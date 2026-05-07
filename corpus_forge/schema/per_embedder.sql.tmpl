@@ -1,0 +1,9 @@
+CREATE TABLE IF NOT EXISTS corpus.embeddings_{name} (
+  chunk_id    BIGINT PRIMARY KEY REFERENCES corpus.chunks(id) ON DELETE CASCADE,
+  embedder_id BIGINT NOT NULL REFERENCES corpus.embedders(id),
+  embedding   vector({dim}) NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS embeddings_{name}_hnsw
+  ON corpus.embeddings_{name}
+  USING hnsw (embedding vector_cosine_ops);

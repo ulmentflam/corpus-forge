@@ -1,0 +1,73 @@
+[project]
+name            = "corpus-forge"
+version         = "0.1.0"
+description     = "HF-format corpus + multi-embedder ingestion daemon for personal text and chat data."
+requires-python = ">=3.11"
+license         = { text = "MIT" }
+readme          = "README.md"
+dependencies = [
+  "sentence-transformers>=3.0",
+  "psycopg[binary]>=3.1",
+  "pgvector>=0.3",
+  "watchdog>=4.0",
+  "typer>=0.12",
+  "pydantic>=2.7",
+  "python-dotenv>=1.0",
+  "tenacity>=8.2",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.30"]
+hf     = ["datasets>=2.20"]
+tokens = ["tiktoken>=0.7"]
+
+[project.scripts]
+corpus-forge = "corpus_forge.cli:app"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.2",
+  "pytest-cov>=5.0",
+  "hypothesis>=6.100",                       # fuzz / property-based tests
+  "testcontainers[postgres]>=4.7",
+  "ruff>=0.5",                               # lint + format
+  "pyrefly>=0.1",                            # type checking (Meta)
+  "pre-commit>=3.7",
+  "mkdocs-material>=9.5",                    # docs site (built on demand)
+  "mkdocstrings[python]>=0.25",              # API docs from docstrings
+]
+
+# ── tool config (also see Tooling & development workflow above) ──
+
+[tool.ruff]
+line-length    = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "ARG", "PTH", "RUF", "PL", "C4", "PT"]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pyrefly]
+project_includes = ["corpus_forge"]
+strict           = true
+python_version   = "3.11"
+
+[tool.pytest.ini_options]
+testpaths     = ["tests"]
+addopts       = "-ra --strict-markers --strict-config"
+markers = [
+  "integration: requires Docker / live Postgres",
+  "smoke: end-to-end happy path",
+  "fuzz: hypothesis-driven property tests",
+]
+
+[tool.coverage.run]
+source = ["corpus_forge"]
+omit   = ["corpus_forge/cli.py", "corpus_forge/__main__.py"]
+
+[tool.coverage.report]
+    fail_under   = 75
+show_missing = true
