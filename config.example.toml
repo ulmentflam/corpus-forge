@@ -1,0 +1,63 @@
+# ~/.config/corpus-forge/config.toml
+
+[backend]
+kind   = "postgres"
+dsn    = "postgresql://${PG_USER}:${PG_PASSWORD}@${PG_HOST}:${PG_PORT}/${PG_DB}"
+schema = "corpus"
+
+[daemon]
+debounce_seconds = 2.0
+log_level        = "INFO"
+log_format       = "text"  # 'text' | 'json'
+
+[[datasets]]
+name = "obsidian-vault"
+kind = "text"
+  [[datasets.sources]]
+  plugin         = "markdown_vault"
+  vault_root     = "~/Library/Mobile Documents/iCloud~md~obsidian/Documents"
+  vault_names    = []  # [] = all subdirectories
+  exclude_globs  = [".obsidian/**", ".trash/**", ".*"]
+  chunker        = "markdown"
+  chunker_config = { max_chars = 1500, overlap = 200 }
+
+[[datasets]]
+name = "claude-code"
+kind = "chat"
+  [[datasets.sources]]
+  plugin            = "claude_code"
+  projects_root     = "~/.claude/projects"
+  include_subagents = true
+  chunker           = "conversation"
+  chunker_config    = { mode = "per_message", role_prefix = true }
+
+[[datasets]]
+name = "opencode"
+kind = "chat"
+  [[datasets.sources]]
+  plugin         = "opencode"
+  storage_root   = "~/.local/share/opencode/storage"
+  chunker        = "conversation"
+  chunker_config = { mode = "sliding_window", window_turns = 6, stride_turns = 3 }
+
+[[embedders]]
+name      = "qwen3_8b"
+provider  = "sentence_transformers"
+model_id  = "Qwen/Qwen3-Embedding-8B"
+dimension = 4096
+normalize = true
+distance  = "cosine"
+active    = true
+batch_size = 16
+device    = "auto"  # 'auto'|'mps'|'cuda'|'cpu'
+
+[[embedders]]
+name      = "openai_3l"
+provider  = "openai"
+model_id  = "text-embedding-3-large"
+dimension = 3072
+normalize = true
+distance  = "cosine"
+active    = false  # enable when cloud redundancy is wanted
+api_key_env = "OPENAI_API_KEY"
+batch_size  = 256
