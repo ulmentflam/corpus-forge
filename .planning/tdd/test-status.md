@@ -10,6 +10,7 @@ Record of test suites written by tdd-tester.
 | P1-05   | red    | Documentation task, TOML validated |
 | P1-06   | red    | Tests written, confirmed red |
 | P1-07   | red    | Tests written, confirmed red |
+| P1-09   | red    | Tests written, confirmed red |
 
 
 ## P0-01 — `chunk_content_hash`
@@ -283,5 +284,107 @@ ImportError while importing test module '/Users/evanowen/Library/Mobile Document
 tests/unit/test_sync_cloud.py:9: in <module>
     from corpus_forge.sync.cloud import detect_cloud_provider
 E   ImportError: cannot import name 'detect_cloud_provider' from 'corpus_forge.sync.cloud'
+```
+- Status: red — handed off to tdd-coder
+
+
+## P1-09 — `conflict_filename` in `corpus_forge/sync/conflicts.py`
+- Test files: `tests/unit/test_sync_conflicts.py`
+- Run command: `PYTHONPATH=. uv run pytest tests/unit/test_sync_conflicts.py -v --no-header 2>&1 | tail -30`
+- Edge case checklist:
+  - [x] happy — basic format without provider: `notes/Foo.conflict-macA-20260507T223045Z.md`
+  - [x] happy — basic format with provider: `notes/Foo.conflict-icloud-macA-20260507T223045Z.md`
+  - [x] happy — explicit provider=None matches no-provider behavior
+  - [x] happy — absolute original path preserved
+  - [x] suffixes — .txt extension preserved
+  - [x] suffixes — no extension (Makefile)
+  - [x] suffixes — hidden file no extension (.gitignore)
+  - [x] suffixes — compound extension (.tar.gz)
+  - [x] suffixes — multi-dot stem (report.v2.md)
+  - [x] suffixes — dotfile with extension (.env.local)
+  - [x] timestamp — no colons in timestamp component
+  - [x] timestamp — trailing Z (UTC indicator)
+  - [x] timestamp — sortable ascending (earlier < later)
+  - [x] timestamp — different hosts sortable
+  - [x] timestamp — midnight boundary (00:00:00)
+  - [x] timestamp — leap year (Feb 29)
+  - [x] host edge — long host name (255 chars)
+  - [x] host edge — underscores in host
+  - [x] host edge — dashes in host
+  - [x] host edge — numeric host
+  - [x] host edge — empty host string
+  - [x] provider — icloud, dropbox, gdrive variants
+  - [x] provider — long provider name
+  - [x] provider — no path separators introduced
+  - [x] path structure — parent directory preserved
+  - [x] path structure — relative stays relative
+  - [x] path structure — absolute stays absolute
+  - [x] multi-dot — .v2 suffix correctly parsed
+  - [x] multi-dot — just dots (a.b.c)
+  - [x] multi-dot — dotfile with multiple dots
+  - [x] type — non-Path original raises TypeError
+  - [x] type — non-string host raises TypeError
+  - [x] type — non-datetime ts raises TypeError
+  - [x] type — non-string provider raises TypeError
+  - [x] type — return type is Path
+  - [x] consistency — same args → same output (idempotent)
+  - [x] consistency — different ts → different output
+  - [x] consistency — different host → different output
+  - [x] regression — file already named "conflict.md"
+  - [x] regression — path with spaces
+  - [x] regression — Unicode stem (日本語)
+  - [x] regression — Unicode path components
+  - [ ] concurrency — N/A (pure function, no shared state)
+  - [ ] failure paths — N/A (no I/O, no network, no disk)
+  - [ ] locale/time — covered via Unicode stem/path, UTC timestamp, midnight/leap-second boundaries
+  - [ ] regression — distinct inputs produce distinct filenames
+- Red output (tail):
+```
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameHappyPath::test_basic_format_no_provider
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameHappyPath::test_basic_format_with_provider
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameHappyPath::test_provider_none_explicit
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameHappyPath::test_absolute_original_path
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameSuffixes::test_txt_extension
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameSuffixes::test_no_extension
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameSuffixes::test_hidden_file_no_extension
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameSuffixes::test_double_extension
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameSuffixes::test_md_with_multiple_dots
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameSuffixes::test_dotfile_with_extension
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameTimestamp::test_no_colons_in_timestamp
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameTimestamp::test_trailing_z
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameTimestamp::test_sortable_ascending
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameTimestamp::test_different_hosts_same_ts_sortable
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameTimestamp::test_midnight_boundary
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameTimestamp::test_leap_second_day
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameHostEdgeCases::test_long_host_name
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameHostEdgeCases::test_host_with_underscores
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameHostEdgeCases::test_host_with_dashes
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameHostEdgeCases::test_host_with_numbers
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameHostEdgeCases::test_empty_host
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameProviderEdgeCases::test_provider_icloud
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameProviderEdgeCases::test_provider_dropbox
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameProviderEdgeCases::test_provider_gdrive
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameProviderEdgeCases::test_provider_with_long_name
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameProviderEdgeCases::test_provider_no_trailing_slash_in_path
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenamePathStructure::test_preserves_parent_directory
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenamePathStructure::test_preserves_parent_with_provider
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenamePathStructure::test_relative_path_becomes_relative
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenamePathStructure::test_absolute_path_becomes_absolute
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameMultiDotFiles::test_multi_dot_stem
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameMultiDotFiles::test_just_dots
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameMultiDotFiles::test_dotfile_with_multiple_dots
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameTypeHandling::test_non_path_original_raises
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameTypeHandling::test_non_string_host_raises
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameTypeHandling::test_non_datetime_ts_raises
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameTypeHandling::test_non_string_provider_raises
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameTypeHandling::test_returns_path
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameConsistency::test_same_args_same_output
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameConsistency::test_same_args_different_ts_different_output
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameConsistency::test_different_host_same_ts_different_output
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameRegression::test_stem_with_conflict_word
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameRegression::test_path_with_spaces
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameRegression::test_unicode_stem
+FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameRegression::test_unicode_path_components
+============================== 45 failed in 0.18s ==============================
 ```
 - Status: red — handed off to tdd-coder
