@@ -7,6 +7,7 @@ Record of test suites written by tdd-tester.
 | P0-02   | red    | DDL created, validated |
 | P1-01   | red    | handed off to tdd-coder |
 | P1-03   | red    | Tests written, confirmed red |
+| P1-05   | red    | Documentation task, TOML validated |
 
 
 ## P0-01 — `chunk_content_hash`
@@ -159,7 +160,7 @@ FAILED tests/unit/test_config_extended.py::TestDaemonConfigSyncFields::test_daem
 FAILED tests/unit/test_config_extended.py::TestDaemonConfigSyncFields::test_daemon_config_sync_poll_interval_zero_rejected
 FAILED tests/unit/test_config_extended.py::TestDaemonConfigSyncFields::test_daemon_config_sync_poll_interval_negative_rejected
 FAILED tests/unit/test_config_extended.py::TestDaemonConfigSyncFields::test_daemon_config_sync_default_listen_notify
-FAILED tests/unit_test_config_extended.py::TestDaemonConfigSyncFields::test_daemon_config_sync_custom_listen_notify
+FAILED tests/unit/test_config_extended.py::TestDaemonConfigSyncFields::test_daemon_config_sync_custom_listen_notify
 FAILED tests/unit/test_config_extended.py::TestDaemonConfigSyncFields::test_daemon_config_sync_from_minimal_toml
 FAILED tests/unit/test_config_extended.py::TestDatasetConfigSyncEnabled::test_dataset_config_sync_enabled_default
 FAILED tests/unit/test_config_extended.py::TestDatasetConfigSyncEnabled::test_dataset_config_sync_enabled_text_accepted
@@ -171,3 +172,28 @@ FAILED tests/unit/test_config_extended.py::TestDatasetConfigSyncEnabled::test_da
 ```
 - Status: red — handed off to tdd-coder
 
+
+## P1-05 — Sync section in `config.example.toml`
+- Test files: `config.example.toml` (direct edit, no test file)
+- Run command: `uv run python -c "import tomllib; tomllib.load(open('config.example.toml', 'rb')); print('TOML valid ✓')"`
+- Edge case checklist:
+  - [x] happy — `[daemon]` section has `host_id`, `trash_dir`, `conflict_dir`, `sync_poll_interval_s`
+  - [x] happy — `*.icloud` added to `exclude_globs` on `markdown_vault` source
+  - [x] happy — `sync_enabled = true` on text vault dataset
+  - [x] format — TOML parses without error
+  - [x] format — ruff format check passes (no reformatting needed)
+  - [x] consistency — alignment with existing `[daemon]` field indentation style
+  - [x] documentation — all new fields have inline comments explaining purpose
+  - [ ] happy-path test — N/A (documentation-only task, TOML validation is the verification)
+  - [ ] boundaries — N/A (config values are user-provided, not computed)
+  - [ ] type/format — N/A (TOML types are self-documenting)
+  - [ ] state — N/A (static config file)
+  - [ ] concurrency — N/A (static config file)
+  - [ ] failure paths — N/A (static config file)
+  - [ ] locale/time — N/A (static config file)
+  - [ ] production-realistic — N/A (example config, not runtime)
+  - [ ] regression — N/A (no code changed)
+- Validation results:
+  - `tomllib` parse: ✓ valid
+  - `ruff format --check`: ✓ no changes needed
+- Status: red — handed off to tdd-coder
