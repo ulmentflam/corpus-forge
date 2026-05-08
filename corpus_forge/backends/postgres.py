@@ -9,7 +9,7 @@ import numpy as np
 import psycopg
 from psycopg.rows import dict_row
 
-from ..identity import advisory_lock_key
+from ..identity import advisory_lock_key, chunk_content_hash
 from .base import StorageBackend
 
 if TYPE_CHECKING:
@@ -275,7 +275,8 @@ class PostgresBackend(StorageBackend):
         )
 
     def upsert_document(
-        self, dataset_id: int, doc: "RawDocument", chunks: list[tuple[str | None, str]]
+        self, dataset_id: int, doc: "RawDocument", chunks: list[tuple[str | None, str]],
+        embedder_ids: list[int] | None = None,
     ) -> int:
         """Insert or update a document and its chunks."""
         # Check if document already exists
@@ -335,15 +336,20 @@ class PostgresBackend(StorageBackend):
             doc_id = result[0]["id"]
 
         # Add chunks
+        cache: dict = {}
         for i, (heading, text) in enumerate(chunks):
-            self._execute(
+            chunk_hash = chunk_content_hash(text)
+            row = self._execute(
                 """
                 INSERT INTO corpus.chunks 
-                (document_id, chunk_index, heading, text, metadata)
-                VALUES (%s, %s, %s, %s, %s)
+                (document_id, chunk_index, heading, text, metadata, content_hash)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
-                (doc_id, i, heading, text, psycopg.types.json.Json({})),
+                (doc_id, i, heading, text, psycopg.types.json.Json({}), chunk_hash),
             )
+            if embedder_ids is not None:
+                self._copy_reusable_embeddings(row[0]["id"], chunk_hash, embedder_ids, cache)
 
         return doc_id
 
@@ -551,6 +557,69 @@ class PostgresBackend(StorageBackend):
             (dataset_id, source_uri),
         )
 
+    def _copy_reusable_embeddings(
+        self,
+        new_chunk_id: int,
+        content_hash: str,
+        embedder_ids: list[int],
+        cache: dict,
+    ) -> set[int]:
+        """Copy embeddings from prior chunks with the same content hash.
+
+        For each embedder_id, looks up an existing chunk with the same content_hash
+        that already has an embedding vector stored. If found, the vector row is
+        copied (INSERT SELECT) for the new chunk. Cache entries skip the SELECT.
+
+        Returns the set of embedder_ids whose embeddings were reused.
+        """
+        reused = set()
+
+        embedder_info = {}
+        for eid in embedder_ids:
+            row = self._execute(
+                "SELECT name, table_name FROM corpus.embedders WHERE id = %s",
+                (eid,),
+            )
+            if row:
+                embedder_info[eid] = row[0]
+
+        for embedder_id in sorted(embedder_ids, key=lambda x: (x % 2 == 0, x)):
+            if embedder_id not in embedder_info:
+                continue
+
+            info = embedder_info[embedder_id]
+            embedder_table = f"corpus.{info['table_name']}"
+
+            cache_key = (content_hash, embedder_id)
+            prior_chunk_id = cache.get(cache_key)
+
+            if prior_chunk_id is None:
+                rows = self._execute(
+                    f"""
+                    SELECT e.chunk_id FROM corpus.chunks c
+                    JOIN {embedder_table} e ON e.chunk_id = c.id
+                    WHERE c.content_hash = %s AND c.id != %s
+                    ORDER BY c.id DESC LIMIT 1
+                    """,
+                    (content_hash, new_chunk_id),
+                )
+                if not rows:
+                    continue
+                prior_chunk_id = rows[0]["chunk_id"]
+                cache[cache_key] = prior_chunk_id
+
+            self._execute(
+                f"""
+                INSERT INTO {embedder_table} (chunk_id, embedding)
+                SELECT %s, embedding FROM {embedder_table}
+                WHERE chunk_id = %s
+                """,
+                (new_chunk_id, prior_chunk_id),
+            )
+            reused.add(embedder_id)
+
+        return reused
+
     def delete_conversation(self, dataset_id: int, source_uri: str) -> None:
         """Delete a conversation and its messages/chunks."""
         self._execute(
@@ -559,4 +628,95 @@ class PostgresBackend(StorageBackend):
             WHERE dataset_id = %s AND source_uri = %s
             """,
             (dataset_id, source_uri),
+        )
+
+    # ── Revisions / Sync ─────────────────────────────────────────────────────
+
+    def insert_revision(
+        self,
+        *,
+        document_id: int,
+        source_uri: str,
+        content_hash: str,
+        text: str,
+        parent_revision_id: int | None,
+        author_host: str,
+        is_tombstone: bool,
+        metadata: dict | None = None,
+    ) -> dict:
+        """Insert a new revision under advisory lock, returning id + revision_number."""
+        with self.lock_source(source_uri):
+            max_row = self._execute(
+                "SELECT MAX(revision_number) AS max FROM corpus.document_revisions WHERE document_id = %s",
+                (document_id,),
+            )
+            revision_number = (max_row[0]["max"] or 0) + 1
+            result = self._execute(
+                """
+                INSERT INTO corpus.document_revisions
+                (document_id, revision_number, parent_revision_id, content_hash,
+                 text, author_host, is_tombstone, metadata, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                RETURNING id, revision_number
+                """,
+                (
+                    document_id,
+                    revision_number,
+                    parent_revision_id,
+                    content_hash,
+                    text,
+                    author_host,
+                    is_tombstone,
+                    psycopg.types.json.Json(metadata) if metadata else None,
+                ),
+            )
+            return {"id": result[0]["id"], "revision_number": result[0]["revision_number"]}
+
+    def latest_revision(self, document_id: int) -> dict | None:
+        """Return the highest revision_number row for a document, or None."""
+        rows = self._execute(
+            "SELECT * FROM corpus.document_revisions WHERE document_id = %s ORDER BY revision_number DESC LIMIT 1",
+            (document_id,),
+        )
+        return rows[0] if rows else None
+
+    def pending_remote_revisions(
+        self,
+        dataset_id: int,
+        last_pulled_revision_id: int | None,
+        self_host: str,
+        *,
+        limit: int = 1024,
+    ) -> list[dict]:
+        """Return revisions from other hosts not yet pulled."""
+        last_id = last_pulled_revision_id if last_pulled_revision_id is not None else 0
+        return self._execute(
+            """
+            SELECT r.* FROM corpus.document_revisions r
+            JOIN corpus.documents d ON d.id = r.document_id
+            WHERE d.dataset_id = %s AND r.id > %s AND r.author_host <> %s
+            ORDER BY r.id ASC LIMIT %s
+            """,
+            (dataset_id, last_id, self_host, limit),
+        )
+
+    def mark_revision_pulled(self, source_id: int, revision_id: int) -> None:
+        """Advance last_pulled_revision_id for a source using GREATEST."""
+        self._execute(
+            "UPDATE corpus.sources SET last_pulled_revision_id = GREATEST(COALESCE(last_pulled_revision_id, 0), %s) WHERE id = %s",
+            (revision_id, source_id),
+        )
+
+    def set_tombstone(self, document_id: int) -> None:
+        """Mark a document as tombstoned."""
+        self._execute(
+            "UPDATE corpus.documents SET tombstoned_at = NOW() WHERE id = %s",
+            (document_id,),
+        )
+
+    def clear_tombstone(self, document_id: int) -> None:
+        """Remove tombstone from a document."""
+        self._execute(
+            "UPDATE corpus.documents SET tombstoned_at = NULL WHERE id = %s",
+            (document_id,),
         )

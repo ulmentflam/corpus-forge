@@ -82,17 +82,21 @@ def ingest_one(
             logger.debug(f"Content unchanged for {raw.source_uri}, skipping")
             return  # Short-circuit if unchanged
 
+        # Resolve active embedder IDs once at start for bulk embedding copy
+        embedder_ids = [backend.register_embedder(e) for e in embedders] or None
+
         # Process based on type
         if isinstance(raw, RawDocument):
             # Process document
             chunk_data = _process_document(raw, chunker)
-            chunk_ids = backend.upsert_document(dataset_id, raw, chunk_data)
+            chunk_ids = backend.upsert_document(dataset_id, raw, chunk_data, embedder_ids=embedder_ids)
         else:  # RawConversation
             # Process conversation
             chunked_messages = _process_conversation(raw, chunker)
             chunk_ids = backend.upsert_conversation(dataset_id, raw, chunked_messages)
 
         # Generate embeddings for each active embedder
+        # This loop remains to handle chunks not covered by bulk copy
         for embedder in embedders:
             embedder_id = backend.register_embedder(embedder)
             _write_embeddings_for_chunks(

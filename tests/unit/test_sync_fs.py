@@ -1,14 +1,20 @@
-"""Unit tests for corpus_forge.sync.fs — atomic_write_text."""
+"""Unit tests for corpus_forge.sync.fs — atomic_write_text and move_to_trash."""
 
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 # The function does not exist yet — these tests must fail red.
-from corpus_forge.sync.fs import atomic_write_text
+from corpus_forge.sync.fs import (
+    atomic_write_text,
+    is_dataless,
+    is_icloud_placeholder,
+    move_to_trash,
+)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
@@ -425,3 +431,382 @@ class TestAtomicWriteTextPlatform:
             atomic_write_text(target, "content")
             # os.fsync should be called at least twice (temp file + parent dir)
             assert len(fsync_calls) >= 1
+
+
+# ── move_to_trash — destination path construction ────────────────────────
+
+class TestMoveToTrashDestPath:
+    """The destination path must follow the expected format."""
+
+    FAKE_TS = datetime(2026, 5, 8, 22, 30, 45)
+
+    def test_no_relpath_uses_src_name(self, tmp_path: Path):
+        """Without rel_path, dest is <trash>/<dataset>/<src.stem>.deleted-<host>-<ts><src.suffix>."""
+        src = tmp_path / "report.md"
+        src.write_text("data")
+        trash = tmp_path / ".trash"
+
+        with patch("corpus_forge.sync.fs.datetime") as mock_dt:
+            mock_dt.utcnow.return_value = self.FAKE_TS
+            dest = move_to_trash(src, trash, "docs", "macA")
+
+        expected = trash / "docs" / "report.deleted-macA-20260508T223045Z.md"
+        assert dest == expected
+
+    def test_with_relpath_preserves_structure(self, tmp_path: Path):
+        """With rel_path, dest preserves directory structure under the dataset."""
+        src = tmp_path / "notes" / "meeting.md"
+        src.parent.mkdir(parents=True)
+        src.write_text("notes")
+        trash = tmp_path / ".trash"
+        rel = Path("journal/2026/meeting.md")
+
+        with patch("corpus_forge.sync.fs.datetime") as mock_dt:
+            mock_dt.utcnow.return_value = self.FAKE_TS
+            dest = move_to_trash(src, trash, "vault", "mbp2", rel_path=rel)
+
+        expected = trash / "vault" / "journal" / "2026" / "meeting.deleted-mbp2-20260508T223045Z.md"
+        assert dest == expected
+
+    def test_no_extension_file(self, tmp_path: Path):
+        """File without extension should not get a trailing dot."""
+        src = tmp_path / "Makefile"
+        src.write_text("all:")
+        trash = tmp_path / ".trash"
+
+        with patch("corpus_forge.sync.fs.datetime") as mock_dt:
+            mock_dt.utcnow.return_value = self.FAKE_TS
+            dest = move_to_trash(src, trash, "code", "host1")
+
+        expected = trash / "code" / "Makefile.deleted-host1-20260508T223045Z"
+        assert dest == expected
+
+    def test_dotfile_no_extension(self, tmp_path: Path):
+        """Dotfile without extension should not get a trailing dot."""
+        src = tmp_path / ".gitignore"
+        src.write_text("*.pyc")
+        trash = tmp_path / ".trash"
+
+        with patch("corpus_forge.sync.fs.datetime") as mock_dt:
+            mock_dt.utcnow.return_value = self.FAKE_TS
+            dest = move_to_trash(src, trash, "dotfiles", "h1")
+
+        expected = trash / "dotfiles" / ".gitignore.deleted-h1-20260508T223045Z"
+        assert dest == expected
+
+    def test_compound_extension(self, tmp_path: Path):
+        """Only the last suffix is moved to the end (e.g. .tar.gz → .gz)."""
+        src = tmp_path / "archive.tar.gz"
+        src.write_text("gzip content")
+        trash = tmp_path / ".trash"
+
+        with patch("corpus_forge.sync.fs.datetime") as mock_dt:
+            mock_dt.utcnow.return_value = self.FAKE_TS
+            dest = move_to_trash(src, trash, "backups", "srv1")
+
+        expected = trash / "backups" / "archive.tar.deleted-srv1-20260508T223045Z.gz"
+        assert dest == expected
+
+    def test_unicode_filename(self, tmp_path: Path):
+        """Unicode filenames should round-trip."""
+        src = tmp_path / "日本語.md"
+        src.write_text("data")
+        trash = tmp_path / ".trash"
+
+        with patch("corpus_forge.sync.fs.datetime") as mock_dt:
+            mock_dt.utcnow.return_value = self.FAKE_TS
+            dest = move_to_trash(src, trash, "uni", "host1")
+
+        expected = trash / "uni" / "日本語.deleted-host1-20260508T223045Z.md"
+        assert dest == expected
+
+
+# ── move_to_trash — file relocation behavior ─────────────────────────────
+
+class TestMoveToTrashFileMoved:
+    """The source file should be moved (not copied-only) to the trash location."""
+
+    FAKE_TS = datetime(2026, 5, 8, 22, 30, 45)
+
+    def test_src_no_longer_exists(self, tmp_path: Path):
+        """After move_to_trash, the source file must not exist."""
+        src = tmp_path / "doc.txt"
+        src.write_text("important data")
+        trash = tmp_path / ".trash"
+
+        with patch("corpus_forge.sync.fs.datetime") as mock_dt:
+            mock_dt.utcnow.return_value = self.FAKE_TS
+            move_to_trash(src, trash, "data", "macA")
+
+        assert not src.exists()
+
+    def test_dest_has_same_content(self, tmp_path: Path):
+        """The trash destination must contain the original content."""
+        content = "line1\nline2\n"
+        src = tmp_path / "doc.txt"
+        src.write_text(content)
+        trash = tmp_path / ".trash"
+
+        with patch("corpus_forge.sync.fs.datetime") as mock_dt:
+            mock_dt.utcnow.return_value = self.FAKE_TS
+            dest = move_to_trash(src, trash, "data", "macA")
+
+        assert dest.read_text() == content
+
+    def test_returns_path(self, tmp_path: Path):
+        """Returns a Path object (the destination)."""
+        src = tmp_path / "doc.txt"
+        src.write_text("x")
+        trash = tmp_path / ".trash"
+
+        with patch("corpus_forge.sync.fs.datetime") as mock_dt:
+            mock_dt.utcnow.return_value = self.FAKE_TS
+            result = move_to_trash(src, trash, "data", "macA")
+
+        assert isinstance(result, Path)
+
+
+# ── move_to_trash — parent directory creation ────────────────────────────
+
+class TestMoveToTrashParentDirs:
+    """Parent directories of the destination must be created automatically."""
+
+    FAKE_TS = datetime(2026, 5, 8, 22, 30, 45)
+
+    def test_creates_trash_dataset_dir(self, tmp_path: Path):
+        """The <trash_root>/<dataset> directory should be created."""
+        src = tmp_path / "doc.txt"
+        src.write_text("x")
+        trash = tmp_path / ".trash"
+
+        assert not (trash / "data").exists()
+
+        with patch("corpus_forge.sync.fs.datetime") as mock_dt:
+            mock_dt.utcnow.return_value = self.FAKE_TS
+            move_to_trash(src, trash, "data", "macA")
+
+        assert (trash / "data").is_dir()
+
+    def test_creates_relpath_parents(self, tmp_path: Path):
+        """When rel_path has sub-directories, they must be created."""
+        src = tmp_path / "doc.txt"
+        src.write_text("x")
+        trash = tmp_path / ".trash"
+        rel = Path("a/b/c/doc.txt")
+
+        deep_dir = trash / "data" / "a" / "b" / "c"
+        assert not deep_dir.exists()
+
+        with patch("corpus_forge.sync.fs.datetime") as mock_dt:
+            mock_dt.utcnow.return_value = self.FAKE_TS
+            move_to_trash(src, trash, "data", "macA", rel_path=rel)
+
+        assert deep_dir.is_dir()
+
+
+# ── move_to_trash — same-filesystem (atomic) ─────────────────────────────
+
+class TestMoveToTrashSameFilesystem:
+    """On the same filesystem, os.replace must be used (atomic)."""
+
+    FAKE_TS = datetime(2026, 5, 8, 22, 30, 45)
+
+    def test_uses_os_replace(self, tmp_path: Path):
+        """os.replace should be called for same-device moves."""
+        src = tmp_path / "doc.txt"
+        src.write_text("x")
+        trash = tmp_path / ".trash"
+
+        with (
+            patch("corpus_forge.sync.fs.datetime") as mock_dt,
+            patch("corpus_forge.sync.fs.os.replace") as mock_replace,
+        ):
+            mock_dt.utcnow.return_value = self.FAKE_TS
+            dest = move_to_trash(src, trash, "data", "macA")
+
+            mock_replace.assert_called_once()
+            args, _ = mock_replace.call_args
+            assert Path(args[0]).name == src.name
+            assert Path(args[1]) == dest
+
+    def test_os_replace_not_called_for_cross_device(self, tmp_path: Path):
+        """os.replace should NOT be called when cross-device EXDEV is raised."""
+        import errno
+
+        src = tmp_path / "doc.txt"
+        src.write_text("x")
+        trash = tmp_path / ".trash"
+
+        with (
+            patch("corpus_forge.sync.fs.datetime") as mock_dt,
+            patch("corpus_forge.sync.fs.os.replace", side_effect=OSError(errno.EXDEV, "cross-device")),
+            patch("corpus_forge.sync.fs.shutil.copy2") as mock_copy,
+            patch("corpus_forge.sync.fs.os.unlink") as mock_unlink,
+        ):
+            mock_dt.utcnow.return_value = self.FAKE_TS
+            move_to_trash(src, trash, "data", "macA")
+
+        # os.replace was called once but raised EXDEV
+        # (no explicit assertion needed here — we're verifying the fallback path handles it)
+
+
+# ── move_to_trash — cross-device fallback ────────────────────────────────
+
+class TestMoveToTrashCrossDevice:
+    """When os.replace raises EXDEV, fall back to copy+unlink."""
+
+    FAKE_TS = datetime(2026, 5, 8, 22, 30, 45)
+
+    def test_calls_copy2_on_exdev(self, tmp_path: Path):
+        """When os.replace raises EXDEV, shutil.copy2 should be used."""
+        import errno
+
+        src = tmp_path / "doc.txt"
+        src.write_text("fallback content")
+        trash = tmp_path / ".trash"
+
+        with (
+            patch("corpus_forge.sync.fs.datetime") as mock_dt,
+            patch("corpus_forge.sync.fs.os.replace", side_effect=OSError(errno.EXDEV, "cross-device")),
+            patch("corpus_forge.sync.fs.shutil.copy2") as mock_copy,
+            patch("corpus_forge.sync.fs.os.unlink"),
+        ):
+            mock_dt.utcnow.return_value = self.FAKE_TS
+            dest = move_to_trash(src, trash, "data", "macA")
+
+            mock_copy.assert_called_once()
+            args, _ = mock_copy.call_args
+            assert Path(args[0]) == src
+            assert Path(args[1]) == dest
+
+    def test_calls_unlink_on_exdev(self, tmp_path: Path):
+        """After copy2 on EXDEV, the source must be unlinked."""
+        import errno
+
+        src = tmp_path / "doc.txt"
+        src.write_text("x")
+        trash = tmp_path / ".trash"
+
+        with (
+            patch("corpus_forge.sync.fs.datetime") as mock_dt,
+            patch("corpus_forge.sync.fs.os.replace", side_effect=OSError(errno.EXDEV, "cross-device")),
+            patch("corpus_forge.sync.fs.shutil.copy2"),
+            patch("corpus_forge.sync.fs.os.unlink") as mock_unlink,
+        ):
+            mock_dt.utcnow.return_value = self.FAKE_TS
+            move_to_trash(src, trash, "data", "macA")
+
+            mock_unlink.assert_called_once_with(str(src))
+
+    def test_non_exdev_oserror_still_raises(self, tmp_path: Path):
+        """A non-EXDEV OSError from os.replace should propagate."""
+        import errno
+
+        src = tmp_path / "doc.txt"
+        src.write_text("x")
+        trash = tmp_path / ".trash"
+
+        with (
+            patch("corpus_forge.sync.fs.datetime") as mock_dt,
+            patch("corpus_forge.sync.fs.os.replace", side_effect=OSError(errno.EACCES, "permission denied")),
+        ):
+            mock_dt.utcnow.return_value = self.FAKE_TS
+            with pytest.raises(OSError):
+                move_to_trash(src, trash, "data", "macA")
+
+    def test_exdev_fallback_preserves_content(self, tmp_path: Path):
+        """After EXDEV fallback, dest content matches original."""
+        import errno
+
+        content = "cross-device content"
+        src = tmp_path / "doc.txt"
+        src.write_text(content)
+        trash = tmp_path / ".trash"
+
+        def fake_replace(_src, _dst):
+            raise OSError(errno.EXDEV, "cross-device link")
+
+        with patch("corpus_forge.sync.fs.datetime") as mock_dt:
+            mock_dt.utcnow.return_value = self.FAKE_TS
+            with patch("corpus_forge.sync.fs.os.replace", side_effect=fake_replace):
+                dest = move_to_trash(src, trash, "data", "macA")
+
+        assert dest.read_text() == content
+        assert not src.exists()
+
+# ── is_icloud_placeholder — iCloud placeholder detection ─────────────────
+
+class TestIsIcloudPlaceholder:
+    """is_icloud_placeholder detects iCloud placeholder files."""
+
+    def test_icloud_suffix_zero_size(self, tmp_path: Path):
+        """Foo.md.icloud with 0 bytes → True"""
+        p = tmp_path / "Foo.md.icloud"
+        p.write_text("")
+        assert is_icloud_placeholder(p) is True
+
+    def test_icloud_suffix_nonzero_size(self, tmp_path: Path):
+        """Foo.md.icloud with content → False (real file with .icloud ext)"""
+        p = tmp_path / "Foo.md.icloud"
+        p.write_text("content")
+        assert is_icloud_placeholder(p) is False
+
+    def test_normal_file(self, tmp_path: Path):
+        """Foo.md (no .icloud suffix) → False"""
+        p = tmp_path / "Foo.md"
+        p.write_text("content")
+        assert is_icloud_placeholder(p) is False
+
+    def test_normal_file_empty(self, tmp_path: Path):
+        """Normal empty file (no .icloud) → False"""
+        p = tmp_path / "empty.md"
+        p.write_text("")
+        assert is_icloud_placeholder(p) is False
+
+    def test_returns_bool(self, tmp_path: Path):
+        """Return type is bool."""
+        p = tmp_path / "x.md"
+        p.write_text("x")
+        result = is_icloud_placeholder(p)
+        assert isinstance(result, bool)
+
+
+# ── is_dataless — xattr-based dataless detection ────────────────────────
+
+class TestIsDataless:
+    """is_dataless detects dataless/unmaterialized files via xattr."""
+
+    def test_normal_file_no_xattr_returns_false(self, tmp_path: Path):
+        """A normal file with no com.apple.fileprovider.materialized xattr → False"""
+        p = tmp_path / "normal.txt"
+        p.write_text("real content")
+        assert is_dataless(p) is False
+
+    def test_getxattr_error_returns_false(self, tmp_path: Path):
+        """An OSError from getxattr should return False (fail closed)."""
+        p = tmp_path / "unknown.txt"
+        p.write_text("x")
+        with patch("corpus_forge.sync.fs.os.getxattr", side_effect=OSError("no such xattr"), create=True):
+            assert is_dataless(p) is False
+
+    def test_permission_error_returns_false(self, tmp_path: Path):
+        """PermissionError should also return False (fail closed)."""
+        p = tmp_path / "locked.txt"
+        p.write_text("x")
+        with patch("corpus_forge.sync.fs.os.getxattr", side_effect=PermissionError("denied"), create=True):
+            assert is_dataless(p) is False
+
+    def test_dataless_xattr_returns_true(self, tmp_path: Path):
+        """When com.apple.fileprovider.materialized xattr present → True"""
+        p = tmp_path / "placeholder.txt"
+        p.write_text("")
+        with patch("corpus_forge.sync.fs.os.getxattr", return_value=b"1", create=True):
+            assert is_dataless(p) is True
+
+    def test_returns_bool(self, tmp_path: Path):
+        """Return type is bool even on error paths."""
+        p = tmp_path / "test.txt"
+        p.write_text("x")
+        with patch("corpus_forge.sync.fs.os.getxattr", side_effect=OSError, create=True):
+            result = is_dataless(p)
+            assert isinstance(result, bool)

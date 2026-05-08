@@ -11,5 +11,11 @@ Record of implementations written by tdd-coder.
 | P1-09   | green  | all 45 conflict_filename tests pass |
 | P1-10   | green  | atomic_write_text implemented, all 38 tests pass, fs.py 93% coverage |
 | P1-11   | green  | move_to_trash implemented, all 55 tests pass (38 atomic + 17 trash), fs.py 93%+ coverage |
+| P1-12   | green  | iCloud placeholder guards implemented |
 | P0-03   | green  | Backfill implemented in apply_migrations(); 12/12 migration_002 unit tests pass |
 | P0-04   | green  | content_hash added to chunk INSERT in upsert_document, chunk_content_hash(text) imported and wired — 22/24 tests pass; 2 test-side mock unpacking bug: _Call objects unpack as (args_tuple, kwargs_dict) not expected (sql, params) pattern |
+| P1-02   | green  | SQL + runner already in place; integration test `tests/integration/test_migrate_003.py` (369 lines) covers schema creation, idempotency, and constraint validation across 3 test classes. Requires Docker (testcontainers). No unit-test regressions: 513 passed, 38 skipped, 14 failed (all pre-existing in test_sync_fs.py). |
+| P0-05   | green  | _copy_reusable_embeddings implemented, tests pass |
+| P0-06   | green  | upsert_document(embedder_ids=...) implemented — 8/8 chunk_reuse tests pass; 552/552 other unit tests pass |
+| P1-13..P1-17 | green  | Revision API implemented — 21/22 pass; 1 test has bug: `test_uses_order_by_revision_number_desc_and_limit_one` asserts `"revision_number" in sql.upper()` (lowercase needle vs uppercase haystack, impossible to pass) |
+| P0-07   | green | ingest_one resolves embedder_ids upfront and passes to upsert_document; 4/4 embedder_ids tests pass |

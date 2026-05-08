@@ -121,8 +121,10 @@ class TestDetectCloudProviderNone:
         """Root-like path returns 'none'."""
         assert detect_cloud_provider(Path("/")) == "none"
 
-    def test_relative_path_no_match(self, tmp_path):
+    def test_relative_path_no_match(self, tmp_path, monkeypatch):
         """Relative path with no cloud keyword returns 'none'."""
+        # chdir to tmp_path so relative paths don't resolve to iCloud
+        monkeypatch.chdir(tmp_path)
         rel = Path("my_vault")
         assert detect_cloud_provider(rel) == "none"
 

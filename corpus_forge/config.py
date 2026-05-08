@@ -1,10 +1,14 @@
 """Configuration management for corpus-forge."""
 
 import os
+import socket
 from pathlib import Path
 from typing import Annotated
 
-import tomli
+try:
+    import tomllib  # Python 3.11+
+except ImportError:
+    import tomli as tomllib  # type: ignore[import-not-found]
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.functional_validators import AfterValidator
 
@@ -42,6 +46,12 @@ class DaemonConfig(BaseModel):
     debounce_seconds: float = Field(default=2.0, gt=0)
     log_level: str = Field(default="INFO", pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$")
     log_format: str = Field(default="text", pattern="^(text|json)$")
+    # Sync fields
+    host_id: str = ""
+    trash_dir: ExpandedPath = "~/.local/share/corpus-forge/trash"
+    conflict_dir: ExpandedPath = ""
+    sync_poll_interval_s: float = Field(default=5.0, gt=0)
+    sync_use_listen_notify: bool = False
 
 
 class DatasetSourceConfig(BaseModel):
@@ -68,6 +78,17 @@ class DatasetConfig(BaseModel):
     kind: str = Field(pattern="^(text|chat)$")
     description: str | None = None
     sources: list[DatasetSourceConfig]
+    sync_enabled: bool = False
+
+    @model_validator(mode="after")
+    def _validate_sync_enabled(self):
+        """Reject sync_enabled=True for non-text datasets."""
+        if self.sync_enabled and self.kind != "text":
+            raise ValueError(
+                f"Dataset '{self.name}': sync_enabled is only allowed for kind='text', "
+                f"not kind='{self.kind}'"
+            )
+        return self
 
 
 class EmbedderConfig(BaseModel):
@@ -106,6 +127,17 @@ class Config(BaseModel):
                 raise ValueError(f"Dataset '{dataset.name}' must have at least one source")
         return self
 
+    def host_id(self) -> str:
+        if self.daemon.host_id:
+            return self.daemon.host_id
+        host_id_path = Path.home() / ".config" / "corpus-forge" / "host_id"
+        if host_id_path.exists():
+            return host_id_path.read_text().strip()
+        hostname = socket.gethostname()
+        host_id_path.parent.mkdir(parents=True, exist_ok=True)
+        host_id_path.write_text(hostname)
+        return hostname
+
     @classmethod
     def load(cls, config_path: Path | None = None, secrets_path: Path | None = None) -> "Config":
         """Load configuration from TOML file and optional secrets file."""
@@ -117,7 +149,7 @@ class Config(BaseModel):
 
         # Load main config
         with config_path.open("rb") as f:
-            config_data = tomli.load(f)
+            config_data = tomllib.load(f)
 
         # Load secrets if provided and exists
         if secrets_path is None:

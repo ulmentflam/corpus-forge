@@ -12,6 +12,7 @@ from corpus_forge.ingest import (
     _process_document,
     get_active_embedders,
     get_chunker_for_source,
+    ingest_one,
 )
 from corpus_forge.sources.base import RawConversation, RawDocument, RawMessage
 
@@ -413,3 +414,111 @@ class TestGetOrCreateDataset:
         assert result == 99  # noqa: PLR2004
         # Should have been called twice: once to check, once to insert
         assert mock_backend._execute.call_count == 2  # noqa: PLR2004
+
+
+class TestIngestOneEmbedderIds:
+    """Tests for ingest_one embedder_ids resolution and pass-through (P0-07)."""
+
+    def test_register_embedder_called_for_each_embedder(self):
+        """ingest_one calls backend.register_embedder for each active embedder."""
+        backend = MagicMock()
+        backend.get_hash.return_value = None
+        backend.register_embedder.return_value = 42
+        backend.chunks_missing_embedding.return_value = []
+        embedder_a = MagicMock()
+        embedder_b = MagicMock()
+        doc = RawDocument(
+            source_uri="test://doc.md",
+            content_hash="abc",
+            text="hello",
+            title="Test",
+            modified_at=1000.0,
+            metadata={},
+            labels=[],
+        )
+        chunker = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.heading = "h1"
+        mock_chunk.text = "chunk text"
+        chunker.chunk.return_value = [mock_chunk]
+
+        ingest_one(backend, doc, chunker, [embedder_a, embedder_b], dataset_id=1)
+
+        assert backend.register_embedder.call_count == 4
+        backend.register_embedder.assert_any_call(embedder_a)
+        backend.register_embedder.assert_any_call(embedder_b)
+
+    def test_register_embedder_not_called_when_no_embedders(self):
+        """ingest_one does not call register_embedder when the embedders list is empty."""
+        backend = MagicMock()
+        backend.get_hash.return_value = None
+        doc = RawDocument(
+            source_uri="test://doc.md",
+            content_hash="abc",
+            text="hello",
+            title="Test",
+            modified_at=1000.0,
+            metadata={},
+            labels=[],
+        )
+        chunker = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.heading = "h1"
+        mock_chunk.text = "chunk text"
+        chunker.chunk.return_value = [mock_chunk]
+
+        ingest_one(backend, doc, chunker, [], dataset_id=1)
+
+        backend.register_embedder.assert_not_called()
+
+    def test_upsert_document_receives_embedder_ids_when_embedders_present(self):
+        """upsert_document is called with embedder_ids when embedders are present."""
+        backend = MagicMock()
+        backend.get_hash.return_value = None
+        backend.register_embedder.return_value = 42
+        backend.chunks_missing_embedding.return_value = []
+        doc = RawDocument(
+            source_uri="test://doc.md",
+            content_hash="abc",
+            text="hello",
+            title="Test",
+            modified_at=1000.0,
+            metadata={},
+            labels=[],
+        )
+        chunker = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.heading = "h1"
+        mock_chunk.text = "chunk text"
+        chunker.chunk.return_value = [mock_chunk]
+
+        ingest_one(backend, doc, chunker, [MagicMock()], dataset_id=1)
+
+        backend.upsert_document.assert_called_once_with(
+            1, doc, [("h1", "chunk text")], embedder_ids=[42]
+        )
+
+    def test_upsert_document_receives_embedder_ids_none_when_no_embedders(self):
+        """upsert_document is called with embedder_ids=None when no embedders."""
+        backend = MagicMock()
+        backend.get_hash.return_value = None
+        doc = RawDocument(
+            source_uri="test://doc.md",
+            content_hash="abc",
+            text="hello",
+            title="Test",
+            modified_at=1000.0,
+            metadata={},
+            labels=[],
+        )
+        chunker = MagicMock()
+        mock_chunk = MagicMock()
+        mock_chunk.heading = "h1"
+        mock_chunk.text = "chunk text"
+        chunker.chunk.return_value = [mock_chunk]
+
+        ingest_one(backend, doc, chunker, [], dataset_id=1)
+
+        backend.upsert_document.assert_called_once_with(
+            1, doc, [("h1", "chunk text")], embedder_ids=None
+        )

@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 
 from corpus_forge.config import (
     Config,
@@ -736,6 +737,93 @@ dimension = 384
 
         with pytest.raises(ValidationError):
             Config.load(config_path=config_file)
+
+
+class TestConfigHostId:
+    """Tests for Config.host_id() resolution and persistence (P1-04)."""
+
+    def test_explicit_host_id_from_daemon_config(self, temp_dir):
+        """Explicit daemon.host_id is returned without file/hostname fallback."""
+        config = Config(
+            backend=BackendConfig(dsn="sqlite:///test.db"),
+            daemon=DaemonConfig(
+                debounce_seconds=2.0,
+                log_level="INFO",
+                log_format="text",
+                host_id="explicit-host",
+            ),
+            datasets=[],
+            embedders=[],
+        )
+        with patch("pathlib.Path.home", return_value=temp_dir):
+            result = config.host_id()
+        assert result == "explicit-host"
+
+    def test_host_id_file_when_config_empty(self, temp_dir):
+        """When daemon.host_id is empty, file at ~/.config/corpus-forge/host_id is used."""
+        host_file = temp_dir / ".config" / "corpus-forge" / "host_id"
+        host_file.parent.mkdir(parents=True)
+        host_file.write_text("file-host\n")
+
+        config = Config(
+            backend=BackendConfig(dsn="sqlite:///test.db"),
+            daemon=DaemonConfig(
+                debounce_seconds=2.0,
+                log_level="INFO",
+                log_format="text",
+                host_id="",
+            ),
+            datasets=[],
+            embedders=[],
+        )
+        with patch("pathlib.Path.home", return_value=temp_dir):
+            result = config.host_id()
+        assert result == "file-host"
+
+    def test_hostname_fallback_persisted(self, temp_dir):
+        """When neither config nor file has host_id, socket.gethostname() is returned & persisted."""
+        config = Config(
+            backend=BackendConfig(dsn="sqlite:///test.db"),
+            daemon=DaemonConfig(
+                debounce_seconds=2.0,
+                log_level="INFO",
+                log_format="text",
+                host_id="",
+            ),
+            datasets=[],
+            embedders=[],
+        )
+        with patch("pathlib.Path.home", return_value=temp_dir), \
+             patch("socket.gethostname", return_value="my-machine"):
+            result = config.host_id()
+
+        assert result == "my-machine"
+
+        host_file = temp_dir / ".config" / "corpus-forge" / "host_id"
+        assert host_file.read_text().strip() == "my-machine"
+
+    def test_persisted_host_id_survives_hostname_change(self, temp_dir):
+        """Once persisted, host_id file is read even if hostname changes."""
+        host_file = temp_dir / ".config" / "corpus-forge" / "host_id"
+        host_file.parent.mkdir(parents=True)
+        host_file.write_text("persisted-host\n")
+
+        config = Config(
+            backend=BackendConfig(dsn="sqlite:///test.db"),
+            daemon=DaemonConfig(
+                debounce_seconds=2.0,
+                log_level="INFO",
+                log_format="text",
+                host_id="",
+            ),
+            datasets=[],
+            embedders=[],
+        )
+        with patch("pathlib.Path.home", return_value=temp_dir), \
+             patch("socket.gethostname", return_value="different-machine"):
+            result = config.host_id()
+
+        assert result == "persisted-host"
 
 
 class TestConfigGetReload:

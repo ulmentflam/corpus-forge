@@ -242,6 +242,84 @@ class TestUpsertDocument:
             # Should have called _execute for INSERT doc + 2x INSERT chunk
             assert backend._execute.call_count >= 3
 
+    def test_upsert_document_chunks_include_content_hash_column(self):
+        from corpus_forge.identity import chunk_content_hash
+
+        with patch.object(PostgresBackend, "__init__", lambda self, dsn, schema="corpus": None):
+            backend = PostgresBackend.__new__(PostgresBackend)
+            backend._execute = MagicMock(
+                side_effect=[
+                    [],
+                    [{"id": 5}],
+                    [],
+                    [],
+                ]
+            )
+
+            doc = RawDocument(
+                source_uri="vault://test.md",
+                content_hash="abc",
+                text="# Test\n\nContent.",
+                title="Test",
+                modified_at=1000.0,
+                metadata={},
+                labels=[],
+            )
+            backend.upsert_document(1, doc, [("# Test", "Chunk A"), ("", "Chunk B")])
+
+            chunk_calls = [
+                (call[0][0], call[0][1] if len(call[0]) > 1 else {})
+                for call in backend._execute.call_args_list
+                if "INSERT INTO corpus.chunks" in str(call[0][0])
+            ]
+            assert len(chunk_calls) == 2, f"Expected 2 chunk INSERT calls, got {len(chunk_calls)}"
+
+            for sql, _ in chunk_calls:
+                assert "content_hash" in sql, f"content_hash missing from chunk INSERT: {sql}"
+
+    def test_upsert_document_chunks_have_correct_content_hash_value(self):
+        from corpus_forge.identity import chunk_content_hash
+
+        with patch.object(PostgresBackend, "__init__", lambda self, dsn, schema="corpus": None):
+            backend = PostgresBackend.__new__(PostgresBackend)
+            backend._execute = MagicMock(
+                side_effect=[
+                    [],
+                    [{"id": 5}],
+                    [],
+                    [],
+                ]
+            )
+
+            doc = RawDocument(
+                source_uri="vault://test.md",
+                content_hash="abc",
+                text="# Test\n\nContent.",
+                title="Test",
+                modified_at=1000.0,
+                metadata={},
+                labels=[],
+            )
+
+            chunks_input = [("# Test", "Chunk A content"), ("", "Chunk B content")]
+            backend.upsert_document(1, doc, chunks_input)
+
+            chunk_calls = [
+                (call[0][0], call[0][1] if len(call[0]) > 1 else {})
+                for call in backend._execute.call_args_list
+                if "INSERT INTO corpus.chunks" in str(call[0][0])
+            ]
+            assert len(chunk_calls) == 2
+
+            for (sql, params), (_, text) in zip(chunk_calls, chunks_input):
+                expected_hash = chunk_content_hash(text)
+                # params could be a tuple (positional) or dict (keyword)
+                params_list = params if isinstance(params, (tuple, list)) else list(params.values())
+                assert any(
+                    isinstance(p, str) and p == expected_hash
+                    for p in params_list
+                ), f"Expected hash {expected_hash} for text {text!r} not in params {params}"
+
 
 class TestUpsertConversation:
     """Tests for upsert_conversation method."""

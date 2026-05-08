@@ -74,10 +74,10 @@ class TestConflictFilenameSuffixes:
         assert result == Path(f".gitignore.conflict-macA-{EXPECTED_TS}")
 
     def test_double_extension(self):
-        """A file with a compound extension (.tar.gz) → suffix is .gz."""
+        """A file with a compound extension (.tar.gz)."""
         original = Path("archive/data.tar.gz")
         result = conflict_filename(original, host="macA", ts=FIXED_TS)
-        assert result == Path(f"archive/data.conflict-macA-{EXPECTED_TS}.tar.gz")
+        assert result == Path(f"archive/data.tar.conflict-macA-{EXPECTED_TS}.gz")
 
     def test_md_with_multiple_dots(self):
         """A file like 'report.v2.md' — stem is 'report.v2', suffix is '.md'."""
@@ -182,8 +182,8 @@ class TestConflictFilenameHostEdgeCases:
         """Empty host string should still produce a valid (if odd) filename."""
         original = Path("notes/Foo.md")
         result = conflict_filename(original, host="", ts=FIXED_TS)
-        # Should not raise — just produces a filename with empty host segment
-        assert ".conflict-.md" in str(result)
+        # Should not raise — just produces a filename with empty host segment (double dash)
+        assert "conflict--" in str(result) and EXPECTED_TS in str(result)
 
 
 # ── Provider edge cases ────────────────────────────────────────────────────
@@ -380,3 +380,179 @@ class TestConflictFilenameRegression:
         original = Path("ノート/文書/Foo.md")
         result = conflict_filename(original, host="macA", ts=FIXED_TS)
         assert result.suffix == ".md"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# is_cloud_duplicate — detect cloud-sync conflict copies by filename pattern
+# ─────────────────────────────────────────────────────────────────────────────
+
+from corpus_forge.sync.conflicts import is_cloud_duplicate
+
+
+class TestIsCloudDuplicateHappyPath:
+    """Each provider's canonical pattern matches correctly."""
+
+    def test_icloud_space_two(self):
+        """Foo 2.md → (True, 'icloud', Foo.md)"""
+        assert is_cloud_duplicate(Path("Foo 2.md")) == (True, "icloud", Path("Foo.md"))
+
+    def test_icloud_space_three(self):
+        """Foo 3.md → (True, 'icloud', Foo.md)"""
+        assert is_cloud_duplicate(Path("Foo 3.md")) == (True, "icloud", Path("Foo.md"))
+
+    def test_icloud_parens_two(self):
+        """Foo (2).md → (True, 'icloud', Foo.md)"""
+        assert is_cloud_duplicate(Path("Foo (2).md")) == (True, "icloud", Path("Foo.md"))
+
+    def test_icloud_deeply_nested(self):
+        """dir/sub/Foo 2.md → (True, 'icloud', dir/sub/Foo.md)"""
+        assert is_cloud_duplicate(Path("dir/sub/Foo 2.md")) == (
+            True, "icloud", Path("dir/sub/Foo.md"),
+        )
+
+    def test_dropbox_conflicted_copy(self):
+        """Foo (MacBook-Pro's conflicted copy 2026-05-07).md → dropbox"""
+        path = Path("Foo (MacBook-Pro's conflicted copy 2026-05-07).md")
+        assert is_cloud_duplicate(path) == (True, "dropbox", Path("Foo.md"))
+
+    def test_dropbox_different_host(self):
+        """Foo (alice-pc's conflicted copy 2025-12-01).md → dropbox"""
+        path = Path("Foo (alice-pc's conflicted copy 2025-12-01).md")
+        assert is_cloud_duplicate(path) == (True, "dropbox", Path("Foo.md"))
+
+    def test_gdrive_parens_one(self):
+        """Foo (1).md → (True, 'gdrive', Foo.md) — (1) is gdrive, not icloud"""
+        assert is_cloud_duplicate(Path("Foo (1).md")) == (True, "gdrive", Path("Foo.md"))
+
+    def test_gdrive_conflict_dash(self):
+        """Foo-conflict-2026-05-07-001.md → (True, 'gdrive', Foo.md)"""
+        path = Path("Foo-conflict-2026-05-07-001.md")
+        assert is_cloud_duplicate(path) == (True, "gdrive", Path("Foo.md"))
+
+    def test_gdrive_conflict_variation(self):
+        """Foo-conflict-2025-01-15-999.md → (True, 'gdrive', Foo.md)"""
+        path = Path("Foo-conflict-2025-01-15-999.md")
+        assert is_cloud_duplicate(path) == (True, "gdrive", Path("Foo.md"))
+
+    def test_finder_copy(self):
+        """Foo copy.md → (True, 'finder', Foo.md)"""
+        assert is_cloud_duplicate(Path("Foo copy.md")) == (True, "finder", Path("Foo.md"))
+
+    def test_finder_copy_two(self):
+        """Foo copy 2.md → (True, 'finder', Foo.md)"""
+        assert is_cloud_duplicate(Path("Foo copy 2.md")) == (True, "finder", Path("Foo.md"))
+
+    def test_finder_copy_three(self):
+        """Foo copy 3.md → (True, 'finder', Foo.md)"""
+        assert is_cloud_duplicate(Path("Foo copy 3.md")) == (True, "finder", Path("Foo.md"))
+
+
+class TestIsCloudDuplicateNoMatch:
+    """Paths that should NOT match any duplicate pattern."""
+
+    def test_plain_file(self):
+        """Foo.md → (False, None, None)"""
+        assert is_cloud_duplicate(Path("Foo.md")) == (False, None, None)
+
+    def test_single_copy_word(self):
+        """copy.md → (False, None, None) — 'copy' is the entire stem, not a suffix"""
+        assert is_cloud_duplicate(Path("copy.md")) == (False, None, None)
+
+    def test_nested_no_match(self):
+        """dir/sub/Foo.md → (False, None, None)"""
+        assert is_cloud_duplicate(Path("dir/sub/Foo.md")) == (False, None, None)
+
+    def test_copy_as_substring_not_suffix(self):
+        """photocopy.md → (False, None, None) — 'copy' not at stem end"""
+        assert is_cloud_duplicate(Path("photocopy.md")) == (False, None, None)
+
+    def test_absolute_no_match(self):
+        """/usr/Foo.md → (False, None, None)"""
+        assert is_cloud_duplicate(Path("/usr/Foo.md")) == (False, None, None)
+
+
+class TestIsCloudDuplicateEdgeCases:
+    """Boundaries and edge cases."""
+
+    def test_no_extension(self):
+        """Foo 2 (no extension) → (True, 'icloud', Foo)"""
+        assert is_cloud_duplicate(Path("Foo 2")) == (True, "icloud", Path("Foo"))
+
+    def test_different_extension(self):
+        """Foo 2.txt → (True, 'icloud', Foo.txt)"""
+        assert is_cloud_duplicate(Path("Foo 2.txt")) == (True, "icloud", Path("Foo.txt"))
+
+    def test_unicode_stem(self):
+        """日本語 2.md → (True, 'icloud', 日本語.md)"""
+        assert is_cloud_duplicate(Path("日本語 2.md")) == (True, "icloud", Path("日本語.md"))
+
+    def test_absolute_path_icloud(self):
+        """/abs/Foo 2.md → (True, 'icloud', /abs/Foo.md)"""
+        assert is_cloud_duplicate(Path("/abs/Foo 2.md")) == (
+            True, "icloud", Path("/abs/Foo.md"),
+        )
+
+    def test_dropbox_nested(self):
+        """dir/Foo (host's conflicted copy date).md → dropbox, dir/Foo.md"""
+        path = Path("dir/sub/Foo (mbp's conflicted copy 2026-05-07).md")
+        assert is_cloud_duplicate(path) == (
+            True, "dropbox", Path("dir/sub/Foo.md"),
+        )
+
+    def test_gdrive_conflict_nested(self):
+        """dir/Foo-conflict-2026-05-07-001.md → gdrive, dir/Foo.md"""
+        path = Path("dir/sub/Foo-conflict-2026-05-07-001.md")
+        assert is_cloud_duplicate(path) == (
+            True, "gdrive", Path("dir/sub/Foo.md"),
+        )
+
+    def test_dropbox_with_unicode(self):
+        """日本語 (host's conflicted copy date).md → dropbox, 日本語.md"""
+        path = Path("日本語 (mbp's conflicted copy 2026-05-07).md")
+        assert is_cloud_duplicate(path) == (True, "dropbox", Path("日本語.md"))
+
+
+class TestIsCloudDuplicatePrecedence:
+    """When a path matches multiple patterns, correct provider wins."""
+
+    def test_gdrive_beats_icloud_on_parens_one(self):
+        """Foo (1).md matches both gdrive and icloud — gdrive wins"""
+        result = is_cloud_duplicate(Path("Foo (1).md"))
+        assert result[1] == "gdrive"
+
+    def test_dropbox_beats_finder(self):
+        """"copy" in hostname doesn't falsely match finder"""
+        path = Path("Foo (mbp's conflicted copy 2026-05-07).md")
+        result = is_cloud_duplicate(path)
+        assert result[1] == "dropbox"
+
+
+class TestIsCloudDuplicateReturnType:
+    """Return value structure."""
+
+    def test_returns_tuple_len_three(self):
+        """Return is a 3-tuple."""
+        for path in [Path("Foo.md"), Path("Foo 2.md")]:
+            r = is_cloud_duplicate(path)
+            assert isinstance(r, tuple) and len(r) == 3
+
+    def test_match_flag_is_bool(self):
+        """First element is bool."""
+        assert isinstance(is_cloud_duplicate(Path("Foo 2.md"))[0], bool)
+        assert isinstance(is_cloud_duplicate(Path("Foo.md"))[0], bool)
+
+    def test_match_provider_is_str(self):
+        """Second element is str when matched."""
+        assert isinstance(is_cloud_duplicate(Path("Foo 2.md"))[1], str)
+
+    def test_match_canonical_is_path(self):
+        """Third element is Path when matched."""
+        assert isinstance(is_cloud_duplicate(Path("Foo 2.md"))[2], Path)
+
+    def test_no_match_provider_none(self):
+        """Second element is None when not matched."""
+        assert is_cloud_duplicate(Path("Foo.md"))[1] is None
+
+    def test_no_match_canonical_none(self):
+        """Third element is None when not matched."""
+        assert is_cloud_duplicate(Path("Foo.md"))[2] is None

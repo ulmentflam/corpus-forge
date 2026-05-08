@@ -175,8 +175,8 @@ class TestEchoSuppressorTTLExpiry:
         suppressor = EchoSuppressor(default_ttl_s=5.0, clock=fake_clock)
         p = tmp_path / "doc.md"
         suppressor.register(p, content_hash="explicit_gc")
-        # The clock says 2000, but we pass now=1006.0
-        suppressor.gc(now=1006.0)
+        # The clock says 2000 (register time), expires_at=2005, we pass now=2006 (after expiry)
+        suppressor.gc(now=2006.0)
         assert suppressor.was_just_written(p, "explicit_gc") is False
 
     def test_gc_with_explicit_now_preserves_fresh(self, tmp_path):
