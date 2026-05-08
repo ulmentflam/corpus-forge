@@ -388,3 +388,98 @@ FAILED tests/unit/test_sync_conflicts.py::TestConflictFilenameRegression::test_u
 ============================== 45 failed in 0.18s ==============================
 ```
 - Status: red — handed off to tdd-coder
+
+
+## P1-10 — `atomic_write_text` in `corpus_forge/sync/fs.py`
+- Test files: `tests/unit/test_sync_fs.py`
+- Run command: `PYTHONPATH=. uv run pytest tests/unit/test_sync_fs.py -v --no-header 2>&1 | tail -30`
+- Edge case checklist:
+  - [x] happy — writes target file with expected text
+  - [x] happy — unicode text round-trips (café, 日本語, emoji)
+  - [x] happy — newlines, tabs, trailing whitespace preserved
+  - [x] happy — default encoding is UTF-8
+  - [x] happy — custom encoding respected (latin-1)
+  - [x] happy — creates parent directories automatically
+  - [x] happy — overwrites existing file
+  - [x] happy — replaces partial content (shorter text than old)
+  - [x] tempfile cleanup — no `.tmp.*` file remains after success
+  - [x] tempfile cleanup — no leftover with deep parents
+  - [x] failure paths — os.replace raises → original content unchanged
+  - [x] failure paths — os.replace raises → target file not created
+  - [x] failure paths — os.replace raises → no temp file left
+  - [x] failure paths — os.replace raises → no parent dirs created
+  - [x] failure paths — os.replace raises → pre-existing parents preserved
+  - [x] boundaries — empty string → zero-byte file
+  - [x] boundaries — single character
+  - [x] boundaries — very long text (1 MB)
+  - [x] boundaries — null bytes in content
+  - [x] boundaries — just newlines
+  - [x] boundaries — RTL text (Arabic)
+  - [x] type — None text raises TypeError
+  - [x] type — int text raises TypeError
+  - [x] type — list text raises TypeError
+  - [x] encoding — UTF-8 BOM written literally
+  - [x] encoding — UTF-16 encoding produces valid UTF-16 bytes
+  - [x] encoding — UTF-32 encoding produces valid UTF-32 bytes
+  - [x] encoding — latin-1 bytes on disk (not utf-8)
+  - [x] state — multiple writes to same path succeed
+  - [x] state — writes don't interleave (each self-contained)
+  - [x] state — writes to different files don't interfere
+  - [x] tempfile naming — `.tmp.` prefix pattern
+  - [x] tempfile naming — in same directory as target
+  - [x] tempfile naming — random suffix (5 unique names)
+  - [x] platform — returns None
+  - [x] platform — os.replace called (not shutil.move)
+  - [x] platform — os.fsync called on temp file
+  - [x] platform — os.fsync called on parent directory
+  - [ ] concurrency — N/A (atomic write, no concurrent access tested here)
+  - [ ] locale/time — covered via Unicode text, RTL text, BOM
+  - [ ] regression — N/A (new function, no prior implementation)
+- Red output (tail):
+```
+E       FileNotFoundError: [Errno 2] No such file or directory: '/private/var/folders/1w/x70hfp3x4ms86dyf8bjk22cw0000gp/T/pytest-of-evanowen/pytest-63/test_writes_target_file_with_e0/output.txt'
+E       ../../../../../Application Support/uv/python/cpython-3.13.3-macos-aarch64-none/lib/python3.13/pathlib/_abc.py:632: in read_text
+E       ../../../../../Application Support/uv/python/cpython-3.13.3-macos-aarch64-none/lib/python3.13/pathlib/_local.py:546: in read_text
+E       E       assert target.read_text() == "hello world"
+E       tests/unit/test_sync_fs.py:31: in test_writes_target_file_with_expected_text
+=========================== short test summary info ============================
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextHappyPath::test_writes_target_file_with_expected_text
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextHappyPath::test_writes_unicode_text
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextHappyPath::test_writes_newlines_and_whitespace
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextHappyPath::test_default_encoding_is_utf8
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextHappyPath::test_custom_encoding
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextHappyPath::test_creates_parent_directories
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextHappyPath::test_overwrites_existing_file
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextHappyPath::test_replaces_partial_file_content
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextTempfileCleanup::test_tempfile_removed_after_success
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextTempfileCleanup::test_no_tempfile_with_deep_parents
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextFailurePaths::test_os_replace_raises_preserves_original_content
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextFailurePaths::test_os_replace_raises_no_target_file_created
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextFailurePaths::test_os_replace_raises_no_tempfile_left
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextFailurePaths::test_os_replace_raises_no_parent_dirs_created
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextFailurePaths::test_os_replace_raises_preserves_existing_parent
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextBoundaries::test_empty_string
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextBoundaries::test_single_character
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextBoundaries::test_very_long_text
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextBoundaries::test_binary_null_bytes_as_text
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextBoundaries::test_just_newlines
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextBoundaries::test_rtl_text
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextTypeValidation::test_none_text_raises
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextTypeValidation::test_int_text_raises
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextTypeValidation::test_list_text_raises
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextEncoding::test_utf8_with_bom
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextEncoding::test_utf16_encoding
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextEncoding::test_utf32_encoding
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextEncoding::test_encoding_mismatch_writes_bytes
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextState::test_multiple_writes_same_path
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextState::test_writes_dont_interleave
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextState::test_writes_to_different_files_concurrently
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextTempfileNaming::test_tempfile_has_tmp_suffix
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextTempfileNaming::test_tempfile_in_same_directory_as_target
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextTempfileNaming::test_tempfile_has_random_suffix
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextPlatform::test_posix_atomic_rename
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextPlatform::test_fsync_called_on_temp_file
+FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextPlatform::test_fsync_called_on_parent_directory
+========================= 37 failed, 1 passed in 0.48s =========================
+```
+- Status: red — handed off to tdd-coder
