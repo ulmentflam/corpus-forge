@@ -31,7 +31,7 @@ Source plan: `/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Works
 
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
-| P0-01 | `chunk_content_hash` helper in `identity.py` | — | `corpus_forge/identity.py`, `tests/unit/test_identity.py` | low | in_progress | tdd-coder | Trivial: thin wrapper around `content_hash(text.encode())`. |
+| P0-01 | `chunk_content_hash` helper in `identity.py` | — | `corpus_forge/identity.py`, `tests/unit/test_identity.py` | low | in_progress | tdd-qa | Trivial: thin wrapper around `content_hash(text.encode())`. |
 | P0-02 | `002_chunk_content_hash.sql` migration file (DDL only) | — | `corpus_forge/schema/002_chunk_content_hash.sql` | low | in_progress | tdd-tester | Pure SQL, no code. Idempotent (`IF NOT EXISTS`). |
 | P0-03 | Migration runner backfills `chunks.content_hash` | P0-01, P0-02 | `corpus_forge/schema/migrate.py`, `tests/integration/test_migrate_002.py` | med | pending | — | Idempotent batched UPDATE; uses sha256 of `chunks.text`. |
 | P0-04 | `upsert_document` writes `content_hash` on chunk insert | P0-01, P0-02 | `corpus_forge/backends/postgres.py`, `tests/unit/test_postgres_backend.py` (or fixture in test_chunk_reuse) | low | pending | — | Just append column to chunk INSERT. |
