@@ -88,6 +88,46 @@
 - [ ] Add `make test-integration` with SQLite support
 - [ ] Dual-backend docs update
 
+### Phase C - Active Directory Sync (plan: .planning/active_directory_sync.md)
+
+#### P0 - Chunk-level embedding reuse
+- [ ] Schema migration `002_chunk_content_hash.sql` (`ALTER TABLE chunks ADD content_hash TEXT` + index)
+- [ ] Backfill `content_hash` for existing chunks in migration runner
+- [ ] `corpus_forge/identity.py`: add `chunk_content_hash(text)`
+- [ ] `corpus_forge/backends/postgres.py::upsert_document` sets `chunks.content_hash` on insert
+- [ ] `corpus_forge/backends/postgres.py::_copy_reusable_embeddings` helper (per-doc cache)
+- [ ] `corpus_forge/ingest.py::ingest_one` passes active embedder ids into `upsert_document`
+- [ ] `tests/unit/test_chunk_reuse.py`
+- [ ] `tests/integration/test_chunk_reuse_e2e.py` (≥70% reuse on small append)
+
+#### P1 - Cross-host sync engine
+- [ ] Schema migration `003_sync.sql` (`document_revisions`, `documents.tombstoned_at`, `sources.last_pulled_revision_id`, `sources.sync_enabled`)
+- [ ] `PostgresBackend` methods: `insert_revision`, `latest_revision`, `pending_remote_revisions`, `mark_revision_pulled`
+- [ ] `corpus_forge/sync/__init__.py` exporting `SyncEngine`
+- [ ] `corpus_forge/sync/echo.py` — `EchoSuppressor` with TTL
+- [ ] `corpus_forge/sync/fs.py` — `atomic_write_text`, trash dir, `.icloud`/dataless guards
+- [ ] `corpus_forge/sync/cloud.py` — `detect_cloud_provider(path)`
+- [ ] `corpus_forge/sync/conflicts.py` — conflict naming + `is_cloud_duplicate(path)` (iCloud/Dropbox/GDrive/Finder patterns)
+- [ ] `corpus_forge/sync/push.py` — watchdog observer, debounce, mtime pre-filter, echo check, cloud-dupe cleanup, revision insert under `lock_source`
+- [ ] `corpus_forge/sync/pull.py` — poll loop, fast-forward / already-in-sync / conflict / tombstone branches
+- [ ] `corpus_forge/sync/engine.py` — start/stop lifecycle per dataset
+- [ ] `corpus_forge/daemon.py` — replace stub with sync-aware orchestrator + signal handling
+- [ ] `corpus_forge/config.py` — `DaemonConfig` (host_id, trash_dir, conflict_dir, sync_poll_interval_s, sync_use_listen_notify) + `DatasetConfig.sync_enabled` + validators
+- [ ] Persist host_id to `~/.config/corpus-forge/host_id` on first run
+- [ ] `config.example.toml` — sync example block, `*.icloud` in default exclude_globs
+- [ ] `corpus_forge/cli.py` — `sync` subgroup: status, pull (--once/--continuous), push, resolve (keep-local/keep-remote), history
+- [ ] `tests/unit/test_sync_echo.py`, `test_sync_conflicts.py`, `test_sync_fs.py`, `test_sync_cloud.py`
+- [ ] `tests/integration/test_sync_push_pull.py`, `test_sync_tombstone.py`, `test_sync_icloud_dupe.py`
+
+#### P2 - Deferred polish
+- [ ] `LISTEN/NOTIFY` channel + pull-loop wakeup (poll fallback retained)
+- [ ] `sync resolve --strategy merge` ($EDITOR with diff markers)
+- [ ] `sync history` CLI
+- [ ] Section-level 3-way merge for non-overlapping concurrent edits
+- [ ] Tombstone retention sweeper
+- [ ] Revision compaction (latest + last-30d + checkpoints)
+- [ ] Content-addressed `chunk_texts` table (Design B refactor)
+
 ## Verification Criteria for Phase A Completion:
 - [ ] Daemon running on both Macs
 - [ ] corpus.chunks and corpus.embeddings_qwen3_8b populated

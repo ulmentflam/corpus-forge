@@ -9,12 +9,13 @@ from ..backends.postgres import PostgresBackend
 def get_migration_files(schema_dir: Path) -> list[Path]:
     """Get numbered SQL migration files in order."""
     sql_files = list(schema_dir.glob("[0-9]*.sql"))
-    return sorted(sql_files, key=lambda p: int(p.name.split(".")[0]))
+    return sorted(sql_files, key=lambda p: int(p.stem.split("_")[0]))
 
 
 def apply_migrations(backend: PostgresBackend, schema_dir: Path) -> None:
     """Apply all pending migrations."""
     migration_files = get_migration_files(schema_dir)
+    applied: set[str] = set()
 
     for migration_file in migration_files:
         print(f"Applying migration: {migration_file.name}")
@@ -25,6 +26,16 @@ def apply_migrations(backend: PostgresBackend, schema_dir: Path) -> None:
         for statement in statements:
             if statement and not statement.startswith("--"):
                 backend._execute(statement)
+        applied.add(migration_file.stem)
+
+    # --- backfill passes ---
+    if "002_chunk_content_hash" in applied:
+        print("Running 002 backfill: content_hash for NULL rows")
+        backend._execute("""
+            UPDATE corpus.chunks
+            SET content_hash = encode(sha256(text::bytea), 'hex')
+            WHERE content_hash IS NULL
+        """)
 
 
 def main() -> None:

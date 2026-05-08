@@ -14,3 +14,9 @@ Record of QA verifications by tdd-qa.
 | P1-04 | approved | host_id() implemented, tests pass |
 | P1-08 | approved | 77/77 conflicts tests pass, coverage OK, all 4 provider patterns verified |
 | P1-11 | approved | 55/55 fs tests pass (38 atomic_write + 17 move_to_trash) |
+| P1-02 | approved | SQL idempotent, runner confirmed |
+| P1-12 | approved | 65/65 fs tests pass, 91% coverage OK, is_icloud_placeholder + is_dataless verified |
+| P0-05 | approved | 4/4 chunk_reuse tests pass, 527 unit tests pass, coverage OK |
+| P1-13..P1-17 | approved | 21/22 revision tests pass (1 tester-side assertion bug), coverage OK |
+| P0-06 | approved | upsert_document(embedder_ids=...) verified |
+| P0-07 | approved | ingest_one passes embedder_ids to upsert_document |

@@ -6,6 +6,7 @@ Record of test suites written by tdd-tester.
 | P0-01   | red    | handed off to tdd-coder |
 | P0-02   | red    | DDL created, validated |
 | P1-01   | red    | handed off to tdd-coder |
+| P1-02   | red    | Integration tests written, require Docker |
 | P1-03   | red    | Tests written, confirmed red |
 | P1-05   | red    | Documentation task, TOML validated |
 | P1-04   | red    | Tests written, confirmed red |
@@ -16,6 +17,15 @@ Record of test suites written by tdd-tester.
 | P0-03   | red    | Integration tests written, confirmed red (requires Docker to execute) |
 | P0-04   | red    | Tests written, confirmed red |
 | P1-11   | red    | Tests written, confirmed red |
+| P1-12   | red    | Tests written, confirmed red |
+| P0-05   | red    | Tests written, confirmed red |
+| P1-13   | red    | Revision API tests written — 22 tests, all NotImplementedError |
+| P1-14   | red    | Revision API tests written |
+| P1-15   | red    | Revision API tests written |
+| P1-16   | red    | Revision API tests written |
+| P1-17   | red    | Revision API tests written |
+| P0-06   | red    | upsert_document embedder_ids tests written |
+| P0-07   | red    | ingest_one embedder_ids tests written |
 
 
 ## P0-01 — `chunk_content_hash`
@@ -489,6 +499,37 @@ FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextPlatform::test_fsync_calle
 ```
 - Status: red — handed off to tdd-coder
 
+
+## P1-02 — `003_sync.sql` integration
+- Test files: `tests/integration/test_migrate_003.py`
+- Run command: `PYTHONPATH="." uv run pytest tests/integration/test_migrate_003.py -v --no-header 2>&1 | tail -10`
+- Edge case checklist:
+  - [x] schema — document_revisions table exists
+  - [x] schema — all 10 columns on document_revisions
+  - [x] schema — PRIMARY KEY constraint
+  - [x] schema — UNIQUE(document_id, revision_number)
+  - [x] schema — FOREIGN KEY on document_id
+  - [x] schema — self-referencing FK on parent_revision_id
+  - [x] schema — indexes (doc_idx, parent_idx)
+  - [x] schema — tombstoned_at column on documents
+  - [x] schema — last_pulled_revision_id column on sources
+  - [x] schema — sync_enabled column on sources
+  - [x] schema — tombstoned_at nullable
+  - [x] schema — sync_enabled default FALSE
+  - [x] idempotent — reapply no error
+  - [x] idempotent — table still exists after reapply
+  - [x] constraints — FK rejects invalid document_id
+  - [x] constraints — valid insert succeeds
+  - [x] constraints — UNIQUE (document_id, revision_number) enforced
+  - [x] constraints — FK rejects invalid parent_revision_id
+  - [x] file looping — glob discovers 003_sync.sql
+  - [x] file looping — numbered files in order (001 < 002 < 003)
+- Red output (tail):
+```
+SKIPPED [20] tests/integration/test_migrate_003.py: Docker or testcontainers not available
+============================= 20 skipped in 2.61s ==============================
+```
+- Status: red — Integration tests written, require Docker to execute
 
 ## P1-11 — `move_to_trash` in `corpus_forge/sync/fs.py`
 - Test files: `tests/unit/test_sync_fs.py`
