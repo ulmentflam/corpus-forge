@@ -6,18 +6,23 @@ dsn    = "postgresql://${PG_USER}:${PG_PASSWORD}@${PG_HOST}:${PG_PORT}/${PG_DB}"
 schema = "corpus"
 
 [daemon]
-debounce_seconds = 2.0
-log_level        = "INFO"
-log_format       = "text"  # 'text' | 'json'
+debounce_seconds     = 2.0
+log_level            = "INFO"
+log_format           = "text"  # 'text' | 'json'
+host_id              = ""  # unique machine identifier (leave empty for auto)
+trash_dir            = "~/.local/share/corpus-forge/trash"
+conflict_dir         = "~/.local/share/corpus-forge/conflicts"
+sync_poll_interval_s = 30  # seconds between sync polls
 
 [[datasets]]
-name = "obsidian-vault"
-kind = "text"
+name         = "obsidian-vault"
+kind         = "text"
+sync_enabled = true
   [[datasets.sources]]
   plugin         = "markdown_vault"
   vault_root     = "~/Library/Mobile Documents/iCloud~md~obsidian/Documents"
   vault_names    = []  # [] = all subdirectories
-  exclude_globs  = [".obsidian/**", ".trash/**", ".*"]
+  exclude_globs  = [".obsidian/**", ".trash/**", ".*", "*.icloud"]
   chunker        = "markdown"
   chunker_config = { max_chars = 1500, overlap = 200 }
 
