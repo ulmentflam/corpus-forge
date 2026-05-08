@@ -149,7 +149,7 @@ class TestLatestRevision:
         backend.latest_revision(document_id=1)
 
         sql = backend._execute.call_args[0][0]
-        assert "revision_number" in sql.upper()
+        assert "REVISION_NUMBER" in sql.upper()
         assert "DESC" in sql.upper() or "desc" in sql
         assert "LIMIT 1" in sql.upper() or "limit 1" in sql
 
