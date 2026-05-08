@@ -8,6 +8,7 @@ Record of test suites written by tdd-tester.
 | P1-01   | red    | handed off to tdd-coder |
 | P1-03   | red    | Tests written, confirmed red |
 | P1-05   | red    | Documentation task, TOML validated |
+| P1-06   | red    | Tests written, confirmed red |
 
 
 ## P0-01 — `chunk_content_hash`
@@ -194,6 +195,52 @@ FAILED tests/unit/test_config_extended.py::TestDatasetConfigSyncEnabled::test_da
   - [ ] production-realistic — N/A (example config, not runtime)
   - [ ] regression — N/A (no code changed)
 - Validation results:
-  - `tomllib` parse: ✓ valid
-  - `ruff format --check`: ✓ no changes needed
+   - `tomllib` parse: ✓ valid
+   - `ruff format --check`: ✓ no changes needed
+- Status: red — handed off to tdd-coder
+
+
+## P1-06 — `EchoSuppressor` in `corpus_forge/sync/echo.py`
+- Test files: `tests/unit/test_sync_echo.py`
+- Run command: `.venv/bin/python -m pytest tests/unit/test_sync_echo.py -v --no-header 2>&1 | tail -30`
+- Edge case checklist:
+  - [x] happy — register then was_just_written with same path+hash → True
+  - [x] happy — register with custom ttl_s
+  - [x] happy — register with ttl_s=None uses default
+  - [x] consumption — second was_just_written for same key → False (consumed)
+  - [x] consumption — consuming one entry doesn't affect other entries
+  - [x] mismatch — wrong hash → False
+  - [x] mismatch — mismatch does NOT consume entry
+  - [x] TTL expiry — was_just_written returns False after TTL elapses
+  - [x] TTL expiry — expired entry not matched
+  - [x] gc — removes expired entries
+  - [x] gc — preserves non-expired entries
+  - [x] gc — no-arg gc uses injectable clock
+  - [x] gc — explicit now= argument works
+  - [x] gc — explicit now= preserves fresh entries
+  - [x] path normalization — relative path matches resolved path
+  - [x] path normalization — symlinked path matches original
+  - [x] path normalization — ./ and .. resolve correctly
+  - [x] boundaries — zero TTL expires immediately
+  - [x] boundaries — multiple registers same path overwrites
+  - [x] boundaries — gc on empty suppressor is no-op
+  - [x] boundaries — gc removes all expired entries
+  - [x] boundaries — default_ttl_s applied correctly
+  - [x] injectable clock — custom clock controls all time reads
+  - [x] type — non-string path raises
+  - [x] type — non-string content_hash raises
+  - [x] type — empty string content_hash accepted
+  - [x] locale — unicode path names
+  - [x] production-realistic — 200 entries handled
+  - [ ] concurrency — N/A (single-threaded cache, no async/race surface)
+  - [ ] failure paths — N/A (in-memory cache, no I/O or network)
+  - [ ] locale/time — N/A (no locale/time deps beyond monotonic clock)
+  - [ ] regression — N/A (new class, no prior implementation)
+- Red output (tail):
+```
+ImportError while importing test module '/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Workspace/playground/corpus-forge/tests/unit/test_sync_echo.py'.
+tests/unit/test_sync_echo.py:11: in <module>
+    from corpus_forge.sync.echo import EchoSuppressor
+E   ModuleNotFoundError: No module named 'corpus_forge.sync.echo'
+```
 - Status: red — handed off to tdd-coder
