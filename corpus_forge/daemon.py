@@ -6,6 +6,45 @@ import sys
 from typing import NoReturn
 
 from .ingest import main as ingest_main
+from .sync.engine import SyncEngine
+
+logger = logging.getLogger(__name__)
+
+
+def run_daemon(config) -> None:
+    """Run daemon with sync engine orchestration.
+
+    For each dataset with sync_enabled=True, constructs a SyncEngine
+    and starts it. Registers SIGINT/SIGTERM handlers that stop all
+    engines before exiting.
+    """
+    engines: list[SyncEngine] = []
+
+    for dataset in config.datasets:
+        if not dataset.sync_enabled:
+            continue
+
+        for source_config in dataset.sources:
+            engine = SyncEngine(
+                dataset_config=dataset,
+                source=source_config,
+                backend=config.backend,
+                embedders=[],
+                host_id=config.host_id(),
+                daemon_config=config.daemon,
+            )
+            engine.start()
+            engines.append(engine)
+            logger.info(f"Started sync engine for {dataset.name}/{source_config.plugin}")
+
+    def _shutdown(signum, frame):
+        logger.info(f"Received signal {signum}, stopping {len(engines)} engine(s)")
+        for engine in engines:
+            engine.stop()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
 
 
 def setup_signal_handlers() -> None:

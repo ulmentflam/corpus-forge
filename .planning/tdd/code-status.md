@@ -19,3 +19,12 @@ Record of implementations written by tdd-coder.
 | P0-06   | green  | upsert_document(embedder_ids=...) implemented — 8/8 chunk_reuse tests pass; 552/552 other unit tests pass |
 | P1-13..P1-17 | green  | Revision API implemented — 21/22 pass; 1 test has bug: `test_uses_order_by_revision_number_desc_and_limit_one` asserts `"revision_number" in sql.upper()` (lowercase needle vs uppercase haystack, impossible to pass) |
 | P0-07   | green | ingest_one resolves embedder_ids upfront and passes to upsert_document; 4/4 embedder_ids tests pass |
+| P1-18   | green | PushPipeline.handle_change implemented — all 15 tests pass, push.py 95% coverage (2 uncovered lines: OSError guard) |
+| P1-19   | green | PushPipeline.start/stop/_should_ignore implemented — all 31 tests pass, push.py 94% coverage |
+| P1-22   | green | PullPipeline.tick implemented — all 4 tests pass, coverage 91.44% |
+| P1-23..P1-25 | green | _handle_already_in_sync, _handle_conflict, _handle_tombstone implemented — all 7 pull tests pass |
+| P1-20, P1-21 | green | Push extras implemented |
+| P1-26 | green | PullPipeline.start/stop lifecycle implemented — all 12 pull tests pass |
+| P1-27 | green | SyncEngine implemented — 13/13 engine tests pass |
+| P1-28 | green | run_daemon implemented — 10/10 daemon tests pass, full suite 92.36% coverage |
+| P1-29 | green | CLI sync subgroup implemented — 9/9 test_cli_sync tests pass |
