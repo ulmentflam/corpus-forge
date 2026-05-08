@@ -41,14 +41,14 @@ Source plan: `/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Works
 | P0-08 | E2E reuse test (testcontainers) | P0-03..P0-07 | `tests/integration/test_chunk_reuse_e2e.py` | med | pending | — | Ingest 10 chunks, append 1, assert ≥7 of original 10 embedding rows preserved (same vector). |
 | P1-01 | `003_sync.sql` migration file (DDL only) | P0-02 (file ordering) | `corpus_forge/schema/003_sync.sql` | low | done | tdd-tester | DDL created (CREATE TABLE + 2 INDEX + 3 ALTER, all IF NOT EXISTS). 31 tests green. |
 | P1-02 | Migration runner applies `003_sync.sql` cleanly + idempotent | P1-01 | `corpus_forge/schema/migrate.py`, `tests/integration/test_migrate_003.py` | low | pending | — | Existing runner already loops numbered files; just confirm. |
-| P1-03 | Pydantic config: `DaemonConfig` sync fields + `DatasetConfig.sync_enabled` + validators | — | `corpus_forge/config.py`, `tests/unit/test_config.py` (and/or test_config_extended) | low | done | tdd-tester | 19 tests written, confirmed red (fields/validators not yet implemented). 39 existing tests still pass. |
+| P1-03 | Pydantic config: `DaemonConfig` sync fields + `DatasetConfig.sync_enabled` + validators | — | `corpus_forge/config.py`, `tests/unit/test_config.py` (and/or test_config_extended) | low | done | tdd-qa | 58/58 config tests pass. QA approved. |
 | P1-04 | `Config.host_id()` resolution + first-run persistence | P1-03 | `corpus_forge/config.py`, `tests/unit/test_config_extended.py` | med | pending | — | Read config value → `socket.gethostname()` fallback → write `~/.config/corpus-forge/host_id` once and prefer that on later loads. Use `tmp_path` + monkeypatch for tests. |
 | P1-05 | `config.example.toml` + default exclude_globs include `*.icloud` | P1-03 | `config.example.toml` | low | done | tdd-tester | Added `[daemon]` sync fields (host_id, trash_dir, conflict_dir, sync_poll_interval_s), `*.icloud` to exclude_globs, `sync_enabled = true` on text vault. TOML valid, ruff format clean. |
-| P1-06 | `EchoSuppressor` in `sync/echo.py` | — | `corpus_forge/sync/__init__.py`, `corpus_forge/sync/echo.py`, `tests/unit/test_sync_echo.py` | low | done | tdd-tester | 28 tests written, confirmed red (module doesn't exist). Handed off to tdd-coder. |
-| P1-07 | `sync/cloud.py::detect_cloud_provider` | — | `corpus_forge/sync/cloud.py`, `tests/unit/test_sync_cloud.py` | low | done | tdd-tester | Substring/prefix match on resolved abs path. Returns `Literal["icloud","dropbox","gdrive","none"]`. Tests written, confirmed red |
+| P1-06 | `EchoSuppressor` in `sync/echo.py` | — | `corpus_forge/sync/__init__.py`, `corpus_forge/sync/echo.py`, `tests/unit/test_sync_echo.py` | low | done | tdd-qa | 28/28 echo tests pass. QA approved. |
+| P1-07 | `sync/cloud.py::detect_cloud_provider` | — | `corpus_forge/sync/cloud.py`, `tests/unit/test_sync_cloud.py` | low | done | tdd-qa | 30/30 cloud tests pass. QA approved. |
 | P1-08 | `sync/conflicts.py::is_cloud_duplicate` | P1-07 | `corpus_forge/sync/conflicts.py`, `tests/unit/test_sync_conflicts.py` | med | pending | — | Recognize iCloud (` 2`, ` 3`, ` (n)`), Dropbox (`(host's conflicted copy date)`), Google Drive (`(1)`, `-conflict-date-n`), Finder (` copy`, ` copy 2`). |
-| P1-09 | `sync/conflicts.py::conflict_filename` (canonical conflict naming) | — | `corpus_forge/sync/conflicts.py`, `tests/unit/test_sync_conflicts.py` | low | in_progress | tdd-tester | 45 tests written, confirmed red. Handed off to tdd-coder. |
-| P1-10 | `sync/fs.py::atomic_write_text` | — | `corpus_forge/sync/fs.py`, `tests/unit/test_sync_fs.py` | low | done | tdd-tester | 38 tests written (37 red, 1 stub-return pass). All dimensions covered: happy, boundaries, failure paths (os.replace crash), encoding, tempfile naming/cleanup, type validation, state/interleaving, RTL/Unicode. Handed off to tdd-coder. |
+| P1-09 | `sync/conflicts.py::conflict_filename` (canonical conflict naming) | — | `corpus_forge/sync/conflicts.py`, `tests/unit/test_sync_conflicts.py` | low | done | tdd-qa | 45/45 conflict tests pass. QA approved. |
+| P1-10 | `sync/fs.py::atomic_write_text` | — | `corpus_forge/sync/fs.py`, `tests/unit/test_sync_fs.py` | low | done | tdd-qa | 38/38 fs tests pass. QA approved. |
 | P1-11 | `sync/fs.py::move_to_trash` | P1-03 (trash_dir config) | `corpus_forge/sync/fs.py`, `tests/unit/test_sync_fs.py` | low | pending | — | `<trash_dir>/<dataset>/<rel-path>.deleted-<host>-<ts><suffix>` via `os.replace`. Creates parents. |
 | P1-12 | `sync/fs.py::is_icloud_placeholder` and dataless guards | — | `corpus_forge/sync/fs.py`, `tests/unit/test_sync_fs.py` | med | pending | — | Detect `*.icloud` 0-byte stubs and `com.apple.fileprovider.materialized` xattr. xattr check should be best-effort and fail closed (treat unknown as real). |
 | P1-13 | `PostgresBackend.insert_revision` | P1-02 | `corpus_forge/backends/postgres.py`, `corpus_forge/backends/base.py`, `tests/integration/test_backend.py` (revision section) or new `tests/integration/test_revisions.py` | med | pending | — | Allocates `revision_number = MAX+1` under `lock_source`. Sets `parent_revision_id` from caller-provided latest. |
@@ -298,7 +298,7 @@ Source plan: `/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Works
 
 ## DAG (waves at-a-glance — see waves.md for parallelism rationale)
 
-- **Wave 0 (P0 foundation, fully parallel):** P0-01, P0-02, P1-01, P1-03, P1-05, P1-06, P1-07, P1-09, P1-10, P1-12.
+- **Wave 0 (P0 foundation, fully parallel ✅ DONE):** P0-01, P0-02, P1-01, P1-03, P1-05, P1-06, P1-07, P1-09, P1-10. All tasks done and QA approved.
 - **Wave 1 (depends on Wave 0):** P0-03, P0-04, P1-02, P1-04, P1-08, P1-11.
 - **Wave 2:** P0-05, P1-13, P1-14, P1-15, P1-16, P1-17.
 - **Wave 3:** P0-06.
