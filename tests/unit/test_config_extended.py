@@ -440,6 +440,304 @@ active = true
         assert config.backend.kind == "postgres"
 
 
+class TestDaemonConfigSyncFields:
+    """Tests for new DaemonConfig sync fields (P1-03)."""
+
+    def test_daemon_config_sync_default_host_id(self):
+        """Test DaemonConfig sync host_id defaults to empty string."""
+        config = DaemonConfig(
+            debounce_seconds=2.0,
+            log_level="INFO",
+            log_format="text",
+        )
+        assert config.host_id == ""
+
+    def test_daemon_config_sync_custom_host_id(self):
+        """Test DaemonConfig accepts a custom host_id."""
+        config = DaemonConfig(
+            debounce_seconds=2.0,
+            log_level="INFO",
+            log_format="text",
+            host_id="host-abc123",
+        )
+        assert config.host_id == "host-abc123"
+
+    def test_daemon_config_sync_default_trash_dir(self):
+        """Test DaemonConfig trash_dir defaults are set."""
+        config = DaemonConfig(
+            debounce_seconds=2.0,
+            log_level="INFO",
+            log_format="text",
+        )
+        assert config.trash_dir is not None
+
+    def test_daemon_config_sync_default_conflict_dir(self):
+        """Test DaemonConfig conflict_dir defaults are set."""
+        config = DaemonConfig(
+            debounce_seconds=2.0,
+            log_level="INFO",
+            log_format="text",
+        )
+        assert config.conflict_dir is not None
+
+    def test_daemon_config_sync_trash_dir_expands_tilde(self):
+        """Test DaemonConfig trash_dir expands ~ via ExpandedPath."""
+        config = DaemonConfig(
+            debounce_seconds=2.0,
+            log_level="INFO",
+            log_format="text",
+            trash_dir="~/my-trash",
+        )
+        assert not config.trash_dir.startswith("~")
+        assert "my-trash" in config.trash_dir
+
+    def test_daemon_config_sync_conflict_dir_expands_tilde(self):
+        """Test DaemonConfig conflict_dir expands ~ via ExpandedPath."""
+        config = DaemonConfig(
+            debounce_seconds=2.0,
+            log_level="INFO",
+            log_format="text",
+            conflict_dir="~/conflicts",
+        )
+        assert not config.conflict_dir.startswith("~")
+        assert "conflicts" in config.conflict_dir
+
+    def test_daemon_config_sync_default_poll_interval(self):
+        """Test DaemonConfig sync_poll_interval_s defaults to 5.0."""
+        config = DaemonConfig(
+            debounce_seconds=2.0,
+            log_level="INFO",
+            log_format="text",
+        )
+        assert config.sync_poll_interval_s == 5.0
+
+    def test_daemon_config_sync_custom_poll_interval(self):
+        """Test DaemonConfig accepts a custom sync_poll_interval_s."""
+        config = DaemonConfig(
+            debounce_seconds=2.0,
+            log_level="INFO",
+            log_format="text",
+            sync_poll_interval_s=10.0,
+        )
+        assert config.sync_poll_interval_s == 10.0
+
+    def test_daemon_config_sync_poll_interval_zero_rejected(self):
+        """Test DaemonConfig rejects sync_poll_interval_s == 0."""
+        with pytest.raises(ValidationError):
+            DaemonConfig(
+                debounce_seconds=2.0,
+                log_level="INFO",
+                log_format="text",
+                sync_poll_interval_s=0,
+            )
+
+    def test_daemon_config_sync_poll_interval_negative_rejected(self):
+        """Test DaemonConfig rejects sync_poll_interval_s < 0."""
+        with pytest.raises(ValidationError):
+            DaemonConfig(
+                debounce_seconds=2.0,
+                log_level="INFO",
+                log_format="text",
+                sync_poll_interval_s=-1.0,
+            )
+
+    def test_daemon_config_sync_default_listen_notify(self):
+        """Test DaemonConfig sync_use_listen_notify defaults to False."""
+        config = DaemonConfig(
+            debounce_seconds=2.0,
+            log_level="INFO",
+            log_format="text",
+        )
+        assert config.sync_use_listen_notify is False
+
+    def test_daemon_config_sync_custom_listen_notify(self):
+        """Test DaemonConfig accepts custom sync_use_listen_notify."""
+        config = DaemonConfig(
+            debounce_seconds=2.0,
+            log_level="INFO",
+            log_format="text",
+            sync_use_listen_notify=True,
+        )
+        assert config.sync_use_listen_notify is True
+
+    def test_daemon_config_sync_from_minimal_toml(self, temp_dir):
+        """Test DaemonConfig parses sync fields from minimal TOML."""
+        config_content = """
+[backend]
+kind = "postgres"
+dsn = "postgresql://test@test/memory"
+schema = "corpus"
+
+[daemon]
+debounce_seconds = 2.0
+log_level = "INFO"
+log_format = "text"
+host_id = "test-host"
+trash_dir = "~/trash"
+conflict_dir = "~/conflicts"
+sync_poll_interval_s = 8.0
+sync_use_listen_notify = true
+
+[[datasets]]
+name = "test"
+kind = "text"
+  [[datasets.sources]]
+  plugin = "markdown_vault"
+  vault_root = "/tmp"
+  chunker = "markdown"
+
+[[embedders]]
+name = "test-embedder"
+provider = "sentence_transformers"
+model_id = "test-model"
+dimension = 384
+"""
+        config_file = temp_dir / "config.toml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_path=config_file)
+        assert config.daemon.host_id == "test-host"
+        assert "trash" in config.daemon.trash_dir
+        assert "conflicts" in config.daemon.conflict_dir
+        assert config.daemon.sync_poll_interval_s == 8.0
+        assert config.daemon.sync_use_listen_notify is True
+
+
+class TestDatasetConfigSyncEnabled:
+    """Tests for new DatasetConfig sync_enabled field and validator (P1-03)."""
+
+    def test_dataset_config_sync_enabled_default(self):
+        """Test DatasetConfig sync_enabled defaults to False."""
+        config = DatasetConfig(
+            name="test",
+            kind="text",
+            sources=[
+                DatasetSourceConfig(
+                    plugin="markdown_vault",
+                    vault_root="/tmp",
+                    chunker="markdown",
+                )
+            ],
+        )
+        assert config.sync_enabled is False
+
+    def test_dataset_config_sync_enabled_text_accepted(self):
+        """Test DatasetConfig sync_enabled=True is accepted when kind='text'."""
+        config = DatasetConfig(
+            name="test",
+            kind="text",
+            sync_enabled=True,
+            sources=[
+                DatasetSourceConfig(
+                    plugin="markdown_vault",
+                    vault_root="/tmp",
+                    chunker="markdown",
+                )
+            ],
+        )
+        assert config.sync_enabled is True
+
+    def test_dataset_config_sync_enabled_chat_rejected(self):
+        """Test DatasetConfig raises when sync_enabled=True and kind='chat'."""
+        with pytest.raises(ValidationError):
+            DatasetConfig(
+                name="test",
+                kind="chat",
+                sync_enabled=True,
+                sources=[
+                    DatasetSourceConfig(
+                        plugin="claude_code",
+                        projects_root="/tmp",
+                        chunker="conversation",
+                    )
+                ],
+            )
+
+    def test_dataset_config_sync_enabled_chat_accepted_false(self):
+        """Test DatasetConfig sync_enabled=False is accepted for kind='chat'."""
+        config = DatasetConfig(
+            name="test",
+            kind="chat",
+            sync_enabled=False,
+            sources=[
+                DatasetSourceConfig(
+                    plugin="claude_code",
+                    projects_root="/tmp",
+                    chunker="conversation",
+                )
+            ],
+        )
+        assert config.sync_enabled is False
+
+    def test_dataset_config_sync_enabled_from_toml_text(self, temp_dir):
+        """Test DatasetConfig sync_enabled parsed from TOML with kind='text'."""
+        config_content = """
+[backend]
+kind = "postgres"
+dsn = "postgresql://test@test/memory"
+schema = "corpus"
+
+[daemon]
+debounce_seconds = 2.0
+log_level = "INFO"
+log_format = "text"
+
+[[datasets]]
+name = "my-text-dataset"
+kind = "text"
+sync_enabled = true
+  [[datasets.sources]]
+  plugin = "markdown_vault"
+  vault_root = "/tmp"
+  chunker = "markdown"
+
+[[embedders]]
+name = "test-embedder"
+provider = "sentence_transformers"
+model_id = "test-model"
+dimension = 384
+"""
+        config_file = temp_dir / "config.toml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_path=config_file)
+        assert config.datasets[0].sync_enabled is True
+
+    def test_dataset_config_sync_enabled_from_toml_chat_rejected(self, temp_dir):
+        """Test DatasetConfig sync_enabled=true with kind='chat' raises from TOML."""
+        config_content = """
+[backend]
+kind = "postgres"
+dsn = "postgresql://test@test/memory"
+schema = "corpus"
+
+[daemon]
+debounce_seconds = 2.0
+log_level = "INFO"
+log_format = "text"
+
+[[datasets]]
+name = "my-chat-dataset"
+kind = "chat"
+sync_enabled = true
+  [[datasets.sources]]
+  plugin = "claude_code"
+  projects_root = "/tmp"
+  chunker = "conversation"
+
+[[embedders]]
+name = "test-embedder"
+provider = "sentence_transformers"
+model_id = "test-model"
+dimension = 384
+"""
+        config_file = temp_dir / "config.toml"
+        config_file.write_text(config_content)
+
+        with pytest.raises(ValidationError):
+            Config.load(config_path=config_file)
+
+
 class TestConfigGetReload:
     def test_get_config_lazy_load(self):
         """Test that get_config lazily loads config."""
