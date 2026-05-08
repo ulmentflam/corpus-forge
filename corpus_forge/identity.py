@@ -4,6 +4,11 @@ import hashlib
 from pathlib import Path
 
 
+def chunk_content_hash(text: str) -> str:
+    """Compute SHA256 hex digest of text encoded as UTF-8."""
+    return content_hash(text.encode("utf-8"))
+
+
 def content_hash(data: bytes) -> str:
     """Compute SHA256 hash of content."""
     return hashlib.sha256(data).hexdigest()
