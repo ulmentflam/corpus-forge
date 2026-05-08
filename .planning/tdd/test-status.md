@@ -26,6 +26,15 @@ Record of test suites written by tdd-tester.
 | P1-17   | red    | Revision API tests written |
 | P0-06   | red    | upsert_document embedder_ids tests written |
 | P0-07   | red    | ingest_one embedder_ids tests written |
+| P1-18   | red    | PushPipeline tests written |
+| P1-19   | red    | PushPipeline observer tests written |
+| P1-20, P1-21 | red | Push extras tests written |
+| P1-22   | red    | PullPipeline tick tests written |
+| P1-23..P1-25 | red | Pull branch tests written |
+| P1-26   | red    | Pull lifecycle tests written |
+| P1-27   | red    | SyncEngine tests written |
+| P1-28   | red    | Daemon orchestrator tests written |
+| P1-29   | red    | CLI sync tests written |
 
 
 ## P0-01 — `chunk_content_hash`
@@ -578,3 +587,27 @@ FAILED tests/unit/test_sync_fs.py::TestMoveToTrashCrossDevice::test_exdev_fallba
 ======================== 17 failed, 38 passed in 0.21s =========================
 ```
 - Status: red — Tests written, confirmed red
+
+
+## P1-22 — `PullPipeline.tick` in `corpus_forge/sync/pull.py`
+- Test files: `tests/unit/test_sync_pull.py`
+- Run command: `PYTHONPATH="." uv run pytest tests/unit/test_sync_pull.py -v --no-header 2>&1 | tail -15`
+- Edge case checklist:
+  - [x] happy — no pending revisions → returns 0
+  - [x] happy — fast-forward: local hash matches parent content_hash → atomic_write_text + echo register + mark_revision_pulled
+  - [x] boundaries — local file missing and parent_revision_id is None → creates file
+  - [x] state — multiple pending revisions (3) → tick returns 3, 3 writes, 3 echo registers, 3 marks
+  - [ ] concurrency — N/A (tick is single-threaded; lock_source per-revision is backend responsibility)
+  - [ ] failure paths — conflict detection (non-fast-forward) is out of scope for this task
+  - [ ] locale/time — N/A (no locale/time deps in ticket scope)
+  - [ ] regression — N/A (new class, no prior implementation)
+- Red output (tail):
+```
+=========================== short test summary info ============================
+FAILED tests/unit/test_sync_pull.py::TestTickNoPending::test_no_pending_revisions_returns_zero
+FAILED tests/unit/test_sync_pull.py::TestTickFastForward::test_fast_forwards_when_local_hash_matches_parent
+FAILED tests/unit/test_sync_pull.py::TestTickFastForward::test_creates_file_when_local_missing_and_parent_null
+FAILED tests/unit/test_sync_pull.py::TestTickMultiple::test_multiple_pending_returns_count
+============================== 4 failed in 0.11s ===============================
+```
+- Status: red — handed off to tdd-coder
