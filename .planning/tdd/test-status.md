@@ -8,9 +8,14 @@ Record of test suites written by tdd-tester.
 | P1-01   | red    | handed off to tdd-coder |
 | P1-03   | red    | Tests written, confirmed red |
 | P1-05   | red    | Documentation task, TOML validated |
+| P1-04   | red    | Tests written, confirmed red |
 | P1-06   | red    | Tests written, confirmed red |
 | P1-07   | red    | Tests written, confirmed red |
 | P1-09   | red    | Tests written, confirmed red |
+| P1-08   | red    | Tests written, confirmed red |
+| P0-03   | red    | Integration tests written, confirmed red (requires Docker to execute) |
+| P0-04   | red    | Tests written, confirmed red |
+| P1-11   | red    | Tests written, confirmed red |
 
 
 ## P0-01 — `chunk_content_hash`
@@ -483,3 +488,52 @@ FAILED tests/unit/test_sync_fs.py::TestAtomicWriteTextPlatform::test_fsync_calle
 ========================= 37 failed, 1 passed in 0.48s =========================
 ```
 - Status: red — handed off to tdd-coder
+
+
+## P1-11 — `move_to_trash` in `corpus_forge/sync/fs.py`
+- Test files: `tests/unit/test_sync_fs.py`
+- Run command: `PYTHONPATH=. uv run pytest tests/unit/test_sync_fs.py -v --no-header 2>&1 | tail -30`
+- Edge case checklist:
+  - [x] dest path — no rel_path uses src.name (stem.deleted-host-ts.suffix)
+  - [x] dest path — rel_path preserves directory structure
+  - [x] dest path — no extension file (Makefile → no trailing dot)
+  - [x] dest path — dotfile (.gitignore → preserved)
+  - [x] dest path — compound extension (.tar.gz)
+  - [x] dest path — unicode filename
+  - [x] file moved — src no longer exists after move
+  - [x] file moved — dest has same content
+  - [x] file moved — returns Path
+  - [x] parent dirs — trash_root/dataset created
+  - [x] parent dirs — rel_path sub-directories created
+  - [x] same filesystem — os.replace called with correct args
+  - [x] same filesystem — os.replace NOT used for cross-device (EXDEV)
+  - [x] cross-device — shutil.copy2 called on EXDEV
+  - [x] cross-device — os.unlink called on EXDEV
+  - [x] cross-device — non-EXDEV OSError propagates
+  - [x] cross-device — fallback preserves content
+  - [ ] concurrency — N/A (single-file move, no concurrent access tested)
+  - [ ] failure paths — covered via cross-device/EXDEV and non-EXDEV error tests
+  - [ ] locale/time — covered via unicode filename test, mocked timestamp
+  - [ ] regression — N/A (new function, no prior implementation)
+- Red output (tail):
+```
+FAILED tests/unit/test_sync_fs.py::TestMoveToTrashDestPath::test_no_relpath_uses_src_name
+FAILED tests/unit/test_sync_fs.py::TestMoveToTrashDestPath::test_with_relpath_preserves_structure
+FAILED tests/unit/test_sync_fs.py::TestMoveToTrashDestPath::test_no_extension_file
+FAILED tests/unit/test_sync_fs.py::TestMoveToTrashDestPath::test_dotfile_no_extension
+FAILED tests/unit/test_sync_fs.py::TestMoveToTrashDestPath::test_compound_extension
+FAILED tests/unit/test_sync_fs.py::TestMoveToTrashDestPath::test_unicode_filename
+FAILED tests/unit/test_sync_fs.py::TestMoveToTrashFileMoved::test_src_no_longer_exists
+FAILED tests/unit/test_sync_fs.py::TestMoveToTrashFileMoved::test_dest_has_same_content
+FAILED tests/unit/test_sync_fs.py::TestMoveToTrashFileMoved::test_returns_path
+FAILED tests/unit/test_sync_fs.py::TestMoveToTrashParentDirs::test_creates_trash_dataset_dir
+FAILED tests/unit/test_sync_fs.py::TestMoveToTrashParentDirs::test_creates_relpath_parents
+FAILED tests/unit/test_sync_fs.py::TestMoveToTrashSameFilesystem::test_uses_os_replace
+FAILED tests/unit/test_sync_fs.py::TestMoveToTrashSameFilesystem::test_os_replace_not_called_for_cross_device
+FAILED tests/unit/test_sync_fs.py::TestMoveToTrashCrossDevice::test_calls_copy2_on_exdev
+FAILED tests/unit/test_sync_fs.py::TestMoveToTrashCrossDevice::test_calls_unlink_on_exdev
+FAILED tests/unit/test_sync_fs.py::TestMoveToTrashCrossDevice::test_non_exdev_oserror_still_raises
+FAILED tests/unit/test_sync_fs.py::TestMoveToTrashCrossDevice::test_exdev_fallback_preserves_content
+======================== 17 failed, 38 passed in 0.21s =========================
+```
+- Status: red — Tests written, confirmed red

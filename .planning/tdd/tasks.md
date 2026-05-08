@@ -33,24 +33,24 @@ Source plan: `/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Works
 |----|-------|------------|---------|------|--------|------------|-------|
 | P0-01 | `chunk_content_hash` helper in `identity.py` | — | `corpus_forge/identity.py`, `tests/unit/test_identity.py` | low | done | tdd-qa | All gates green: 17/17 tests pass, 100% coverage on identity.py, 89% overall (threshold 85%), lint/format/typecheck clean on changed files, 57 regression tests pass. |
 | P0-02 | `002_chunk_content_hash.sql` migration file (DDL only) | — | `corpus_forge/schema/002_chunk_content_hash.sql` | low | done | tdd-tester | DDL created (ALTER + CREATE INDEX, both IF NOT EXISTS). 12 tests green. Surfaced: `get_migration_files()` sort-key extraction is broken for all existing files; ruff has no `.sql` exclusion. |
-| P0-03 | Migration runner backfills `chunks.content_hash` | P0-01, P0-02 | `corpus_forge/schema/migrate.py`, `tests/integration/test_migrate_002.py` | med | pending | — | Idempotent batched UPDATE; uses sha256 of `chunks.text`. |
-| P0-04 | `upsert_document` writes `content_hash` on chunk insert | P0-01, P0-02 | `corpus_forge/backends/postgres.py`, `tests/unit/test_postgres_backend.py` (or fixture in test_chunk_reuse) | low | pending | — | Just append column to chunk INSERT. |
+| P0-03 | Migration runner backfills `chunks.content_hash` | P0-01, P0-02 | `corpus_forge/schema/migrate.py`, `tests/integration/test_migrate_002.py` | med | done | tdd-qa | Backfill implemented. QA approved. |
+| P0-04 | `upsert_document` writes `content_hash` on chunk insert | P0-01, P0-02 | `corpus_forge/backends/postgres.py`, `tests/unit/test_postgres_backend.py` (or fixture in test_chunk_reuse) | low | done | tdd-qa | content_hash in INSERT. QA approved. |
 | P0-05 | `_copy_reusable_embeddings` helper on `PostgresBackend` | P0-04 | `corpus_forge/backends/postgres.py`, `tests/unit/test_chunk_reuse.py` | med | pending | — | Per-call cache `(content_hash, embedder_id) → chunk_id`. Returns set of reused embedder_ids. |
 | P0-06 | `upsert_document` accepts `embedder_ids` and triggers reuse | P0-05 | `corpus_forge/backends/postgres.py`, `corpus_forge/backends/base.py`, `tests/unit/test_chunk_reuse.py` | med | pending | — | Signature change: `upsert_document(..., embedder_ids: list[int] \| None = None)`. Backwards-compat default keeps None = no reuse. |
 | P0-07 | `ingest_one` passes active embedder ids into `upsert_document` | P0-06 | `corpus_forge/ingest.py`, `tests/unit/test_ingest_core.py` (or test_ingest_helpers) | low | pending | — | Resolve embedder_id via `backend.register_embedder(e)` once per call, pass list. |
 | P0-08 | E2E reuse test (testcontainers) | P0-03..P0-07 | `tests/integration/test_chunk_reuse_e2e.py` | med | pending | — | Ingest 10 chunks, append 1, assert ≥7 of original 10 embedding rows preserved (same vector). |
-| P1-01 | `003_sync.sql` migration file (DDL only) | P0-02 (file ordering) | `corpus_forge/schema/003_sync.sql` | low | done | tdd-tester | DDL created (CREATE TABLE + 2 INDEX + 3 ALTER, all IF NOT EXISTS). 31 tests green. |
+| P1-01 | `003_sync.sql` migration file (DDL only) | P0-02 (file ordering) | `corpus_forge/schema/003_sync.sql` | low | done | tdd-tester | DDL created. 31 tests green. |
 | P1-02 | Migration runner applies `003_sync.sql` cleanly + idempotent | P1-01 | `corpus_forge/schema/migrate.py`, `tests/integration/test_migrate_003.py` | low | pending | — | Existing runner already loops numbered files; just confirm. |
-| P1-03 | Pydantic config: `DaemonConfig` sync fields + `DatasetConfig.sync_enabled` + validators | — | `corpus_forge/config.py`, `tests/unit/test_config.py` (and/or test_config_extended) | low | done | tdd-qa | 58/58 config tests pass. QA approved. |
-| P1-04 | `Config.host_id()` resolution + first-run persistence | P1-03 | `corpus_forge/config.py`, `tests/unit/test_config_extended.py` | med | pending | — | Read config value → `socket.gethostname()` fallback → write `~/.config/corpus-forge/host_id` once and prefer that on later loads. Use `tmp_path` + monkeypatch for tests. |
-| P1-05 | `config.example.toml` + default exclude_globs include `*.icloud` | P1-03 | `config.example.toml` | low | done | tdd-tester | Added `[daemon]` sync fields (host_id, trash_dir, conflict_dir, sync_poll_interval_s), `*.icloud` to exclude_globs, `sync_enabled = true` on text vault. TOML valid, ruff format clean. |
-| P1-06 | `EchoSuppressor` in `sync/echo.py` | — | `corpus_forge/sync/__init__.py`, `corpus_forge/sync/echo.py`, `tests/unit/test_sync_echo.py` | low | done | tdd-qa | 28/28 echo tests pass. QA approved. |
-| P1-07 | `sync/cloud.py::detect_cloud_provider` | — | `corpus_forge/sync/cloud.py`, `tests/unit/test_sync_cloud.py` | low | done | tdd-qa | 30/30 cloud tests pass. QA approved. |
-| P1-08 | `sync/conflicts.py::is_cloud_duplicate` | P1-07 | `corpus_forge/sync/conflicts.py`, `tests/unit/test_sync_conflicts.py` | med | pending | — | Recognize iCloud (` 2`, ` 3`, ` (n)`), Dropbox (`(host's conflicted copy date)`), Google Drive (`(1)`, `-conflict-date-n`), Finder (` copy`, ` copy 2`). |
-| P1-09 | `sync/conflicts.py::conflict_filename` (canonical conflict naming) | — | `corpus_forge/sync/conflicts.py`, `tests/unit/test_sync_conflicts.py` | low | done | tdd-qa | 45/45 conflict tests pass. QA approved. |
-| P1-10 | `sync/fs.py::atomic_write_text` | — | `corpus_forge/sync/fs.py`, `tests/unit/test_sync_fs.py` | low | done | tdd-qa | 38/38 fs tests pass. QA approved. |
-| P1-11 | `sync/fs.py::move_to_trash` | P1-03 (trash_dir config) | `corpus_forge/sync/fs.py`, `tests/unit/test_sync_fs.py` | low | pending | — | `<trash_dir>/<dataset>/<rel-path>.deleted-<host>-<ts><suffix>` via `os.replace`. Creates parents. |
-| P1-12 | `sync/fs.py::is_icloud_placeholder` and dataless guards | — | `corpus_forge/sync/fs.py`, `tests/unit/test_sync_fs.py` | med | pending | — | Detect `*.icloud` 0-byte stubs and `com.apple.fileprovider.materialized` xattr. xattr check should be best-effort and fail closed (treat unknown as real). |
+| P1-03 | Pydantic config sync fields + validators | — | `corpus_forge/config.py`, `tests/unit/test_config.py` (and/or test_config_extended) | low | done | tdd-qa | 58/58 pass. QA approved. |
+| P1-04 | `Config.host_id()` resolution + first-run persistence | P1-03 | `corpus_forge/config.py`, `tests/unit/test_config_extended.py` | med | done | tdd-qa | host_id() implemented. QA approved. |
+| P1-05 | `config.example.toml` + default exclude_globs | P1-03 | `config.example.toml` | low | done | tdd-tester | TOML valid. |
+| P1-06 | `EchoSuppressor` in `sync/echo.py` | — | `corpus_forge/sync/echo.py`, `tests/unit/test_sync_echo.py` | low | done | tdd-qa | 28/28 pass. QA approved. |
+| P1-07 | `sync/cloud.py::detect_cloud_provider` | — | `corpus_forge/sync/cloud.py`, `tests/unit/test_sync_cloud.py` | low | done | tdd-qa | 30/30 pass. QA approved. |
+| P1-08 | `sync/conflicts.py::is_cloud_duplicate` | P1-07 | `corpus_forge/sync/conflicts.py`, `tests/unit/test_sync_conflicts.py` | med | done | tdd-qa | 77/77 pass. QA approved. |
+| P1-09 | `sync/conflicts.py::conflict_filename` | — | `corpus_forge/sync/conflicts.py`, `tests/unit/test_sync_conflicts.py` | low | done | tdd-qa | 45/45 pass. QA approved. |
+| P1-10 | `sync/fs.py::atomic_write_text` | — | `corpus_forge/sync/fs.py`, `tests/unit/test_sync_fs.py` | low | done | tdd-qa | 38/38 pass. QA approved. |
+| P1-11 | `sync/fs.py::move_to_trash` | P1-03 | `corpus_forge/sync/fs.py`, `tests/unit/test_sync_fs.py` | low | done | tdd-qa | 55/55 pass. QA approved. |
+| P1-12 | `sync/fs.py::is_icloud_placeholder` and dataless guards | — | `corpus_forge/sync/fs.py`, `tests/unit/test_sync_fs.py` | med | pending | — | Detect `*.icloud` 0-byte stubs and `com.apple.fileprovider.materialized` xattr. |
 | P1-13 | `PostgresBackend.insert_revision` | P1-02 | `corpus_forge/backends/postgres.py`, `corpus_forge/backends/base.py`, `tests/integration/test_backend.py` (revision section) or new `tests/integration/test_revisions.py` | med | pending | — | Allocates `revision_number = MAX+1` under `lock_source`. Sets `parent_revision_id` from caller-provided latest. |
 | P1-14 | `PostgresBackend.latest_revision` | P1-02 | `corpus_forge/backends/postgres.py`, `tests/integration/test_revisions.py` | low | pending | — | `SELECT … ORDER BY revision_number DESC LIMIT 1` for a `document_id` (or by `source_uri` lookup). |
 | P1-15 | `PostgresBackend.pending_remote_revisions` | P1-02 | `corpus_forge/backends/postgres.py`, `tests/integration/test_revisions.py` | med | pending | — | `WHERE r.id > $last AND r.author_host <> $self ORDER BY r.id ASC`. Joins documents to filter by `dataset_id`. |
@@ -298,18 +298,19 @@ Source plan: `/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Works
 
 ## DAG (waves at-a-glance — see waves.md for parallelism rationale)
 
-- **Wave 0 (P0 foundation, fully parallel ✅ DONE):** P0-01, P0-02, P1-01, P1-03, P1-05, P1-06, P1-07, P1-09, P1-10. All tasks done and QA approved.
-- **Wave 1 (depends on Wave 0):** P0-03, P0-04, P1-02, P1-04, P1-08, P1-11.
-- **Wave 2:** P0-05, P1-13, P1-14, P1-15, P1-16, P1-17.
-- **Wave 3:** P0-06.
-- **Wave 4:** P0-07.
-- **Wave 5 (P0 gate):** P0-08. _All P0 work must finish before any subsequent wave starts on P1 push/pull._
-- **Wave 6:** P1-18, P1-22.
-- **Wave 7:** P1-19, P1-23, P1-24, P1-25.
-- **Wave 8:** P1-20, P1-21, P1-26.
-- **Wave 9:** P1-27.
-- **Wave 10:** P1-28, P1-29.
-- **Wave 11 (E2E):** P1-30, P1-31, P1-32.
+- **Wave 0 (✅ DONE):** P0-01, P0-02, P1-01, P1-03, P1-05, P1-06, P1-07, P1-09, P1-10.
+- **Wave 1 (✅ DONE):** P0-03, P0-04, P1-04, P1-08, P1-11.
+- **Wave 2 (in progress):** P1-02, P1-12, P0-05.
+- **Wave 3 (serial on postgres.py):** P1-13..P1-17 (revision API, collapsed cycle).
+- **Wave 4:** P0-06.
+- **Wave 5:** P0-07.
+- **Wave 6 (P0 gate):** P0-08. _All P0 must finish before P1 push/pull._
+- **Wave 7:** P1-18, P1-22.
+- **Wave 8:** P1-19, P1-23, P1-24, P1-25.
+- **Wave 9:** P1-20, P1-21, P1-26.
+- **Wave 10:** P1-27.
+- **Wave 11:** P1-28, P1-29.
+- **Wave 12 (E2E):** P1-30, P1-31, P1-32.
 
 ## Out of scope
 
