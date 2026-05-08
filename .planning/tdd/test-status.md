@@ -9,6 +9,7 @@ Record of test suites written by tdd-tester.
 | P1-03   | red    | Tests written, confirmed red |
 | P1-05   | red    | Documentation task, TOML validated |
 | P1-06   | red    | Tests written, confirmed red |
+| P1-07   | red    | Tests written, confirmed red |
 
 
 ## P0-01 — `chunk_content_hash`
@@ -242,5 +243,45 @@ ImportError while importing test module '/Users/evanowen/Library/Mobile Document
 tests/unit/test_sync_echo.py:11: in <module>
     from corpus_forge.sync.echo import EchoSuppressor
 E   ModuleNotFoundError: No module named 'corpus_forge.sync.echo'
+```
+- Status: red — handed off to tdd-coder
+
+
+## P1-07 — `detect_cloud_provider` in `corpus_forge/sync/cloud.py`
+- Test files: `tests/unit/test_sync_cloud.py`
+- Run command: `PYTHONPATH=. uv run pytest tests/unit/test_sync_cloud.py -v --no-header 2>&1 | tail -30`
+- Edge case checklist:
+  - [x] happy — iCloud `Library/Mobile Documents/com~apple~CloudDocs` path
+  - [x] happy — iCloud `Library/Mobile Documents/iCloud~` path
+  - [x] happy — iCloud deeply nested file
+  - [x] happy — iCloud case-sensitive match
+  - [x] happy — Dropbox home path
+  - [x] happy — Dropbox nested inside
+  - [x] happy — Google Drive with space (`Google Drive`)
+  - [x] happy — GoogleDrive no-space variant
+  - [x] happy — `My Drive` variant
+  - [x] happy — deep Google Drive file
+  - [x] none — plain local path
+  - [x] none — root path `/`
+  - [x] none — relative path no match
+  - [x] none — `vault` in name (no false positive)
+  - [x] precedence — iCloud beats Dropbox
+  - [x] precedence — iCloud beats Google Drive
+  - [x] precedence — Dropbox beats Google Drive
+  - [x] type — string input raises TypeError
+  - [x] type — symlink resolves correctly
+  - [x] type — path with spaces handled
+  - [x] boundaries — return type is one of `Literal["icloud","dropbox","gdrive","none"]`
+  - [x] production-realistic — macOS iCloud paths, Dropbox, Google Drive patterns
+  - [ ] concurrency — N/A (pure function, no shared state)
+  - [ ] failure paths — N/A (no I/O, no network, no disk)
+  - [ ] locale/time — N/A (no locale/time deps)
+  - [ ] regression — N/A (new function, no prior implementation)
+- Red output (tail):
+```
+ImportError while importing test module '/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Workspace/playground/corpus-forge/tests/unit/test_sync_cloud.py'.
+tests/unit/test_sync_cloud.py:9: in <module>
+    from corpus_forge.sync.cloud import detect_cloud_provider
+E   ImportError: cannot import name 'detect_cloud_provider' from 'corpus_forge.sync.cloud'
 ```
 - Status: red — handed off to tdd-coder
