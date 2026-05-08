@@ -1,5 +1,7 @@
 """Unit tests for embedder implementations."""
 
+from unittest.mock import patch
+
 import pytest
 
 from corpus_forge.embedders.openai import OPENAI_AVAILABLE, OpenAIEmbedder
@@ -46,27 +48,25 @@ class TestSentenceTransformersEmbedder:
 
     def test_model_not_available(self):
         """Test encode when sentence-transformers is not available."""
-        if SENTENCE_TRANSFORMERS_AVAILABLE:
-            pytest.skip("sentence-transformers is available")
         embedder = SentenceTransformersEmbedder(
             name="test",
             model_id="test-model",
             dimension=384,
         )
-        with pytest.raises(ImportError, match="sentence-transformers package is required"):
-            embedder.encode(["test"])
+        with patch("corpus_forge.embedders.sentence_transformers.SENTENCE_TRANSFORMERS_AVAILABLE", False):
+            with pytest.raises(ImportError, match="sentence-transformers package is required"):
+                embedder.encode(["test"])
 
     def test_warmup_no_model(self):
         """Test warmup when model is not available."""
-        if SENTENCE_TRANSFORMERS_AVAILABLE:
-            pytest.skip("sentence-transformers is available")
         embedder = SentenceTransformersEmbedder(
             name="test",
             model_id="test-model",
             dimension=384,
         )
-        # Should not raise
-        embedder.warmup()
+        with patch("corpus_forge.embedders.sentence_transformers.SENTENCE_TRANSFORMERS_AVAILABLE", False):
+            # Should not raise
+            embedder.warmup()
 
     def test_model_id_validation(self):
         """Test that model_id is stored correctly."""

@@ -25,14 +25,11 @@ class TestSetupSignalHandlers:
             calls = mock_signal.call_args_list
             assert calls[1][0][0] == 15  # SIGTERM = 15
 
-    @pytest.mark.skip(reason="pre-existing bug: get signal from real signal table after mocking signal.signal — masked by removed integration marker")
     def test_signal_handler_exits_gracefully(self):
         """Test that the signal handler calls sys.exit(0)."""
-        with patch("corpus_forge.daemon.signal.signal"):
+        with patch("corpus_forge.daemon.signal.signal") as mock_signal:
             setup_signal_handlers()
-            # Get the handler from the signal module
-            import signal
-            handler = signal.getsignal(signal.SIGINT)
+            handler = mock_signal.call_args_list[0][0][1]  # SIGINT handler
 
         # Call the handler directly
         with patch("corpus_forge.daemon.sys.exit") as mock_exit:
@@ -78,28 +75,26 @@ class TestDaemonMain:
 class TestDaemonSignalHandling:
     """Tests for signal handling in daemon mode."""
 
-    @pytest.mark.skip(reason="pre-existing bug: get signal from real signal table after mocking signal.signal")
     def test_sigint_calls_exit_zero(self):
         """Test SIGINT triggers clean exit."""
         with patch("corpus_forge.daemon.signal.signal") as mock_signal:
             setup_signal_handlers()
-            handler = signal.getsignal(signal.SIGINT)
+            handler = mock_signal.call_args_list[0][0][1]  # SIGINT handler
 
         with patch("corpus_forge.daemon.sys.exit") as mock_exit:
             with patch("corpus_forge.daemon.logging.info"):
-                handler(signal.SIGINT, None)
+                handler(2, None)
                 mock_exit.assert_called_once_with(0)
 
-    @pytest.mark.skip(reason="pre-existing bug: get signal from real signal table after mocking signal.signal")
     def test_sigterm_calls_exit_zero(self):
         """Test SIGTERM triggers clean exit."""
         with patch("corpus_forge.daemon.signal.signal") as mock_signal:
             setup_signal_handlers()
-            handler = signal.getsignal(signal.SIGTERM)
+            handler = mock_signal.call_args_list[1][0][1]  # SIGTERM handler
 
         with patch("corpus_forge.daemon.sys.exit") as mock_exit:
             with patch("corpus_forge.daemon.logging.info"):
-                handler(signal.SIGTERM, None)
+                handler(15, None)
                 mock_exit.assert_called_once_with(0)
 
 

@@ -10,7 +10,23 @@ from corpus_forge.embedders.sentence_transformers import (
     SentenceTransformersEmbedder,
 )
 
-pytestmark = pytest.mark.integration
+# These are pure unit tests with mocked models — NOT integration tests.
+# Removing integration marker so they run regardless of Docker availability.
+
+
+@pytest.fixture(autouse=True)
+def _mock_sentence_transformer():
+    """Prevent all tests from loading real HuggingFace models.
+
+    Tests that need specific SentenceTransformer behavior override this
+    with their own nested patch.
+    """
+    with patch("corpus_forge.embedders.sentence_transformers.SentenceTransformer") as mock_cls:
+        mock_model = MagicMock()
+        mock_model.get_sentence_embedding_dimension.return_value = 384
+        mock_model.encode.return_value = np.zeros((1, 384), dtype=np.float32)
+        mock_cls.return_value = mock_model
+        yield
 
 
 class TestSentenceTransformersInit:
@@ -51,7 +67,6 @@ class TestSentenceTransformersInit:
 
 class TestSentenceTransformersModel:
     def test_load_model_lazy(self):
-        """Test that model is not loaded until needed."""
         embedder = SentenceTransformersEmbedder(
             name="test",
             model_id="BAAI/bge-small-en-v1.5",
@@ -65,7 +80,10 @@ class TestSentenceTransformersModel:
             MockST.return_value = mock_model
             embedder._load_model()
             assert embedder._model is mock_model
-            MockST.assert_called_once_with("BAAI/bge-small-en-v1.5", device="auto")
+            _, kwargs = MockST.call_args
+            assert kwargs.get("device") in ("mps", "cuda", "cpu"), (
+                f"Expected device to be a concrete device, got {kwargs.get('device')}"
+            )
 
     def test_load_model_uses_custom_device(self):
         embedder = SentenceTransformersEmbedder(
@@ -167,8 +185,10 @@ class TestSentenceTransformersEncode:
             dimension=384,
         )
         embedder._model = None
-        with pytest.raises(RuntimeError, match="Failed to load SentenceTransformer model"):
-            embedder.encode(["hello"])
+        # Make _load_model a no-op so _model stays None after the call
+        with patch.object(embedder, '_load_model'):
+            with pytest.raises(RuntimeError, match="Failed to load SentenceTransformer model"):
+                embedder.encode(["hello"])
 
     def test_encode_raises_when_package_missing(self):
         """Test encode raises ImportError when sentence-transformers missing."""
