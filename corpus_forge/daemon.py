@@ -37,7 +37,7 @@ def run_daemon(config) -> None:
             engines.append(engine)
             logger.info(f"Started sync engine for {dataset.name}/{source_config.plugin}")
 
-    def _shutdown(signum, frame):
+    def _shutdown(signum, _frame):
         logger.info(f"Received signal {signum}, stopping {len(engines)} engine(s)")
         for engine in engines:
             engine.stop()

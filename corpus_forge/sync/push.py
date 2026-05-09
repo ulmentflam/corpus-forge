@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import threading
-from datetime import UTC
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 
@@ -15,7 +15,7 @@ from corpus_forge.sync.conflicts import conflict_filename, is_cloud_duplicate
 
 
 class _DebouncedHandler(FileSystemEventHandler):
-    def __init__(self, pipeline: "PushPipeline", debounce_seconds: float) -> None:
+    def __init__(self, pipeline: PushPipeline, debounce_seconds: float) -> None:
         super().__init__()
         self.pipeline = pipeline
         self.debounce_seconds = debounce_seconds
@@ -182,8 +182,6 @@ class PushPipeline:
         return False
 
     def _handle_cloud_duplicate(self, path: Path) -> bool:
-        from datetime import datetime
-
         matched, provider, canonical_path = is_cloud_duplicate(path)
         if not matched or canonical_path is None or not canonical_path.exists():
             return False

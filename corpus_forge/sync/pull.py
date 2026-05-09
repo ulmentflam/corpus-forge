@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
-
-logger = logging.getLogger(__name__)
-
-from datetime import UTC
 
 from corpus_forge.identity import file_content_hash
 from corpus_forge.sync.conflicts import conflict_filename
 from corpus_forge.sync.fs import atomic_write_text, move_to_trash
+
+logger = logging.getLogger(__name__)
 
 
 class PullPipeline:
@@ -55,7 +54,7 @@ class PullPipeline:
             return self._source_root / p.name
         return self._source_root / p
 
-    def start(self, source_root: Path, poll_interval_s: float = 5.0) -> None:
+    def start(self, _source_root: Path, poll_interval_s: float = 5.0) -> None:
         if self._thread is not None and self._thread.is_alive():
             raise RuntimeError("PullPipeline already started")
         self._stop_event.clear()
@@ -123,9 +122,7 @@ class PullPipeline:
         )
         self._last_pulled_id = max(self._last_pulled_id, revision["id"])
 
-    def _handle_conflict(self, revision: dict, path: Path, local_hash: str | None) -> None:
-        from datetime import datetime
-
+    def _handle_conflict(self, revision: dict, path: Path, _local_hash: str | None) -> None:
         if path.exists():
             ts = datetime.now(UTC)
             conflict_path = conflict_filename(path, host=self._host_id, ts=ts)
