@@ -2,8 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from corpus_forge.sync.engine import SyncEngine
 
 

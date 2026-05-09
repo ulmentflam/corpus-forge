@@ -1,15 +1,14 @@
 """Unit tests for detect_cloud_provider — cloud storage detection from filesystem paths."""
 
 from pathlib import Path
-from typing import Literal
 
 import pytest
 
 # The function does not exist yet — these tests must fail red.
 from corpus_forge.sync.cloud import detect_cloud_provider
 
-
 # ── iCloud tests ──────────────────────────────────────────────────────────
+
 
 class TestDetectCloudProvideriCloud:
     """iCloud Drive and iCloud app-container paths detect as 'icloud'."""
@@ -22,7 +21,9 @@ class TestDetectCloudProvideriCloud:
 
     def test_icloud_iCloud_tilde_path(self, tmp_path):
         """iCloud app container: Library/Mobile Documents/iCloud~com.apple.Notes."""
-        iCloud_path = tmp_path / "Library" / "Mobile Documents" / "iCloud~com~apple~CloudKit" / "data"
+        iCloud_path = (
+            tmp_path / "Library" / "Mobile Documents" / "iCloud~com~apple~CloudKit" / "data"
+        )
         iCloud_path.mkdir(parents=True)
         assert detect_cloud_provider(iCloud_path) == "icloud"
 
@@ -50,6 +51,7 @@ class TestDetectCloudProvideriCloud:
 
 # ── Dropbox tests ─────────────────────────────────────────────────────────
 
+
 class TestDetectCloudProviderDropbox:
     """Dropbox paths detect as 'dropbox'."""
 
@@ -75,6 +77,7 @@ class TestDetectCloudProviderDropbox:
 
 
 # ── Google Drive tests ────────────────────────────────────────────────────
+
 
 class TestDetectCloudProviderGoogleDrive:
     """Google Drive paths detect as 'gdrive'."""
@@ -107,6 +110,7 @@ class TestDetectCloudProviderGoogleDrive:
 
 
 # ── None / unmatched tests ────────────────────────────────────────────────
+
 
 class TestDetectCloudProviderNone:
     """Plain paths with no cloud keyword return 'none'."""
@@ -143,6 +147,7 @@ class TestDetectCloudProviderNone:
 
 # ── Precedence tests ──────────────────────────────────────────────────────
 
+
 class TestDetectCloudProviderPrecedence:
     """First match in precedence wins: iCloud > Dropbox > Google Drive > none."""
 
@@ -167,21 +172,21 @@ class TestDetectCloudProviderPrecedence:
             / "Library"
             / "Mobile Documents"
             / "iCloud~com~apple~CloudKit"
-            / "Google Drive" / "vault"
+            / "Google Drive"
+            / "vault"
         )
         cloud_path.mkdir(parents=True)
         assert detect_cloud_provider(cloud_path) == "icloud"
 
     def test_dropbox_precedence_over_google_drive(self, tmp_path):
         """If path contains both Dropbox and Google Drive markers, Dropbox wins."""
-        cloud_path = (
-            tmp_path / "Dropbox" / "Google Drive" / "vault"
-        )
+        cloud_path = tmp_path / "Dropbox" / "Google Drive" / "vault"
         cloud_path.mkdir(parents=True)
         assert detect_cloud_provider(cloud_path) == "dropbox"
 
 
 # ── Type / format tests ───────────────────────────────────────────────────
+
 
 class TestDetectCloudProviderTypeHandling:
     """Wrong types and edge-format inputs."""
@@ -213,6 +218,7 @@ class TestDetectCloudProviderTypeHandling:
 
 
 # ── Return type tests ─────────────────────────────────────────────────────
+
 
 class TestDetectCloudProviderReturnType:
     """Return type is Literal["icloud", "dropbox", "gdrive", "none"]."""

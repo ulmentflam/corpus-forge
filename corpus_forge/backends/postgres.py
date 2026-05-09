@@ -3,10 +3,12 @@
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import numpy as np
 import psycopg
+from psycopg import sql as pgsql
 from psycopg.rows import dict_row
 
 from ..identity import advisory_lock_key, chunk_content_hash
@@ -39,6 +41,14 @@ class PostgresBackend(StorageBackend):
         # For now, we'll create a new connection each time
         conn = psycopg.connect(self.dsn)
         try:
+            # Ensure the schema is visible for unqualified table names in DDL.
+            # This must be set per-connection because SET search_path is session-scoped.
+            conn.execute(
+                pgsql.SQL("SET search_path = {schema}, public").format(
+                    schema=pgsql.Identifier(self.schema)
+                )
+            )
+            conn.commit()
             yield conn
         finally:
             conn.close()
@@ -47,11 +57,9 @@ class PostgresBackend(StorageBackend):
         """Execute a query and return results as list of dicts."""
         with self._get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             cur.execute(query, params)
-            if cur.description:  # SELECT query
-                return [dict(row) for row in cur.fetchall()]
-            else:  # INSERT/UPDATE/DELETE
-                conn.commit()
-                return []
+            rows = cur.fetchall() if cur.description else []
+            conn.commit()
+            return [dict(row) for row in rows]
 
     def migrate(self) -> None:
         """Apply schema migrations."""
@@ -74,8 +82,7 @@ class PostgresBackend(StorageBackend):
         CREATE TABLE IF NOT EXISTS sources (
           id           BIGSERIAL PRIMARY KEY,
           dataset_id   BIGINT NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
-          plugin       TEXT NOT NULL,                -- 'markdown_vault' |
-              'claude_code' | 'opencode'
+          plugin       TEXT NOT NULL,                -- 'markdown_vault' | 'claude_code' | 'opencode'
           identity     TEXT NOT NULL,                -- canonical id, e.g. vault root path
           host         TEXT NOT NULL,                -- writer hostname (multi-Mac coord)
           config       JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -130,7 +137,7 @@ class PostgresBackend(StorageBackend):
         CREATE INDEX IF NOT EXISTS messages_external_idx
           ON messages(conversation_id, external_uuid);
         
-        -- Chunks (the embedded unit; XOR doc/conv) ----------------------------------
+        -- Chunks (the embedded unit - XOR doc/conv) ---------------------------------
         CREATE TABLE IF NOT EXISTS chunks (
           id              BIGSERIAL PRIMARY KEY,
           document_id     BIGINT REFERENCES documents(id)     ON DELETE CASCADE,
@@ -141,11 +148,13 @@ class PostgresBackend(StorageBackend):
           heading         TEXT,
           role            TEXT,                      -- echoed for chat chunks
           token_count     INT,
+          content_hash    TEXT,                      -- sha256 of chunk text (dedup key)
           metadata        JSONB NOT NULL DEFAULT '{}'::jsonb,
           CHECK ( (document_id IS NOT NULL)::int + (conversation_id IS NOT NULL)::int = 1 ),
           UNIQUE (document_id, chunk_index),
           UNIQUE (conversation_id, message_id, chunk_index)
         );
+        CREATE INDEX IF NOT EXISTS chunks_content_hash_idx ON chunks(content_hash);
         CREATE INDEX IF NOT EXISTS chunks_doc_idx  ON chunks(document_id);
         CREATE INDEX IF NOT EXISTS chunks_conv_idx ON chunks(conversation_id);
         
@@ -200,6 +209,10 @@ class PostgresBackend(StorageBackend):
 
     def register_embedder(self, embedder) -> int:
         """Register an embedder and create its table."""
+        # Sanitize embedder name for use as a SQL identifier in table_name.
+        safe_name = embedder.name.replace("-", "_")
+        table_name_val = f"embeddings_{safe_name}"
+
         # Check if embedder already exists
         existing = self._execute(
             "SELECT id FROM corpus.embedders WHERE name = %s", (embedder.name,)
@@ -210,8 +223,8 @@ class PostgresBackend(StorageBackend):
             # Update existing record
             self._execute(
                 """
-                UPDATE corpus.embedders 
-                SET provider = %s, model_id = %s, dimension = %s, 
+                UPDATE corpus.embedders
+                SET provider = %s, model_id = %s, dimension = %s,
                     normalized = %s, distance = %s, active = %s,
                     table_name = %s, config = %s
                 WHERE id = %s
@@ -222,9 +235,11 @@ class PostgresBackend(StorageBackend):
                     embedder.dimension,
                     embedder.normalized,
                     embedder.distance,
-                    embedder.active,
-                    f"embeddings_{embedder.name}",
-                    {"provider": embedder.provider, "model_id": embedder.model_id},
+                    getattr(embedder, "active", True),
+                    table_name_val,
+                    psycopg.types.json.Json(
+                        {"provider": embedder.provider, "model_id": embedder.model_id}
+                    ),
                     embedder_id,
                 ),
             )
@@ -232,8 +247,8 @@ class PostgresBackend(StorageBackend):
             # Insert new embedder
             result = self._execute(
                 """
-                INSERT INTO corpus.embedders 
-                (name, provider, model_id, dimension, normalized, distance, 
+                INSERT INTO corpus.embedders
+                (name, provider, model_id, dimension, normalized, distance,
                  active, table_name, config)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
@@ -246,8 +261,10 @@ class PostgresBackend(StorageBackend):
                     embedder.normalized,
                     embedder.distance,
                     True,  # active
-                    f"embeddings_{embedder.name}",
-                    {"provider": embedder.provider, "model_id": embedder.model_id},
+                    table_name_val,
+                    psycopg.types.json.Json(
+                        {"provider": embedder.provider, "model_id": embedder.model_id}
+                    ),
                 ),
             )
             embedder_id = result[0]["id"]
@@ -259,7 +276,9 @@ class PostgresBackend(StorageBackend):
 
     def _create_embedder_table(self, embedder) -> None:
         """Create the table for storing embeddings from this embedder."""
-        table_name = f"embeddings_{embedder.name}"
+        # Sanitize the name so it forms a valid SQL identifier (replace hyphens with underscores).
+        safe_name = embedder.name.replace("-", "_")
+        table_name = f"embeddings_{safe_name}"
         self._execute(
             f"""
             CREATE TABLE IF NOT EXISTS corpus.{table_name} (
@@ -275,7 +294,10 @@ class PostgresBackend(StorageBackend):
         )
 
     def upsert_document(
-        self, dataset_id: int, doc: "RawDocument", chunks: list[tuple[str | None, str]],
+        self,
+        dataset_id: int,
+        doc: "RawDocument",
+        chunks: list[tuple[str | None, str]],
         embedder_ids: list[int] | None = None,
     ) -> int:
         """Insert or update a document and its chunks."""
@@ -378,18 +400,26 @@ class PostgresBackend(StorageBackend):
                 return conv_id
 
             # Update conversation
+            started_at = (
+                datetime.fromtimestamp(conv.started_at, tz=UTC)
+                if conv.started_at is not None
+                else None
+            )
+            ended_at = (
+                datetime.fromtimestamp(conv.ended_at, tz=UTC) if conv.ended_at is not None else None
+            )
             self._execute(
                 """
-                UPDATE corpus.conversations 
-                SET content_hash = %s, title = %s, started_at = %s, 
+                UPDATE corpus.conversations
+                SET content_hash = %s, title = %s, started_at = %s,
                     ended_at = %s, message_count = %s, metadata = %s
                 WHERE id = %s
                 """,
                 (
                     conv.content_hash,
                     conv.title,
-                    conv.started_at,
-                    conv.ended_at,
+                    started_at,
+                    ended_at,
                     len(conv.messages),
                     psycopg.types.json.Json(conv.metadata),
                     conv_id,
@@ -400,10 +430,18 @@ class PostgresBackend(StorageBackend):
             self._execute("DELETE FROM corpus.messages WHERE conversation_id = %s", (conv_id,))
         else:
             # Insert new conversation
+            started_at = (
+                datetime.fromtimestamp(conv.started_at, tz=UTC)
+                if conv.started_at is not None
+                else None
+            )
+            ended_at = (
+                datetime.fromtimestamp(conv.ended_at, tz=UTC) if conv.ended_at is not None else None
+            )
             result = self._execute(
                 """
-                INSERT INTO corpus.conversations 
-                (dataset_id, source_uri, external_id, title, started_at, 
+                INSERT INTO corpus.conversations
+                (dataset_id, source_uri, external_id, title, started_at,
                  ended_at, message_count, content_hash, metadata)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
@@ -413,8 +451,8 @@ class PostgresBackend(StorageBackend):
                     conv.source_uri,
                     conv.external_id,
                     conv.title,
-                    conv.started_at,
-                    conv.ended_at,
+                    started_at,
+                    ended_at,
                     len(conv.messages),
                     conv.content_hash,
                     psycopg.types.json.Json(conv.metadata),
@@ -425,10 +463,11 @@ class PostgresBackend(StorageBackend):
         # Add messages
         message_ids = []
         for i, message in enumerate(conv.messages):
+            msg_ts = datetime.fromtimestamp(message.ts, tz=UTC) if message.ts is not None else None
             result = self._execute(
                 """
-                INSERT INTO corpus.messages 
-                (conversation_id, external_uuid, parent_uuid, turn_index, role, 
+                INSERT INTO corpus.messages
+                (conversation_id, external_uuid, parent_uuid, turn_index, role,
                  content, tool_calls, tool_results, ts, metadata)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
@@ -442,7 +481,7 @@ class PostgresBackend(StorageBackend):
                     message.content,
                     psycopg.types.json.Json(message.tool_calls) if message.tool_calls else None,
                     psycopg.types.json.Json(message.tool_results) if message.tool_results else None,
-                    message.ts,
+                    msg_ts,
                     psycopg.types.json.Json(message.metadata),
                 ),
             )
@@ -485,7 +524,7 @@ class PostgresBackend(StorageBackend):
             raise ValueError(f"Embedder with ID {embedder_id} not found")
 
         embedder_name = embedder_info[0]["name"]
-        table_name = f"embeddings_{embedder_name}"
+        table_name = f"embeddings_{embedder_name.replace('-', '_')}"
 
         # Insert embeddings with ON CONFLICT DO NOTHING
         for chunk_id, embedding in pairs:
@@ -513,7 +552,7 @@ class PostgresBackend(StorageBackend):
             return
 
         embedder_name = embedder_info[0]["name"]
-        table_name = f"embeddings_{embedder_name}"
+        table_name = f"embeddings_{embedder_name.replace('-', '_')}"
 
         # Query for chunks missing this embedder's embedding
         query = f"""

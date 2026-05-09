@@ -105,7 +105,9 @@ class TestSentenceTransformersModel:
             model_id="BAAI/bge-small-en-v1.5",
             dimension=384,
         )
-        with patch("corpus_forge.embedders.sentence_transformers.SENTENCE_TRANSFORMERS_AVAILABLE", False):
+        with patch(
+            "corpus_forge.embedders.sentence_transformers.SENTENCE_TRANSFORMERS_AVAILABLE", False
+        ):
             embedder._load_model()
             assert embedder._model is None
 
@@ -186,7 +188,7 @@ class TestSentenceTransformersEncode:
         )
         embedder._model = None
         # Make _load_model a no-op so _model stays None after the call
-        with patch.object(embedder, '_load_model'):
+        with patch.object(embedder, "_load_model"):
             with pytest.raises(RuntimeError, match="Failed to load SentenceTransformer model"):
                 embedder.encode(["hello"])
 
@@ -197,9 +199,14 @@ class TestSentenceTransformersEncode:
             model_id="BAAI/bge-small-en-v1.5",
             dimension=384,
         )
-        with patch("corpus_forge.embedders.sentence_transformers.SENTENCE_TRANSFORMERS_AVAILABLE", False):
-            with pytest.raises(ImportError, match="sentence-transformers package is required"):
-                embedder.encode(["hello"])
+        with (
+            patch(
+                "corpus_forge.embedders.sentence_transformers.SENTENCE_TRANSFORMERS_AVAILABLE",
+                False,
+            ),
+            pytest.raises(ImportError, match="sentence-transformers package is required"),
+        ):
+            embedder.encode(["hello"])
 
 
 class TestSentenceTransformersWarmup:
@@ -214,7 +221,10 @@ class TestSentenceTransformersWarmup:
         )
         mock_model = MagicMock()
         mock_model.get_sentence_embedding_dimension.return_value = 384
-        with patch("corpus_forge.embedders.sentence_transformers.SentenceTransformer", return_value=mock_model):
+        with patch(
+            "corpus_forge.embedders.sentence_transformers.SentenceTransformer",
+            return_value=mock_model,
+        ):
             embedder.warmup()
             assert embedder._model is mock_model
 
@@ -229,7 +239,10 @@ class TestSentenceTransformersWarmup:
         )
         mock_model = MagicMock()
         mock_model.get_sentence_embedding_dimension.return_value = 384
-        with patch("corpus_forge.embedders.sentence_transformers.SentenceTransformer", return_value=mock_model):
+        with patch(
+            "corpus_forge.embedders.sentence_transformers.SentenceTransformer",
+            return_value=mock_model,
+        ):
             embedder.warmup()
             mock_model.encode.assert_called_once()
             call_args = mock_model.encode.call_args
@@ -241,6 +254,8 @@ class TestSentenceTransformersWarmup:
             model_id="BAAI/bge-small-en-v1.5",
             dimension=384,
         )
-        with patch("corpus_forge.embedders.sentence_transformers.SENTENCE_TRANSFORMERS_AVAILABLE", False):
+        with patch(
+            "corpus_forge.embedders.sentence_transformers.SENTENCE_TRANSFORMERS_AVAILABLE", False
+        ):
             embedder.warmup()
             assert embedder._model is None

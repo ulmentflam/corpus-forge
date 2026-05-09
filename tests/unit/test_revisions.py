@@ -2,8 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from corpus_forge.backends.postgres import PostgresBackend
 
 
@@ -204,9 +202,7 @@ class TestPendingRemoteRevisions:
         backend = _make_backend()
         backend._execute.return_value = []
 
-        backend.pending_remote_revisions(
-            dataset_id=1, last_pulled_revision_id=0, self_host="macA"
-        )
+        backend.pending_remote_revisions(dataset_id=1, last_pulled_revision_id=0, self_host="macA")
 
         sql = backend._execute.call_args[0][0]
         assert "ORDER BY" in sql
@@ -216,9 +212,7 @@ class TestPendingRemoteRevisions:
         backend = _make_backend()
         backend._execute.return_value = []
 
-        backend.pending_remote_revisions(
-            dataset_id=1, last_pulled_revision_id=0, self_host="macA"
-        )
+        backend.pending_remote_revisions(dataset_id=1, last_pulled_revision_id=0, self_host="macA")
 
         params = backend._execute.call_args[0][1]
         assert 1024 in params or "1024" in str(params)
@@ -248,9 +242,7 @@ class TestPendingRemoteRevisions:
         backend = _make_backend()
         backend._execute.return_value = []
 
-        backend.pending_remote_revisions(
-            dataset_id=7, last_pulled_revision_id=0, self_host="macA"
-        )
+        backend.pending_remote_revisions(dataset_id=7, last_pulled_revision_id=0, self_host="macA")
 
         sql = backend._execute.call_args[0][0]
         params = backend._execute.call_args[0][1]

@@ -1,10 +1,8 @@
 """Unit tests for corpus_forge.sync.fs — atomic_write_text and move_to_trash."""
 
-import os
-import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -16,8 +14,8 @@ from corpus_forge.sync.fs import (
     move_to_trash,
 )
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def tmp_dir(tmp_path: Path):
@@ -26,6 +24,7 @@ def tmp_dir(tmp_path: Path):
 
 
 # ── Happy-path tests ─────────────────────────────────────────────────────
+
 
 class TestAtomicWriteTextHappyPath:
     """Core success scenarios."""
@@ -89,6 +88,7 @@ class TestAtomicWriteTextHappyPath:
 
 # ── Tempfile cleanup tests ───────────────────────────────────────────────
 
+
 class TestAtomicWriteTextTempfileCleanup:
     """The temp file must not persist after a successful write."""
 
@@ -111,6 +111,7 @@ class TestAtomicWriteTextTempfileCleanup:
 
 
 # ── Failure-path / crash simulation tests ────────────────────────────────
+
 
 class TestAtomicWriteTextFailurePaths:
     """If os.replace raises, the original file must remain untouched."""
@@ -182,6 +183,7 @@ class TestAtomicWriteTextFailurePaths:
 
 # ── Boundary tests ───────────────────────────────────────────────────────
 
+
 class TestAtomicWriteTextBoundaries:
     """Edge cases on input size and content."""
 
@@ -232,6 +234,7 @@ class TestAtomicWriteTextBoundaries:
 
 # ── Type / format tests ──────────────────────────────────────────────────
 
+
 class TestAtomicWriteTextTypeValidation:
     """Wrong types should raise TypeError (or equivalent)."""
 
@@ -255,6 +258,7 @@ class TestAtomicWriteTextTypeValidation:
 
 
 # ── Encoding tests ───────────────────────────────────────────────────────
+
 
 class TestAtomicWriteTextEncoding:
     """Encoding-specific behavior."""
@@ -296,6 +300,7 @@ class TestAtomicWriteTextEncoding:
 
 # ── State / idempotency tests ────────────────────────────────────────────
 
+
 class TestAtomicWriteTextState:
     """Stateful behavior — multiple calls, ordering."""
 
@@ -326,6 +331,7 @@ class TestAtomicWriteTextState:
 
 
 # ── Tempfile naming tests ────────────────────────────────────────────────
+
 
 class TestAtomicWriteTextTempfileNaming:
     """The temp file naming convention."""
@@ -396,6 +402,7 @@ class TestAtomicWriteTextTempfileNaming:
 
 # ── Platform-specific tests ──────────────────────────────────────────────
 
+
 class TestAtomicWriteTextPlatform:
     """Platform-specific behavior."""
 
@@ -434,6 +441,7 @@ class TestAtomicWriteTextPlatform:
 
 
 # ── move_to_trash — destination path construction ────────────────────────
+
 
 class TestMoveToTrashDestPath:
     """The destination path must follow the expected format."""
@@ -523,6 +531,7 @@ class TestMoveToTrashDestPath:
 
 # ── move_to_trash — file relocation behavior ─────────────────────────────
 
+
 class TestMoveToTrashFileMoved:
     """The source file should be moved (not copied-only) to the trash location."""
 
@@ -568,6 +577,7 @@ class TestMoveToTrashFileMoved:
 
 # ── move_to_trash — parent directory creation ────────────────────────────
 
+
 class TestMoveToTrashParentDirs:
     """Parent directories of the destination must be created automatically."""
 
@@ -606,6 +616,7 @@ class TestMoveToTrashParentDirs:
 
 # ── move_to_trash — same-filesystem (atomic) ─────────────────────────────
 
+
 class TestMoveToTrashSameFilesystem:
     """On the same filesystem, os.replace must be used (atomic)."""
 
@@ -639,7 +650,9 @@ class TestMoveToTrashSameFilesystem:
 
         with (
             patch("corpus_forge.sync.fs.datetime") as mock_dt,
-            patch("corpus_forge.sync.fs.os.replace", side_effect=OSError(errno.EXDEV, "cross-device")),
+            patch(
+                "corpus_forge.sync.fs.os.replace", side_effect=OSError(errno.EXDEV, "cross-device")
+            ),
             patch("corpus_forge.sync.fs.shutil.copy2") as mock_copy,
             patch("corpus_forge.sync.fs.os.unlink") as mock_unlink,
         ):
@@ -651,6 +664,7 @@ class TestMoveToTrashSameFilesystem:
 
 
 # ── move_to_trash — cross-device fallback ────────────────────────────────
+
 
 class TestMoveToTrashCrossDevice:
     """When os.replace raises EXDEV, fall back to copy+unlink."""
@@ -667,7 +681,9 @@ class TestMoveToTrashCrossDevice:
 
         with (
             patch("corpus_forge.sync.fs.datetime") as mock_dt,
-            patch("corpus_forge.sync.fs.os.replace", side_effect=OSError(errno.EXDEV, "cross-device")),
+            patch(
+                "corpus_forge.sync.fs.os.replace", side_effect=OSError(errno.EXDEV, "cross-device")
+            ),
             patch("corpus_forge.sync.fs.shutil.copy2") as mock_copy,
             patch("corpus_forge.sync.fs.os.unlink"),
         ):
@@ -689,7 +705,9 @@ class TestMoveToTrashCrossDevice:
 
         with (
             patch("corpus_forge.sync.fs.datetime") as mock_dt,
-            patch("corpus_forge.sync.fs.os.replace", side_effect=OSError(errno.EXDEV, "cross-device")),
+            patch(
+                "corpus_forge.sync.fs.os.replace", side_effect=OSError(errno.EXDEV, "cross-device")
+            ),
             patch("corpus_forge.sync.fs.shutil.copy2"),
             patch("corpus_forge.sync.fs.os.unlink") as mock_unlink,
         ):
@@ -708,7 +726,10 @@ class TestMoveToTrashCrossDevice:
 
         with (
             patch("corpus_forge.sync.fs.datetime") as mock_dt,
-            patch("corpus_forge.sync.fs.os.replace", side_effect=OSError(errno.EACCES, "permission denied")),
+            patch(
+                "corpus_forge.sync.fs.os.replace",
+                side_effect=OSError(errno.EACCES, "permission denied"),
+            ),
         ):
             mock_dt.utcnow.return_value = self.FAKE_TS
             with pytest.raises(OSError):
@@ -734,7 +755,9 @@ class TestMoveToTrashCrossDevice:
         assert dest.read_text() == content
         assert not src.exists()
 
+
 # ── is_icloud_placeholder — iCloud placeholder detection ─────────────────
+
 
 class TestIsIcloudPlaceholder:
     """is_icloud_placeholder detects iCloud placeholder files."""
@@ -773,6 +796,7 @@ class TestIsIcloudPlaceholder:
 
 # ── is_dataless — xattr-based dataless detection ────────────────────────
 
+
 class TestIsDataless:
     """is_dataless detects dataless/unmaterialized files via xattr."""
 
@@ -786,14 +810,18 @@ class TestIsDataless:
         """An OSError from getxattr should return False (fail closed)."""
         p = tmp_path / "unknown.txt"
         p.write_text("x")
-        with patch("corpus_forge.sync.fs.os.getxattr", side_effect=OSError("no such xattr"), create=True):
+        with patch(
+            "corpus_forge.sync.fs.os.getxattr", side_effect=OSError("no such xattr"), create=True
+        ):
             assert is_dataless(p) is False
 
     def test_permission_error_returns_false(self, tmp_path: Path):
         """PermissionError should also return False (fail closed)."""
         p = tmp_path / "locked.txt"
         p.write_text("x")
-        with patch("corpus_forge.sync.fs.os.getxattr", side_effect=PermissionError("denied"), create=True):
+        with patch(
+            "corpus_forge.sync.fs.os.getxattr", side_effect=PermissionError("denied"), create=True
+        ):
             assert is_dataless(p) is False
 
     def test_dataless_xattr_returns_true(self, tmp_path: Path):

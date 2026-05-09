@@ -1,8 +1,8 @@
 """Conflict file naming utilities for the sync subsystem."""
 
 import re
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 
 def is_cloud_duplicate(path: Path) -> tuple[bool, str | None, Path | None]:
@@ -16,7 +16,7 @@ def is_cloud_duplicate(path: Path) -> tuple[bool, str | None, Path | None]:
     suffix = path.suffix
 
     # Google Drive: "<stem> (1)<suffix>" or "<stem>-conflict-<date>-<n><suffix>"
-    gdrive_match = re.match(r'^(.+?)(?: \(1\)|-conflict-[\w-]+-\d+)$', stem)
+    gdrive_match = re.match(r"^(.+?)(?: \(1\)|-conflict-[\w-]+-\d+)$", stem)
     if gdrive_match:
         canonical = path.with_name(f"{gdrive_match.group(1)}{suffix}")
         return (True, "gdrive", canonical)
@@ -29,13 +29,13 @@ def is_cloud_duplicate(path: Path) -> tuple[bool, str | None, Path | None]:
 
     # Finder: "<stem> copy<suffix>" or "<stem> copy <n><suffix>"
     # Checked before icloud so "Foo copy 2" → finder, not icloud
-    finder_match = re.match(r'^(.+?) copy(?: (\d+))?$', stem)
+    finder_match = re.match(r"^(.+?) copy(?: (\d+))?$", stem)
     if finder_match:
         canonical = path.with_name(f"{finder_match.group(1)}{suffix}")
         return (True, "finder", canonical)
 
     # iCloud: "<stem> <n><suffix>" or "<stem> (<n>)<suffix>"
-    icloud_match = re.match(r'^(.+?)(?: (\d+)| \((\d+)\))$', stem)
+    icloud_match = re.match(r"^(.+?)(?: (\d+)| \((\d+)\))$", stem)
     if icloud_match:
         canonical = path.with_name(f"{icloud_match.group(1)}{suffix}")
         return (True, "icloud", canonical)

@@ -16,19 +16,23 @@ def _mock_cursor():
 
     # SELECT returns list of dicts
     cur.description = [("id",), ("content_hash",), ("name",), ("dimension",)]
-    cur.fetchall = MagicMock(return_value=[
-        {"id": 1, "content_hash": "abc", "name": "test", "dimension": 384},
-    ])
+    cur.fetchall = MagicMock(
+        return_value=[
+            {"id": 1, "content_hash": "abc", "name": "test", "dimension": 384},
+        ]
+    )
     # RETURNING returns single dict
     cur.fetchone = MagicMock(return_value={"id": 42})
     # pg_try_advisory_lock returns True
-    cur.fetchone = MagicMock(side_effect=[
-        {"id": 1},      # SELECT id FROM documents
-        {"content_hash": "old"},  # SELECT content_hash
-        {"id": 42},     # RETURNING id (INSERT)
-        {"id": 43},     # RETURNING id (messages)
-        True,           # pg_try_advisory_lock
-    ])
+    cur.fetchone = MagicMock(
+        side_effect=[
+            {"id": 1},  # SELECT id FROM documents
+            {"content_hash": "old"},  # SELECT content_hash
+            {"id": 42},  # RETURNING id (INSERT)
+            {"id": 43},  # RETURNING id (messages)
+            True,  # pg_try_advisory_lock
+        ]
+    )
     cur.execute = MagicMock()
     return cur
 
@@ -54,13 +58,16 @@ class TestPostgresBackendInit:
         assert backend.schema == "my_schema"
 
     def test_init_calls_setup_connection(self):
-        with patch("corpus_forge.backends.postgres.PostgresBackend._setup_connection") as mock_setup:
-            with patch("corpus_forge.backends.postgres.PostgresBackend._execute"):
-                PostgresBackend(dsn="postgresql://test@localhost/test")
-                mock_setup.assert_called_once()
+        with (
+            patch("corpus_forge.backends.postgres.PostgresBackend._setup_connection") as mock_setup,
+            patch("corpus_forge.backends.postgres.PostgresBackend._execute"),
+        ):
+            PostgresBackend(dsn="postgresql://test@localhost/test")
+            mock_setup.assert_called_once()
 
     def test_setup_connection_expands_env_vars(self):
         import os
+
         os.environ["TEST_PG_HOST"] = "expanded-host"
         try:
             backend = PostgresBackend(dsn="postgresql://user:${TEST_PG_HOST}/db")
@@ -243,7 +250,6 @@ class TestUpsertDocument:
             assert backend._execute.call_count >= 3
 
     def test_upsert_document_chunks_include_content_hash_column(self):
-        from corpus_forge.identity import chunk_content_hash
 
         with patch.object(PostgresBackend, "__init__", lambda self, dsn, schema="corpus": None):
             backend = PostgresBackend.__new__(PostgresBackend)
@@ -315,10 +321,9 @@ class TestUpsertDocument:
                 expected_hash = chunk_content_hash(text)
                 # params could be a tuple (positional) or dict (keyword)
                 params_list = params if isinstance(params, (tuple, list)) else list(params.values())
-                assert any(
-                    isinstance(p, str) and p == expected_hash
-                    for p in params_list
-                ), f"Expected hash {expected_hash} for text {text!r} not in params {params}"
+                assert any(isinstance(p, str) and p == expected_hash for p in params_list), (
+                    f"Expected hash {expected_hash} for text {text!r} not in params {params}"
+                )
 
 
 class TestUpsertConversation:
@@ -347,14 +352,24 @@ class TestUpsertConversation:
                 ended_at=1005.0,
                 messages=[
                     RawMessage(
-                        external_uuid="m1", parent_uuid=None, role="user",
-                        content="Hello", tool_calls=None, tool_results=None,
-                        ts=1000.0, metadata={},
+                        external_uuid="m1",
+                        parent_uuid=None,
+                        role="user",
+                        content="Hello",
+                        tool_calls=None,
+                        tool_results=None,
+                        ts=1000.0,
+                        metadata={},
                     ),
                     RawMessage(
-                        external_uuid="m2", parent_uuid="m1", role="assistant",
-                        content="Hi!", tool_calls=None, tool_results=None,
-                        ts=1001.0, metadata={},
+                        external_uuid="m2",
+                        parent_uuid="m1",
+                        role="assistant",
+                        content="Hi!",
+                        tool_calls=None,
+                        tool_results=None,
+                        ts=1001.0,
+                        metadata={},
                     ),
                 ],
                 metadata={},

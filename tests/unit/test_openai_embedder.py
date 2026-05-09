@@ -39,6 +39,7 @@ class TestOpenAIEmbedderInit:
 class TestOpenAIClient:
     def test_get_client_raises_without_key(self):
         import os
+
         orig = os.environ.pop("OPENAI_API_KEY", None)
         try:
             if not OPENAI_AVAILABLE:
@@ -73,6 +74,7 @@ class TestOpenAIEncode:
         if not OPENAI_AVAILABLE:
             pytest.skip("openai not installed")
         import os
+
         os.environ["OPENAI_API_KEY"] = "fake-key"
         embedder = OpenAIEmbedder(
             name="test",
@@ -145,6 +147,7 @@ class TestOpenAIEncode:
         if not OPENAI_AVAILABLE:
             pytest.skip("openai not installed")
         import os
+
         os.environ["OPENAI_API_KEY"] = "fake-key"
         embedder = OpenAIEmbedder(
             name="test",
@@ -172,6 +175,7 @@ class TestOpenAIEncode:
         with patch("corpus_forge.embedders.openai.OPENAI_AVAILABLE", True):
             # Set a fake API key so _get_client doesn't raise ValueError
             import os
+
             orig = os.environ.pop("OPENAI_API_KEY", None)
             try:
                 os.environ["OPENAI_API_KEY"] = "fake"

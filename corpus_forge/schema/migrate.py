@@ -21,10 +21,16 @@ def apply_migrations(backend: PostgresBackend, schema_dir: Path) -> None:
         print(f"Applying migration: {migration_file.name}")
         sql_content = migration_file.read_text()
 
-        # Split by semicolon and execute each statement
+        # Split by semicolon and execute each statement.
+        # Strip leading comment lines before checking for real SQL content, because a
+        # statement that starts with "-- comment" may still contain actual SQL below.
         statements = [stmt.strip() for stmt in sql_content.split(";") if stmt.strip()]
         for statement in statements:
-            if statement and not statement.startswith("--"):
+            non_comment_lines = [
+                line for line in statement.splitlines() if not line.lstrip().startswith("--")
+            ]
+            sql_body = "\n".join(non_comment_lines).strip()
+            if sql_body:
                 backend._execute(statement)
         applied.add(migration_file.stem)
 

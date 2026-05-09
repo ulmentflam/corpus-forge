@@ -4,14 +4,14 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import psycopg
 import pytest
 
 from corpus_forge.backends.postgres import PostgresBackend
 from corpus_forge.chunkers.markdown import MarkdownChunker
-from corpus_forge.embedders.base import BaseEmbedder
 from corpus_forge.ingest import ingest_once, ingest_one
-from corpus_forge.sources.markdown_vault import MarkdownVaultSource
 from corpus_forge.sources.base import RawDocument
+from corpus_forge.sources.markdown_vault import MarkdownVaultSource
 
 pytestmark = pytest.mark.integration
 
@@ -36,7 +36,7 @@ def vault_dir(temp_dir: Path) -> Path:
         "# Note 2\n\nSecond note.\n\n## Section A\n\nContent A.\n\n## Section B\n\nContent B."
     )
     (vault / "empty.md").write_text("")
-    (vault / "dotfile.md").write_text("# Should be ignored")
+    (vault / ".dotfile.md").write_text("# Should be ignored")
     (vault / ".trash").mkdir()
     (vault / ".trash" / "old.md").write_text("# Trash")
 
@@ -54,14 +54,14 @@ class TestMarkdownVaultSource:
         assert "note1.md" in names
         assert "note2.md" in names
         assert "empty.md" in names
-        assert "dotfile.md" in names
+        assert ".dotfile.md" in names
 
     def test_excludes_trash_and_hidden(self, vault_dir: Path) -> None:
         source = MarkdownVaultSource(vault_root=vault_dir, exclude_globs=[".trash/**", ".*"])
         paths = list(source.discover())
         names = {p.name for p in paths}
         assert ".trash" not in names
-        assert "dotfile.md" not in names
+        assert ".dotfile.md" not in names
 
     def test_scan_yields_raw_documents(self, vault_dir: Path) -> None:
         source = MarkdownVaultSource(vault_root=vault_dir)
@@ -109,10 +109,10 @@ class TestMarkdownChunking:
 
 
 class TestIngestOne:
-    def test_ingest_document(self, backend: PostgresBackend, pg: object, temp_dir: Path) -> None:
+    def test_ingest_document(self, backend: PostgresBackend, pg_dsn: str, temp_dir: Path) -> None:
         doc = RawDocument(
-            source_uri="vault://test.md",
-            content_hash="abc123",
+            source_uri="vault://ingest-doc-unique-test.md",
+            content_hash="abc123-ingest-doc",
             text="# Test\n\nIngested content.",
             title="Test",
             modified_at=1000.0,
@@ -120,43 +120,45 @@ class TestIngestOne:
             labels=[],
         )
         chunker = MarkdownChunker(max_chars=1500, overlap=200)
-        embedders = [
-            BaseEmbedder(
-                name="mock-embed",
-                provider="sentence_transformers",
-                model_id="mock/model",
-                dimension=384,
-            )
-        ]
 
-        with pg.get_connection() as conn, conn.cursor() as cur:
+        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO corpus.datasets (name, kind) VALUES ('test', 'text') RETURNING id"
+                "INSERT INTO corpus.datasets (name, kind) VALUES ('test_ingest_doc', 'text') RETURNING id"
             )
             dataset_id = cur.fetchone()[0]
+            conn.commit()
 
         # Mock the embedder encode to avoid loading a real model
         mock_embedder = MagicMock()
         mock_embedder.name = "mock-embed"
+        mock_embedder.provider = "sentence_transformers"
+        mock_embedder.model_id = "mock/model"
         mock_embedder.dimension = 384
-        mock_embedder.encode = MagicMock(return_value=np.random.randn(1, 384).astype(np.float32))
+        mock_embedder.normalized = True
+        mock_embedder.distance = "cosine"
+        mock_embedder.active = True
+        mock_embedder.encode = MagicMock(
+            side_effect=lambda texts, **_kw: np.random.randn(len(texts), 384).astype(np.float32)
+        )
 
         ingest_one(backend, doc, chunker, [mock_embedder], dataset_id)
 
-        with pg.get_connection() as conn, conn.cursor() as cur:
+        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(*) FROM corpus.documents WHERE source_uri = %s;", ("vault://test.md",)
+                "SELECT COUNT(*) FROM corpus.documents WHERE source_uri = %s;",
+                ("vault://ingest-doc-unique-test.md",),
             )
             assert cur.fetchone()[0] == 1
 
             cur.execute(
-                "SELECT COUNT(*) FROM corpus.chunks WHERE document_id IN (SELECT id FROM corpus.documents WHERE source_uri = %s);",
-                ("vault://test.md",),
+                "SELECT COUNT(*) FROM corpus.chunks WHERE document_id IN "
+                "(SELECT id FROM corpus.documents WHERE source_uri = %s);",
+                ("vault://ingest-doc-unique-test.md",),
             )
             assert cur.fetchone()[0] >= 1
 
     def test_ingest_unchanged_skips(
-        self, backend: PostgresBackend, pg: object, temp_dir: Path
+        self, backend: PostgresBackend, pg_dsn: str, temp_dir: Path
     ) -> None:
         doc = RawDocument(
             source_uri="vault://skip.md",
@@ -169,20 +171,28 @@ class TestIngestOne:
         )
         chunker = MarkdownChunker()
         mock_embedder = MagicMock()
-        mock_embedder.name = "mock"
+        mock_embedder.name = "mock-skip"
+        mock_embedder.provider = "sentence_transformers"
+        mock_embedder.model_id = "mock/model"
         mock_embedder.dimension = 384
-        mock_embedder.encode = MagicMock(return_value=np.random.randn(1, 384).astype(np.float32))
+        mock_embedder.normalized = True
+        mock_embedder.distance = "cosine"
+        mock_embedder.active = True
+        mock_embedder.encode = MagicMock(
+            side_effect=lambda texts, **_kw: np.random.randn(len(texts), 384).astype(np.float32)
+        )
 
-        with pg.get_connection() as conn, conn.cursor() as cur:
+        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO corpus.datasets (name, kind) VALUES ('test', 'text') RETURNING id"
+                "INSERT INTO corpus.datasets (name, kind) VALUES ('test_ingest_skip', 'text') RETURNING id"
             )
             dataset_id = cur.fetchone()[0]
+            conn.commit()
 
         ingest_one(backend, doc, chunker, [mock_embedder], dataset_id)
         ingest_one(backend, doc, chunker, [mock_embedder], dataset_id)
 
-        with pg.get_connection() as conn, conn.cursor() as cur:
+        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT COUNT(*) FROM corpus.documents WHERE source_uri = %s;", ("vault://skip.md",)
             )
@@ -194,16 +204,16 @@ class TestIngestOne:
 
 class TestIngestOnce:
     def test_full_ingestion_pass(
-        self, backend: PostgresBackend, pg: object, pg_dsn: str, vault_dir: Path, temp_dir: Path
+        self, backend: PostgresBackend, pg_dsn: str, vault_dir: Path, temp_dir: Path
     ) -> None:
         """End-to-end: config → backend → source scan → chunk → store."""
         from corpus_forge.config import (
-            Config,
             BackendConfig,
+            Config,
             DaemonConfig,
             DatasetConfig,
+            DatasetSourceConfig,
             EmbedderConfig,
-            SourceConfig,
         )
 
         config = Config(
@@ -249,32 +259,36 @@ class TestIngestOnce:
             mock_embedder.dimension = 384
             mock_embedder.normalized = True
             mock_embedder.distance = "cosine"
+            mock_embedder.active = True
             mock_embedder.encode = MagicMock(
-                return_value=np.random.randn(1, 384).astype(np.float32)
+                side_effect=lambda texts, **_kw: np.random.randn(len(texts), 384).astype(np.float32)
             )
             mock_registry.register = MagicMock(return_value=mock_embedder)
 
             ingest_once(config)
 
         # Verify documents were ingested
-        with pg.get_connection() as conn, conn.cursor() as cur:
+        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM corpus.datasets WHERE name = 'integration-vault';")
             assert cur.fetchone()[0] == 1
 
-            cur.execute("SELECT COUNT(*) FROM corpus.documents WHERE dataset_id = 1;")
+            cur.execute(
+                "SELECT COUNT(*) FROM corpus.documents d "
+                "JOIN corpus.datasets ds ON ds.id = d.dataset_id "
+                "WHERE ds.name = 'integration-vault';"
+            )
             count = cur.fetchone()[0]
             assert count >= 2  # note1.md and note2.md at minimum
 
     def test_ingest_creates_dataset_if_missing(
-        self, backend: PostgresBackend, pg: object, pg_dsn: str, vault_dir: Path, temp_dir: Path
+        self, backend: PostgresBackend, pg_dsn: str, vault_dir: Path, temp_dir: Path
     ) -> None:
         from corpus_forge.config import (
-            Config,
             BackendConfig,
+            Config,
             DaemonConfig,
             DatasetConfig,
-            EmbedderConfig,
-            SourceConfig,
+            DatasetSourceConfig,
         )
 
         config = Config(
@@ -302,6 +316,6 @@ class TestIngestOnce:
             mock_registry.list_names = MagicMock(return_value=[])
             ingest_once(config)
 
-        with pg.get_connection() as conn, conn.cursor() as cur:
+        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM corpus.datasets WHERE name = 'new-dataset';")
             assert cur.fetchone()[0] == 1

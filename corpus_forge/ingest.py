@@ -89,7 +89,9 @@ def ingest_one(
         if isinstance(raw, RawDocument):
             # Process document
             chunk_data = _process_document(raw, chunker)
-            chunk_ids = backend.upsert_document(dataset_id, raw, chunk_data, embedder_ids=embedder_ids)
+            chunk_ids = backend.upsert_document(
+                dataset_id, raw, chunk_data, embedder_ids=embedder_ids
+            )
         else:  # RawConversation
             # Process conversation
             chunked_messages = _process_conversation(raw, chunker)

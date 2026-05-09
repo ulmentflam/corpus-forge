@@ -6,7 +6,6 @@ import pytest
 
 from corpus_forge.embedders.openai import OPENAI_AVAILABLE, OpenAIEmbedder
 from corpus_forge.embedders.sentence_transformers import (
-    SENTENCE_TRANSFORMERS_AVAILABLE,
     SentenceTransformersEmbedder,
 )
 
@@ -53,9 +52,14 @@ class TestSentenceTransformersEmbedder:
             model_id="test-model",
             dimension=384,
         )
-        with patch("corpus_forge.embedders.sentence_transformers.SENTENCE_TRANSFORMERS_AVAILABLE", False):
-            with pytest.raises(ImportError, match="sentence-transformers package is required"):
-                embedder.encode(["test"])
+        with (
+            patch(
+                "corpus_forge.embedders.sentence_transformers.SENTENCE_TRANSFORMERS_AVAILABLE",
+                False,
+            ),
+            pytest.raises(ImportError, match="sentence-transformers package is required"),
+        ):
+            embedder.encode(["test"])
 
     def test_warmup_no_model(self):
         """Test warmup when model is not available."""
@@ -64,7 +68,9 @@ class TestSentenceTransformersEmbedder:
             model_id="test-model",
             dimension=384,
         )
-        with patch("corpus_forge.embedders.sentence_transformers.SENTENCE_TRANSFORMERS_AVAILABLE", False):
+        with patch(
+            "corpus_forge.embedders.sentence_transformers.SENTENCE_TRANSFORMERS_AVAILABLE", False
+        ):
             # Should not raise
             embedder.warmup()
 

@@ -31,9 +31,7 @@ class SyncEngine:
 
     def start(self) -> None:
         echo = self._echo_suppressor
-        push = PushPipeline(
-            self._backend, self._dataset_config.id, echo, self._host_id
-        )
+        push = PushPipeline(self._backend, self._dataset_config.id, echo, self._host_id)
         push.start(
             source_root=self._source.root,
             exclude_globs=self._dataset_config.exclude_globs or [],

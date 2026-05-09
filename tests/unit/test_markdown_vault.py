@@ -26,15 +26,13 @@ class TestMarkdownVaultSource:
             assert ".obsidian" not in str(f)
 
     def test_discover_excludes_dotfiles(self, sample_vault_dir):
-        """Test that dotfiles/directories are excluded."""
+        """Test that dotfiles are excluded when '.*' is in the exclude_globs."""
         (sample_vault_dir / ".hidden.md").write_text("# Hidden")
-        source = MarkdownVaultSource(vault_root=sample_vault_dir)
+        source = MarkdownVaultSource(vault_root=sample_vault_dir, exclude_globs=[".*"])
         files = list(source.discover())
-        # The exclude check uses substring matching, so ".hidden" won't match ".*"
-        # This tests that the default exclude_globs work as designed
         file_names = {f.name for f in files}
-        # .hidden.md is NOT excluded because ".*" is not a substring of the path
-        assert ".hidden.md" in file_names
+        # .hidden.md starts with '.' and matches the exclude glob '.*'
+        assert ".hidden.md" not in file_names
 
     def test_parse_returns_raw_document(self, sample_vault_dir):
         """Test that parse returns a RawDocument."""

@@ -8,7 +8,6 @@ import pytest
 
 from corpus_forge.sync.push import PushPipeline
 
-
 # ── helpers ──────────────────────────────────────────────────────────────
 
 
@@ -285,9 +284,8 @@ class TestLockSourceContext:
         }
         pipeline._backend.insert_revision.side_effect = RuntimeError("db error")
 
-        with _patch_chunk_hash("new_hash"):
-            with pytest.raises(RuntimeError):
-                pipeline.handle_change(mock_path)
+        with _patch_chunk_hash("new_hash"), pytest.raises(RuntimeError):
+            pipeline.handle_change(mock_path)
 
         mock_lock.__exit__.assert_called_once()
 
@@ -469,8 +467,10 @@ class TestDebounce:
             timers.append(t)
             return t
 
-        with patch("watchdog.observers.Observer") as mock_obs_cls, \
-             patch("threading.Timer", side_effect=_factory):
+        with (
+            patch("watchdog.observers.Observer") as mock_obs_cls,
+            patch("threading.Timer", side_effect=_factory),
+        ):
             mock_obs = mock_obs_cls.return_value
             pipeline.start(Path("/vault"), debounce_seconds=1.0)
             handler = mock_obs.schedule.call_args[0][0]
@@ -493,8 +493,10 @@ class TestDebounce:
             timers_by_path.setdefault(path_key, []).append(t)
             return t
 
-        with patch("watchdog.observers.Observer") as mock_obs_cls, \
-             patch("threading.Timer", side_effect=_factory):
+        with (
+            patch("watchdog.observers.Observer") as mock_obs_cls,
+            patch("threading.Timer", side_effect=_factory),
+        ):
             mock_obs = mock_obs_cls.return_value
             pipeline.start(Path("/vault"), debounce_seconds=1.0)
             handler = mock_obs.schedule.call_args[0][0]
@@ -510,8 +512,10 @@ class TestDebounce:
 
     def test_timer_uses_debounce_seconds(self):
         pipeline = _make_pipeline()
-        with patch("watchdog.observers.Observer") as mock_obs_cls, \
-             patch("threading.Timer") as mock_timer_cls:
+        with (
+            patch("watchdog.observers.Observer") as mock_obs_cls,
+            patch("threading.Timer") as mock_timer_cls,
+        ):
             mock_obs = mock_obs_cls.return_value
             pipeline.start(Path("/vault"), debounce_seconds=3.0)
             handler = mock_obs.schedule.call_args[0][0]
@@ -602,13 +606,18 @@ class TestCloudDuplicateDifferentHash:
             with patch("corpus_forge.sync.push.detect_cloud_provider") as mock_dcp:
                 mock_dcp.return_value = "icloud"
                 with patch("corpus_forge.sync.push.conflict_filename") as mock_cf:
-                    mock_cf.return_value = Path("/vault/doc.conflict-macA-icloud-20260508T120000Z.md")
+                    mock_cf.return_value = Path(
+                        "/vault/doc.conflict-macA-icloud-20260508T120000Z.md"
+                    )
                     with patch("corpus_forge.sync.push.chunk_content_hash") as mock_cch:
                         mock_cch.side_effect = ["hash_dup", "hash_original"]
                         pipeline._backend.lock_source.return_value = mock_lock
                         pipeline._backend.resolve_document.return_value = {"id": 42}
                         pipeline._backend.latest_revision.return_value = {
-                            "id": 5, "revision_number": 3, "content_hash": "old"}
+                            "id": 5,
+                            "revision_number": 3,
+                            "content_hash": "old",
+                        }
                         pipeline._handle_cloud_duplicate(path)
 
         pipeline._backend.insert_revision.assert_called_once()
@@ -669,7 +678,10 @@ class TestHandleDeleteTombstone:
         pipeline._backend.lock_source.return_value = mock_lock
         pipeline._backend.resolve_document.return_value = {"id": 42}
         pipeline._backend.latest_revision.return_value = {
-            "id": 5, "revision_number": 3, "content_hash": "old"}
+            "id": 5,
+            "revision_number": 3,
+            "content_hash": "old",
+        }
 
         pipeline.handle_delete(path)
 
@@ -695,7 +707,10 @@ class TestHandleDeleteTombstone:
         pipeline._backend.lock_source.return_value = mock_lock
         pipeline._backend.resolve_document.return_value = {"id": 42}
         pipeline._backend.latest_revision.return_value = {
-            "id": 5, "revision_number": 3, "content_hash": "old"}
+            "id": 5,
+            "revision_number": 3,
+            "content_hash": "old",
+        }
 
         pipeline.handle_delete(path)
 
@@ -716,7 +731,10 @@ class TestHandleDeleteTombstone:
         pipeline._backend.lock_source.return_value = mock_lock
         pipeline._backend.resolve_document.return_value = {"id": 42}
         pipeline._backend.latest_revision.return_value = {
-            "id": 5, "revision_number": 3, "content_hash": "old"}
+            "id": 5,
+            "revision_number": 3,
+            "content_hash": "old",
+        }
 
         pipeline.handle_delete(path)
 
@@ -759,7 +777,10 @@ class TestHandleDeleteTombstone:
         pipeline._backend.lock_source.return_value = mock_lock
         pipeline._backend.resolve_document.return_value = {"id": 42}
         pipeline._backend.latest_revision.return_value = {
-            "id": 5, "revision_number": 3, "content_hash": "old"}
+            "id": 5,
+            "revision_number": 3,
+            "content_hash": "old",
+        }
 
         pipeline.handle_delete(path)
 
@@ -815,10 +836,12 @@ class TestHandleDeleteICloudSibling:
 def _patch_chunk_hash(return_value: str):
     """Patch chunk_content_hash to return a fixed value."""
     import corpus_forge.sync.push as push_mod
+
     return _patch(push_mod, "chunk_content_hash", return_value=return_value)
 
 
 def _patch(module, name: str, **kwargs):
     """Thin wrapper around unittest.mock.patch.object."""
     import unittest.mock as um
+
     return um.patch.object(module, name, **kwargs)

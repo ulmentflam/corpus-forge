@@ -7,7 +7,6 @@ import pytest
 
 from corpus_forge.sync.pull import PullPipeline
 
-
 # ── helpers ──────────────────────────────────────────────────────────────
 
 
@@ -249,6 +248,7 @@ class TestPullLifecycle:
         pipeline.tick = MagicMock(return_value=0)
         pipeline.start(tmp_path, poll_interval_s=0.01)
         import time
+
         time.sleep(0.05)
         pipeline.stop()
         pipeline.tick.assert_called()
@@ -266,7 +266,7 @@ class TestPullLifecycle:
         pipeline = _make_pipeline(source_root=tmp_path)
         pipeline.tick = MagicMock(return_value=0)
         pipeline.start(tmp_path)
-        import pytest
+
         with pytest.raises(RuntimeError):
             pipeline.start(tmp_path)
         pipeline.stop()

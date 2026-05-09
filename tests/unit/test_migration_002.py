@@ -16,9 +16,7 @@ class TestFileExists:
 
     def test_file_exists(self):
         """Happy path: migration file is present."""
-        assert MIGRATION_FILE.exists(), (
-            f"Expected migration file at {MIGRATION_FILE}"
-        )
+        assert MIGRATION_FILE.exists(), f"Expected migration file at {MIGRATION_FILE}"
 
     def test_file_has_sql_extension(self):
         """Naming: file ends with .sql."""
@@ -31,9 +29,7 @@ class TestFileExists:
         assert number_part.isdigit(), (
             f"Migration filename stem '{stem}' does not start with a digit"
         )
-        assert len(number_part) == 3, (
-            f"Migration number '{number_part}' is not 3 digits"
-        )
+        assert len(number_part) == 3, f"Migration number '{number_part}' is not 3 digits"
 
 
 # ── DDL content validation ──────────────────────────────────────────────
@@ -142,9 +138,7 @@ class TestGetMigrationFiles:
         """
         stem = MIGRATION_FILE.stem  # '002_chunk_content_hash'
         number_part = stem.split("_")[0]  # '002'
-        assert number_part.isdigit(), (
-            f"Cannot extract numeric prefix from '{stem}'"
-        )
+        assert number_part.isdigit(), f"Cannot extract numeric prefix from '{stem}'"
         numeric = int(number_part)
         assert numeric == 2, f"Expected numeric prefix 2, got {numeric}"
 
@@ -153,6 +147,4 @@ class TestGetMigrationFiles:
         content = MIGRATION_FILE.read_text()
         # Count occurrences of IF NOT EXISTS (case-insensitive)
         count = content.upper().count("IF NOT EXISTS")
-        assert count >= 2, (
-            f"Expected at least 2 'IF NOT EXISTS' guards in migration, found {count}"
-        )
+        assert count >= 2, f"Expected at least 2 'IF NOT EXISTS' guards in migration, found {count}"

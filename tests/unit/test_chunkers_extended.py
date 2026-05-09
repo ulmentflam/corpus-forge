@@ -1,9 +1,5 @@
 """Unit tests for chunkers/base.py — extended coverage."""
 
-from unittest.mock import MagicMock, patch
-
-import pytest
-
 from corpus_forge.chunkers.base import Chunker, ConversationChunker, MarkdownChunker, TextChunk
 
 

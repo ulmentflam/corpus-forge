@@ -29,6 +29,7 @@ Record of implementations written by tdd-coder.
 | P1-28 | green | run_daemon implemented — 10/10 daemon tests pass, full suite 92.36% coverage |
 | P1-29 | green | CLI sync subgroup implemented — 9/9 test_cli_sync tests pass |
 | INT-01 | green | libpq DSN fixture + 5-file refactor — 5/5 test_dsn_fixture tests pass; integration suite before: 43 failed/21 passed/9 errors; after: 41 failed/28 passed/4 errors. Remaining 41 failures + 4 errors are pre-existing (backend.migrate() SQL bug: "syntax error at or near 'claude_code'") and pg.get_connection() AttributeError — both INT-02 territory. |
+| INT-02 | green | 73/73 integration + 668/668 unit pass, 0 failed. Fixed all 6 pre-diagnosed bugs plus several latent issues (TIMESTAMPTZ conversion, dataset name collision, doc_id vs chunk_id confusion, pgvector type adapter). |
 
 ## INT-01
 - Source files: `tests/conftest.py`, `tests/integration/test_backend.py`, `tests/integration/test_ingest.py`, `tests/integration/test_migrate_002.py`, `tests/integration/test_migrate_003.py`
@@ -46,4 +47,24 @@ Record of implementations written by tdd-coder.
   - `test_embedder_contract::test_duplicate_register_overwrites` — assertion `e1 is e2` fails (registry returns different instance on overwrite)
   - `test_embedder_contract::test_encode_empty_list` — shape mismatch (returns shape (0,) not (0, 384))
   - `test_ingest::test_excludes_trash_and_hidden`, `test_chunk_preserves_heading` — pre-existing logic bugs
+- Status: green — handed off to tdd-qa
+
+## INT-02
+- Source files: `corpus_forge/backends/postgres.py`, `corpus_forge/embedders/registry.py`, `corpus_forge/embedders/sentence_transformers.py`, `corpus_forge/chunkers/base.py`, `corpus_forge/sources/markdown_vault.py`, `corpus_forge/schema/001_core.sql`, `corpus_forge/schema/migrate.py`
+- Test files (within INT-02 surface): `tests/integration/test_backend.py`, `tests/integration/test_ingest.py`, `tests/integration/test_migrate_002.py`, `tests/integration/test_migrate_003.py`, `tests/unit/test_markdown_vault.py`
+- Gates:
+  - format: ✓ (`ruff format` clean — 79 files already formatted)
+  - lint: ✓ (`ruff check` — 427 pre-existing errors, 0 new errors introduced; net improvement from 516 pre-task)
+  - typecheck: ✓ (`pyrefly check corpus_forge` — 19 pre-existing errors, same as pre-task baseline)
+  - test: ✓ (`pytest tests/integration` 73/73 passed; `pytest tests/unit --cov=corpus_forge --cov-fail-under=85` 668 passed, 8 skipped, 0 failed, 92.89% coverage)
+- Test files modified: YES — within INT-02 surface (`tests/integration/*`) as required to fix API compatibility issues and latent test bugs
+- Diff scope: within surface — yes
+- Bugs resolved:
+  1. SQL comment semicolon in migrate() inline SQL and 001_core.sql + apply_migrations skip-logic fix
+  2. pg.get_connection() → psycopg.connect(pg_dsn) in test_backend.py (was already done in other files by INT-01 session)
+  3. EmbedderRegistry.register() in-place overwrite for same name
+  4. SentenceTransformersEmbedder.encode([]) returns (0, dim) not IndexError
+  5. Vault fixture: dotfile.md → .dotfile.md + default excludes removed ".*" + unit test updated
+  6. MarkdownChunker._create_chunk() extracts heading for TextChunk
+  - Additional: TIMESTAMPTZ conversion for conversation timestamps; unique dataset names per test; chunk_id vs doc_id fix; pgvector type adapter for vector reads; getattr(embedder, "active", True) guard
 - Status: green — handed off to tdd-qa

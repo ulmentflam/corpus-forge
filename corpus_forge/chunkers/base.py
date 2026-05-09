@@ -88,6 +88,19 @@ class Chunker:
 class MarkdownChunker(Chunker):
     """Markdown chunker: heading-aware split, paragraph-bounded, soft char cap, overlap."""
 
+    @staticmethod
+    def _extract_heading(text: str) -> str | None:
+        """Return the text of the first markdown heading found in *text*, or None."""
+        for line in text.splitlines():
+            stripped = line.lstrip("#").strip()
+            if line.startswith("#") and stripped:
+                return stripped
+        return None
+
+    def _create_chunk(self, text: str, _start: int, _end: int) -> TextChunk:
+        """Create a chunk with the heading extracted from the chunk text."""
+        return TextChunk(text=text, heading=self._extract_heading(text))
+
     def _find_split_point(self, text: str, start: int, max_end: int) -> int | None:
         """
         Find split point respecting markdown structure:

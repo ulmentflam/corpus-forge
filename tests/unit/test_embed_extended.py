@@ -65,8 +65,7 @@ active = true
 
                     # Verify _execute was called with dataset query
                     dataset_queries = [
-                        c for c in mock_backend._execute.call_args_list
-                        if "datasets" in str(c)
+                        c for c in mock_backend._execute.call_args_list if "datasets" in str(c)
                     ]
                     assert len(dataset_queries) >= 1
 

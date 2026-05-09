@@ -1,7 +1,8 @@
 """Command-line interface for corpus-forge."""
 
-import typer
 from pathlib import Path
+
+import typer
 
 from . import __version__
 
@@ -72,9 +73,7 @@ def _get_backend(config):
 
 
 def _get_dataset_id(backend, name):
-    rows = backend._execute(
-        "SELECT id FROM corpus.datasets WHERE name = %s", (name,)
-    )
+    rows = backend._execute("SELECT id FROM corpus.datasets WHERE name = %s", (name,))
     return rows[0]["id"] if rows else None
 
 
@@ -99,9 +98,7 @@ def status(
             if not ds_id:
                 typer.echo(f"Dataset {ds.name}: not found")
                 continue
-            pending = backend.pending_remote_revisions(
-                ds_id, None, config.host_id(), limit=1
-            )
+            pending = backend.pending_remote_revisions(ds_id, None, config.host_id(), limit=1)
             typer.echo(
                 f"Dataset {ds.name}: sync={'enabled' if ds.sync_enabled else 'disabled'},"
                 f" pending={len(pending)}"
@@ -141,9 +138,7 @@ def pull(
                 continue
             for src_cfg in ds.sources:
                 source = _instantiate_source(src_cfg)
-                pl = PullPipeline(
-                    backend, dataset_id, source.root, echo, config.host_id()
-                )
+                pl = PullPipeline(backend, dataset_id, source.root, echo, config.host_id())
                 if once:
                     count = pl.tick()
                     typer.echo(f"Pulled {count} revision(s)")
@@ -152,9 +147,7 @@ def pull(
                         source.root,
                         poll_interval_s=config.daemon.sync_poll_interval_s,
                     )
-                    typer.echo(
-                        f"Continuous pull started for {ds.name}/{src_cfg.plugin}"
-                    )
+                    typer.echo(f"Continuous pull started for {ds.name}/{src_cfg.plugin}")
     except Exception as exc:
         typer.echo(f"Error: {exc}")
         raise typer.Exit()
@@ -188,9 +181,7 @@ def push(
                 continue
             for src_cfg in ds.sources:
                 source = _instantiate_source(src_cfg)
-                pl = PushPipeline(
-                    backend, dataset_id, echo, config.host_id()
-                )
+                pl = PushPipeline(backend, dataset_id, echo, config.host_id())
                 pl.start(
                     source.root,
                     exclude_globs=src_cfg.exclude_globs or [],
@@ -205,9 +196,7 @@ def push(
 @sync_app.command()
 def resolve(
     conflict_file: str = typer.Argument(..., help="Path to conflict file"),
-    strategy: str = typer.Option(
-        "ours", "--strategy", help="keep-local|keep-remote"
-    ),
+    strategy: str = typer.Option("ours", "--strategy", help="keep-local|keep-remote"),
 ):
     """Resolve a sync conflict."""
     if strategy == "merge":
