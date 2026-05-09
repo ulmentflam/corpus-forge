@@ -5,7 +5,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from testcontainers.postgres import PostgresContainer
 
 from corpus_forge.backends.postgres import PostgresBackend
 from corpus_forge.embedders.base import BaseEmbedder
@@ -14,25 +13,17 @@ from corpus_forge.sources.base import RawConversation, RawDocument, RawMessage
 pytestmark = pytest.mark.integration
 
 
-@pytest.fixture(scope="module")
-def pg():
-    """Module-scoped pgvector container."""
-    with PostgresContainer("pgvector/pgvector:pg17", port=5432) as container:
-        yield container
-
-
-def _make_backend(pg):
+def _make_backend(pg_dsn: str) -> PostgresBackend:
     """Create a PostgresBackend pointing at the test container."""
-    dsn = pg.get_connection_url()
-    return PostgresBackend(dsn=dsn, schema="corpus")
+    return PostgresBackend(dsn=pg_dsn, schema="corpus")
 
 
 # ── Schema migration ─────────────────────────────────────────────────────────
 
 
 class TestMigrate:
-    def test_creates_all_tables(self, pg):
-        backend = _make_backend(pg)
+    def test_creates_all_tables(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
 
         with pg.get_connection() as conn, conn.cursor() as cur:
@@ -61,21 +52,21 @@ class TestMigrate:
         }
         assert expected.issubset(tables), f"Missing tables: {expected - tables}"
 
-    def test_creates_vector_extension(self, pg):
-        backend = _make_backend(pg)
+    def test_creates_vector_extension(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
 
         with pg.get_connection() as conn, conn.cursor() as cur:
             cur.execute("SELECT extname FROM pg_extension WHERE extname = 'vector';")
             assert cur.fetchone() is not None
 
-    def test_idempotent_migrate(self, pg):
-        backend = _make_backend(pg)
+    def test_idempotent_migrate(self, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         backend.migrate()  # Should not raise
 
-    def test_hnsw_index_created(self, pg):
-        backend = _make_backend(pg)
+    def test_hnsw_index_created(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
 
         with pg.get_connection() as conn, conn.cursor() as cur:
@@ -89,8 +80,8 @@ class TestMigrate:
             )
             assert cur.fetchone() is not None
 
-    def test_unique_constraints_exist(self, pg):
-        backend = _make_backend(pg)
+    def test_unique_constraints_exist(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
 
         with pg.get_connection() as conn, conn.cursor() as cur:
@@ -110,8 +101,8 @@ class TestMigrate:
 
 
 class TestDatasetOps:
-    def test_upsert_document(self, pg):
-        backend = _make_backend(pg)
+    def test_upsert_document(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
 
         with pg.get_connection() as conn, conn.cursor() as cur:
@@ -137,8 +128,8 @@ class TestDatasetOps:
             cur.execute("SELECT COUNT(*) FROM corpus.chunks WHERE document_id = %s;", (doc_id,))
             assert cur.fetchone()[0] == 1
 
-    def test_upsert_document_unchanged_skips_chunks(self, pg):
-        backend = _make_backend(pg)
+    def test_upsert_document_unchanged_skips_chunks(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
 
         with pg.get_connection() as conn, conn.cursor() as cur:
@@ -163,8 +154,8 @@ class TestDatasetOps:
         doc_id2 = backend.upsert_document(dataset_id, doc, chunks)
         assert doc_id2 == doc_id
 
-    def test_upsert_document_changed_updates(self, pg):
-        backend = _make_backend(pg)
+    def test_upsert_document_changed_updates(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
 
         with pg.get_connection() as conn, conn.cursor() as cur:
@@ -203,8 +194,8 @@ class TestDatasetOps:
             assert row[0] == "New content."
             assert row[1] == "New"
 
-    def test_upsert_conversation(self, pg):
-        backend = _make_backend(pg)
+    def test_upsert_conversation(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
 
         with pg.get_connection() as conn, conn.cursor() as cur:
@@ -250,11 +241,13 @@ class TestDatasetOps:
         assert conv_id is not None
 
         with pg.get_connection() as conn, conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM corpus.messages WHERE conversation_id = %s;", (conv_id,))
+            cur.execute(
+                "SELECT COUNT(*) FROM corpus.messages WHERE conversation_id = %s;", (conv_id,)
+            )
             assert cur.fetchone()[0] == 2
 
-    def test_delete_document(self, pg):
-        backend = _make_backend(pg)
+    def test_delete_document(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
 
         with pg.get_connection() as conn, conn.cursor() as cur:
@@ -277,11 +270,14 @@ class TestDatasetOps:
         backend.delete_document(dataset_id, "vault://delete-me.md")
 
         with pg.get_connection() as conn, conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM corpus.documents WHERE source_uri = %s;", ("vault://delete-me.md",))
+            cur.execute(
+                "SELECT COUNT(*) FROM corpus.documents WHERE source_uri = %s;",
+                ("vault://delete-me.md",),
+            )
             assert cur.fetchone()[0] == 0
 
-    def test_delete_conversation(self, pg):
-        backend = _make_backend(pg)
+    def test_delete_conversation(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
 
         with pg.get_connection() as conn, conn.cursor() as cur:
@@ -317,7 +313,10 @@ class TestDatasetOps:
         backend.delete_conversation(dataset_id, "claude-code://proj/del-session")
 
         with pg.get_connection() as conn, conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM corpus.conversations WHERE source_uri = %s;", ("claude-code://proj/del-session",))
+            cur.execute(
+                "SELECT COUNT(*) FROM corpus.conversations WHERE source_uri = %s;",
+                ("claude-code://proj/del-session",),
+            )
             assert cur.fetchone()[0] == 0
 
 
@@ -325,8 +324,8 @@ class TestDatasetOps:
 
 
 class TestEmbedderOps:
-    def test_register_embedder(self, pg):
-        backend = _make_backend(pg)
+    def test_register_embedder(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
 
         embedder = BaseEmbedder(
@@ -341,14 +340,17 @@ class TestEmbedderOps:
         assert embedder_id is not None
 
         with pg.get_connection() as conn, conn.cursor() as cur:
-            cur.execute("SELECT name, provider, dimension FROM corpus.embedders WHERE id = %s;", (embedder_id,))
+            cur.execute(
+                "SELECT name, provider, dimension FROM corpus.embedders WHERE id = %s;",
+                (embedder_id,),
+            )
             row = cur.fetchone()
             assert row[0] == "test-embed"
             assert row[1] == "sentence_transformers"
             assert row[2] == 384
 
-    def test_register_embedder_creates_table(self, pg):
-        backend = _make_backend(pg)
+    def test_register_embedder_creates_table(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
 
         embedder = BaseEmbedder(
@@ -366,8 +368,8 @@ class TestEmbedderOps:
             )
             assert cur.fetchone() is not None
 
-    def test_write_embeddings(self, pg):
-        backend = _make_backend(pg)
+    def test_write_embeddings(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
 
         embedder = BaseEmbedder(
@@ -407,8 +409,8 @@ class TestEmbedderOps:
             assert row[0] == doc_id
             assert len(row[1]) == 384
 
-    def test_write_embeddings_empty_does_not_raise(self, pg):
-        backend = _make_backend(pg)
+    def test_write_embeddings_empty_does_not_raise(self, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
 
         embedder = BaseEmbedder(
@@ -420,8 +422,8 @@ class TestEmbedderOps:
         backend.register_embedder(embedder)
         backend.write_embeddings(1, [])  # empty — should not raise
 
-    def test_chunks_missing_embedding(self, pg):
-        backend = _make_backend(pg)
+    def test_chunks_missing_embedding(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
 
         embedder = BaseEmbedder(
@@ -468,14 +470,14 @@ class TestEmbedderOps:
         assert doc_id1 in missing_ids
         assert doc_id2 in missing_ids
 
-    def test_advisory_lock_context(self, pg):
-        backend = _make_backend(pg)
+    def test_advisory_lock_context(self, pg_dsn):
+        backend = _make_backend(pg_dsn)
         # lock_source should not raise
         with backend.lock_source("test-key"):
             pass
 
-    def test_advisory_lock_conflict(self, pg):
-        backend = _make_backend(pg)
+    def test_advisory_lock_conflict(self, pg_dsn):
+        backend = _make_backend(pg_dsn)
 
         with backend.lock_source("test-key"):
             with pytest.raises(RuntimeError, match="Could not acquire lock"):

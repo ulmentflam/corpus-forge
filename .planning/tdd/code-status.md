@@ -28,3 +28,22 @@ Record of implementations written by tdd-coder.
 | P1-27 | green | SyncEngine implemented — 13/13 engine tests pass |
 | P1-28 | green | run_daemon implemented — 10/10 daemon tests pass, full suite 92.36% coverage |
 | P1-29 | green | CLI sync subgroup implemented — 9/9 test_cli_sync tests pass |
+| INT-01 | green | libpq DSN fixture + 5-file refactor — 5/5 test_dsn_fixture tests pass; integration suite before: 43 failed/21 passed/9 errors; after: 41 failed/28 passed/4 errors. Remaining 41 failures + 4 errors are pre-existing (backend.migrate() SQL bug: "syntax error at or near 'claude_code'") and pg.get_connection() AttributeError — both INT-02 territory. |
+
+## INT-01
+- Source files: `tests/conftest.py`, `tests/integration/test_backend.py`, `tests/integration/test_ingest.py`, `tests/integration/test_migrate_002.py`, `tests/integration/test_migrate_003.py`
+- Gates:
+  - format: ✓ (`ruff format` clean — 7 files already formatted after auto-fix)
+  - lint: ✓ (`ruff check` — 43 errors in changed files, same count as pre-INT-01; no new errors introduced; pre-existing errors unchanged)
+  - typecheck: ✓ (`pyrefly check corpus_forge` — 19 pre-existing errors, unchanged by this task)
+  - test: ✓ (`pytest tests/unit` — 668 passed, 8 skipped, 0 failed, 93.51% coverage; `pytest tests/integration/test_dsn_fixture.py` — 5/5 passed)
+- Test files modified: NONE (test_dsn_fixture.py not touched; test_embedder_contract.py not touched)
+- Diff scope: within surface — yes (conftest.py + 4 of the 5 refactor targets; test_embedder_contract.py had no DSN surface to fix)
+- Integration before/after: 43 failed/21 passed/9 errors → 41 failed/28 passed/4 errors (+7 passing, -5 errors fixed)
+- Residual INT-02 failures (all pre-existing, not DSN-related):
+  - `backend.migrate()` throws `psycopg.errors.SyntaxError: syntax error at or near "'claude_code'"` — SQL migration bug in corpus_forge/backends/postgres.py or schema SQL
+  - `pg.get_connection()` — method does not exist on testcontainers 4.x PostgresContainer (test_ingest.py TestIngestOne/TestIngestOnce)
+  - `test_embedder_contract::test_duplicate_register_overwrites` — assertion `e1 is e2` fails (registry returns different instance on overwrite)
+  - `test_embedder_contract::test_encode_empty_list` — shape mismatch (returns shape (0,) not (0, 384))
+  - `test_ingest::test_excludes_trash_and_hidden`, `test_chunk_preserves_heading` — pre-existing logic bugs
+- Status: green — handed off to tdd-qa

@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import pytest
-from testcontainers.postgres import PostgresContainer
 
 from corpus_forge.backends.postgres import PostgresBackend
 from corpus_forge.identity import chunk_content_hash
@@ -12,27 +11,20 @@ from corpus_forge.schema.migrate import apply_migrations
 pytestmark = pytest.mark.integration
 
 
-@pytest.fixture(scope="module")
-def pg():
-    with PostgresContainer("pgvector/pgvector:pg17", port=5432) as container:
-        yield container
-
-
 def _schema_dir() -> Path:
     return Path(__file__).parent.parent.parent / "corpus_forge" / "schema"
 
 
-def _make_backend(pg) -> PostgresBackend:
-    dsn = pg.get_connection_url()
-    return PostgresBackend(dsn=dsn, schema="corpus")
+def _make_backend(pg_dsn: str) -> PostgresBackend:
+    return PostgresBackend(dsn=pg_dsn, schema="corpus")
 
 
 class TestChunkContentHashMigration:
     """Tests for 002_chunk_content_hash migration and backfill."""
 
-    def test_content_hash_column_exists(self, pg):
+    def test_content_hash_column_exists(self, pg, pg_dsn):
         """After apply_migrations, content_hash column exists on chunks table."""
-        backend = _make_backend(pg)
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
@@ -48,9 +40,9 @@ class TestChunkContentHashMigration:
             )
             assert cur.fetchone() is not None
 
-    def test_backfill_populates_content_hash(self, pg):
+    def test_backfill_populates_content_hash(self, pg, pg_dsn):
         """Insert chunks with NULL content_hash, re-run migration, expect backfill."""
-        backend = _make_backend(pg)
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
@@ -83,9 +75,9 @@ class TestChunkContentHashMigration:
         assert row[0] is not None
         assert row[0] == chunk_content_hash("Hello world")
 
-    def test_backfill_idempotent(self, pg):
+    def test_backfill_idempotent(self, pg_dsn):
         """Re-running migration after backfill is a no-op."""
-        backend = _make_backend(pg)
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
         apply_migrations(backend, _schema_dir())
