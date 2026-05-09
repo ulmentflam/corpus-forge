@@ -35,6 +35,7 @@ Record of test suites written by tdd-tester.
 | P1-27   | red    | SyncEngine tests written |
 | P1-28   | red    | Daemon orchestrator tests written |
 | P1-29   | red    | CLI sync tests written |
+| P1-30   | red    | E2E push/pull cross-host test — 4 tests, all failing due to real production bug: `push.py:84` calls `backend.resolve_document()` which does not exist on `PostgresBackend`. Routed to principal for INT-03 coder task. |
 
 
 ## P0-01 — `chunk_content_hash`
@@ -645,3 +646,78 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
 ```
 - Red reason: `fixture 'pg_dsn' not found` — fixture does not exist in conftest yet
 - Status: red — handed off to tdd-coder
+
+
+## P1-32 — E2E iCloud-dupe cleanup
+- Test files: `tests/integration/test_sync_icloud_dupe.py`
+- Run command: `PYTHONPATH=. uv run pytest tests/integration/test_sync_icloud_dupe.py -v --no-header 2>&1 | tail -30`
+- Edge case checklist:
+  - [x] happy — same-hash dupe: Foo 2.md matches Foo.md hash → push deletes Foo 2.md
+  - [x] happy — diff-hash dupe: Foo 2.md differs from Foo.md → renamed to Foo.conflict-icloud-macA-<ts>.md
+  - [x] happy — exactly one documents row after same-hash delete
+  - [x] happy — two documents rows after diff-hash rename (Foo.md + conflict file)
+  - [x] happy — no extra revision after same-hash deletion
+  - [x] iCloud detection — path under Library/Mobile Documents/com~apple~CloudDocs → detect_cloud_provider == "icloud" (CONFIRMED GREEN)
+  - [x] conflict naming format — Foo.conflict-icloud-macA-<ts>.md
+  - [x] boundaries — Foo 2.md is recognised by is_cloud_duplicate (iCloud <stem> N pattern)
+  - [x] direct-call path — _handle_cloud_duplicate same-hash → unlink only, no insert_revision (CONFIRMED GREEN)
+  - [x] direct-call path — _handle_cloud_duplicate diff-hash → rename + insert_revision
+  - [ ] N/A — concurrency (single SyncEngine, not a cross-host sync test)
+  - [ ] N/A — locale/time (timestamp format is pinned by test_conflict_file_name_format_with_provider)
+  - [ ] N/A — tombstone (separate P1-31 test)
+- Production bugs surfaced (do NOT paper over):
+  - **BUG-PUSH-DUPE**: `PushPipeline.handle_change()` never calls `_handle_cloud_duplicate()`.
+    The `_DebouncedHandler.on_created`/`on_modified` callbacks route ONLY to `handle_change`.
+    `_handle_cloud_duplicate` is defined but unreachable from the watchdog event loop.
+    This means the cloud-dupe cleanup branch is effectively dead code from the watchdog perspective.
+  - **BUG-PUSH-RESOLVE**: Both `handle_change()` and `_handle_cloud_duplicate()` call
+    `self._backend.resolve_document(self._dataset_id, source_uri)` which does not exist
+    on `PostgresBackend` (not in `base.py` protocol either). This causes
+    `AttributeError: 'PostgresBackend' object has no attribute 'resolve_document'`
+    when any file event fires.
+- Red output (tail):
+  ```
+  AttributeError: 'PostgresBackend' object has no attribute 'resolve_document'. Did you mean: 'delete_document'?
+  corpus_forge/sync/push.py:84: AttributeError
+
+  FAILED tests/integration/test_sync_icloud_dupe.py::TestICloudDupeSameHashDeleted::test_icloud_dupe_same_hash_deleted
+  FAILED tests/integration/test_sync_icloud_dupe.py::TestICloudDupeDiffHashRenamed::test_icloud_dupe_diff_hash_renamed
+  FAILED tests/integration/test_sync_icloud_dupe.py::TestConflictFilenameFormat::test_conflict_file_name_format_with_provider
+  =================== 3 failed, 2 passed, 2 warnings in 32.74s ===================
+  ```
+- iCloud substring detection under tmp_path: **CONFIRMED WORKING** (test_icloud_substring_detected PASSED)
+- Status: red — 2 production bugs surfaced, handed off to tdd-coder for BUG-PUSH-DUPE + BUG-PUSH-RESOLVE fixes
+
+## P1-30 — E2E push/pull cross-host integration test
+- Test files: `tests/integration/test_sync_push_pull.py`
+- Run command: `PYTHONPATH=. uv run pytest tests/integration/test_sync_push_pull.py -v --no-header 2>&1 | tail -40`
+- Edge case checklist:
+  - [x] happy path (A→B convergence) — `test_edit_on_a_appears_on_b`
+  - [x] happy path (B→A bidirectional) — `test_edit_on_b_appears_on_a`
+  - [x] boundaries — monotonic revision numbers across 3 edits — `test_revision_numbers_monotonic`
+  - [x] hash equality — content hash on A == hash on B == DB revision hash — `test_hash_equality_after_convergence`
+  - [ ] N/A — type/format (content is always UTF-8 markdown, no format ambiguity at this level)
+  - [ ] N/A — locale/time (not exercised by sync push/pull path)
+  - [ ] N/A — concurrency at test level (engines run on separate threads internally; two-engine concurrency IS exercised by A↔B tests)
+  - [x] failure paths — suspected pull.py:69 absolute-path bug documented in each assert message
+  - [x] production-realistic data — markdown file content, real Postgres, real watchdog Observer
+  - [x] regression hook — the pull.py:69 source_uri/source_root bug explicitly named in assertions and test docstring
+- Bugs found during test writing (real production bugs, NOT papered over):
+  1. **BUG-PUSH-RESOLVE**: `push.py:84` calls `self._backend.resolve_document(dataset_id, source_uri)` but `PostgresBackend` has no `resolve_document` method. Confirmed by test run: `AttributeError: 'PostgresBackend' object has no attribute 'resolve_document'`. This prevents any revision from being inserted → pull side never converges.
+  2. **BUG-PUSH-INSERT-REVISION**: `push.py:96-103` calls `insert_revision(document_id=..., content_hash=..., text=..., parent_revision_id=..., author_host=..., is_tombstone=...)` without the `source_uri` keyword argument, but `PostgresBackend.insert_revision` requires `source_uri`. Would fail after BUG-1 is fixed.
+  3. **BUG-PULL-SOURCE-URI (suspected, per waves.md)**: `pull.py:69` does `path = self._source_root / rev["source_uri"]`. `pending_remote_revisions` does `SELECT r.*` from `document_revisions` which has no `source_uri` column — the join to `documents` fetches only `r.*`, not `d.source_uri`. The key `source_uri` will be absent from `rev`, causing `KeyError`. Even if added, `str(path.resolve())` is absolute, so `Path(root_b) / "/absolute/path/on/A"` silently drops `root_b` (Python Path behavior: `Path("/x") / "/y"` → `Path("/y")`).
+  4. **BUG-PULL-SOURCE-ID**: `pull.py:83` calls `mark_revision_pulled(source_id=rev["source_id"], ...)` but `document_revisions` table has no `source_id` column, and `pending_remote_revisions` does not join `sources`.
+- Red output (tail — 4/4 failed in 34.25s):
+  ```
+      File ".../corpus_forge/sync/push.py", line 84, in handle_change
+        doc = self._backend.resolve_document(self._dataset_id, source_uri)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    AttributeError: 'PostgresBackend' object has no attribute 'resolve_document'. Did you mean: 'delete_document'?
+
+  FAILED tests/integration/test_sync_push_pull.py::test_edit_on_a_appears_on_b
+  FAILED tests/integration/test_sync_push_pull.py::test_edit_on_b_appears_on_a
+  FAILED tests/integration/test_sync_push_pull.py::test_revision_numbers_monotonic
+  FAILED tests/integration/test_sync_push_pull.py::test_hash_equality_after_convergence
+  ======================== 4 failed, 7 warnings in 34.25s ========================
+  ```
+- Status: red — real production bugs (BUG-PUSH-RESOLVE, BUG-PUSH-INSERT-REVISION, BUG-PULL-SOURCE-URI, BUG-PULL-SOURCE-ID). Handed off to principal for INT-03 coder routing. Tests must NOT be relaxed.
