@@ -49,7 +49,8 @@ class TestChunkContentHashMigration:
 
         with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO corpus.datasets (name, kind) VALUES ('test_backfill', 'text') RETURNING id"
+                "INSERT INTO corpus.datasets (name, kind)"
+                " VALUES ('test_backfill', 'text') RETURNING id"
             )
             dataset_id = cur.fetchone()[0]
             cur.execute(

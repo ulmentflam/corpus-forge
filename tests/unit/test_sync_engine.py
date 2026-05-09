@@ -56,32 +56,40 @@ class TestStart:
 
     def test_push_pipeline_created(self):
         engine = _make_engine()
-        with patch("corpus_forge.sync.engine.PushPipeline") as mock_pp:
-            with patch("corpus_forge.sync.engine.PullPipeline") as mock_pl:
-                engine.start()
+        with (
+            patch("corpus_forge.sync.engine.PushPipeline") as mock_pp,
+            patch("corpus_forge.sync.engine.PullPipeline"),
+        ):
+            engine.start()
         mock_pp.assert_called_once()
         mock_pp.return_value.start.assert_called_once()
 
     def test_pull_pipeline_created(self):
         engine = _make_engine()
-        with patch("corpus_forge.sync.engine.PushPipeline") as mock_pp:
-            with patch("corpus_forge.sync.engine.PullPipeline") as mock_pl:
-                engine.start()
+        with (
+            patch("corpus_forge.sync.engine.PushPipeline"),
+            patch("corpus_forge.sync.engine.PullPipeline") as mock_pl,
+        ):
+            engine.start()
         mock_pl.assert_called_once()
         mock_pl.return_value.start.assert_called_once()
 
     def test_push_pipeline_started(self):
         engine = _make_engine()
-        with patch("corpus_forge.sync.engine.PushPipeline") as mock_pp:
-            with patch("corpus_forge.sync.engine.PullPipeline") as mock_pl:
-                engine.start()
+        with (
+            patch("corpus_forge.sync.engine.PushPipeline") as mock_pp,
+            patch("corpus_forge.sync.engine.PullPipeline"),
+        ):
+            engine.start()
         mock_pp.return_value.start.assert_called_once()
 
     def test_pull_pipeline_started(self):
         engine = _make_engine()
-        with patch("corpus_forge.sync.engine.PushPipeline") as mock_pp:
-            with patch("corpus_forge.sync.engine.PullPipeline") as mock_pl:
-                engine.start()
+        with (
+            patch("corpus_forge.sync.engine.PushPipeline"),
+            patch("corpus_forge.sync.engine.PullPipeline") as mock_pl,
+        ):
+            engine.start()
         mock_pl.return_value.start.assert_called_once()
 
 
@@ -90,27 +98,33 @@ class TestStop:
 
     def test_push_pipeline_stopped(self):
         engine = _make_engine()
-        with patch("corpus_forge.sync.engine.PushPipeline") as mock_pp:
-            with patch("corpus_forge.sync.engine.PullPipeline"):
-                engine.start()
-                engine.stop()
+        with (
+            patch("corpus_forge.sync.engine.PushPipeline") as mock_pp,
+            patch("corpus_forge.sync.engine.PullPipeline"),
+        ):
+            engine.start()
+            engine.stop()
         mock_pp.return_value.stop.assert_called_once()
 
     def test_pull_pipeline_stopped(self):
         engine = _make_engine()
-        with patch("corpus_forge.sync.engine.PushPipeline") as mock_pp:
-            with patch("corpus_forge.sync.engine.PullPipeline") as mock_pl:
-                engine.start()
-                engine.stop()
+        with (
+            patch("corpus_forge.sync.engine.PushPipeline"),
+            patch("corpus_forge.sync.engine.PullPipeline") as mock_pl,
+        ):
+            engine.start()
+            engine.stop()
         mock_pl.return_value.stop.assert_called_once()
 
     def test_stop_is_idempotent_after_start(self):
         # stop() no longer calls upsert_document — it simply stops both
         # pipelines.  Verify stop() completes without error.
         engine = _make_engine()
-        with patch("corpus_forge.sync.engine.PushPipeline") as mock_pp:
-            with patch("corpus_forge.sync.engine.PullPipeline") as mock_pl:
-                engine.start()
-                engine.stop()
+        with (
+            patch("corpus_forge.sync.engine.PushPipeline") as mock_pp,
+            patch("corpus_forge.sync.engine.PullPipeline") as mock_pl,
+        ):
+            engine.start()
+            engine.stop()
         mock_pp.return_value.stop.assert_called_once()
         mock_pl.return_value.stop.assert_called_once()

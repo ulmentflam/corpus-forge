@@ -68,7 +68,7 @@ class TestDetectCloudProviderDropbox:
         assert detect_cloud_provider(dropbox_path) == "dropbox"
 
     def test_dropbox_lowercase_variant_not_matched(self, tmp_path):
-        """'dropbox' (lowercase) substring should still match (case-insensitive check on resolved path)."""
+        """'dropbox' (lowercase) substring should still match (case-insensitive path check)."""
         dropbox_path = tmp_path / "home" / "alice" / "dropbox" / "vault"
         dropbox_path.mkdir(parents=True)
         # On macOS the real path is Dropbox with capital D; on Linux it may be lowercase.
@@ -224,7 +224,7 @@ class TestDetectCloudProviderReturnType:
     """Return type is Literal["icloud", "dropbox", "gdrive", "none"]."""
 
     @pytest.mark.parametrize(
-        "describe,provider",
+        ("describe", "provider"),
         [
             ("iCloud iCloud~ path", "icloud"),
             ("iCloud com~apple~CloudDocs path", "icloud"),

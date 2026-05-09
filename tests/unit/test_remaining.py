@@ -55,7 +55,7 @@ class TestProcessConversationFallback:
         chunker = MarkdownChunker(max_chars=1500)
         result = _process_conversation(conv, chunker)
         # When chunker.chunk() receives a list, it processes it as a sequence
-        assert len(result) == 2  # noqa: PLR2004
+        assert len(result) == 2
 
     def test_process_conversation_mixed_empty(self):
         """Test processing a conversation with mixed empty/non-empty messages."""
@@ -104,7 +104,7 @@ class TestProcessConversationFallback:
         chunker = MarkdownChunker(max_chars=1500)
         result = _process_conversation(conv, chunker)
         # When chunker.chunk() receives a list, it processes it as a sequence
-        assert len(result) == 3  # noqa: PLR2004
+        assert len(result) == 3
 
 
 class TestWriteEmbeddings:
@@ -152,7 +152,7 @@ class TestWriteEmbeddings:
         mock_backend.write_embeddings.assert_called_once()
         call_args = mock_backend.write_embeddings.call_args
         assert call_args[0][0] == 1
-        assert len(call_args[0][1]) == 2  # noqa: PLR2004
+        assert len(call_args[0][1]) == 2
 
 
 class TestIngestOnceErrorHandling:
@@ -209,11 +209,11 @@ class TestEmbedderInit:
         assert embedder.name == "test-st"
         assert embedder.provider == "sentence_transformers"
         assert embedder.model_id == "test-model"
-        assert embedder.dimension == 384  # noqa: PLR2004
+        assert embedder.dimension == 384
         assert embedder.normalized is True
         assert embedder.distance == "cosine"
         assert embedder.device == "auto"
-        assert embedder.batch_size == 32  # noqa: PLR2004
+        assert embedder.batch_size == 32
 
     def test_openai_embedder_init(self):
         """Test OpenAIEmbedder initialization."""
@@ -225,11 +225,11 @@ class TestEmbedderInit:
         assert embedder.name == "test-openai"
         assert embedder.provider == "openai"
         assert embedder.model_id == "text-embedding-3-small"
-        assert embedder.dimension == 1536  # noqa: PLR2004
+        assert embedder.dimension == 1536
         assert embedder.normalized is True
         assert embedder.distance == "cosine"
         assert embedder.api_key_env == "OPENAI_API_KEY"
-        assert embedder.batch_size == 256  # noqa: PLR2004
+        assert embedder.batch_size == 256
 
     def test_openai_embedder_custom_values(self):
         """Test OpenAIEmbedder with custom values."""
@@ -245,4 +245,4 @@ class TestEmbedderInit:
         assert embedder.normalized is False
         assert embedder.distance == "l2"
         assert embedder.api_key_env == "CUSTOM_API_KEY"
-        assert embedder.batch_size == 128  # noqa: PLR2004
+        assert embedder.batch_size == 128

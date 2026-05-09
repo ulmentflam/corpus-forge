@@ -40,7 +40,7 @@ class TestTextChunk:
         assert chunk.text == "hello"
         assert chunk.heading == "Test"
         assert chunk.role == "user"
-        assert chunk.token_count == 5  # noqa: PLR2004
+        assert chunk.token_count == 5
         assert chunk.metadata == {"key": "value"}
 
 
@@ -63,8 +63,8 @@ class TestChunker:
     def test_chunker_overlap_config(self):
         """Test overlap configuration."""
         chunker = _TestChunker(max_chars=100, overlap=50)
-        assert chunker.max_chars == 100  # noqa: PLR2004
-        assert chunker.overlap == 50  # noqa: PLR2004
+        assert chunker.max_chars == 100
+        assert chunker.overlap == 50
 
     def test_chunker_invalid_overlap(self):
         """Test that overlap >= max_chars raises ValueError."""
@@ -113,7 +113,7 @@ class TestMarkdownChunker:
         chunker = MarkdownChunker(max_chars=50, overlap=20)
         long_text = "Word1 Word2 Word3 Word4 Word5 Word6 Word7 Word8 Word9 Word10"
         result = chunker.chunk(long_text)
-        if len(result) >= 2:  # noqa: PLR2004
+        if len(result) >= 2:
             # Check that there is overlap between consecutive chunks
             prev_end = result[0].text
             for i in range(1, len(result)):
@@ -166,7 +166,7 @@ class TestConversationChunker:
         chunker = ConversationChunker(mode="per_message")
         messages = ["Hello", "World", "Test"]
         result = chunker.chunk(messages)
-        assert len(result) == 3  # noqa: PLR2004
+        assert len(result) == 3
         assert result[0].text == "Hello"
         assert result[1].text == "World"
         assert result[2].text == "Test"
@@ -176,7 +176,7 @@ class TestConversationChunker:
         chunker = ConversationChunker(mode="per_message")
         messages = ["Hello", "", "  ", "World"]
         result = chunker.chunk(messages)
-        assert len(result) == 2  # noqa: PLR2004
+        assert len(result) == 2
         assert result[0].text == "Hello"
         assert result[1].text == "World"
 
@@ -198,5 +198,5 @@ class TestConversationChunker:
     def test_conversation_chunker_custom_max_chars(self):
         """Test custom max_chars and overlap."""
         chunker = ConversationChunker(mode="per_message", max_chars=500, overlap=50)
-        assert chunker.max_chars == 500  # noqa: PLR2004
-        assert chunker.overlap == 50  # noqa: PLR2004
+        assert chunker.max_chars == 500
+        assert chunker.overlap == 50

@@ -782,7 +782,7 @@ class TestConfigHostId:
         assert result == "file-host"
 
     def test_hostname_fallback_persisted(self, temp_dir):
-        """When neither config nor file has host_id, socket.gethostname() is returned & persisted."""
+        """When config and file lack host_id, socket.gethostname() is returned & persisted."""
         config = Config(
             backend=BackendConfig(dsn="sqlite:///test.db"),
             daemon=DaemonConfig(

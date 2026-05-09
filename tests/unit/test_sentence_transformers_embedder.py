@@ -188,9 +188,11 @@ class TestSentenceTransformersEncode:
         )
         embedder._model = None
         # Make _load_model a no-op so _model stays None after the call
-        with patch.object(embedder, "_load_model"):
-            with pytest.raises(RuntimeError, match="Failed to load SentenceTransformer model"):
-                embedder.encode(["hello"])
+        with (
+            patch.object(embedder, "_load_model"),
+            pytest.raises(RuntimeError, match="Failed to load SentenceTransformer model"),
+        ):
+            embedder.encode(["hello"])
 
     def test_encode_raises_when_package_missing(self):
         """Test encode raises ImportError when sentence-transformers missing."""

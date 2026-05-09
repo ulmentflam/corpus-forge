@@ -1,5 +1,6 @@
 """Unit tests for corpus_forge.sync.fs — atomic_write_text and move_to_trash."""
 
+import contextlib
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -122,9 +123,11 @@ class TestAtomicWriteTextFailurePaths:
         target.write_text("original content")
         original_stat = target.stat()
 
-        with patch("corpus_forge.sync.fs.os.replace", side_effect=OSError("simulated failure")):
-            with pytest.raises(OSError, match="simulated failure"):
-                atomic_write_text(target, "new content")
+        with (
+            patch("corpus_forge.sync.fs.os.replace", side_effect=OSError("simulated failure")),
+            pytest.raises(OSError, match="simulated failure"),
+        ):
+            atomic_write_text(target, "new content")
 
         # Original must be untouched
         assert target.read_text() == "original content"
@@ -135,9 +138,11 @@ class TestAtomicWriteTextFailurePaths:
         target = tmp_dir / "no_target.txt"
         assert not target.exists()
 
-        with patch("corpus_forge.sync.fs.os.replace", side_effect=OSError("boom")):
-            with pytest.raises(OSError):
-                atomic_write_text(target, "content")
+        with (
+            patch("corpus_forge.sync.fs.os.replace", side_effect=OSError("boom")),
+            pytest.raises(OSError),
+        ):
+            atomic_write_text(target, "content")
 
         assert not target.exists()
 
@@ -146,9 +151,11 @@ class TestAtomicWriteTextFailurePaths:
         target = tmp_dir / "clean.txt"
         initial_entries = set(tmp_dir.iterdir())
 
-        with patch("corpus_forge.sync.fs.os.replace", side_effect=OSError("boom")):
-            with pytest.raises(OSError):
-                atomic_write_text(target, "content")
+        with (
+            patch("corpus_forge.sync.fs.os.replace", side_effect=OSError("boom")),
+            pytest.raises(OSError),
+        ):
+            atomic_write_text(target, "content")
 
         # Directory should be unchanged
         assert set(tmp_dir.iterdir()) == initial_entries
@@ -159,9 +166,11 @@ class TestAtomicWriteTextFailurePaths:
         parent = target.parent
         assert not parent.exists()
 
-        with patch("corpus_forge.sync.fs.os.replace", side_effect=OSError("boom")):
-            with pytest.raises(OSError):
-                atomic_write_text(target, "content")
+        with (
+            patch("corpus_forge.sync.fs.os.replace", side_effect=OSError("boom")),
+            pytest.raises(OSError),
+        ):
+            atomic_write_text(target, "content")
 
         assert not parent.exists()
 
@@ -173,9 +182,11 @@ class TestAtomicWriteTextFailurePaths:
 
         target = pre_existing / "b" / "deep.txt"
 
-        with patch("corpus_forge.sync.fs.os.replace", side_effect=OSError("boom")):
-            with pytest.raises(OSError):
-                atomic_write_text(target, "content")
+        with (
+            patch("corpus_forge.sync.fs.os.replace", side_effect=OSError("boom")),
+            pytest.raises(OSError),
+        ):
+            atomic_write_text(target, "content")
 
         # Pre-existing file must still be there
         assert (pre_existing / "existing.txt").read_text() == "pre-existing"
@@ -348,11 +359,11 @@ class TestAtomicWriteTextTempfileNaming:
             # Don't actually replace — we just want to inspect the name
             raise InterruptedError("stop")
 
-        with patch("corpus_forge.sync.fs.os.replace", side_effect=capture_replace):
-            try:
-                atomic_write_text(target, "content")
-            except InterruptedError:
-                pass
+        with (
+            patch("corpus_forge.sync.fs.os.replace", side_effect=capture_replace),
+            contextlib.suppress(InterruptedError),
+        ):
+            atomic_write_text(target, "content")
 
         assert len(captured_names) == 1
         temp_path = Path(captured_names[0])
@@ -370,11 +381,11 @@ class TestAtomicWriteTextTempfileNaming:
             captured_names.append(src)
             raise InterruptedError("stop")
 
-        with patch("corpus_forge.sync.fs.os.replace", side_effect=capture_replace):
-            try:
-                atomic_write_text(target, "content")
-            except InterruptedError:
-                pass
+        with (
+            patch("corpus_forge.sync.fs.os.replace", side_effect=capture_replace),
+            contextlib.suppress(InterruptedError),
+        ):
+            atomic_write_text(target, "content")
 
         assert len(captured_names) == 1
         # Temp file's parent must equal target's parent
@@ -390,11 +401,11 @@ class TestAtomicWriteTextTempfileNaming:
             raise InterruptedError("stop")
 
         for _ in range(5):
-            with patch("corpus_forge.sync.fs.os.replace", side_effect=capture_replace):
-                try:
-                    atomic_write_text(target, "content")
-                except InterruptedError:
-                    pass
+            with (
+                patch("corpus_forge.sync.fs.os.replace", side_effect=capture_replace),
+                contextlib.suppress(InterruptedError),
+            ):
+                atomic_write_text(target, "content")
 
         # Should have 5 unique temp file names
         assert len(names) == 5
@@ -449,7 +460,7 @@ class TestMoveToTrashDestPath:
     FAKE_TS = datetime(2026, 5, 8, 22, 30, 45)
 
     def test_no_relpath_uses_src_name(self, tmp_path: Path):
-        """Without rel_path, dest is <trash>/<dataset>/<src.stem>.deleted-<host>-<ts><src.suffix>."""
+        """Without rel_path, dest is <trash>/<dataset>/<stem>.deleted-<host>-<ts><suffix>."""
         src = tmp_path / "report.md"
         src.write_text("data")
         trash = tmp_path / ".trash"
@@ -653,8 +664,8 @@ class TestMoveToTrashSameFilesystem:
             patch(
                 "corpus_forge.sync.fs.os.replace", side_effect=OSError(errno.EXDEV, "cross-device")
             ),
-            patch("corpus_forge.sync.fs.shutil.copy2") as mock_copy,
-            patch("corpus_forge.sync.fs.os.unlink") as mock_unlink,
+            patch("corpus_forge.sync.fs.shutil.copy2"),
+            patch("corpus_forge.sync.fs.os.unlink"),
         ):
             mock_dt.utcnow.return_value = self.FAKE_TS
             move_to_trash(src, trash, "data", "macA")

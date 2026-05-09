@@ -30,10 +30,12 @@ class TestSetupSignalHandlers:
             handler = mock_signal.call_args_list[0][0][1]  # SIGINT handler
 
         # Call the handler directly
-        with patch("corpus_forge.daemon.sys.exit") as mock_exit:
-            with patch("corpus_forge.daemon.logging.info"):
-                handler(2, None)
-                mock_exit.assert_called_once_with(0)
+        with (
+            patch("corpus_forge.daemon.sys.exit") as mock_exit,
+            patch("corpus_forge.daemon.logging.info"),
+        ):
+            handler(2, None)
+            mock_exit.assert_called_once_with(0)
 
 
 class TestDaemonMain:
@@ -41,33 +43,39 @@ class TestDaemonMain:
 
     def test_main_sets_up_signal_handlers(self):
         """Test that main calls setup_signal_handlers."""
-        with patch("corpus_forge.daemon.setup_signal_handlers") as mock_setup:
-            with patch("corpus_forge.daemon.ingest_main") as mock_ingest:
-                with patch("corpus_forge.daemon.logging.info"):
-                    with patch("corpus_forge.daemon.sys.exit"):
-                        main()
-                        mock_setup.assert_called_once()
-                        mock_ingest.assert_called_once_with(once=False)
+        with (
+            patch("corpus_forge.daemon.setup_signal_handlers") as mock_setup,
+            patch("corpus_forge.daemon.ingest_main") as mock_ingest,
+            patch("corpus_forge.daemon.logging.info"),
+            patch("corpus_forge.daemon.sys.exit"),
+        ):
+            main()
+            mock_setup.assert_called_once()
+            mock_ingest.assert_called_once_with(once=False)
 
     def test_main_logs_start(self):
         """Test that main logs startup message."""
-        with patch("corpus_forge.daemon.setup_signal_handlers"):
-            with patch("corpus_forge.daemon.ingest_main") as mock_ingest:
-                with patch("corpus_forge.daemon.logging.info") as mock_info:
-                    with patch("corpus_forge.daemon.sys.exit"):
-                        main()
-                        mock_info.assert_any_call("Starting corpus-forge daemon...")
-                        mock_ingest.assert_called_once()
+        with (
+            patch("corpus_forge.daemon.setup_signal_handlers"),
+            patch("corpus_forge.daemon.ingest_main") as mock_ingest,
+            patch("corpus_forge.daemon.logging.info") as mock_info,
+            patch("corpus_forge.daemon.sys.exit"),
+        ):
+            main()
+            mock_info.assert_any_call("Starting corpus-forge daemon...")
+            mock_ingest.assert_called_once()
 
     def test_main_exits_after_ingest(self):
         """Test that main exits after ingest_main returns."""
-        with patch("corpus_forge.daemon.setup_signal_handlers"):
-            with patch("corpus_forge.daemon.ingest_main"):
-                with patch("corpus_forge.daemon.logging.info"):
-                    with patch("corpus_forge.daemon.sys.exit") as mock_exit:
-                        main()
-                        # Should exit at the end
-                        assert mock_exit.called
+        with (
+            patch("corpus_forge.daemon.setup_signal_handlers"),
+            patch("corpus_forge.daemon.ingest_main"),
+            patch("corpus_forge.daemon.logging.info"),
+            patch("corpus_forge.daemon.sys.exit") as mock_exit,
+        ):
+            main()
+            # Should exit at the end
+            assert mock_exit.called
 
 
 class TestDaemonSignalHandling:
@@ -79,10 +87,12 @@ class TestDaemonSignalHandling:
             setup_signal_handlers()
             handler = mock_signal.call_args_list[0][0][1]  # SIGINT handler
 
-        with patch("corpus_forge.daemon.sys.exit") as mock_exit:
-            with patch("corpus_forge.daemon.logging.info"):
-                handler(2, None)
-                mock_exit.assert_called_once_with(0)
+        with (
+            patch("corpus_forge.daemon.sys.exit") as mock_exit,
+            patch("corpus_forge.daemon.logging.info"),
+        ):
+            handler(2, None)
+            mock_exit.assert_called_once_with(0)
 
     def test_sigterm_calls_exit_zero(self):
         """Test SIGTERM triggers clean exit."""
@@ -90,10 +100,12 @@ class TestDaemonSignalHandling:
             setup_signal_handlers()
             handler = mock_signal.call_args_list[1][0][1]  # SIGTERM handler
 
-        with patch("corpus_forge.daemon.sys.exit") as mock_exit:
-            with patch("corpus_forge.daemon.logging.info"):
-                handler(15, None)
-                mock_exit.assert_called_once_with(0)
+        with (
+            patch("corpus_forge.daemon.sys.exit") as mock_exit,
+            patch("corpus_forge.daemon.logging.info"),
+        ):
+            handler(15, None)
+            mock_exit.assert_called_once_with(0)
 
 
 class TestDaemonOrchestrator:
@@ -142,13 +154,15 @@ class TestDaemonOrchestrator:
 
         engine = MagicMock()
 
-        with patch("corpus_forge.daemon.SyncEngine", return_value=engine):
-            with patch("corpus_forge.daemon.signal.signal") as mock_signal:
-                with patch("corpus_forge.daemon.sys.exit"):
-                    run_daemon(config)
-                    handler = mock_signal.call_args_list[0][0][1]
-                    handler(None, None)
-                    engine.stop.assert_called_once()
+        with (
+            patch("corpus_forge.daemon.SyncEngine", return_value=engine),
+            patch("corpus_forge.daemon.signal.signal") as mock_signal,
+            patch("corpus_forge.daemon.sys.exit"),
+        ):
+            run_daemon(config)
+            handler = mock_signal.call_args_list[0][0][1]
+            handler(None, None)
+            engine.stop.assert_called_once()
 
     def test_signal_does_not_stop_disabled_engines(self):
         """Only running engines are stopped on signal (disabled skipped)."""
@@ -159,10 +173,12 @@ class TestDaemonOrchestrator:
 
         engine = MagicMock()
 
-        with patch("corpus_forge.daemon.SyncEngine", return_value=engine):
-            with patch("corpus_forge.daemon.signal.signal") as mock_signal:
-                with patch("corpus_forge.daemon.sys.exit"):
-                    run_daemon(config)
-                    handler = mock_signal.call_args_list[0][0][1]
-                    handler(None, None)
-                    engine.stop.assert_called_once()
+        with (
+            patch("corpus_forge.daemon.SyncEngine", return_value=engine),
+            patch("corpus_forge.daemon.signal.signal") as mock_signal,
+            patch("corpus_forge.daemon.sys.exit"),
+        ):
+            run_daemon(config)
+            handler = mock_signal.call_args_list[0][0][1]
+            handler(None, None)
+            engine.stop.assert_called_once()

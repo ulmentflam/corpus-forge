@@ -11,13 +11,14 @@ from corpus_forge.sources.base import RawConversation, RawDocument, RawMessage
 
 def _docker_available() -> bool:
     """Check if Docker (or Docker-compatible runtime) is available."""
-    import subprocess  # noqa: PLC0415
+    import subprocess
 
     try:
         result = subprocess.run(
             ["docker", "info"],
             capture_output=True,
             timeout=5,
+            check=False,
         )
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):

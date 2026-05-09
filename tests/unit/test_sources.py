@@ -45,7 +45,7 @@ class TestClaudeCodeSource:
 
         source = ClaudeCodeSource(projects_root=sample_claude_code_dir, include_subagents=True)
         files = list(source.discover())
-        assert len(files) == 2  # noqa: PLR2004
+        assert len(files) == 2
 
     def test_parse_valid_session(self, sample_claude_code_dir):
         """Test parsing a valid session file."""
@@ -57,7 +57,7 @@ class TestClaudeCodeSource:
         assert conv.source_uri.startswith("claude-code://")
         assert conv.external_id == "session1"
         assert conv.content_hash  # Non-empty hash
-        assert len(conv.messages) >= 2  # noqa: PLR2004
+        assert len(conv.messages) >= 2
         assert conv.messages[0].role == "user"
         assert conv.messages[1].role == "assistant"
 
@@ -95,7 +95,7 @@ class TestClaudeCodeSource:
         source = ClaudeCodeSource(projects_root=projects_dir)
         conv = source.parse(session_file)
 
-        assert len(conv.messages) == 2  # noqa: PLR2004
+        assert len(conv.messages) == 2
 
     def test_parse_list_content(self, temp_dir):
         """Test parsing messages with list content."""

@@ -23,11 +23,11 @@ class TestSentenceTransformersEmbedder:
         assert embedder.name == "test-st"
         assert embedder.provider == "sentence_transformers"
         assert embedder.model_id == "test-model"
-        assert embedder.dimension == 384  # noqa: PLR2004
+        assert embedder.dimension == 384
         assert embedder.normalized is True
         assert embedder.distance == "cosine"
         assert embedder.device == "auto"
-        assert embedder.batch_size == 32  # noqa: PLR2004
+        assert embedder.batch_size == 32
 
     def test_init_custom_values(self):
         """Test initialization with custom values."""
@@ -43,7 +43,7 @@ class TestSentenceTransformersEmbedder:
         assert embedder.normalized is False
         assert embedder.distance == "l2"
         assert embedder.device == "cpu"
-        assert embedder.batch_size == 64  # noqa: PLR2004
+        assert embedder.batch_size == 64
 
     def test_model_not_available(self):
         """Test encode when sentence-transformers is not available."""
@@ -97,11 +97,11 @@ class TestOpenAIEmbedder:
         assert embedder.name == "test-openai"
         assert embedder.provider == "openai"
         assert embedder.model_id == "text-embedding-3-small"
-        assert embedder.dimension == 1536  # noqa: PLR2004
+        assert embedder.dimension == 1536
         assert embedder.normalized is True
         assert embedder.distance == "cosine"
         assert embedder.api_key_env == "OPENAI_API_KEY"
-        assert embedder.batch_size == 256  # noqa: PLR2004
+        assert embedder.batch_size == 256
 
     def test_init_custom_values(self):
         """Test initialization with custom values."""
@@ -117,12 +117,12 @@ class TestOpenAIEmbedder:
         assert embedder.normalized is False
         assert embedder.distance == "ip"
         assert embedder.api_key_env == "CUSTOM_API_KEY"
-        assert embedder.batch_size == 128  # noqa: PLR2004
+        assert embedder.batch_size == 128
 
     def test_api_key_not_found(self):
         """Test that missing API key raises ValueError."""
         # Import here to avoid circular dependency with openai package
-        import os  # noqa: PLC0415
+        import os
 
         if "OPENAI_API_KEY" in os.environ:
             del os.environ["OPENAI_API_KEY"]
@@ -139,7 +139,7 @@ class TestOpenAIEmbedder:
     def test_warmup_noop_when_no_key(self):
         """Test warmup doesn't fail when API key is missing."""
         # Import here to avoid circular dependency with openai package
-        import os  # noqa: PLC0415
+        import os
 
         # Ensure no API key is set
         orig_key = os.environ.pop("OPENAI_API_KEY", None)

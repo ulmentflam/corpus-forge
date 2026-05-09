@@ -180,9 +180,7 @@ class TestPendingRemoteRevisions:
         backend = _make_backend()
         backend._execute.return_value = []
 
-        result = backend.pending_remote_revisions(
-            dataset_id=1, last_pulled_revision_id=0, self_host="macA"
-        )
+        backend.pending_remote_revisions(dataset_id=1, last_pulled_revision_id=0, self_host="macA")
 
         sql = backend._execute.call_args[0][0]
         params = backend._execute.call_args[0][1]
@@ -193,11 +191,11 @@ class TestPendingRemoteRevisions:
         backend = _make_backend()
         backend._execute.return_value = []
 
-        result = backend.pending_remote_revisions(
+        backend.pending_remote_revisions(
             dataset_id=1, last_pulled_revision_id=100, self_host="macA"
         )
 
-        sql = backend._execute.call_args[0][0]
+        backend._execute.call_args[0][0]
         params = backend._execute.call_args[0][1]
         assert 100 in params or "100" in str(params)
 

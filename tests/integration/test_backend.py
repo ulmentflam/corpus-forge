@@ -105,7 +105,8 @@ class TestDatasetOps:
 
         with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO corpus.datasets (name, kind) VALUES ('test_upsert_doc', 'text') RETURNING id"
+                "INSERT INTO corpus.datasets (name, kind)"
+                " VALUES ('test_upsert_doc', 'text') RETURNING id"
             )
             dataset_id = cur.fetchone()[0]
             conn.commit()
@@ -133,7 +134,8 @@ class TestDatasetOps:
 
         with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO corpus.datasets (name, kind) VALUES ('test_upsert_unchanged', 'text') RETURNING id"
+                "INSERT INTO corpus.datasets (name, kind)"
+                " VALUES ('test_upsert_unchanged', 'text') RETURNING id"
             )
             dataset_id = cur.fetchone()[0]
             conn.commit()
@@ -160,7 +162,8 @@ class TestDatasetOps:
 
         with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO corpus.datasets (name, kind) VALUES ('test_upsert_changed', 'text') RETURNING id"
+                "INSERT INTO corpus.datasets (name, kind)"
+                " VALUES ('test_upsert_changed', 'text') RETURNING id"
             )
             dataset_id = cur.fetchone()[0]
             conn.commit()
@@ -201,7 +204,8 @@ class TestDatasetOps:
 
         with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO corpus.datasets (name, kind) VALUES ('test_upsert_conv', 'chat') RETURNING id"
+                "INSERT INTO corpus.datasets (name, kind)"
+                " VALUES ('test_upsert_conv', 'chat') RETURNING id"
             )
             dataset_id = cur.fetchone()[0]
             conn.commit()
@@ -254,7 +258,8 @@ class TestDatasetOps:
 
         with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO corpus.datasets (name, kind) VALUES ('test_delete_doc', 'text') RETURNING id"
+                "INSERT INTO corpus.datasets (name, kind)"
+                " VALUES ('test_delete_doc', 'text') RETURNING id"
             )
             dataset_id = cur.fetchone()[0]
             conn.commit()
@@ -285,7 +290,8 @@ class TestDatasetOps:
 
         with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO corpus.datasets (name, kind) VALUES ('test_delete_conv', 'chat') RETURNING id"
+                "INSERT INTO corpus.datasets (name, kind)"
+                " VALUES ('test_delete_conv', 'chat') RETURNING id"
             )
             dataset_id = cur.fetchone()[0]
             conn.commit()
@@ -386,7 +392,8 @@ class TestEmbedderOps:
 
         with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO corpus.datasets (name, kind) VALUES ('test_write_embed', 'text') RETURNING id"
+                "INSERT INTO corpus.datasets (name, kind)"
+                " VALUES ('test_write_embed', 'text') RETURNING id"
             )
             dataset_id = cur.fetchone()[0]
             conn.commit()
@@ -419,7 +426,8 @@ class TestEmbedderOps:
             register_vector(conn)
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT chunk_id, embedding FROM corpus.embeddings_test_embed WHERE chunk_id = %s;",
+                    "SELECT chunk_id, embedding"
+                    " FROM corpus.embeddings_test_embed WHERE chunk_id = %s;",
                     (chunk_id,),
                 )
                 row = cur.fetchone()
@@ -453,7 +461,8 @@ class TestEmbedderOps:
 
         with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO corpus.datasets (name, kind) VALUES ('test_missing_embed', 'text') RETURNING id"
+                "INSERT INTO corpus.datasets (name, kind)"
+                " VALUES ('test_missing_embed', 'text') RETURNING id"
             )
             dataset_id = cur.fetchone()[0]
             conn.commit()
@@ -511,7 +520,9 @@ class TestEmbedderOps:
     def test_advisory_lock_conflict(self, pg_dsn):
         backend = _make_backend(pg_dsn)
 
-        with backend.lock_source("test-key"):
-            with pytest.raises(RuntimeError, match="Could not acquire lock"):
-                with backend.lock_source("test-key"):
-                    pass
+        with (
+            backend.lock_source("test-key"),
+            pytest.raises(RuntimeError, match="Could not acquire lock"),
+            backend.lock_source("test-key"),
+        ):
+            pass

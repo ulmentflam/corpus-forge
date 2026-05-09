@@ -317,7 +317,7 @@ class TestUpsertDocument:
             ]
             assert len(chunk_calls) == 2
 
-            for (sql, params), (_, text) in zip(chunk_calls, chunks_input):
+            for (_sql, params), (_, text) in zip(chunk_calls, chunks_input, strict=False):
                 expected_hash = chunk_content_hash(text)
                 # params could be a tuple (positional) or dict (keyword)
                 params_list = params if isinstance(params, (tuple, list)) else list(params.values())
@@ -496,9 +496,11 @@ class TestLockSource:
             backend._get_connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
             backend._get_connection.return_value.__exit__ = MagicMock(return_value=None)
 
-            with pytest.raises(RuntimeError, match="Could not acquire lock"):
-                with backend.lock_source("test-key"):
-                    pass
+            with (
+                pytest.raises(RuntimeError, match="Could not acquire lock"),
+                backend.lock_source("test-key"),
+            ):
+                pass
 
 
 class TestDeleteOps:

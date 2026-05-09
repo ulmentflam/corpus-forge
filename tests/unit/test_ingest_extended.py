@@ -36,7 +36,7 @@ class TestProcessDocument:
         chunker = Chunker(max_chars=50, overlap=10)
         result = _process_document(doc, chunker)
         assert len(result) >= 1
-        for heading, text in result:
+        for _heading, text in result:
             assert isinstance(text, str)
             assert len(text) > 0
 
