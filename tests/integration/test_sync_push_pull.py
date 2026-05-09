@@ -349,8 +349,9 @@ def test_revision_numbers_monotonic(pg_dsn: str, tmp_path: Path) -> None:
             # Give watchdog + debounce time to fire (debounce=0.05s + watchdog latency)
             time.sleep(0.5)
 
-        # source_uri is the resolved absolute path (push records str(path.resolve()))
-        source_uri = str(file_on_a.resolve())
+        # source_uri is relative to source_root (push records path.relative_to(source_root))
+        # After BUG-4 fix: push records relative URIs when source_root is known.
+        source_uri = str(file_on_a.resolve().relative_to(root_a.resolve()))
         doc_id = _get_document_id_for_source_uri(pg_dsn, source_uri)
 
         assert doc_id is not None, (
@@ -442,7 +443,8 @@ def test_hash_equality_after_convergence(pg_dsn: str, tmp_path: Path) -> None:
         assert hash_a == hash_b, f"Hash mismatch between A and B: A={hash_a!r}, B={hash_b!r}"
 
         # Also verify the DB revision hash matches
-        source_uri = str(file_on_a.resolve())
+        # source_uri is relative to source_root after BUG-4 fix
+        source_uri = str(file_on_a.resolve().relative_to(root_a.resolve()))
         doc_id = _get_document_id_for_source_uri(pg_dsn, source_uri)
         if doc_id is not None:
             revisions = _latest_revision_rows(pg_dsn, doc_id)

@@ -57,4 +57,3 @@ class SyncEngine:
             self._push_pipeline.stop()
         if self._pull_pipeline is not None:
             self._pull_pipeline.stop()
-        self._backend.upsert_document(self._dataset_config.id, None, [])

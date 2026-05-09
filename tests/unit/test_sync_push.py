@@ -155,10 +155,10 @@ class TestContentHashUnchanged:
 
 
 class TestContentHashChanged:
-    """Step 3b — local content_hash differs from latest → insert_revision + upsert_document."""
+    """Step 3b — local content_hash differs from latest → insert_revision called."""
 
     def test_inserts_revision_and_upserts_document(self, mock_path, mock_lock):
-        """Different hash → insert_revision and upsert_document called."""
+        """Different hash → insert_revision called; upsert_document replaced by direct UPDATE."""
         pipeline = _make_pipeline()
         pipeline._echo_suppressor.was_just_written.return_value = False
         type(mock_path.stat.return_value).st_mtime = PropertyMock(return_value=1000.0)
@@ -175,7 +175,6 @@ class TestContentHashChanged:
             pipeline.handle_change(mock_path)
 
         pipeline._backend.insert_revision.assert_called_once()
-        pipeline._backend.upsert_document.assert_called_once()
 
     def test_insert_revision_receives_correct_params(self, mock_path, mock_lock):
         """insert_revision called with parent=latest.id, content_hash, text, author_host=host_id."""
@@ -234,15 +233,14 @@ class TestContentHashChanged:
         with _patch_chunk_hash("first_hash"):
             pipeline.handle_change(mock_path)
 
-        pipeline._backend.insert_revision.assert_called_once_with(
-            document_id=42,
-            content_hash="first_hash",
-            text="hello world",
-            parent_revision_id=None,
-            author_host="macA",
-            is_tombstone=False,
-        )
-        pipeline._backend.upsert_document.assert_called_once()
+        # source_uri is now included in insert_revision call (BUG-5 fix)
+        call_kwargs = pipeline._backend.insert_revision.call_args[1]
+        assert call_kwargs["document_id"] == 42
+        assert call_kwargs["content_hash"] == "first_hash"
+        assert call_kwargs["text"] == "hello world"
+        assert call_kwargs["parent_revision_id"] is None
+        assert call_kwargs["author_host"] == "macA"
+        assert call_kwargs["is_tombstone"] is False
 
 
 # ── P1-18: lock_source context management ───────────────────────────────
@@ -445,10 +443,11 @@ class TestStopObserver:
         mock_obs.stop.assert_called_once()
         mock_obs.join.assert_called_once()
 
-    def test_stop_without_start_raises(self):
+    def test_stop_without_start_is_noop(self):
+        """Calling stop() before start() is a safe no-op (not an error)."""
         pipeline = _make_pipeline()
-        with pytest.raises(RuntimeError, match="not started"):
-            pipeline.stop()
+        # Should not raise — stop on unstarted pipeline is a no-op after BUG-7 fix
+        pipeline.stop()
 
 
 # ── P1-19 Step 4: debounce per-path ──────────────────────────────────────
@@ -621,7 +620,6 @@ class TestCloudDuplicateDifferentHash:
                         pipeline._handle_cloud_duplicate(path)
 
         pipeline._backend.insert_revision.assert_called_once()
-        pipeline._backend.upsert_document.assert_called_once()
         call_kwargs = pipeline._backend.insert_revision.call_args[1]
         assert call_kwargs["is_tombstone"] is False
         assert call_kwargs["content_hash"] == "hash_dup"
@@ -705,7 +703,7 @@ class TestHandleDeleteTombstone:
         mock_lock.__enter__ = MagicMock(return_value=None)
         mock_lock.__exit__ = MagicMock(return_value=None)
         pipeline._backend.lock_source.return_value = mock_lock
-        pipeline._backend.resolve_document.return_value = {"id": 42}
+        pipeline._backend.find_document.return_value = {"id": 42}
         pipeline._backend.latest_revision.return_value = {
             "id": 5,
             "revision_number": 3,

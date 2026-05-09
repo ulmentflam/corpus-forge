@@ -67,15 +67,15 @@ class TestInsertRevision:
 
         assert result["revision_number"] == 6
 
-    def test_insert_revision_acquires_advisory_lock(self):
+    def test_insert_revision_executes_insert_sql(self):
+        # insert_revision no longer acquires lock_source internally — callers
+        # (handle_change / handle_delete) already hold the lock.  Verify the
+        # INSERT SQL was executed with the correct document_id.
         backend = _make_backend()
         backend._execute.side_effect = [
             [{"max": None}],
             [{"id": 1, "revision_number": 1}],
         ]
-        backend.lock_source = MagicMock()
-        backend.lock_source.return_value.__enter__ = MagicMock()
-        backend.lock_source.return_value.__exit__ = MagicMock()
 
         backend.insert_revision(
             document_id=42,
@@ -87,7 +87,10 @@ class TestInsertRevision:
             is_tombstone=False,
         )
 
-        backend.lock_source.assert_called_once_with("vault://doc.md")
+        assert backend._execute.call_count == 2
+        insert_call = backend._execute.call_args_list[1]
+        assert "INSERT" in insert_call[0][0].upper()
+        assert 42 in insert_call[0][1]
 
     def test_insert_revision_accepts_all_keyword_params(self):
         backend = _make_backend()

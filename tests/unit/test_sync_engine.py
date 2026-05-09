@@ -104,10 +104,13 @@ class TestStop:
                 engine.stop()
         mock_pl.return_value.stop.assert_called_once()
 
-    def test_flushes_pending_revisions(self):
+    def test_stop_is_idempotent_after_start(self):
+        # stop() no longer calls upsert_document — it simply stops both
+        # pipelines.  Verify stop() completes without error.
         engine = _make_engine()
-        with patch("corpus_forge.sync.engine.PushPipeline"):
-            with patch("corpus_forge.sync.engine.PullPipeline"):
+        with patch("corpus_forge.sync.engine.PushPipeline") as mock_pp:
+            with patch("corpus_forge.sync.engine.PullPipeline") as mock_pl:
                 engine.start()
                 engine.stop()
-        engine._backend.upsert_document.assert_called_once()
+        mock_pp.return_value.stop.assert_called_once()
+        mock_pl.return_value.stop.assert_called_once()

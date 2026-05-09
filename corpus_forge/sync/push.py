@@ -3,6 +3,7 @@ from __future__ import annotations
 import fnmatch
 import threading
 from datetime import UTC
+from hashlib import sha256
 from pathlib import Path
 
 from watchdog import observers
@@ -14,7 +15,7 @@ from corpus_forge.sync.conflicts import conflict_filename, is_cloud_duplicate
 
 
 class _DebouncedHandler(FileSystemEventHandler):
-    def __init__(self, pipeline, debounce_seconds: float) -> None:
+    def __init__(self, pipeline: "PushPipeline", debounce_seconds: float) -> None:
         super().__init__()
         self.pipeline = pipeline
         self.debounce_seconds = debounce_seconds
@@ -50,16 +51,38 @@ class _DebouncedHandler(FileSystemEventHandler):
 
 
 class PushPipeline:
-    def __init__(self, backend, dataset_id: int, echo_suppressor, host_id: str) -> None:
+    def __init__(
+        self,
+        backend,
+        dataset_id: int,
+        echo_suppressor,
+        host_id: str,
+    ) -> None:
         self._backend = backend
         self._dataset_id = dataset_id
         self._echo_suppressor = echo_suppressor
         self._host_id = host_id
         self._mtime_cache: dict[str, float] = {}
-        self._observer: Observer | None = None
+        self._observer: observers.Observer | None = None
         self._handler: _DebouncedHandler | None = None
+        # Set by start(); None when pipeline is used without watchdog (direct calls)
+        self._source_root: Path | None = None
+        self._exclude_globs: tuple[str, ...] = ()
+
+    def _compute_source_uri(self, path: Path) -> str:
+        """Return source_uri relative to source_root if known, else absolute."""
+        if self._source_root is not None:
+            try:
+                return str(path.resolve().relative_to(self._source_root.resolve()))
+            except ValueError:
+                pass
+        return str(path.resolve())
 
     def handle_change(self, path: Path) -> None:
+        # Cloud-duplicate early exit (BUG-7 fix: wire in before main logic)
+        if self._handle_cloud_duplicate(path):
+            return
+
         resolved = str(path.resolve())
 
         # 1. mtime pre-filter
@@ -79,9 +102,11 @@ class PushPipeline:
             return
 
         # 3. Lock + revision logic
-        source_uri = resolved
+        source_uri = self._compute_source_uri(path)
         with self._backend.lock_source(source_uri):
             doc = self._backend.resolve_document(self._dataset_id, source_uri)
+            if doc is None:
+                return
             latest = self._backend.latest_revision(doc["id"])
 
             if latest is not None:
@@ -95,23 +120,34 @@ class PushPipeline:
 
             self._backend.insert_revision(
                 document_id=doc["id"],
+                source_uri=source_uri,
                 content_hash=content_hash,
                 text=text,
                 parent_revision_id=parent_id,
                 author_host=self._host_id,
                 is_tombstone=False,
             )
-
-            self._backend.upsert_document(self._dataset_id, None, [])
+            # Update the documents row to reflect the new content
+            self._backend._execute(
+                """
+                UPDATE corpus.documents
+                SET content_hash = %s, text = %s, modified_at = NOW()
+                WHERE id = %s
+                """,
+                (content_hash, text, doc["id"]),
+            )
+            # Clear tombstone if this document was previously deleted
+            self._backend.clear_tombstone(doc["id"])
 
     def start(
         self,
         source_root: Path,
         *,
-        exclude_globs: tuple[str, ...] | None = None,
+        exclude_globs: tuple[str, ...] | list[str] | None = None,
         debounce_seconds: float = 1.0,
     ) -> None:
-        self._exclude_globs = exclude_globs if exclude_globs is not None else ()
+        self._source_root = source_root
+        self._exclude_globs = tuple(exclude_globs) if exclude_globs is not None else ()
         self._debounce_seconds = debounce_seconds
         self._handler = _DebouncedHandler(self, debounce_seconds)
         self._observer = observers.Observer()
@@ -120,11 +156,12 @@ class PushPipeline:
 
     def stop(self) -> None:
         if self._observer is None:
-            raise RuntimeError("PushPipeline not started")
+            return
         if self._handler is not None:
             self._handler.shutdown()
         self._observer.stop()
         self._observer.join()
+        self._observer = None
 
     def _should_ignore(self, path: Path) -> bool:
         name = path.name
@@ -162,36 +199,48 @@ class PushPipeline:
         ts = datetime.now(UTC)
         conflict = conflict_filename(canonical_path, host=self._host_id, ts=ts, provider=provider)
         path.rename(conflict)
-        source_uri = str(conflict.resolve())
+        source_uri = self._compute_source_uri(conflict)
         with self._backend.lock_source(source_uri):
             doc = self._backend.resolve_document(self._dataset_id, source_uri)
+            if doc is None:
+                return True
             latest = self._backend.latest_revision(doc["id"])
             self._backend.insert_revision(
                 document_id=doc["id"],
+                source_uri=source_uri,
                 content_hash=local_hash,
                 text=text,
                 parent_revision_id=latest["id"] if latest else None,
                 author_host=self._host_id,
                 is_tombstone=False,
             )
-            self._backend.upsert_document(self._dataset_id, None, [])
+            self._backend._execute(
+                """
+                UPDATE corpus.documents
+                SET content_hash = %s, text = %s, modified_at = NOW()
+                WHERE id = %s
+                """,
+                (local_hash, text, doc["id"]),
+            )
         return True
 
     def handle_delete(self, path: Path) -> None:
-        source_uri = str(path.resolve())
+        source_uri = self._compute_source_uri(path)
         with self._backend.lock_source(source_uri):
             icloud_sibling = path.with_name(path.name + ".icloud")
             if icloud_sibling.exists():
                 return
 
-            doc = self._backend.resolve_document(self._dataset_id, source_uri)
+            # Only tombstone documents that are actually tracked.  Use
+            # find_document (find-only, no stub creation) so that ghost files
+            # (never ingested) are cleanly skipped.
+            doc = self._backend.find_document(self._dataset_id, source_uri)
             if doc is None:
                 return
             latest = self._backend.latest_revision(doc["id"])
-            from hashlib import sha256
-
             self._backend.insert_revision(
                 document_id=doc["id"],
+                source_uri=source_uri,
                 content_hash=sha256(b"").hexdigest(),
                 text="",
                 parent_revision_id=latest["id"] if latest else None,
