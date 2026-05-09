@@ -17,7 +17,7 @@ Record of implementations written by tdd-coder.
 | P1-02   | green  | SQL + runner already in place; integration test `tests/integration/test_migrate_003.py` (369 lines) covers schema creation, idempotency, and constraint validation across 3 test classes. Requires Docker (testcontainers). No unit-test regressions: 513 passed, 38 skipped, 14 failed (all pre-existing in test_sync_fs.py). |
 | P0-05   | green  | _copy_reusable_embeddings implemented, tests pass |
 | P0-06   | green  | upsert_document(embedder_ids=...) implemented — 8/8 chunk_reuse tests pass; 552/552 other unit tests pass |
-| P1-13..P1-17 | green  | Revision API implemented — 21/22 pass; 1 test has bug: `test_uses_order_by_revision_number_desc_and_limit_one` asserts `"revision_number" in sql.upper()` (lowercase needle vs uppercase haystack, impossible to pass) |
+| P1-13..P1-17 | green  | Revision API implemented — 22/22 pass. (Earlier note about a casing bug was stale and removed in DOC-01.) |
 | P0-07   | green | ingest_one resolves embedder_ids upfront and passes to upsert_document; 4/4 embedder_ids tests pass |
 | P1-18   | green | PushPipeline.handle_change implemented — all 15 tests pass, push.py 95% coverage (2 uncovered lines: OSError guard) |
 | P1-19   | green | PushPipeline.start/stop/_should_ignore implemented — all 31 tests pass, push.py 94% coverage |
@@ -30,6 +30,8 @@ Record of implementations written by tdd-coder.
 | P1-29 | green | CLI sync subgroup implemented — 9/9 test_cli_sync tests pass |
 | INT-01 | green | libpq DSN fixture + 5-file refactor — 5/5 test_dsn_fixture tests pass; integration suite before: 43 failed/21 passed/9 errors; after: 41 failed/28 passed/4 errors. Remaining 41 failures + 4 errors are pre-existing (backend.migrate() SQL bug: "syntax error at or near 'claude_code'") and pg.get_connection() AttributeError — both INT-02 territory. |
 | INT-02 | green | 73/73 integration + 668/668 unit pass, 0 failed. Fixed all 6 pre-diagnosed bugs plus several latent issues (TIMESTAMPTZ conversion, dataset name collision, doc_id vs chunk_id confusion, pgvector type adapter). |
+| P0-08, P1-30, P1-31, P1-32 | green | All 4 E2E test files written and green. Surfaced and fixed 9 production sync-engine bugs (push: resolve_document, source_uri kwarg, relative source_uri, real RawDocument upsert, _handle_cloud_duplicate wiring; pull: source_uri/source_id/parent_content_hash JOINs; backend: _copy_reusable_embeddings embedder_id, upsert_document UPDATE-in-place reuse). Integration suite: 102/102 passing. Unit suite: 668/668. |
+| DOC-01 | green | Wave 13 closeout. Stale "1 failed test" claim removed; Wave 6 + 12 flipped to DONE; Wave 13 summary appended to tasks.md. |
 
 ## INT-01
 - Source files: `tests/conftest.py`, `tests/integration/test_backend.py`, `tests/integration/test_ingest.py`, `tests/integration/test_migrate_002.py`, `tests/integration/test_migrate_003.py`

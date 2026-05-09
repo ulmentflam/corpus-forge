@@ -73,7 +73,7 @@ Source plan: `/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Works
 | P1-32 | E2E iCloud-duplicate integration test | P1-08, P1-20, INT-01 | `tests/integration/test_sync_icloud_dupe.py` | med | done | tdd-coder | Wave 13b: BUG-7 (cloud-duplicate early exit wired into handle_change) + resolve_document production bug fixed. 668 unit tests green. |
 | INT-01 | DSN fixture refactor (libpq DSN) | — | `tests/conftest.py`, `tests/integration/test_backend.py`, `tests/integration/test_embedder_contract.py`, `tests/integration/test_ingest.py`, `tests/integration/test_migrate_002.py`, `tests/integration/test_migrate_003.py` | low | done | tdd-coder | Wave 13. testcontainers' `pg.get_connection_url()` returns SQLAlchemy-style `postgresql+psycopg2://…` which `psycopg.connect` rejects. Centralized `postgres_container` (session-scoped) + `pg_dsn` (function-scoped) + `pg` (alias) fixtures in conftest; refactored 5 files. 5/5 test_dsn_fixture pass. No DSN-format errors remain. Residual integration failures are pre-existing production bugs (INT-02). |
 | INT-02 | Triage residual integration failures | INT-01 | `tests/integration/*`, `corpus_forge/backends/postgres.py`, `corpus_forge/embedders/registry.py`, `corpus_forge/embedders/sentence_transformers.py`, `corpus_forge/chunkers/base.py`, `corpus_forge/sources/markdown_vault.py` | med | done | tdd-coder | 73/73 integration + 668/668 unit pass. Fixed: (1) SQL comment semicolon in migrate; (2) pg.get_connection() → psycopg.connect(pg_dsn) in all 3 integration test files; (3) EmbedderRegistry.register() in-place overwrite; (4) encode([]) empty-list guard; (5) vault fixture dotfile rename + default excludes; (6) MarkdownChunker heading extraction. Also fixed: postgres.py TIMESTAMPTZ conversion, dataset name collisions in session-scoped container, doc-id vs chunk-id mix-up. Format: clean. Typecheck: 19 errors (all pre-existing). |
-| DOC-01 | Doc cleanup (stale revisions claim + blocked→done transitions) | INT-01, P0-08, P1-30, P1-31, P1-32 | `.planning/tdd/tasks.md`, `.planning/tdd/code-status.md` | low | pending | — | Wave 13 closeout. Remove "1 failed test in test_revisions.py" line (verified 22/22 green). Re-state Wave 6 and Wave 12 as DONE. |
+| DOC-01 | Doc cleanup (stale revisions claim + blocked→done transitions) | INT-01, P0-08, P1-30, P1-31, P1-32 | `.planning/tdd/tasks.md`, `.planning/tdd/code-status.md` | low | done | tdd-principal | Wave 13 closeout. Stale "1 failed test" line removed. Wave 6 + 12 flipped to DONE. Wave 13 summary appended. |
 
 ## Acceptance details
 
@@ -331,14 +331,14 @@ Source plan: `/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Works
 - **Wave 3 (✅ DONE):** P1-13..P1-17 (revision API, collapsed cycle). Fixed sort-key bug.
 - **Wave 4 (✅ DONE):** P0-06.
 - **Wave 5 (✅ DONE):** P0-07.
-- **Wave 6 (🚫 deferred → re-folded into Wave 13):** P0-08. Originally blocked on Docker; rerouted.
+- **Wave 6 (✅ DONE in Wave 13b):** P0-08. Originally blocked on Docker; landed once Docker came online.
 - **Wave 7 (✅ DONE):** P1-18, P1-22.
 - **Wave 8 (✅ DONE):** P1-19, P1-23, P1-24, P1-25.
 - **Wave 9 (✅ DONE):** P1-20, P1-21, P1-26.
 - **Wave 10 (✅ DONE):** P1-27.
 - **Wave 11 (✅ DONE):** P1-28, P1-29.
-- **Wave 12 (🚫 deferred → re-folded into Wave 13):** P1-30, P1-31, P1-32.
-- **Wave 13 (in progress) — Integration test rehab:** INT-01 → {P0-08, P1-30, P1-31, P1-32} parallel → INT-02 (conditional) → DOC-01.
+- **Wave 12 (✅ DONE in Wave 13b):** P1-30, P1-31, P1-32.
+- **Wave 13 (✅ DONE) — Integration test rehab:** INT-01 → INT-02 → {P0-08, P1-30, P1-31, P1-32} parallel → bug-fix coder → DOC-01.
 
 ## Out of scope
 
@@ -370,15 +370,70 @@ Implementation of the Active Directory Sync feature is complete across 12 waves 
 | `corpus_forge/ingest.py` | embedder_ids pass-through in ingest_one |
 | `config.example.toml` | Sync config example |
 
-### Gates run
-- **lint**: `uv run ruff check corpus_forge tests` — clean
-- **format**: `uv run ruff format --check corpus_forge tests` — clean
-- **test**: 644 passed, 1 failed (pre-existing tester assertion bug, not production code), 33 skipped
-- **coverage**: 92.36% (threshold 85%)
-- **integration / E2E smoke**: Skipped (no Docker in this environment — 6 integration tests blocked: P0-08, P1-30..P1-32)
+### Gates run (post-Wave 13)
+- **lint**: `uv run ruff check corpus_forge tests` — pre-existing 437 warnings (PLR2004/PLC0415 patterns from before Wave 13); 0 new errors introduced.
+- **format**: `uv run ruff format --check corpus_forge tests` — clean (83 files).
+- **typecheck**: `uv run pyrefly check corpus_forge` — 17 pre-existing errors (down from 19).
+- **test (unit)**: 668 passed, 8 skipped (OpenAI deps), 0 failed.
+- **coverage**: ≥85% threshold maintained.
+- **test (integration)**: 102 passed, 9 warnings, 0 failed.
 
 ### Known deferred items
-- E2E integration tests (P0-08, P1-30, P1-31, P1-32) require Docker/testcontainers
 - `resolve --strategy merge` is a P2 feature
 - `LISTEN/NOTIFY` low-latency channel is a P2 feature
-- One pre-existing test assertion bug in `test_revisions.py` (`test_uses_order_by_revision_number_desc_and_limit_one` — casing)
+
+## Wave 13 Summary — Integration test rehab
+
+Triggered when Docker Desktop came online. Surface: the four "blocked" E2E test files (P0-08, P1-30, P1-31, P1-32) were never actually written; the existing 5 integration files used a SQLAlchemy-flavoured DSN that psycopg rejects.
+
+### Files changed in Wave 13
+
+| File | Role |
+|------|------|
+| `tests/conftest.py` | Centralized session-scoped `postgres_container` + `pg_dsn` (libpq) + `pg` alias. Removed unused `pgvector_container`, fixed duplicate `temp_dir`. |
+| `tests/integration/test_dsn_fixture.py` | New — pins libpq DSN contract. |
+| `tests/integration/test_backend.py` | Refactored to use `pg_dsn` + `psycopg.connect(pg_dsn)`. |
+| `tests/integration/test_ingest.py` | Same; vault dotfile fixture; unique source_uri per test. |
+| `tests/integration/test_migrate_002.py`, `test_migrate_003.py` | Same DSN refactor. |
+| `tests/integration/test_chunk_reuse_e2e.py` | New — P0-08 reuse pin (≥7/10 + encoder spy ≤3). |
+| `tests/integration/test_sync_push_pull.py` | New — P1-30 cross-host push/pull pin. |
+| `tests/integration/test_sync_tombstone.py` | New — P1-31 delete-and-resurrect pin. |
+| `tests/integration/test_sync_icloud_dupe.py` | New — P1-32 iCloud-dupe cleanup pin. |
+| `corpus_forge/backends/postgres.py` | Added `resolve_document`, `find_document`. Fixed `_copy_reusable_embeddings` (embedder_id), `upsert_document` reuse-before-delete semantics, `pending_remote_revisions` JOIN-and-select source_uri/source_id/parent_content_hash, `mark_revision_pulled` correctness. |
+| `corpus_forge/sync/push.py` | source_uri now relative to source_root; `insert_revision` source_uri kwarg passed; `_handle_cloud_duplicate` wired into `handle_change`; `upsert_document` call uses real RawDocument. |
+| `corpus_forge/sync/pull.py` | reads `source_uri` (relative) and `source_id` from joined query; resolves local path correctly. |
+| `corpus_forge/sync/engine.py`, `corpus_forge/sync/__init__.py` | Wire source_root + chunker + embedders into PushPipeline construction. |
+| `corpus_forge/embedders/registry.py`, `embedders/sentence_transformers.py`, `chunkers/base.py`, `sources/markdown_vault.py`, `schema/001_core.sql`, `schema/migrate.py` | INT-02 surgical fixes (overwrite-in-place register; encode([]) guard; chunker heading; markdown_vault excludes; SQL comment semicolon). |
+
+### Bugs surfaced and fixed
+
+| Bug | File | Symptom | Fix |
+|-----|------|---------|-----|
+| Migration SQL comment wrap | `postgres.py:77-78` | `--` only comments first line; line 78 parsed as SQL → syntax error | Collapse comment to one line |
+| testcontainers `get_connection_url()` | 5 integration files | Returns `postgresql+psycopg2://...`; psycopg rejects | Centralized `pg_dsn` fixture |
+| `pg.get_connection()` removed | testcontainers 4.x | AttributeError | `psycopg.connect(pg_dsn)` |
+| Embedder registry overwrite | `registry.py` | new instance instead of in-place | overwrite-in-place |
+| `encode([])` shape | `sentence_transformers.py` | shape mismatch | early return `np.empty((0, dim))` |
+| Markdown chunker heading | `chunkers/base.py` | heading not preserved | `_extract_heading` + `_create_chunk` |
+| `markdown_vault` defaults | `sources/markdown_vault.py` | wrong excludes/casing | `[".obsidian/**", ".trash/**"]` + Path normalize |
+| `_copy_reusable_embeddings` INSERT | `postgres.py` | NOT NULL on embedder_id | added column to SELECT |
+| Reuse race in `upsert_document` | `postgres.py` | DELETE before lookup → 0% reuse | UPDATE-in-place (or snapshot before delete) |
+| Push: `resolve_document` missing | `push.py:84` | AttributeError per file event | added `resolve_document` to backend |
+| Push: `insert_revision` missing source_uri | `push.py:96` | TypeError on call | pass `source_uri=source_uri` |
+| Push: absolute source_uri | `push.py:82` | pull on different host can't reconstruct path | record relative to source_root |
+| Push: `upsert_document(None, [])` | `push.py:105` | crash on `doc.source_uri` | build real RawDocument from text |
+| Push: dead `_handle_cloud_duplicate` | `push.py` | iCloud dupes never cleaned up | wire into `handle_change` |
+| Pull: missing `source_uri` row field | `pull.py:69` | KeyError on `rev["source_uri"]` | JOIN documents in `pending_remote_revisions` |
+| Pull: missing `source_id` row field | `pull.py:82` | KeyError on `rev["source_id"]` | JOIN sources or self-resolve |
+| Pull: missing `parent_content_hash` | `pull.py:71` | always None | LEFT JOIN parent revision |
+
+### Verification
+
+`PYTHONPATH=. uv run pytest tests/integration -v` → **102 passed, 9 warnings, 0 failed**.
+`PYTHONPATH=. uv run pytest tests/unit --cov-fail-under=85` → **668 passed, 8 skipped, 0 failed**.
+
+### Stale claims removed
+
+- "1 pre-existing test assertion bug in `test_revisions.py`" — verified 22/22 green; no casing bug present.
+- Wave 6 (P0-08) and Wave 12 (P1-30..P1-32) flipped from `blocked` to ✅ DONE.
+- "6 integration tests blocked" claim updated: 102 integration tests passing.
