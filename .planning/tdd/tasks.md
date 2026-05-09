@@ -38,7 +38,7 @@ Source plan: `/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Works
 | P0-05 | `_copy_reusable_embeddings` helper on `PostgresBackend` | P0-04 | `corpus_forge/backends/postgres.py`, `tests/unit/test_chunk_reuse.py` | med | done | tdd-qa | Per-call cache `(content_hash, embedder_id) → chunk_id`. Returns set of reused embedder_ids. QA approved. |
 | P0-06 | `upsert_document` accepts `embedder_ids` and triggers reuse | P0-05 | `corpus_forge/backends/postgres.py`, `corpus_forge/backends/base.py`, `tests/unit/test_chunk_reuse.py` | med | done | tdd-qa | Signature change: `upsert_document(..., embedder_ids: list[int] \| None = None)`. Backwards-compat default keeps None = no reuse. QA approved. |
 | P0-07 | `ingest_one` passes active embedder ids into `upsert_document` | P0-06 | `corpus_forge/ingest.py`, `tests/unit/test_ingest_core.py` (or test_ingest_helpers) | low | done | tdd-qa | Resolve embedder_id via `backend.register_embedder(e)` once per call, pass list. QA approved. |
-| P0-08 | E2E reuse test (testcontainers) | P0-03..P0-07 | `tests/integration/test_chunk_reuse_e2e.py` | med | blocked | — | Requires Docker/testcontainers — not available in this environment. |
+| P0-08 | E2E reuse test (testcontainers) | P0-03..P0-07, INT-01 | `tests/integration/test_chunk_reuse_e2e.py` | med | pending | — | Wave 13: file does not exist yet. Was blocked on Docker; Docker is now up. Depends on DSN fixture (INT-01). |
 | P1-01 | `003_sync.sql` migration file (DDL only) | P0-02 (file ordering) | `corpus_forge/schema/003_sync.sql` | low | done | tdd-tester | DDL created. 31 tests green. |
 | P1-02 | Migration runner applies `003_sync.sql` cleanly + idempotent | P1-01 | `corpus_forge/schema/migrate.py`, `tests/integration/test_migrate_003.py` | low | done | tdd-qa | Existing runner already loops numbered files; just confirm. QA approved. |
 | P1-03 | Pydantic config sync fields + validators | — | `corpus_forge/config.py`, `tests/unit/test_config.py` (and/or test_config_extended) | low | done | tdd-qa | 58/58 pass. QA approved. |
@@ -68,9 +68,12 @@ Source plan: `/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Works
 | P1-27 | `sync/engine.py::SyncEngine` lifecycle (start/stop both halves per dataset) | P1-19, P1-26 | `corpus_forge/sync/engine.py`, `corpus_forge/sync/__init__.py` (export), `tests/unit/test_sync_engine.py` | med | done | tdd-qa | Owns push pipeline + pull pipeline. `start()` non-blocking, `stop()` flushes. QA approved. |
 | P1-28 | `daemon.py` orchestrator: per-dataset SyncEngine vs ingest_main | P1-27, P1-04 | `corpus_forge/daemon.py`, `tests/unit/test_daemon.py` | med | done | tdd-qa | Replaces 39-line stub. Block on signals, call `engine.stop()` on shutdown. QA approved. |
 | P1-29 | CLI `sync` Typer subgroup | P1-04, P1-13..P1-17, P1-09 | `corpus_forge/cli.py`, `tests/unit/test_cli_sync.py` | med | done | tdd-qa | Commands: `status`, `pull --once/--continuous -d DATASET`, `push`, `resolve CONFLICT_FILE --strategy keep-local\|keep-remote`, `history SOURCE_URI [--limit N]`. P2 strategies (`merge`) raise NotImplemented with friendly error. QA approved. |
-| P1-30 | E2E push→pull integration test (testcontainers) | P1-27, P1-28 | `tests/integration/test_sync_push_pull.py` | high | blocked | — | Requires Docker/testcontainers — not available in this environment. |
-| P1-31 | E2E tombstone integration test | P1-25, P1-27 | `tests/integration/test_sync_tombstone.py` | med | blocked | — | Requires Docker/testcontainers — not available in this environment. |
-| P1-32 | E2E iCloud-duplicate integration test | P1-08, P1-20 | `tests/integration/test_sync_icloud_dupe.py` | med | blocked | — | Requires Docker/testcontainers — not available in this environment. |
+| P1-30 | E2E push→pull integration test (testcontainers) | P1-27, P1-28, INT-01 | `tests/integration/test_sync_push_pull.py` | high | pending | — | Wave 13: file does not exist yet. Test will use a small `sync_poll_interval_s` (e.g. 0.5s) per Q3 default-(c). |
+| P1-31 | E2E tombstone integration test | P1-25, P1-27, INT-01 | `tests/integration/test_sync_tombstone.py` | med | pending | — | Wave 13: file does not exist yet. |
+| P1-32 | E2E iCloud-duplicate integration test | P1-08, P1-20, INT-01 | `tests/integration/test_sync_icloud_dupe.py` | med | pending | — | Wave 13: file does not exist yet. Simulates iCloud path-shape under tmp_path; production code uses substring match on resolved path so a directory named `Library/Mobile Documents/com~apple~CloudDocs/...` under tmp_path will trigger detection. |
+| INT-01 | DSN fixture refactor (libpq DSN) | — | `tests/conftest.py`, `tests/integration/test_backend.py`, `tests/integration/test_embedder_contract.py`, `tests/integration/test_ingest.py`, `tests/integration/test_migrate_002.py`, `tests/integration/test_migrate_003.py` | low | pending | — | Wave 13. testcontainers' `pg.get_connection_url()` returns SQLAlchemy-style `postgresql+psycopg2://…` which `psycopg.connect` rejects. Centralize a `pg_dsn` / `postgres_container` fixture returning libpq DSN; refactor 5 files to consume it. |
+| INT-02 | Triage residual integration failures | INT-01 | `tests/integration/*` (TBD) | med | pending | — | Wave 13. Only runs if INT-01 leaves anything red. Pre-DSN-fix triage list: `test_advisory_lock_*`, `test_chunks_missing_embedding`, `test_write_embeddings_empty_does_not_raise`, two `test_embedder_contract` failures. Pull pipeline's `path = source_root / rev["source_uri"]` may be a real bug if `source_uri` is absolute — flag during triage. |
+| DOC-01 | Doc cleanup (stale revisions claim + blocked→done transitions) | INT-01, P0-08, P1-30, P1-31, P1-32 | `.planning/tdd/tasks.md`, `.planning/tdd/code-status.md` | low | pending | — | Wave 13 closeout. Remove "1 failed test in test_revisions.py" line (verified 22/22 green). Re-state Wave 6 and Wave 12 as DONE. |
 
 ## Acceptance details
 
@@ -296,6 +299,30 @@ Source plan: `/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Works
 - Drop `Foo 2.md` matching hash next to `Foo.md` → push deletes `Foo 2.md`; only one document exists.
 - Drop `Foo 2.md` differing from `Foo.md` → push renames it to `Foo.conflict-icloud-<host>-<ts>.md` and inserts a conflict revision.
 
+### INT-01 — DSN fixture refactor
+- Add a `postgres_container` (or `pg`, conftest-scoped) fixture in `tests/conftest.py` that wraps `PostgresContainer("pgvector/pgvector:pg17", port=5432)` and yields the container.
+- Add a `pg_dsn` fixture that takes the container and returns a libpq DSN: `f"postgresql://{c.username}:{c.password}@{c.get_container_host_ip()}:{c.get_exposed_port(5432)}/{c.dbname}"`. (Stripping `+psycopg2` from `get_connection_url()` is acceptable as long as the test asserts the resulting string parses with `psycopg.conninfo.conninfo_to_dict`.)
+- Refactor each of the five existing integration test files to consume the new fixtures. The old per-file `pg` fixture and `_make_backend(pg)` helpers go away or become thin wrappers.
+- Centralize the pgvector extension creation in the conftest fixture (today only `pgvector_container` does it; the per-file `pg` fixtures rely on `backend.migrate()` doing CREATE EXTENSION via `001_core.sql`).
+- Failing micro-test (red signal for tester): a smoke test `tests/integration/test_dsn_fixture.py` (or a `tests/unit/test_conftest_dsn_smoke.py`) asserting `pg_dsn` parses cleanly via `psycopg.conninfo.conninfo_to_dict` and starts with `postgresql://` (no `+psycopg2`).
+- Acceptance: after the refactor, `PYTHONPATH=. uv run pytest tests/integration -v` shows 0 failures attributable to `psycopg.ProgrammingError: missing "="`. Container start cost reduced (one fixture, not five).
+
+### INT-02 — Triage residual integration failures
+- Only runs if INT-01 leaves any failure. tdd-qa enumerates remaining failures from the INT-01 sign-off run.
+- Triage each: real production bug → file follow-up under a new task id; flaky test setup → fix in place.
+- Known suspects (pre-DSN-fix): `test_advisory_lock_context`, `test_advisory_lock_conflict` (unclear if DSN-only), `test_chunks_missing_embedding` (state leakage across module-scoped container), `test_write_embeddings_empty_does_not_raise` (likely embedder_id 1 not actually registered), `test_embedder_contract::test_duplicate_register_overwrites` and `test_encode_empty_list` (may not need container at all).
+- Suspected real bug to verify: `corpus_forge/sync/pull.py:71` does `path = self._source_root / rev["source_uri"]`. If push records `source_uri = str(path.resolve())` (absolute), `Path("/x") / "/y"` returns `Path("/y")` so `source_root` is silently dropped. Confirm via P1-30 first; if reproducing, decide whether to (a) record relative `source_uri` from push, or (b) compute relative on pull. **Do not pre-judge — let the failing E2E test surface it.**
+
+### DOC-01 — Doc cleanup
+- In `tasks.md`:
+  - Remove the line "One pre-existing test assertion bug in `test_revisions.py`" from the Summary's Known deferred items.
+  - Update the Summary's `test:` line: re-run unit suite and report current pass count (no longer "644 passed, 1 failed").
+  - Update the Summary's `integration / E2E smoke:` line to "all green" with counts.
+  - Re-flag DAG entries: Wave 6 (P0-08) and Wave 12 (P1-30..P1-32) move from blocked to ✅ DONE.
+- In `code-status.md`:
+  - The `P1-13..P1-17` row's "1 test has bug …" claim is stale (test now passes); update note to reflect green.
+- Append a Wave 13 summary block below the existing Summary, listing files changed, gates run, and integration pass counts.
+
 ## DAG (waves at-a-glance — see waves.md for parallelism rationale)
 
 - **Wave 0 (✅ DONE):** P0-01, P0-02, P1-01, P1-03, P1-05, P1-06, P1-07, P1-09, P1-10.
@@ -304,13 +331,14 @@ Source plan: `/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Works
 - **Wave 3 (✅ DONE):** P1-13..P1-17 (revision API, collapsed cycle). Fixed sort-key bug.
 - **Wave 4 (✅ DONE):** P0-06.
 - **Wave 5 (✅ DONE):** P0-07.
-- **Wave 6 (🚫 cannot run — no Docker):** P0-08. All integration tests are skipped in this env.
-- **Wave 7 (in progress):** P1-18, P1-22.
-- **Wave 8:** P1-19, P1-23, P1-24, P1-25.
-- **Wave 9:** P1-20, P1-21, P1-26.
+- **Wave 6 (🚫 deferred → re-folded into Wave 13):** P0-08. Originally blocked on Docker; rerouted.
+- **Wave 7 (✅ DONE):** P1-18, P1-22.
+- **Wave 8 (✅ DONE):** P1-19, P1-23, P1-24, P1-25.
+- **Wave 9 (✅ DONE):** P1-20, P1-21, P1-26.
 - **Wave 10 (✅ DONE):** P1-27.
 - **Wave 11 (✅ DONE):** P1-28, P1-29.
-- **Wave 12 (🚫 cannot run — no Docker):** P1-30, P1-31, P1-32. All E2E integration tests require Docker/testcontainers.
+- **Wave 12 (🚫 deferred → re-folded into Wave 13):** P1-30, P1-31, P1-32.
+- **Wave 13 (in progress) — Integration test rehab:** INT-01 → {P0-08, P1-30, P1-31, P1-32} parallel → INT-02 (conditional) → DOC-01.
 
 ## Out of scope
 
