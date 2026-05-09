@@ -688,6 +688,53 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
 - iCloud substring detection under tmp_path: **CONFIRMED WORKING** (test_icloud_substring_detected PASSED)
 - Status: red — 2 production bugs surfaced, handed off to tdd-coder for BUG-PUSH-DUPE + BUG-PUSH-RESOLVE fixes
 
+## P1-31 — E2E tombstone integration test
+- Test files: `tests/integration/test_sync_tombstone.py`
+- Run command: `PYTHONPATH=. uv run pytest tests/integration/test_sync_tombstone.py -v --no-header 2>&1 | tail -30`
+- Edge case checklist:
+  - [x] happy path — delete on A, file disappears from B root, appears in B's trash_b
+  - [x] trash path shape — `<trash_b>/<dataset_component>/doomed.deleted-macA-<ts>.md`, `.md` suffix preserved
+  - [x] tombstone revision — `document_revisions.is_tombstone = TRUE`, `author_host = 'macA'`
+  - [x] tombstone revision content — `content_hash = sha256(b'')`, `text = ''`
+  - [x] tombstoned_at flag — `documents.tombstoned_at` set to non-NULL after delete
+  - [x] resurrection clears flag — re-create on A → B sees file again; `tombstoned_at = NULL`
+  - [x] resurrection content — B has the re-created content verbatim
+  - [x] dataset rel-path preserved — trashed file stays under dataset-scoped subdirectory inside trash_b
+  - [x] iCloud guard — sibling `.icloud` placeholder present → handle_delete is a no-op (no tombstone)
+  - [x] untracked file delete — handle_delete on a file never pushed → no revision inserted, no crash
+  - [x] poll loop — PullPipeline poll thread picks up tombstone without manual tick
+  - [ ] N/A — concurrency (push and pull drive sequentially in tests; internal threading is exercised by poll loop test)
+  - [ ] N/A — locale/time (UTC timestamp format embedded in trash filename; not the focus of this task)
+  - [ ] N/A — type/format (content is always UTF-8 markdown)
+- Bugs found during test writing (real production bugs confirmed by test run, NOT papered over):
+  1. **BUG-PUSH-RESOLVE** (same as P1-30): `push.py:84` calls `self._backend.resolve_document(dataset_id, source_uri)` — `PostgresBackend` has no `resolve_document` method. `AttributeError` on every `handle_change` and `handle_delete` call. All 13 tests fail at this point.
+  2. **BUG-PULL-SOURCE-URI** (latent, will surface after BUG-1 fixed): `pull.py:69` does `path = self._source_root / rev["source_uri"]`. `pending_remote_revisions` returns `r.*` from `document_revisions`, which has no `source_uri` column — will cause `KeyError`. Additionally, even if `source_uri` were added to the join, it would be an absolute path from push (stored as `str(path.resolve())`), so `Path(root_b) / "/abs/path"` silently drops `root_b`.
+  3. **BUG-PULL-SOURCE-ID** (latent): `pull.py:83` calls `mark_revision_pulled(source_id=rev["source_id"], ...)` — no `source_id` in `document_revisions` table.
+- Red output (tail):
+  ```
+      with self._backend.lock_source(source_uri):
+  >       doc = self._backend.resolve_document(self._dataset_id, source_uri)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  E       AttributeError: 'PostgresBackend' object has no attribute 'resolve_document'. Did you mean: 'delete_document'?
+
+  corpus_forge/sync/push.py:84: AttributeError
+  FAILED tests/integration/test_sync_tombstone.py::TestTombstoneDeleteOnA::test_delete_on_a_tombstones_on_b
+  FAILED tests/integration/test_sync_tombstone.py::TestTombstoneDeleteOnA::test_trash_path_dataset_component_matches_contract
+  FAILED tests/integration/test_sync_tombstone.py::TestTombstoneDeleteOnA::test_tombstone_revision_content_hash_is_empty_sha256
+  FAILED tests/integration/test_sync_tombstone.py::TestTombstoneDeleteOnA::test_tombstoned_at_set_on_document
+  FAILED tests/integration/test_sync_tombstone.py::TestTombstoneResurrection::test_resurrect_clears_tombstone
+  FAILED tests/integration/test_sync_tombstone.py::TestTombstoneResurrection::test_resurrect_content_appears_on_b
+  FAILED tests/integration/test_sync_tombstone.py::TestTombstonePushSideOnly::test_handle_delete_inserts_tombstone_revision
+  FAILED tests/integration/test_sync_tombstone.py::TestTombstonePushSideOnly::test_handle_delete_sets_tombstoned_at
+  FAILED tests/integration/test_sync_tombstone.py::TestTombstonePushSideOnly::test_handle_delete_noop_when_file_not_tracked
+  FAILED tests/integration/test_sync_tombstone.py::TestTombstonePushSideOnly::test_handle_delete_ignores_icloud_placeholder
+  FAILED tests/integration/test_sync_tombstone.py::TestPullSideTombstone::test_pull_tombstone_moves_file_to_trash
+  FAILED tests/integration/test_sync_tombstone.py::TestPullSideTombstone::test_pull_tombstone_sets_tombstoned_at
+  FAILED tests/integration/test_sync_tombstone.py::TestTombstonePollLoop::test_poll_loop_processes_tombstone
+  ============================== 13 failed in 6.46s ==============================
+  ```
+- Status: red — same root production bug as P1-30 (resolve_document missing). Handed off to tdd-coder via same INT-03 fix. Tests must NOT be relaxed.
+
 ## P1-30 — E2E push/pull cross-host integration test
 - Test files: `tests/integration/test_sync_push_pull.py`
 - Run command: `PYTHONPATH=. uv run pytest tests/integration/test_sync_push_pull.py -v --no-header 2>&1 | tail -40`
