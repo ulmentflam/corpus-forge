@@ -82,7 +82,7 @@ class PostgresBackend(StorageBackend):
         CREATE TABLE IF NOT EXISTS sources (
           id           BIGSERIAL PRIMARY KEY,
           dataset_id   BIGINT NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
-          plugin       TEXT NOT NULL,                -- 'markdown_vault' | 'claude_code' | 'opencode'
+          plugin       TEXT NOT NULL,               -- 'markdown_vault' | 'claude_code' | 'opencode'
           identity     TEXT NOT NULL,                -- canonical id, e.g. vault root path
           host         TEXT NOT NULL,                -- writer hostname (multi-Mac coord)
           config       JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -353,7 +353,8 @@ class PostgresBackend(StorageBackend):
             # Load prior chunks keyed by content_hash (for embedding reuse)
             # and by chunk_index (for update-in-place matching).
             prior_rows = self._execute(
-                "SELECT id, chunk_index, content_hash, heading FROM corpus.chunks WHERE document_id = %s ORDER BY chunk_index",
+                "SELECT id, chunk_index, content_hash, heading"
+                " FROM corpus.chunks WHERE document_id = %s ORDER BY chunk_index",
                 (doc_id,),
             )
             # content_hash -> first surviving chunk_id (for reuse cache seeding)
@@ -693,7 +694,8 @@ class PostgresBackend(StorageBackend):
         if not source_uri:
             return None
         rows = self._execute(
-            "SELECT id, content_hash FROM corpus.documents WHERE dataset_id = %s AND source_uri = %s",
+            "SELECT id, content_hash FROM corpus.documents"
+            " WHERE dataset_id = %s AND source_uri = %s",
             (dataset_id, source_uri),
         )
         if rows:
@@ -714,7 +716,8 @@ class PostgresBackend(StorageBackend):
         Returns None if no row exists for (dataset_id, source_uri).
         """
         rows = self._execute(
-            "SELECT id, content_hash FROM corpus.documents WHERE dataset_id = %s AND source_uri = %s",
+            "SELECT id, content_hash FROM corpus.documents"
+            " WHERE dataset_id = %s AND source_uri = %s",
             (dataset_id, source_uri),
         )
         return rows[0] if rows else None
@@ -722,7 +725,8 @@ class PostgresBackend(StorageBackend):
     def resolve_self_source(self, dataset_id: int, host: str) -> int:
         """Upsert a sources row for this host's pull tracker and return its id."""
         rows = self._execute(
-            "SELECT id FROM corpus.sources WHERE dataset_id = %s AND plugin = %s AND identity = %s AND host = %s",
+            "SELECT id FROM corpus.sources"
+            " WHERE dataset_id = %s AND plugin = %s AND identity = %s AND host = %s",
             (dataset_id, "sync", "pull", host),
         )
         if rows:
@@ -816,7 +820,7 @@ class PostgresBackend(StorageBackend):
         self,
         *,
         document_id: int,
-        source_uri: str,
+        source_uri: str,  # noqa: ARG002 — part of public API (base.py); not stored in SQL directly
         content_hash: str,
         text: str,
         parent_revision_id: int | None,
@@ -831,7 +835,8 @@ class PostgresBackend(StorageBackend):
         acquisition was removed to avoid double-lock across separate connections.
         """
         max_row = self._execute(
-            "SELECT MAX(revision_number) AS max FROM corpus.document_revisions WHERE document_id = %s",
+            "SELECT MAX(revision_number) AS max FROM corpus.document_revisions"
+            " WHERE document_id = %s",
             (document_id,),
         )
         revision_number = (max_row[0]["max"] or 0) + 1
@@ -859,7 +864,8 @@ class PostgresBackend(StorageBackend):
     def latest_revision(self, document_id: int) -> dict | None:
         """Return the highest revision_number row for a document, or None."""
         rows = self._execute(
-            "SELECT * FROM corpus.document_revisions WHERE document_id = %s ORDER BY revision_number DESC LIMIT 1",
+            "SELECT * FROM corpus.document_revisions"
+            " WHERE document_id = %s ORDER BY revision_number DESC LIMIT 1",
             (document_id,),
         )
         return rows[0] if rows else None
@@ -896,7 +902,9 @@ class PostgresBackend(StorageBackend):
     def mark_revision_pulled(self, source_id: int, revision_id: int) -> None:
         """Advance last_pulled_revision_id for a source using GREATEST."""
         self._execute(
-            "UPDATE corpus.sources SET last_pulled_revision_id = GREATEST(COALESCE(last_pulled_revision_id, 0), %s) WHERE id = %s",
+            "UPDATE corpus.sources"
+            " SET last_pulled_revision_id = GREATEST(COALESCE(last_pulled_revision_id, 0), %s)"
+            " WHERE id = %s",
             (revision_id, source_id),
         )
 

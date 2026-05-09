@@ -16,7 +16,7 @@ app = typer.Typer(
 @app.command()
 def migrate():
     """Apply schema migrations."""
-    from .schema.migrate import main  # noqa: PLC0415
+    from .schema.migrate import main
 
     main()
 
@@ -24,7 +24,7 @@ def migrate():
 @app.command()
 def ingest(once: bool = typer.Option(False, "--once", help="Run one-shot ingestion pass")):
     """Run ingestion daemon or one-shot pass."""
-    from .ingest import main  # noqa: PLC0415
+    from .ingest import main
 
     main(once=once)
 
@@ -36,7 +36,7 @@ def embed(
     limit: int | None = typer.Option(None, "-l", help="Max chunks to process"),
 ):
     """Backfill embeddings for chunks."""
-    from .embed import main  # noqa: PLC0415
+    from .embed import main
 
     main(embedder=embedder, dataset=dataset, limit=limit)
 
@@ -44,7 +44,7 @@ def embed(
 @app.command()
 def daemon():
     """Run daemon in foreground (dev)."""
-    from .daemon import main  # noqa: PLC0415
+    from .daemon import main
 
     main()
 
@@ -88,7 +88,7 @@ def status(
         config = Config.load()
     except FileNotFoundError:
         typer.echo("No configuration found; run 'corpus-forge migrate' to initialise.")
-        raise typer.Exit()
+        raise typer.Exit() from None
     try:
         backend = _get_backend(config)
         for ds in config.datasets:
@@ -105,13 +105,13 @@ def status(
             )
     except Exception as exc:
         typer.echo(f"Error: {exc}")
-        raise typer.Exit()
+        raise typer.Exit() from None
 
 
 @sync_app.command()
 def pull(
     once: bool = typer.Option(False, "--once", help="Single pull cycle"),
-    continuous: bool = typer.Option(False, "--continuous", help="Continuous polling"),
+    _continuous: bool = typer.Option(False, "--continuous", help="Continuous polling"),
     dataset: str = typer.Option(..., "-d", "--dataset", help="Dataset name"),
 ):
     """Pull remote changes for a dataset."""
@@ -121,7 +121,7 @@ def pull(
         config = Config.load()
     except FileNotFoundError:
         typer.echo("No configuration found.")
-        raise typer.Exit()
+        raise typer.Exit() from None
     try:
         backend = _get_backend(config)
         from corpus_forge.ingest import _instantiate_source
@@ -150,7 +150,7 @@ def pull(
                     typer.echo(f"Continuous pull started for {ds.name}/{src_cfg.plugin}")
     except Exception as exc:
         typer.echo(f"Error: {exc}")
-        raise typer.Exit()
+        raise typer.Exit() from None
 
 
 @sync_app.command()
@@ -164,7 +164,7 @@ def push(
         config = Config.load()
     except FileNotFoundError:
         typer.echo("No configuration found.")
-        raise typer.Exit()
+        raise typer.Exit() from None
     try:
         backend = _get_backend(config)
         from corpus_forge.ingest import _instantiate_source
@@ -190,7 +190,7 @@ def push(
                 typer.echo(f"Push started for {ds.name}/{src_cfg.plugin}")
     except Exception as exc:
         typer.echo(f"Error: {exc}")
-        raise typer.Exit()
+        raise typer.Exit() from None
 
 
 @sync_app.command()
@@ -238,7 +238,7 @@ def history(
         config = Config.load()
     except FileNotFoundError:
         typer.echo("No configuration found.")
-        raise typer.Exit()
+        raise typer.Exit() from None
     try:
         backend = _get_backend(config)
         rows = backend._execute(
@@ -265,7 +265,7 @@ def history(
             )
     except Exception as exc:
         typer.echo(f"Error: {exc}")
-        raise typer.Exit()
+        raise typer.Exit() from None
 
 
 if __name__ == "__main__":

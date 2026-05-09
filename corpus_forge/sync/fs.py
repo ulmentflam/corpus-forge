@@ -1,5 +1,6 @@
 """Atomic file-write and trash-move utilities for the sync subsystem."""
 
+import errno
 import os
 import shutil
 import tempfile
@@ -36,12 +37,12 @@ def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
         os.fsync(fd)
         os.close(fd)
         fd = None
-        os.replace(tmp_path, str(path))
+        os.replace(tmp_path, str(path))  # noqa: PTH105 — tests patch corpus_forge.sync.fs.os.replace
     finally:
         if fd is not None:
             os.close(fd)
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        if Path(tmp_path).exists():
+            os.unlink(tmp_path)  # noqa: PTH108 — tests patch corpus_forge.sync.fs.os.unlink
         if not parent_existed:
             _remove_empty_parents(path.parent)
 
@@ -73,11 +74,11 @@ def move_to_trash(
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        os.replace(str(src), str(dest))
+        os.replace(str(src), str(dest))  # noqa: PTH105 — tests patch corpus_forge.sync.fs.os.replace
     except OSError as e:
-        if e.errno == 18:  # EXDEV: cross-device link
+        if e.errno == errno.EXDEV:  # cross-device link
             shutil.copy2(str(src), str(dest))
-            os.unlink(str(src))
+            os.unlink(str(src))  # noqa: PTH108 — tests patch corpus_forge.sync.fs.os.unlink
         else:
             raise
 
