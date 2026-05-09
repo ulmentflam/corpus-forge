@@ -17,7 +17,7 @@ from .base import BaseEmbedder
 class SentenceTransformersEmbedder(BaseEmbedder):
     """Sentence Transformers embedder."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         name: str,
         model_id: str,
