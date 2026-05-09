@@ -21,7 +21,7 @@ class TestEmbedderRegistry:
         assert embedder.name == "test-st"
         assert embedder.provider == "sentence_transformers"
         assert embedder.model_id == "test-model"
-        assert embedder.dimension == 384  # noqa: PLR2004
+        assert embedder.dimension == 384
 
     def test_register_openai(self):
         """Test registering an OpenAI embedder."""
@@ -35,7 +35,7 @@ class TestEmbedderRegistry:
         assert embedder.name == "test-openai"
         assert embedder.provider == "openai"
         assert embedder.model_id == "text-embedding-3-small"
-        assert embedder.dimension == 1536  # noqa: PLR2004
+        assert embedder.dimension == 1536
 
     def test_register_invalid_provider(self):
         """Test that invalid provider raises ValueError."""
@@ -85,7 +85,7 @@ class TestEmbedderRegistry:
         names = registry.list_names()
         assert "embedder-1" in names
         assert "embedder-2" in names
-        assert len(names) == 2  # noqa: PLR2004
+        assert len(names) == 2
 
     def test_clear(self):
         """Test clearing all registered embedders."""
@@ -128,7 +128,7 @@ class TestBaseEmbedder:
         assert embedder.name == "test"
         assert embedder.provider == "sentence_transformers"
         assert embedder.model_id == "test-model"
-        assert embedder.dimension == 384  # noqa: PLR2004
+        assert embedder.dimension == 384
         assert embedder.normalized is True
         assert embedder.distance == "cosine"
 

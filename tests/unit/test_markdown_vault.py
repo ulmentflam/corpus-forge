@@ -13,7 +13,7 @@ class TestMarkdownVaultSource:
         """Test that discover yields markdown files."""
         source = MarkdownVaultSource(vault_root=sample_vault_dir)
         files = list(source.discover())
-        assert len(files) == 2  # noqa: PLR2004
+        assert len(files) == 2
         file_names = {f.name for f in files}
         assert "note1.md" in file_names
         assert "note2.md" in file_names
@@ -102,7 +102,7 @@ class TestMarkdownVaultSource:
         # Same file should produce same hash
         hash2 = source.file_content_hash(note_path)
         assert hash1 == hash2
-        assert len(hash1) == 64  # SHA256 hex digest length  # noqa: PLR2004
+        assert len(hash1) == 64  # SHA256 hex digest length
 
     def test_identity(self, sample_vault_dir):
         """Test identity method returns resolved path."""

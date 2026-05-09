@@ -144,14 +144,14 @@ class TestDDLContent:
     # ── ALTER TABLE: sources.last_pulled_revision_id ────────────────────
 
     def test_add_last_pulled_revision_id_column(self, sql):
-        """DDL: ALTER TABLE corpus.sources ADD COLUMN IF NOT EXISTS last_pulled_revision_id BIGINT."""
+        """DDL: ALTER TABLE corpus.sources ADD COLUMN IF NOT EXISTS last_pulled_revision_id."""
         assert "ALTER TABLE corpus.sources" in sql
         assert "ADD COLUMN IF NOT EXISTS last_pulled_revision_id BIGINT" in sql
 
     # ── ALTER TABLE: sources.sync_enabled ───────────────────────────────
 
     def test_add_sync_enabled_column(self, sql):
-        """DDL: ALTER TABLE corpus.sources ADD COLUMN IF NOT EXISTS sync_enabled BOOLEAN DEFAULT FALSE."""
+        """DDL: ALTER TABLE corpus.sources ADD COLUMN IF NOT EXISTS sync_enabled."""
         assert "ALTER TABLE corpus.sources" in sql
         assert "ADD COLUMN IF NOT EXISTS sync_enabled BOOLEAN DEFAULT FALSE" in sql
 
@@ -190,7 +190,7 @@ class TestDDLContent:
         assert "DENY " not in upper_sql
 
     def test_statements_count(self, sql):
-        """Structure: exactly 6 executable statements (1 CREATE TABLE + 2 CREATE INDEX + 3 ALTER TABLE)."""
+        """Structure: exactly 6 executable statements (1 CREATE TABLE + 2 INDEX + 3 ALTER)."""
         raw_blocks = sql.split(";")
         executable = []
         for block in raw_blocks:
@@ -198,9 +198,9 @@ class TestDDLContent:
             if not stripped:
                 continue
             lines = [
-                l.strip()
-                for l in stripped.splitlines()
-                if l.strip() and not l.strip().startswith("--")
+                ln.strip()
+                for ln in stripped.splitlines()
+                if ln.strip() and not ln.strip().startswith("--")
             ]
             if lines:
                 executable.append(" ".join(lines))
@@ -246,7 +246,7 @@ class TestGetMigrationFiles:
 
         # Find unqualified table references after FROM/ON/INTO keywords
         # (excluding comments)
-        non_comment_lines = [l for l in content.splitlines() if not l.strip().startswith("--")]
+        non_comment_lines = [ln for ln in content.splitlines() if not ln.strip().startswith("--")]
         for line in non_comment_lines:
             stripped = line.strip()
             if not stripped or stripped.startswith("--"):
@@ -258,7 +258,7 @@ class TestGetMigrationFiles:
                 if keyword in stripped.upper():
                     # Extract potential table reference after keyword
                     idx = stripped.upper().index(keyword)
-                    after = stripped[idx + len(keyword) :].strip()
+                    stripped[idx + len(keyword) :].strip()
                     # If it starts with a digit or letter but no dot,
                     # it might be unqualified — but CREATE TABLE /
                     # ADD COLUMN lines have table names in different positions.

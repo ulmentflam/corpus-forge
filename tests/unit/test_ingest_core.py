@@ -153,7 +153,7 @@ class TestProcessConversation:
         )
         chunker = MarkdownChunker(max_chars=1500)
         result = _process_conversation(conv, chunker)
-        assert len(result) == 2  # noqa: PLR2004
+        assert len(result) == 2
 
     def test_process_conversation_empty_messages(self):
         """Test processing a conversation with empty messages."""
@@ -397,7 +397,7 @@ class TestGetOrCreateDataset:
             name = "test-dataset"
 
         result = _get_or_create_dataset(mock_backend, MockDatasetConfig())
-        assert result == 42  # noqa: PLR2004
+        assert result == 42
 
     def test_create_new_dataset(self):
         """Test creating a new dataset."""
@@ -411,9 +411,9 @@ class TestGetOrCreateDataset:
             description = "A test dataset"
 
         result = _get_or_create_dataset(mock_backend, MockDatasetConfig())
-        assert result == 99  # noqa: PLR2004
+        assert result == 99
         # Should have been called twice: once to check, once to insert
-        assert mock_backend._execute.call_count == 2  # noqa: PLR2004
+        assert mock_backend._execute.call_count == 2
 
 
 class TestIngestOneEmbedderIds:

@@ -49,7 +49,7 @@ class TestDDLContent:
         assert "ADD COLUMN IF NOT EXISTS content_hash TEXT" in sql
 
     def test_contains_create_index(self, sql):
-        """DDL: CREATE INDEX IF NOT EXISTS chunks_content_hash_idx ON corpus.chunks(content_hash)."""
+        """DDL: CREATE INDEX IF NOT EXISTS chunks_content_hash_idx ON corpus.chunks."""
         assert "CREATE INDEX IF NOT EXISTS chunks_content_hash_idx" in sql
         assert "ON corpus.chunks(content_hash)" in sql
 
@@ -99,9 +99,9 @@ class TestDDLContent:
                 continue
             # Remove comment-only lines within a block
             lines = [
-                l.strip()
-                for l in stripped.splitlines()
-                if l.strip() and not l.strip().startswith("--")
+                ln.strip()
+                for ln in stripped.splitlines()
+                if ln.strip() and not ln.strip().startswith("--")
             ]
             if lines:
                 executable.append(" ".join(lines))

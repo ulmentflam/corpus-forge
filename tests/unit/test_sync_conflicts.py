@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 # The function does not exist yet — these tests must fail red.
-from corpus_forge.sync.conflicts import conflict_filename
+from corpus_forge.sync.conflicts import conflict_filename, is_cloud_duplicate
 
 # ── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -394,8 +394,6 @@ class TestConflictFilenameRegression:
 # ─────────────────────────────────────────────────────────────────────────────
 # is_cloud_duplicate — detect cloud-sync conflict copies by filename pattern
 # ─────────────────────────────────────────────────────────────────────────────
-
-from corpus_forge.sync.conflicts import is_cloud_duplicate
 
 
 class TestIsCloudDuplicateHappyPath:

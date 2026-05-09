@@ -140,7 +140,7 @@ class TestSmokeVaultIngestion:
         backend = FakeBackend()
         source = MarkdownVaultSource(vault_root=vault)
         chunker = MarkdownChunker(max_chars=1500, overlap=200)
-        embedder = _fake_embedder()
+        _fake_embedder()
 
         # Simulate dataset creation
         dataset_id = 1
@@ -191,8 +191,10 @@ class TestSmokeConversationIngestion:
         proj = projects / "my-project"
         proj.mkdir()
         (proj / "session1.jsonl").write_text(
-            '{"uuid": "m1", "message": {"role": "user", "content": "Hello"}, "timestamp": 1000}\n'
-            '{"uuid": "m2", "message": {"role": "assistant", "content": "Hi!"}, "timestamp": 1001}\n'
+            '{"uuid": "m1", "message": {"role": "user", "content": "Hello"},'
+            ' "timestamp": 1000}\n'
+            '{"uuid": "m2", "message": {"role": "assistant", "content": "Hi!"},'
+            ' "timestamp": 1001}\n'
         )
 
         source = ClaudeCodeSource(projects_root=projects)
@@ -208,7 +210,9 @@ class TestSmokeConversationIngestion:
         (storage / "session" / "sess1").mkdir(parents=True)
         (storage / "message" / "msg1").mkdir(parents=True)
         (storage / "message" / "msg1" / "message.json").write_text(
-            '{"id": "msg1", "parentId": null, "role": "assistant", "content": "Hello world", "timestamp": 1000, "parts": [{"type": "text", "content": "Hello world"}]}'
+            '{"id": "msg1", "parentId": null, "role": "assistant",'
+            ' "content": "Hello world", "timestamp": 1000,'
+            ' "parts": [{"type": "text", "content": "Hello world"}]}'
         )
 
         source = OpenCodeSource(storage_root=storage)
@@ -264,7 +268,8 @@ class TestSmokeChunking:
         vault = temp_dir / "vault"
         vault.mkdir()
         (vault / "headings.md").write_text(
-            "# Main\n\nPara one.\n\n## Sub One\n\nContent A.\n\n## Sub Two\n\nContent B.\n\n### Deep\n\nDeep content."
+            "# Main\n\nPara one.\n\n## Sub One\n\nContent A.\n\n"
+            "## Sub Two\n\nContent B.\n\n### Deep\n\nDeep content."
         )
 
         source = MarkdownVaultSource(vault_root=vault)

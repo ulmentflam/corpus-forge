@@ -86,9 +86,11 @@ class TestTickFastForward:
         rev = _make_revision(parent_content_hash="parent_hash_123")
         pipeline._backend.pending_remote_revisions.return_value = [rev]
 
-        with _patch_file_content_hash(return_value="parent_hash_123"):
-            with _patch_atomic_write_text() as mock_write:
-                result = pipeline.tick()
+        with (
+            _patch_file_content_hash(return_value="parent_hash_123"),
+            _patch_atomic_write_text() as mock_write,
+        ):
+            result = pipeline.tick()
 
         assert result == 1
         mock_write.assert_called_once()
@@ -105,9 +107,11 @@ class TestTickFastForward:
         )
         pipeline._backend.pending_remote_revisions.return_value = [rev]
 
-        with _patch_file_content_hash(return_value=None):
-            with _patch_atomic_write_text() as mock_write:
-                result = pipeline.tick()
+        with (
+            _patch_file_content_hash(return_value=None),
+            _patch_atomic_write_text() as mock_write,
+        ):
+            result = pipeline.tick()
 
         assert result == 1
         mock_write.assert_called_once()
@@ -152,9 +156,11 @@ class TestTickMultiple:
         ]
         pipeline._backend.pending_remote_revisions.return_value = revs
 
-        with _patch_file_content_hash(side_effect=[None, "h1", "h2"]):
-            with _patch_atomic_write_text() as mock_write:
-                result = pipeline.tick()
+        with (
+            _patch_file_content_hash(side_effect=[None, "h1", "h2"]),
+            _patch_atomic_write_text() as mock_write,
+        ):
+            result = pipeline.tick()
 
         assert result == 3
         assert mock_write.call_count == 3
@@ -169,14 +175,13 @@ class TestTickAlreadyInSync:
     """local hash == revision content_hash → skip write, register echo, mark pulled."""
 
     def test_already_in_sync_skips_write_and_registers_echo(self):
-        """Local hash matches content_hash → _handle_already_in_sync (NotImplementedError before assertions)."""
+        """Local hash matches content_hash → _handle_already_in_sync (NotImplementedError)."""
         pipeline = _make_pipeline()
         rev = _make_revision(content_hash="same_hash")
         pipeline._backend.pending_remote_revisions.return_value = [rev]
 
-        with _patch_file_content_hash(return_value="same_hash"):
-            with _patch_atomic_write_text() as mock_write:
-                result = pipeline.tick()  # raises NotImplementedError until implemented
+        with _patch_file_content_hash(return_value="same_hash"), _patch_atomic_write_text():
+            pipeline.tick()  # raises NotImplementedError until implemented
 
         # Expected when implemented:
         # assert result == 1
@@ -192,7 +197,7 @@ class TestTickConflict:
     """local matches neither parent nor incoming → conflict branch."""
 
     def test_conflict_renames_local_and_writes_incoming(self):
-        """Local hash != parent and != incoming → _handle_conflict (NotImplementedError before assertions)."""
+        """Local hash != parent and != incoming → _handle_conflict (NotImplementedError)."""
         pipeline = _make_pipeline()
         rev = _make_revision(
             content_hash="remote_hash",
@@ -200,9 +205,11 @@ class TestTickConflict:
         )
         pipeline._backend.pending_remote_revisions.return_value = [rev]
 
-        with _patch_file_content_hash(return_value="local_only_hash"):
-            with _patch_atomic_write_text() as mock_write:
-                result = pipeline.tick()  # raises NotImplementedError until implemented
+        with (
+            _patch_file_content_hash(return_value="local_only_hash"),
+            _patch_atomic_write_text(),
+        ):
+            pipeline.tick()  # raises NotImplementedError until implemented
 
         # Expected when implemented:
         # assert result == 1
@@ -229,7 +236,7 @@ class TestTickTombstone:
         pipeline._backend.pending_remote_revisions.return_value = [rev]
 
         with _patch_file_content_hash(return_value="whatever"):
-            result = pipeline.tick()  # raises NotImplementedError until implemented
+            pipeline.tick()  # raises NotImplementedError until implemented
 
         # Expected when implemented:
         # assert result == 1

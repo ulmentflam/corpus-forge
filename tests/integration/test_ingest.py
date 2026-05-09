@@ -85,7 +85,10 @@ class TestMarkdownVaultSource:
 class TestMarkdownChunking:
     def test_chunks_long_text(self) -> None:
         chunker = MarkdownChunker(max_chars=100, overlap=20)
-        long_text = "# Header\n\nPara one.\n\nPara two that is longer.\n\nPara three even longer content here."
+        long_text = (
+            "# Header\n\nPara one.\n\nPara two that is longer.\n\n"
+            "Para three even longer content here."
+        )
         chunks = chunker.chunk(long_text)
         assert len(chunks) >= 1
         for chunk in chunks:
@@ -123,7 +126,8 @@ class TestIngestOne:
 
         with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO corpus.datasets (name, kind) VALUES ('test_ingest_doc', 'text') RETURNING id"
+                "INSERT INTO corpus.datasets (name, kind)"
+                " VALUES ('test_ingest_doc', 'text') RETURNING id"
             )
             dataset_id = cur.fetchone()[0]
             conn.commit()
@@ -184,7 +188,8 @@ class TestIngestOne:
 
         with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO corpus.datasets (name, kind) VALUES ('test_ingest_skip', 'text') RETURNING id"
+                "INSERT INTO corpus.datasets (name, kind)"
+                " VALUES ('test_ingest_skip', 'text') RETURNING id"
             )
             dataset_id = cur.fetchone()[0]
             conn.commit()

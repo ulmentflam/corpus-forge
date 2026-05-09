@@ -341,7 +341,8 @@ class TestSyncMigrationConstraints:
             _run_sql(
                 pg_dsn,
                 "INSERT INTO corpus.document_revisions "
-                "(document_id, revision_number, parent_revision_id, content_hash, text, author_host) "
+                "(document_id, revision_number, parent_revision_id,"
+                " content_hash, text, author_host) "
                 "VALUES (%s, 1, 99999, 'abc', 'text', 'host1')",
                 (doc_id,),
             )

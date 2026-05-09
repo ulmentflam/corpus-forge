@@ -173,7 +173,10 @@ class TestEchoSuppressorTTLExpiry:
 
     def test_gc_with_explicit_now_argument(self, tmp_path):
         """gc(now=X) should use the provided timestamp instead of the clock."""
-        fake_clock = lambda: 2000.0  # never used when gc(now=...) is called
+
+        def fake_clock():
+            return 2000.0  # never used when gc(now=...) is called
+
         suppressor = EchoSuppressor(default_ttl_s=5.0, clock=fake_clock)
         p = tmp_path / "doc.md"
         suppressor.register(p, content_hash="explicit_gc")
@@ -183,7 +186,10 @@ class TestEchoSuppressorTTLExpiry:
 
     def test_gc_with_explicit_now_preserves_fresh(self, tmp_path):
         """gc(now=X) must not evict entries that are still valid at *now*."""
-        fake_clock = lambda: 2000.0
+
+        def fake_clock():
+            return 2000.0
+
         suppressor = EchoSuppressor(default_ttl_s=5.0, clock=fake_clock)
         p = tmp_path / "doc.md"
         suppressor.register(p, content_hash="fresh_at_now")
@@ -203,7 +209,7 @@ class TestEchoSuppressorPathNormalization:
         p.write_text("content")
         suppressor.register(p, content_hash="rel_test")
         # Query with a relative path that resolves to the same file
-        cwd = os.getcwd()
+        cwd = Path.cwd()
         os.chdir(tmp_path)
         try:
             relative = Path("doc.md")
@@ -229,7 +235,7 @@ class TestEchoSuppressorPathNormalization:
         p.write_text("content")
         suppressor.register(p, content_hash="normalize_test")
         # Query with a path containing ..
-        cwd = os.getcwd()
+        cwd = Path.cwd()
         os.chdir(tmp_path)
         try:
             relative = Path("./sub/../sub/doc.md")

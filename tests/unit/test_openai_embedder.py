@@ -183,9 +183,11 @@ class TestOpenAIEncode:
                 # _get_client will create a real client with fake key
                 # which will fail on encode, but we need to test the
                 # RuntimeError path specifically
-                with patch.object(embedder, "_get_client", return_value=None):
-                    with pytest.raises(RuntimeError, match="Failed to initialize OpenAI client"):
-                        embedder.encode(["hello"])
+                with (
+                    patch.object(embedder, "_get_client", return_value=None),
+                    pytest.raises(RuntimeError, match="Failed to initialize OpenAI client"),
+                ):
+                    embedder.encode(["hello"])
             finally:
                 if orig is not None:
                     os.environ["OPENAI_API_KEY"] = orig
@@ -198,6 +200,8 @@ class TestOpenAIEncode:
             dimension=1536,
         )
         # Mock OPENAI_AVAILABLE as False
-        with patch("corpus_forge.embedders.openai.OPENAI_AVAILABLE", False):
-            with pytest.raises(ImportError, match="openai package is required"):
-                embedder.encode(["hello"])
+        with (
+            patch("corpus_forge.embedders.openai.OPENAI_AVAILABLE", False),
+            pytest.raises(ImportError, match="openai package is required"),
+        ):
+            embedder.encode(["hello"])

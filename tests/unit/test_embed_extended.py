@@ -53,21 +53,23 @@ active = true
             mock_embedder = MagicMock()
             mock_embedder.name = "test-embedder"
 
-            with patch("corpus_forge.embed.registry.register", return_value=mock_embedder):
-                with patch("corpus_forge.embed.PostgresBackend") as mock_backend_cls:
-                    mock_backend = MagicMock()
-                    mock_backend.register_embedder.return_value = 1
-                    mock_backend._execute.return_value = [{"id": 42}]  # dataset found
-                    mock_backend.chunks_missing_embedding.return_value = []
-                    mock_backend_cls.return_value = mock_backend
+            with (
+                patch("corpus_forge.embed.registry.register", return_value=mock_embedder),
+                patch("corpus_forge.embed.PostgresBackend") as mock_backend_cls,
+            ):
+                mock_backend = MagicMock()
+                mock_backend.register_embedder.return_value = 1
+                mock_backend._execute.return_value = [{"id": 42}]  # dataset found
+                mock_backend.chunks_missing_embedding.return_value = []
+                mock_backend_cls.return_value = mock_backend
 
-                    backfill_embedder("test-embedder", dataset_name="my-dataset")
+                backfill_embedder("test-embedder", dataset_name="my-dataset")
 
-                    # Verify _execute was called with dataset query
-                    dataset_queries = [
-                        c for c in mock_backend._execute.call_args_list if "datasets" in str(c)
-                    ]
-                    assert len(dataset_queries) >= 1
+                # Verify _execute was called with dataset query
+                dataset_queries = [
+                    c for c in mock_backend._execute.call_args_list if "datasets" in str(c)
+                ]
+                assert len(dataset_queries) >= 1
 
     def test_backfill_dataset_filter_no_chunks_after_filter(self, temp_dir):
         """Test backfill where dataset filter removes all chunks."""
@@ -111,17 +113,19 @@ active = true
             mock_embedder = MagicMock()
             mock_embedder.name = "test-embedder"
 
-            with patch("corpus_forge.embed.registry.register", return_value=mock_embedder):
-                with patch("corpus_forge.embed.PostgresBackend") as mock_backend_cls:
-                    mock_backend = MagicMock()
-                    mock_backend.register_embedder.return_value = 1
-                    mock_backend._execute.return_value = [{"id": 42}]  # dataset found
-                    # Return empty list — no chunks need embedding
-                    mock_backend.chunks_missing_embedding.return_value = []
-                    mock_backend_cls.return_value = mock_backend
+            with (
+                patch("corpus_forge.embed.registry.register", return_value=mock_embedder),
+                patch("corpus_forge.embed.PostgresBackend") as mock_backend_cls,
+            ):
+                mock_backend = MagicMock()
+                mock_backend.register_embedder.return_value = 1
+                mock_backend._execute.return_value = [{"id": 42}]  # dataset found
+                # Return empty list — no chunks need embedding
+                mock_backend.chunks_missing_embedding.return_value = []
+                mock_backend_cls.return_value = mock_backend
 
-                    # Should not raise, just break early
-                    backfill_embedder("test-embedder", dataset_name="my-dataset")
+                # Should not raise, just break early
+                backfill_embedder("test-embedder", dataset_name="my-dataset")
 
     def test_backfill_limit_hits_mid_batch(self, temp_dir):
         """Test backfill where limit is hit during a batch."""
@@ -165,26 +169,28 @@ active = true
             mock_embedder = MagicMock()
             mock_embedder.name = "test-embedder"
 
-            with patch("corpus_forge.embed.registry.register", return_value=mock_embedder):
-                with patch("corpus_forge.embed.PostgresBackend") as mock_backend_cls:
-                    mock_backend = MagicMock()
-                    mock_backend.register_embedder.return_value = 1
-                    # First call returns 5 chunks, second returns 5 more
-                    mock_backend.chunks_missing_embedding.side_effect = [
-                        [(i, f"text{i}") for i in range(1, 6)],
-                        [(i, f"text{i}") for i in range(6, 11)],
-                        [],
-                    ]
+            with (
+                patch("corpus_forge.embed.registry.register", return_value=mock_embedder),
+                patch("corpus_forge.embed.PostgresBackend") as mock_backend_cls,
+            ):
+                mock_backend = MagicMock()
+                mock_backend.register_embedder.return_value = 1
+                # First call returns 5 chunks, second returns 5 more
+                mock_backend.chunks_missing_embedding.side_effect = [
+                    [(i, f"text{i}") for i in range(1, 6)],
+                    [(i, f"text{i}") for i in range(6, 11)],
+                    [],
+                ]
 
-                    def mock_encode(texts):
-                        return [[0.1] * 384 for _ in texts]
+                def mock_encode(texts):
+                    return [[0.1] * 384 for _ in texts]
 
-                    mock_embedder.encode.side_effect = mock_encode
-                    mock_backend_cls.return_value = mock_backend
+                mock_embedder.encode.side_effect = mock_encode
+                mock_backend_cls.return_value = mock_backend
 
-                    backfill_embedder("test-embedder", limit=7)
-                    # Should process first batch of 5, then second batch of 2 (limit=7)
-                    assert mock_embedder.encode.call_count == 2
+                backfill_embedder("test-embedder", limit=7)
+                # Should process first batch of 5, then second batch of 2 (limit=7)
+                assert mock_embedder.encode.call_count == 2
 
 
 class TestMainFunction:
@@ -232,15 +238,17 @@ active = true
             mock_embedder = MagicMock()
             mock_embedder.name = "test-embedder"
 
-            with patch("corpus_forge.embed.registry.register", return_value=mock_embedder):
-                with patch("corpus_forge.embed.PostgresBackend") as mock_backend_cls:
-                    mock_backend = MagicMock()
-                    mock_backend.register_embedder.return_value = 1
-                    mock_backend.chunks_missing_embedding.return_value = []
-                    mock_backend_cls.return_value = mock_backend
+            with (
+                patch("corpus_forge.embed.registry.register", return_value=mock_embedder),
+                patch("corpus_forge.embed.PostgresBackend") as mock_backend_cls,
+            ):
+                mock_backend = MagicMock()
+                mock_backend.register_embedder.return_value = 1
+                mock_backend.chunks_missing_embedding.return_value = []
+                mock_backend_cls.return_value = mock_backend
 
-                    # Should not raise
-                    main("test-embedder")
+                # Should not raise
+                main("test-embedder")
 
     def test_main_catches_and_re_raises_exception(self, temp_dir):
         """Test that main logs error and re-raises."""
@@ -316,12 +324,14 @@ active = true
             mock_embedder = MagicMock()
             mock_embedder.name = "test-embedder"
 
-            with patch("corpus_forge.embed.registry.register", return_value=mock_embedder):
-                with patch("corpus_forge.embed.PostgresBackend") as mock_backend_cls:
-                    mock_backend = MagicMock()
-                    mock_backend.register_embedder.return_value = 1
-                    mock_backend._execute.return_value = [{"id": 42}]
-                    mock_backend.chunks_missing_embedding.return_value = []
-                    mock_backend_cls.return_value = mock_backend
+            with (
+                patch("corpus_forge.embed.registry.register", return_value=mock_embedder),
+                patch("corpus_forge.embed.PostgresBackend") as mock_backend_cls,
+            ):
+                mock_backend = MagicMock()
+                mock_backend.register_embedder.return_value = 1
+                mock_backend._execute.return_value = [{"id": 42}]
+                mock_backend.chunks_missing_embedding.return_value = []
+                mock_backend_cls.return_value = mock_backend
 
-                    main("test-embedder", dataset="my-dataset", limit=10)
+                main("test-embedder", dataset="my-dataset", limit=10)

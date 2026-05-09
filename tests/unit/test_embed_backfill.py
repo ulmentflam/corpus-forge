@@ -191,7 +191,7 @@ active = true
                     mock_embedder.encode.assert_called_once()
                     # Verify it was called with exactly 2 texts
                     call_args = mock_embedder.encode.call_args[0][0]
-                    assert len(call_args) == 2  # noqa: PLR2004
+                    assert len(call_args) == 2
 
     def test_backfill_embedder_dataset_not_found(self, temp_dir):
         """Test that missing dataset raises ValueError."""
