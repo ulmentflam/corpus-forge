@@ -35,17 +35,17 @@ def _testcontainers_available() -> bool:
 
 # Lazy import — only when Docker is available
 if _docker_available() and _testcontainers_available():
-    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
+    from testcontainers.postgres import PostgresContainer
 
 
 @pytest.fixture
-def temp_dir():
+def temp_dir() -> Path:
     """Create a temporary directory for test files."""
     with tempfile.TemporaryDirectory() as tmpdir:
         yield Path(tmpdir)
 
 
-def pytest_configure(config):
+def pytest_configure(config: pytest.Config) -> None:
     """Register Docker availability marker."""
     config.addinivalue_line(
         "markers",
@@ -53,24 +53,19 @@ def pytest_configure(config):
     )
 
 
-def pytest_collection_modifyitems(config, items):
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Skip integration tests when Docker is not available."""
     if not _docker_available() or not _testcontainers_available():
         skip = pytest.mark.skip(reason="Docker or testcontainers not available")
         for item in items:
-            if "integration" in item.keywords or item.module.__name__.startswith("tests.integration"):
+            if "integration" in item.keywords or item.module.__name__.startswith(
+                "tests.integration"
+            ):
                 item.add_marker(skip)
 
 
 @pytest.fixture
-def temp_dir():
-    """Create a temporary directory for test files."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield Path(tmpdir)
-
-
-@pytest.fixture
-def sample_vault_dir(temp_dir):
+def sample_vault_dir(temp_dir: Path) -> Path:
     """Create a sample markdown vault directory."""
     vault_dir = temp_dir / "vault"
     vault_dir.mkdir()
@@ -87,7 +82,7 @@ def sample_vault_dir(temp_dir):
 
 
 @pytest.fixture
-def sample_claude_code_dir(temp_dir):
+def sample_claude_code_dir(temp_dir: Path) -> Path:
     """Create a sample Claude Code projects directory."""
     projects_dir = temp_dir / "projects"
     projects_dir.mkdir()
@@ -109,7 +104,7 @@ def sample_claude_code_dir(temp_dir):
 
 
 @pytest.fixture
-def sample_opencode_dir(temp_dir):
+def sample_opencode_dir(temp_dir: Path) -> Path:
     """Create a sample OpenCode storage directory."""
     storage_dir = temp_dir / "storage"
     storage_dir.mkdir()
@@ -137,19 +132,42 @@ def sample_opencode_dir(temp_dir):
     return storage_dir
 
 
-@pytest.fixture
-def pgvector_container():
-    """Create a PostgreSQL container with pgvector extension."""
-    with PostgresContainer("pgvector/pgvector:pg17") as postgres:
-        # Enable pgvector extension
-        with postgres.get_connection() as conn, conn.cursor() as cur:
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            conn.commit()
-        yield postgres
+@pytest.fixture(scope="session")
+def postgres_container():  # type: ignore[return]
+    """Session-scoped PostgreSQL+pgvector container shared across all integration tests."""
+    with PostgresContainer("pgvector/pgvector:pg17", port=5432) as container:
+        yield container
 
 
 @pytest.fixture
-def sample_document():
+def pg_dsn(postgres_container) -> str:  # type: ignore[return]
+    """Function-scoped libpq DSN string built from the shared postgres_container.
+
+    Returns a bare postgresql:// DSN that psycopg.connect() accepts directly,
+    rather than the SQLAlchemy-style postgresql+psycopg2:// returned by
+    postgres_container.get_connection_url().
+    """
+    c = postgres_container
+    return (
+        f"postgresql://{c.username}:{c.password}"
+        f"@{c.get_container_host_ip()}:{c.get_exposed_port(5432)}"
+        f"/{c.dbname}"
+    )
+
+
+@pytest.fixture
+def pg(postgres_container):  # type: ignore[return]
+    """Function-scoped alias for postgres_container.
+
+    Provides backward-compatible access to the shared container for legacy test
+    methods that reference ``pg`` directly (e.g. ``pg.get_connection()`` calls
+    that are pre-existing and will be triaged in INT-02).
+    """
+    return postgres_container
+
+
+@pytest.fixture
+def sample_document() -> RawDocument:
     """Create a sample RawDocument for testing."""
     return RawDocument(
         source_uri="test://vault/test.md",
@@ -163,7 +181,7 @@ def sample_document():
 
 
 @pytest.fixture
-def sample_conversation():
+def sample_conversation() -> RawConversation:
     """Create a sample RawConversation for testing."""
     return RawConversation(
         source_uri="test://claude-code/project/session1",
@@ -200,7 +218,7 @@ def sample_conversation():
 
 
 @pytest.fixture
-def sample_config_content():
+def sample_config_content() -> str:
     """Sample TOML configuration content."""
     return """
 [backend]

@@ -4,7 +4,6 @@ from pathlib import Path
 
 import psycopg
 import pytest
-from testcontainers.postgres import PostgresContainer
 
 from corpus_forge.backends.postgres import PostgresBackend
 from corpus_forge.schema.migrate import apply_migrations
@@ -12,22 +11,15 @@ from corpus_forge.schema.migrate import apply_migrations
 pytestmark = pytest.mark.integration
 
 
-@pytest.fixture(scope="module")
-def pg():
-    with PostgresContainer("pgvector/pgvector:pg17", port=5432) as container:
-        yield container
-
-
 def _schema_dir() -> Path:
     return Path(__file__).parent.parent.parent / "corpus_forge" / "schema"
 
 
-def _make_backend(pg) -> PostgresBackend:
-    dsn = pg.get_connection_url()
-    return PostgresBackend(dsn=dsn, schema="corpus")
+def _make_backend(pg_dsn: str) -> PostgresBackend:
+    return PostgresBackend(dsn=pg_dsn, schema="corpus")
 
 
-def _run_sql(pg, sql: str, params: tuple = ()):
+def _run_sql(pg, sql: str, params: tuple = ()) -> None:
     with pg.get_connection() as conn, conn.cursor() as cur:
         cur.execute(sql, params)
 
@@ -41,8 +33,8 @@ def _fetch_one(pg, sql: str, params: tuple = ()):
 class TestSyncMigrationSchema:
     """Verify 003_sync creates all schema objects on a fresh database."""
 
-    def test_document_revisions_table_exists(self, pg):
-        backend = _make_backend(pg)
+    def test_document_revisions_table_exists(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
@@ -53,15 +45,22 @@ class TestSyncMigrationSchema:
         )
         assert row is not None
 
-    def test_document_revisions_columns(self, pg):
-        backend = _make_backend(pg)
+    def test_document_revisions_columns(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
         expected = {
-            "id", "document_id", "revision_number", "parent_revision_id",
-            "content_hash", "text", "author_host", "is_tombstone",
-            "metadata", "created_at",
+            "id",
+            "document_id",
+            "revision_number",
+            "parent_revision_id",
+            "content_hash",
+            "text",
+            "author_host",
+            "is_tombstone",
+            "metadata",
+            "created_at",
         }
         with pg.get_connection() as conn, conn.cursor() as cur:
             cur.execute(
@@ -71,8 +70,8 @@ class TestSyncMigrationSchema:
             actual = {row[0] for row in cur.fetchall()}
         assert expected.issubset(actual), f"Missing columns: {expected - actual}"
 
-    def test_document_revisions_pkey(self, pg):
-        backend = _make_backend(pg)
+    def test_document_revisions_pkey(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
@@ -84,8 +83,8 @@ class TestSyncMigrationSchema:
         )
         assert row is not None
 
-    def test_document_revisions_unique_constraint(self, pg):
-        backend = _make_backend(pg)
+    def test_document_revisions_unique_constraint(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
@@ -98,8 +97,8 @@ class TestSyncMigrationSchema:
             names = [r[0] for r in cur.fetchall()]
         assert any("revision" in n.lower() or "document_id" in n.lower() for n in names)
 
-    def test_document_revisions_foreign_key(self, pg):
-        backend = _make_backend(pg)
+    def test_document_revisions_foreign_key(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
@@ -111,8 +110,8 @@ class TestSyncMigrationSchema:
         )
         assert row is not None
 
-    def test_document_revisions_self_ref_fk(self, pg):
-        backend = _make_backend(pg)
+    def test_document_revisions_self_ref_fk(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
@@ -129,8 +128,8 @@ class TestSyncMigrationSchema:
         ref_tables = {r[2] for r in rows}
         assert "document_revisions" in ref_tables
 
-    def test_document_revisions_indexes(self, pg):
-        backend = _make_backend(pg)
+    def test_document_revisions_indexes(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
@@ -143,8 +142,8 @@ class TestSyncMigrationSchema:
         assert any("doc_idx" in n for n in names)
         assert any("parent_idx" in n for n in names)
 
-    def test_tombstoned_at_column_exists(self, pg):
-        backend = _make_backend(pg)
+    def test_tombstoned_at_column_exists(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
@@ -156,8 +155,8 @@ class TestSyncMigrationSchema:
         )
         assert row is not None
 
-    def test_sources_last_pulled_revision_id_column(self, pg):
-        backend = _make_backend(pg)
+    def test_sources_last_pulled_revision_id_column(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
@@ -169,8 +168,8 @@ class TestSyncMigrationSchema:
         )
         assert row is not None
 
-    def test_sources_sync_enabled_column(self, pg):
-        backend = _make_backend(pg)
+    def test_sources_sync_enabled_column(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
@@ -182,8 +181,8 @@ class TestSyncMigrationSchema:
         )
         assert row is not None
 
-    def test_tombstoned_at_nullable(self, pg):
-        backend = _make_backend(pg)
+    def test_tombstoned_at_nullable(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
@@ -196,8 +195,8 @@ class TestSyncMigrationSchema:
         assert row is not None
         assert row[0] == "YES"
 
-    def test_sync_enabled_default_false(self, pg):
-        backend = _make_backend(pg)
+    def test_sync_enabled_default_false(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
@@ -214,14 +213,14 @@ class TestSyncMigrationSchema:
 class TestSyncMigrationIdempotent:
     """Re-running migrations is a no-op."""
 
-    def test_reapply_no_error(self, pg):
-        backend = _make_backend(pg)
+    def test_reapply_no_error(self, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
         apply_migrations(backend, _schema_dir())
 
-    def test_table_still_exists_after_reapply(self, pg):
-        backend = _make_backend(pg)
+    def test_table_still_exists_after_reapply(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
         apply_migrations(backend, _schema_dir())
@@ -237,8 +236,8 @@ class TestSyncMigrationIdempotent:
 class TestSyncMigrationConstraints:
     """Foreign key and unique constraints fire correctly."""
 
-    def test_fk_rejects_invalid_document_id(self, pg):
-        backend = _make_backend(pg)
+    def test_fk_rejects_invalid_document_id(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
@@ -250,8 +249,8 @@ class TestSyncMigrationConstraints:
                 "VALUES (99999, 1, 'abc', 'text', 'host1')",
             )
 
-    def test_insert_valid_revision_succeeds(self, pg):
-        backend = _make_backend(pg)
+    def test_insert_valid_revision_succeeds(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
@@ -283,8 +282,8 @@ class TestSyncMigrationConstraints:
         )
         assert row is not None
 
-    def test_unique_revision_number_per_document(self, pg):
-        backend = _make_backend(pg)
+    def test_unique_revision_number_per_document(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
@@ -318,8 +317,8 @@ class TestSyncMigrationConstraints:
                 (doc_id,),
             )
 
-    def test_fk_rejects_invalid_parent_revision_id(self, pg):
-        backend = _make_backend(pg)
+    def test_fk_rejects_invalid_parent_revision_id(self, pg, pg_dsn):
+        backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
@@ -350,9 +349,7 @@ class TestMigrationFileLooping:
     """Runner loops numbered SQL files."""
 
     def test_get_migration_files_includes_003(self):
-        files = sorted(
-            p.name for p in _schema_dir().glob("[0-9]*.sql")
-        )
+        files = sorted(p.name for p in _schema_dir().glob("[0-9]*.sql"))
         assert any(f.startswith("003") for f in files)
 
     def test_migration_files_numeric_order(self):

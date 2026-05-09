@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-from testcontainers.postgres import PostgresContainer
 
 from corpus_forge.backends.postgres import PostgresBackend
 from corpus_forge.chunkers.markdown import MarkdownChunker
@@ -17,28 +16,25 @@ from corpus_forge.sources.base import RawDocument
 pytestmark = pytest.mark.integration
 
 
-@pytest.fixture(scope="module")
-def pg():
-    with PostgresContainer("pgvector/pgvector:pg17", port=5432) as container:
-        yield container
-
-
 @pytest.fixture
-def backend(pg):
-    dsn = pg.get_connection_url()
-    b = PostgresBackend(dsn=dsn, schema="corpus")
+def backend(pg_dsn: str) -> PostgresBackend:
+    b = PostgresBackend(dsn=pg_dsn, schema="corpus")
     b.migrate()
     return b
 
 
 @pytest.fixture
-def vault_dir(temp_dir):
+def vault_dir(temp_dir: Path) -> Path:
     """Create a test vault with markdown files."""
     vault = temp_dir / "test-vault"
     vault.mkdir()
 
-    (vault / "note1.md").write_text("# Note 1\n\nFirst note content here.\n\n## Subsection\n\nMore detail.")
-    (vault / "note2.md").write_text("# Note 2\n\nSecond note.\n\n## Section A\n\nContent A.\n\n## Section B\n\nContent B.")
+    (vault / "note1.md").write_text(
+        "# Note 1\n\nFirst note content here.\n\n## Subsection\n\nMore detail."
+    )
+    (vault / "note2.md").write_text(
+        "# Note 2\n\nSecond note.\n\n## Section A\n\nContent A.\n\n## Section B\n\nContent B."
+    )
     (vault / "empty.md").write_text("")
     (vault / "dotfile.md").write_text("# Should be ignored")
     (vault / ".trash").mkdir()
@@ -51,7 +47,7 @@ def vault_dir(temp_dir):
 
 
 class TestMarkdownVaultSource:
-    def test_discovers_markdown_files(self, vault_dir):
+    def test_discovers_markdown_files(self, vault_dir: Path) -> None:
         source = MarkdownVaultSource(vault_root=vault_dir)
         paths = list(source.discover())
         names = {p.name for p in paths}
@@ -60,14 +56,14 @@ class TestMarkdownVaultSource:
         assert "empty.md" in names
         assert "dotfile.md" in names
 
-    def test_excludes_trash_and_hidden(self, vault_dir):
+    def test_excludes_trash_and_hidden(self, vault_dir: Path) -> None:
         source = MarkdownVaultSource(vault_root=vault_dir, exclude_globs=[".trash/**", ".*"])
         paths = list(source.discover())
         names = {p.name for p in paths}
         assert ".trash" not in names
         assert "dotfile.md" not in names
 
-    def test_scan_yields_raw_documents(self, vault_dir):
+    def test_scan_yields_raw_documents(self, vault_dir: Path) -> None:
         source = MarkdownVaultSource(vault_root=vault_dir)
         docs = list(source.scan())
         assert len(docs) >= 2
@@ -75,7 +71,7 @@ class TestMarkdownVaultSource:
             assert isinstance(doc, RawDocument)
             assert doc.content_hash  # non-empty hash
 
-    def test_empty_file_yields_empty_doc(self, vault_dir):
+    def test_empty_file_yields_empty_doc(self, vault_dir: Path) -> None:
         source = MarkdownVaultSource(vault_root=vault_dir)
         docs = {d.source_uri: d for d in source.scan()}
         empty_doc = [d for d in docs.values() if d.source_uri.endswith("empty.md")]
@@ -87,7 +83,7 @@ class TestMarkdownVaultSource:
 
 
 class TestMarkdownChunking:
-    def test_chunks_long_text(self):
+    def test_chunks_long_text(self) -> None:
         chunker = MarkdownChunker(max_chars=100, overlap=20)
         long_text = "# Header\n\nPara one.\n\nPara two that is longer.\n\nPara three even longer content here."
         chunks = chunker.chunk(long_text)
@@ -95,13 +91,13 @@ class TestMarkdownChunking:
         for chunk in chunks:
             assert chunk.text  # non-empty
 
-    def test_single_chunk_for_short_text(self):
+    def test_single_chunk_for_short_text(self) -> None:
         chunker = MarkdownChunker(max_chars=1000, overlap=100)
         short_text = "# Header\n\nShort content."
         chunks = chunker.chunk(short_text)
         assert len(chunks) == 1
 
-    def test_chunk_preserves_heading(self):
+    def test_chunk_preserves_heading(self) -> None:
         chunker = MarkdownChunker(max_chars=50, overlap=10)
         text = "# Main\n\nPara one.\n\n## Sub\n\nPara two."
         chunks = chunker.chunk(text)
@@ -113,7 +109,7 @@ class TestMarkdownChunking:
 
 
 class TestIngestOne:
-    def test_ingest_document(self, backend, temp_dir):
+    def test_ingest_document(self, backend: PostgresBackend, pg: object, temp_dir: Path) -> None:
         doc = RawDocument(
             source_uri="vault://test.md",
             content_hash="abc123",
@@ -148,13 +144,20 @@ class TestIngestOne:
         ingest_one(backend, doc, chunker, [mock_embedder], dataset_id)
 
         with pg.get_connection() as conn, conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM corpus.documents WHERE source_uri = %s;", ("vault://test.md",))
+            cur.execute(
+                "SELECT COUNT(*) FROM corpus.documents WHERE source_uri = %s;", ("vault://test.md",)
+            )
             assert cur.fetchone()[0] == 1
 
-            cur.execute("SELECT COUNT(*) FROM corpus.chunks WHERE document_id IN (SELECT id FROM corpus.documents WHERE source_uri = %s);", ("vault://test.md",))
+            cur.execute(
+                "SELECT COUNT(*) FROM corpus.chunks WHERE document_id IN (SELECT id FROM corpus.documents WHERE source_uri = %s);",
+                ("vault://test.md",),
+            )
             assert cur.fetchone()[0] >= 1
 
-    def test_ingest_unchanged_skips(self, backend, temp_dir):
+    def test_ingest_unchanged_skips(
+        self, backend: PostgresBackend, pg: object, temp_dir: Path
+    ) -> None:
         doc = RawDocument(
             source_uri="vault://skip.md",
             content_hash="unchanged",
@@ -180,7 +183,9 @@ class TestIngestOne:
         ingest_one(backend, doc, chunker, [mock_embedder], dataset_id)
 
         with pg.get_connection() as conn, conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM corpus.documents WHERE source_uri = %s;", ("vault://skip.md",))
+            cur.execute(
+                "SELECT COUNT(*) FROM corpus.documents WHERE source_uri = %s;", ("vault://skip.md",)
+            )
             assert cur.fetchone()[0] == 1
 
 
@@ -188,12 +193,21 @@ class TestIngestOne:
 
 
 class TestIngestOnce:
-    def test_full_ingestion_pass(self, backend, vault_dir, temp_dir):
+    def test_full_ingestion_pass(
+        self, backend: PostgresBackend, pg: object, pg_dsn: str, vault_dir: Path, temp_dir: Path
+    ) -> None:
         """End-to-end: config → backend → source scan → chunk → store."""
-        from corpus_forge.config import Config, BackendConfig, DaemonConfig, DatasetConfig, EmbedderConfig, SourceConfig
+        from corpus_forge.config import (
+            Config,
+            BackendConfig,
+            DaemonConfig,
+            DatasetConfig,
+            EmbedderConfig,
+            SourceConfig,
+        )
 
         config = Config(
-            backend=BackendConfig(kind="postgres", dsn=pg.get_connection_url(), schema="corpus"),
+            backend=BackendConfig(kind="postgres", dsn=pg_dsn, schema="corpus"),
             daemon=DaemonConfig(debounce_seconds=1.0, log_level="INFO", log_format="text"),
             datasets=[
                 DatasetConfig(
@@ -235,7 +249,9 @@ class TestIngestOnce:
             mock_embedder.dimension = 384
             mock_embedder.normalized = True
             mock_embedder.distance = "cosine"
-            mock_embedder.encode = MagicMock(return_value=np.random.randn(1, 384).astype(np.float32))
+            mock_embedder.encode = MagicMock(
+                return_value=np.random.randn(1, 384).astype(np.float32)
+            )
             mock_registry.register = MagicMock(return_value=mock_embedder)
 
             ingest_once(config)
@@ -249,11 +265,20 @@ class TestIngestOnce:
             count = cur.fetchone()[0]
             assert count >= 2  # note1.md and note2.md at minimum
 
-    def test_ingest_creates_dataset_if_missing(self, backend, vault_dir, temp_dir):
-        from corpus_forge.config import Config, BackendConfig, DaemonConfig, DatasetConfig, EmbedderConfig, SourceConfig
+    def test_ingest_creates_dataset_if_missing(
+        self, backend: PostgresBackend, pg: object, pg_dsn: str, vault_dir: Path, temp_dir: Path
+    ) -> None:
+        from corpus_forge.config import (
+            Config,
+            BackendConfig,
+            DaemonConfig,
+            DatasetConfig,
+            EmbedderConfig,
+            SourceConfig,
+        )
 
         config = Config(
-            backend=BackendConfig(kind="postgres", dsn=pg.get_connection_url(), schema="corpus"),
+            backend=BackendConfig(kind="postgres", dsn=pg_dsn, schema="corpus"),
             daemon=DaemonConfig(debounce_seconds=1.0, log_level="INFO", log_format="text"),
             datasets=[
                 DatasetConfig(
