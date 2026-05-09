@@ -611,3 +611,37 @@ FAILED tests/unit/test_sync_pull.py::TestTickMultiple::test_multiple_pending_ret
 ============================== 4 failed in 0.11s ===============================
 ```
 - Status: red — handed off to tdd-coder
+
+## INT-01 — DSN fixture refactor (libpq DSN)
+- Test files: `tests/integration/test_dsn_fixture.py`
+- Run command: `PYTHONPATH=. uv run pytest tests/integration/test_dsn_fixture.py -v --no-header 2>&1 | tail -30`
+- Form chosen: Form A — integration test with real psycopg.connect, no Docker-skip (uses existing `pytest_collection_modifyitems` skip mechanism in conftest)
+- Edge case checklist:
+  - [x] happy path — `TestPgDsnLiveConnect::test_connect_and_select_one` opens connection and checks `SELECT 1 == 1`
+  - [x] fixture shape — `TestPgDsnFixtureShape::test_pg_dsn_is_str` asserts `isinstance(pg_dsn, str)`
+  - [x] DSN scheme — `test_pg_dsn_starts_with_postgresql_scheme` asserts `startswith("postgresql://")`
+  - [x] negative scheme — `test_pg_dsn_no_sqlalchemy_driver_prefix` explicitly rejects `+psycopg2`
+  - [x] parser shape — `test_pg_dsn_parses_as_libpq_conninfo` calls `psycopg.conninfo.conninfo_to_dict` without raising and checks `host` key present
+  - [ ] N/A — boundaries (DSN format is fixed by testcontainers; no length/overflow variation)
+  - [ ] N/A — type/format errors (no malformed-input test; contract is about correct output shape)
+  - [ ] N/A — state (fixture is fresh per-session; idempotency handled by container fixture)
+  - [ ] N/A — concurrency (fixture is session-scoped; single-threaded)
+  - [ ] N/A — failure paths (bad DSN rejection is tested implicitly; no network-error simulation needed here)
+  - [ ] N/A — locale/time (no locale/time surface)
+  - [ ] N/A — regression (new fixture, no prior implementation)
+- Notes:
+  - Conftest already has `pgvector_container` fixture (function-scoped, not session-scoped). The coder must add a session-scoped `postgres_container` + `pg_dsn` pair. The existing `pgvector_container` is separate and should not be removed (other tests may rely on it).
+  - Existing integration files use `pg.get_connection_url()` → `postgresql+psycopg2://…`, which `psycopg.connect()` rejects with `ProgrammingError: missing "=" after ...`. All 5 files need refactor after `pg_dsn` lands.
+  - `--strict-markers` is set; `requires_docker` is NOT in `[tool.pytest.ini_options].markers` (only in conftest `addinivalue_line`). Used `pytest.mark.integration` for consistency with all existing integration files.
+  - `temp_dir` fixture is defined twice in conftest.py (lines 42-45 and 66-69) — bug noted, not fixed here (tester role).
+- Red output (tail):
+```
+ERROR tests/integration/test_dsn_fixture.py::TestPgDsnFixtureShape::test_pg_dsn_is_str
+ERROR tests/integration/test_dsn_fixture.py::TestPgDsnFixtureShape::test_pg_dsn_starts_with_postgresql_scheme
+ERROR tests/integration/test_dsn_fixture.py::TestPgDsnFixtureShape::test_pg_dsn_no_sqlalchemy_driver_prefix
+ERROR tests/integration/test_dsn_fixture.py::TestPgDsnFixtureShape::test_pg_dsn_parses_as_libpq_conninfo
+ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_and_select_one
+============================== 5 errors in 0.11s ===============================
+```
+- Red reason: `fixture 'pg_dsn' not found` — fixture does not exist in conftest yet
+- Status: red — handed off to tdd-coder
