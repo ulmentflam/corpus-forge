@@ -648,6 +648,56 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
 - Status: red — handed off to tdd-coder
 
 
+## P0-08 — E2E chunk-embedding reuse (characterization test)
+- Test files: `tests/integration/test_chunk_reuse_e2e.py`
+- Run command: `PYTHONPATH=. uv run pytest tests/integration/test_chunk_reuse_e2e.py -v --no-header 2>&1 | tail -30`
+- Edge case checklist:
+  - [x] happy path — first ingest of 12-section doc produces >=10 embedded chunks
+  - [x] reuse threshold — >=7 embeddings reused after small append (contractual; >=70%)
+  - [x] encoder spy — second pass encodes <=3 new texts
+  - [x] append-single-chunk — appending one section creates <=2 new tail chunks
+  - [x] fake-embedder isolation — no real model loaded; deterministic stable vectors
+  - [x] idempotent reingest — re-ingesting identical doc encodes 0 new texts (short-circuit path)
+  - [x] FakeEmbedder determinism — same text always maps to same vector
+  - [x] FakeEmbedder non-zero — vectors are never all-zero
+  - [x] FakeEmbedder distinctness — different texts produce different vectors
+  - [x] FakeEmbedder spy attrs — call_count and call_args_list work correctly
+  - [x] chunk count prediction — sanity test verifying test doc yields >=10 chunks
+  - [ ] N/A — concurrency (single-threaded ingest; advisory lock tested elsewhere)
+  - [ ] N/A — locale/time (UTF-8 text, no locale-sensitive operations)
+  - [ ] N/A — failure paths (network/disk errors deferred; this is a happy-path pin)
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_chunk_reuse_e2e.py::TestChunkReuseE2E::test_chunk_reuse_e2e
+  FAILED tests/integration/test_chunk_reuse_e2e.py::TestChunkReuseE2E::test_reuse_skips_encode_for_identical_reingest
+  =================== 2 failed, 5 passed, 1 warning in 10.30s ====================
+
+  test_chunk_reuse_e2e:
+    AssertionError: Expected <=3 texts encoded on second pass, got 13.
+    The reuse path should have copied embeddings for unchanged chunks.
+
+  test_reuse_skips_encode_for_identical_reingest:
+    psycopg.errors.NotNullViolation: null value in column "embedder_id" of relation
+    "embeddings_fake_embedder" violates not-null constraint
+  ```
+- Status: red — 2 failures surface real production bugs (see notes)
+- Production bug suspicions (do NOT paper over with test changes):
+  1. **BUG-P0-08-A** `_copy_reusable_embeddings` INSERT missing `embedder_id`:
+     `INSERT INTO {table} (chunk_id, embedding) SELECT %s, embedding FROM {table} WHERE chunk_id = %s`
+     The embedding table DDL has `embedder_id BIGINT NOT NULL`.
+     The INSERT must include `embedder_id` (can SELECT it from the source row).
+     Fix: `INSERT INTO {table} (chunk_id, embedder_id, embedding) SELECT %s, embedder_id, embedding FROM {table} WHERE chunk_id = %s`.
+  2. **BUG-P0-08-B** `upsert_document` deletes all chunks before calling `_copy_reusable_embeddings`:
+     `DELETE FROM corpus.chunks WHERE document_id = %s` cascades to delete all embedding rows.
+     Then for each re-inserted chunk, `_copy_reusable_embeddings` searches for a prior chunk with the
+     same `content_hash` that has an embedding — but the embeddings were just deleted. Result: reuse
+     never works for a re-ingest of the same document; it only works cross-document (same content_hash
+     in a different document already in the DB).
+     Fix options: (a) collect prior chunk_ids (by content_hash) BEFORE deleting; (b) soft-delete
+     chunks and cascade; (c) upsert chunks instead of delete-then-reinsert.
+  - Both bugs must be fixed by tdd-coder before these tests can go green.
+
+
 ## P1-32 — E2E iCloud-dupe cleanup
 - Test files: `tests/integration/test_sync_icloud_dupe.py`
 - Run command: `PYTHONPATH=. uv run pytest tests/integration/test_sync_icloud_dupe.py -v --no-header 2>&1 | tail -30`
