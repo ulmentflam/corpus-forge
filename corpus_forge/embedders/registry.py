@@ -18,9 +18,22 @@ class EmbedderRegistry:
     def register(
         self, name: str, provider: str, model_id: str, dimension: int, **kwargs
     ) -> Embedder:
-        """Register and create an embedder instance."""
+        """Register and create an embedder instance.
+
+        If an embedder with the same name already exists, its attributes are
+        updated in-place and the same object reference is returned.
+        """
         if provider not in self._embedder_classes:
             raise ValueError(f"Unknown embedder provider: {provider}")
+
+        if name in self._instances:
+            existing = self._instances[name]
+            existing.provider = provider
+            existing.model_id = model_id
+            existing.dimension = dimension
+            for key, value in kwargs.items():
+                setattr(existing, key, value)
+            return existing
 
         embedder_class = self._embedder_classes[provider]
         embedder = embedder_class(name=name, model_id=model_id, dimension=dimension, **kwargs)

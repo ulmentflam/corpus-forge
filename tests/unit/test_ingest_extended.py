@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from corpus_forge.chunkers.base import Chunker, TextChunk
 from corpus_forge.config import Config
 from corpus_forge.ingest import (
     _get_or_create_dataset,
@@ -12,12 +13,10 @@ from corpus_forge.ingest import (
     _process_document,
     _write_embeddings_for_chunks,
     get_active_embedders,
-    get_chunker_for_source,
     ingest_once,
     main,
 )
-from corpus_forge.chunkers.base import Chunker, TextChunk
-from corpus_forge.sources.base import RawConversation, RawDocument, RawMessage, Source
+from corpus_forge.sources.base import RawConversation, RawDocument, RawMessage
 
 
 class TestProcessDocument:
@@ -71,14 +70,24 @@ class TestProcessConversation:
             ended_at=1005.0,
             messages=[
                 RawMessage(
-                    external_uuid="m1", parent_uuid=None, role="user",
-                    content="Hello", tool_calls=None, tool_results=None,
-                    ts=1000.0, metadata={},
+                    external_uuid="m1",
+                    parent_uuid=None,
+                    role="user",
+                    content="Hello",
+                    tool_calls=None,
+                    tool_results=None,
+                    ts=1000.0,
+                    metadata={},
                 ),
                 RawMessage(
-                    external_uuid="m2", parent_uuid="m1", role="assistant",
-                    content="Hi!", tool_calls=None, tool_results=None,
-                    ts=1001.0, metadata={},
+                    external_uuid="m2",
+                    parent_uuid="m1",
+                    role="assistant",
+                    content="Hi!",
+                    tool_calls=None,
+                    tool_results=None,
+                    ts=1001.0,
+                    metadata={},
                 ),
             ],
             metadata={},
@@ -101,14 +110,24 @@ class TestProcessConversation:
             ended_at=1005.0,
             messages=[
                 RawMessage(
-                    external_uuid="m1", parent_uuid=None, role="user",
-                    content="Hello", tool_calls=None, tool_results=None,
-                    ts=1000.0, metadata={},
+                    external_uuid="m1",
+                    parent_uuid=None,
+                    role="user",
+                    content="Hello",
+                    tool_calls=None,
+                    tool_results=None,
+                    ts=1000.0,
+                    metadata={},
                 ),
                 RawMessage(
-                    external_uuid="m2", parent_uuid="m1", role="assistant",
-                    content="", tool_calls=None, tool_results=None,
-                    ts=1001.0, metadata={},
+                    external_uuid="m2",
+                    parent_uuid="m1",
+                    role="assistant",
+                    content="",
+                    tool_calls=None,
+                    tool_results=None,
+                    ts=1001.0,
+                    metadata={},
                 ),
             ],
             metadata={},

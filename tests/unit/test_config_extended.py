@@ -1,19 +1,17 @@
 """Unit tests for config.py — extended coverage."""
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
 
 from corpus_forge.config import (
-    Config,
     BackendConfig,
+    Config,
     DaemonConfig,
     DatasetConfig,
     DatasetSourceConfig,
     EmbedderConfig,
-    ExpandUser,
     expand_user,
     get_config,
     interpolate_env_vars,
@@ -43,6 +41,7 @@ class TestInterpolateEnvVars:
     def test_interpolate_existing_var(self):
         """Test that existing env vars are interpolated."""
         import os
+
         os.environ["TEST_VAR"] = "interpolated_value"
         try:
             result = interpolate_env_vars("${TEST_VAR}/path")
@@ -81,6 +80,7 @@ class TestBackendConfig:
     def test_backend_config_interpolates_dsn(self):
         """Test that DSN env vars are interpolated."""
         import os
+
         os.environ["PG_HOST"] = "interpolated-host"
         try:
             config = BackendConfig(dsn="postgresql://user:${PG_HOST}/db")
@@ -394,6 +394,7 @@ active = true
         config_file.write_text(config_content)
 
         import os
+
         os.environ["TEST_PG_HOST"] = "expanded-host"
         try:
             config = Config.load(config_path=config_file)
@@ -793,8 +794,10 @@ class TestConfigHostId:
             datasets=[],
             embedders=[],
         )
-        with patch("pathlib.Path.home", return_value=temp_dir), \
-             patch("socket.gethostname", return_value="my-machine"):
+        with (
+            patch("pathlib.Path.home", return_value=temp_dir),
+            patch("socket.gethostname", return_value="my-machine"),
+        ):
             result = config.host_id()
 
         assert result == "my-machine"
@@ -819,8 +822,10 @@ class TestConfigHostId:
             datasets=[],
             embedders=[],
         )
-        with patch("pathlib.Path.home", return_value=temp_dir), \
-             patch("socket.gethostname", return_value="different-machine"):
+        with (
+            patch("pathlib.Path.home", return_value=temp_dir),
+            patch("socket.gethostname", return_value="different-machine"),
+        ):
             result = config.host_id()
 
         assert result == "persisted-host"

@@ -2,8 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from corpus_forge.backends.postgres import PostgresBackend
 from corpus_forge.sources.base import RawDocument
 
@@ -152,7 +150,8 @@ class TestUpsertDocumentEmbedderIds:
                 labels=[],
             )
             backend.upsert_document(
-                1, doc,
+                1,
+                doc,
                 [("# Test", "Chunk A"), ("", "Chunk B")],
                 embedder_ids=[],
             )
@@ -186,7 +185,8 @@ class TestUpsertDocumentEmbedderIds:
                 labels=[],
             )
             backend.upsert_document(
-                1, doc,
+                1,
+                doc,
                 [("# Test", "Chunk A"), ("", "Chunk B")],
                 embedder_ids=[],
             )
@@ -218,7 +218,8 @@ class TestUpsertDocumentEmbedderIds:
             )
             expected_ids = [1, 2, 3]
             backend.upsert_document(
-                1, doc,
+                1,
+                doc,
                 [("# Test", "Chunk A")],
                 embedder_ids=expected_ids,
             )

@@ -16,9 +16,7 @@ class TestFileExists:
 
     def test_file_exists(self):
         """Happy path: migration file is present."""
-        assert MIGRATION_FILE.exists(), (
-            f"Expected migration file at {MIGRATION_FILE}"
-        )
+        assert MIGRATION_FILE.exists(), f"Expected migration file at {MIGRATION_FILE}"
 
     def test_file_has_sql_extension(self):
         """Naming: file ends with .sql."""
@@ -31,17 +29,13 @@ class TestFileExists:
         assert number_part.isdigit(), (
             f"Migration filename stem '{stem}' does not start with a digit"
         )
-        assert len(number_part) == 3, (
-            f"Migration number '{number_part}' is not 3 digits"
-        )
+        assert len(number_part) == 3, f"Migration number '{number_part}' is not 3 digits"
 
     def test_file_ordering_after_002(self):
         """Ordering: numeric prefix must be > 002 (comes after P0-02)."""
         stem = MIGRATION_FILE.stem
         number_part = int(stem.split("_")[0])
-        assert number_part > 2, (
-            f"Migration number {number_part} must be > 2 (P0-02 dependency)"
-        )
+        assert number_part > 2, f"Migration number {number_part} must be > 2 (P0-02 dependency)"
 
 
 # ── DDL content validation ──────────────────────────────────────────────
@@ -233,9 +227,7 @@ class TestGetMigrationFiles:
         """The numeric prefix can be extracted as an int."""
         stem = MIGRATION_FILE.stem  # '003_sync'
         number_part = stem.split("_")[0]  # '003'
-        assert number_part.isdigit(), (
-            f"Cannot extract numeric prefix from '{stem}'"
-        )
+        assert number_part.isdigit(), f"Cannot extract numeric prefix from '{stem}'"
         numeric = int(number_part)
         assert numeric == 3, f"Expected numeric prefix 3, got {numeric}"
 
@@ -243,9 +235,7 @@ class TestGetMigrationFiles:
         """Content: all DDL statements include IF NOT EXISTS."""
         content = MIGRATION_FILE.read_text()
         count = content.upper().count("IF NOT EXISTS")
-        assert count >= 6, (
-            f"Expected at least 6 'IF NOT EXISTS' guards in migration, found {count}"
-        )
+        assert count >= 6, f"Expected at least 6 'IF NOT EXISTS' guards in migration, found {count}"
 
     def test_schema_set_command_present(self):
         """Convention: SET search_path is present (from 001_core.sql pattern)."""
@@ -253,13 +243,10 @@ class TestGetMigrationFiles:
         # Verify that all table references are schema-qualified.
         content = MIGRATION_FILE.read_text()
         # Check that table references use corpus. prefix
-        import re
+
         # Find unqualified table references after FROM/ON/INTO keywords
         # (excluding comments)
-        non_comment_lines = [
-            l for l in content.splitlines()
-            if not l.strip().startswith("--")
-        ]
+        non_comment_lines = [l for l in content.splitlines() if not l.strip().startswith("--")]
         for line in non_comment_lines:
             stripped = line.strip()
             if not stripped or stripped.startswith("--"):
@@ -271,7 +258,7 @@ class TestGetMigrationFiles:
                 if keyword in stripped.upper():
                     # Extract potential table reference after keyword
                     idx = stripped.upper().index(keyword)
-                    after = stripped[idx + len(keyword):].strip()
+                    after = stripped[idx + len(keyword) :].strip()
                     # If it starts with a digit or letter but no dot,
                     # it might be unqualified — but CREATE TABLE /
                     # ADD COLUMN lines have table names in different positions.

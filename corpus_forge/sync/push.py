@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import threading
+from datetime import UTC
 from pathlib import Path
 
 from watchdog import observers
@@ -144,7 +145,7 @@ class PushPipeline:
         return False
 
     def _handle_cloud_duplicate(self, path: Path) -> bool:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         matched, provider, canonical_path = is_cloud_duplicate(path)
         if not matched or canonical_path is None or not canonical_path.exists():
@@ -158,10 +159,8 @@ class PushPipeline:
             return True
 
         text = path.read_text(encoding="utf-8")
-        ts = datetime.now(timezone.utc)
-        conflict = conflict_filename(
-            canonical_path, host=self._host_id, ts=ts, provider=provider
-        )
+        ts = datetime.now(UTC)
+        conflict = conflict_filename(canonical_path, host=self._host_id, ts=ts, provider=provider)
         path.rename(conflict)
         source_uri = str(conflict.resolve())
         with self._backend.lock_source(source_uri):

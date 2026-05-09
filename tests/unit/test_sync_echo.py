@@ -1,35 +1,36 @@
 """Unit tests for EchoSuppressor — the duplicate-write suppression cache."""
 
 import os
-import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 # The class does not exist yet — these tests must fail red.
 from corpus_forge.sync.echo import EchoSuppressor
 
-
 # ── helpers ──────────────────────────────────────────────────────────────
+
 
 def _make_suppressor(clock_base: float = 1000.0):
     """Create an EchoSuppressor backed by an injectable monotonic clock."""
     current = clock_base
+
     def clock():
         return current
+
     return EchoSuppressor(default_ttl_s=5.0, clock=clock), clock
 
 
 def _advance(clock, seconds: float):
     """Advance the injectable clock by *seconds*."""
-    clock.__wrapped__ = _make_suppressor(0)[1].__code__  # noqa: F841
+    clock.__wrapped__ = _make_suppressor(0)[1].__code__
     # We'll just use a mutable list to mutate the clock value.
     # Actually, simpler: use a dict.
     pass
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def clock_state():
@@ -48,6 +49,7 @@ def advance(state, seconds: float):
 
 
 # ── Tests ────────────────────────────────────────────────────────────────
+
 
 class TestEchoSuppressorHappyPath:
     """Happy-path tests: register → was_just_written returns True."""

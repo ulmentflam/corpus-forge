@@ -1,6 +1,6 @@
 """Unit tests for conflict_filename — canonical conflict naming."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -8,17 +8,17 @@ import pytest
 # The function does not exist yet — these tests must fail red.
 from corpus_forge.sync.conflicts import conflict_filename
 
-
 # ── Fixtures ───────────────────────────────────────────────────────────────
 
 # Fixed timestamp for deterministic assertions.
-FIXED_TS = datetime(2026, 5, 7, 22, 30, 45, tzinfo=timezone.utc)
+FIXED_TS = datetime(2026, 5, 7, 22, 30, 45, tzinfo=UTC)
 
 # Expected timestamp component (ISO 8601 basic, no colons).
 EXPECTED_TS = "20260507T223045Z"
 
 
 # ── Happy-path tests ───────────────────────────────────────────────────────
+
 
 class TestConflictFilenameHappyPath:
     """The basic happy path — without provider."""
@@ -51,6 +51,7 @@ class TestConflictFilenameHappyPath:
 
 
 # ── Suffix / extension tests ───────────────────────────────────────────────
+
 
 class TestConflictFilenameSuffixes:
     """Different file extensions and edge-case suffixes."""
@@ -94,6 +95,7 @@ class TestConflictFilenameSuffixes:
 
 # ── Timestamp tests ────────────────────────────────────────────────────────
 
+
 class TestConflictFilenameTimestamp:
     """Timestamp format: ISO 8601 basic, UTC, no colons, sortable."""
 
@@ -116,8 +118,8 @@ class TestConflictFilenameTimestamp:
 
     def test_sortable_ascending(self):
         """Two conflict filenames with different timestamps must sort correctly."""
-        ts_earlier = datetime(2026, 5, 7, 10, 0, 0, tzinfo=timezone.utc)
-        ts_later = datetime(2026, 5, 8, 10, 0, 0, tzinfo=timezone.utc)
+        ts_earlier = datetime(2026, 5, 7, 10, 0, 0, tzinfo=UTC)
+        ts_later = datetime(2026, 5, 8, 10, 0, 0, tzinfo=UTC)
         original = Path("notes/Foo.md")
         fn_earlier = conflict_filename(original, host="macA", ts=ts_earlier)
         fn_later = conflict_filename(original, host="macA", ts=ts_later)
@@ -132,20 +134,21 @@ class TestConflictFilenameTimestamp:
 
     def test_midnight_boundary(self):
         """Timestamp at midnight (00:00:00) must format correctly."""
-        ts_midnight = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ts_midnight = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
         original = Path("notes/Foo.md")
         result = conflict_filename(original, host="macA", ts=ts_midnight)
         assert "20260101T000000Z" in str(result)
 
     def test_leap_second_day(self):
         """Timestamp on Feb 29 (leap year) must format correctly."""
-        ts_leap = datetime(2028, 2, 29, 12, 0, 0, tzinfo=timezone.utc)
+        ts_leap = datetime(2028, 2, 29, 12, 0, 0, tzinfo=UTC)
         original = Path("notes/Foo.md")
         result = conflict_filename(original, host="macA", ts=ts_leap)
         assert "20280229T120000Z" in str(result)
 
 
 # ── Host name edge cases ───────────────────────────────────────────────────
+
 
 class TestConflictFilenameHostEdgeCases:
     """Edge cases for the host parameter."""
@@ -188,6 +191,7 @@ class TestConflictFilenameHostEdgeCases:
 
 # ── Provider edge cases ────────────────────────────────────────────────────
 
+
 class TestConflictFilenameProviderEdgeCases:
     """Provider parameter variations."""
 
@@ -227,6 +231,7 @@ class TestConflictFilenameProviderEdgeCases:
 
 # ── Path structure tests ───────────────────────────────────────────────────
 
+
 class TestConflictFilenamePathStructure:
     """Verify directory structure is preserved correctly."""
 
@@ -257,6 +262,7 @@ class TestConflictFilenamePathStructure:
 
 # ── Multi-dot file edge cases ──────────────────────────────────────────────
 
+
 class TestConflictFilenameMultiDotFiles:
     """Files with multiple dots in the stem."""
 
@@ -285,6 +291,7 @@ class TestConflictFilenameMultiDotFiles:
 
 
 # ── Type / format tests ────────────────────────────────────────────────────
+
 
 class TestConflictFilenameTypeHandling:
     """Wrong types and malformed inputs should raise."""
@@ -322,6 +329,7 @@ class TestConflictFilenameTypeHandling:
 
 # ── Idempotency / consistency tests ────────────────────────────────────────
 
+
 class TestConflictFilenameConsistency:
     """Repeated calls with same args produce identical results."""
 
@@ -335,7 +343,7 @@ class TestConflictFilenameConsistency:
     def test_same_args_different_ts_different_output(self):
         """Different timestamps must produce different filenames."""
         original = Path("notes/Foo.md")
-        ts2 = datetime(2026, 5, 8, 12, 0, 0, tzinfo=timezone.utc)
+        ts2 = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
         r1 = conflict_filename(original, host="macA", ts=FIXED_TS)
         r2 = conflict_filename(original, host="macA", ts=ts2)
         assert r1 != r2
@@ -349,6 +357,7 @@ class TestConflictFilenameConsistency:
 
 
 # ── Regression hooks ───────────────────────────────────────────────────────
+
 
 class TestConflictFilenameRegression:
     """Regression tests for known edge cases."""
@@ -407,7 +416,9 @@ class TestIsCloudDuplicateHappyPath:
     def test_icloud_deeply_nested(self):
         """dir/sub/Foo 2.md → (True, 'icloud', dir/sub/Foo.md)"""
         assert is_cloud_duplicate(Path("dir/sub/Foo 2.md")) == (
-            True, "icloud", Path("dir/sub/Foo.md"),
+            True,
+            "icloud",
+            Path("dir/sub/Foo.md"),
         )
 
     def test_dropbox_conflicted_copy(self):
@@ -489,21 +500,27 @@ class TestIsCloudDuplicateEdgeCases:
     def test_absolute_path_icloud(self):
         """/abs/Foo 2.md → (True, 'icloud', /abs/Foo.md)"""
         assert is_cloud_duplicate(Path("/abs/Foo 2.md")) == (
-            True, "icloud", Path("/abs/Foo.md"),
+            True,
+            "icloud",
+            Path("/abs/Foo.md"),
         )
 
     def test_dropbox_nested(self):
         """dir/Foo (host's conflicted copy date).md → dropbox, dir/Foo.md"""
         path = Path("dir/sub/Foo (mbp's conflicted copy 2026-05-07).md")
         assert is_cloud_duplicate(path) == (
-            True, "dropbox", Path("dir/sub/Foo.md"),
+            True,
+            "dropbox",
+            Path("dir/sub/Foo.md"),
         )
 
     def test_gdrive_conflict_nested(self):
         """dir/Foo-conflict-2026-05-07-001.md → gdrive, dir/Foo.md"""
         path = Path("dir/sub/Foo-conflict-2026-05-07-001.md")
         assert is_cloud_duplicate(path) == (
-            True, "gdrive", Path("dir/sub/Foo.md"),
+            True,
+            "gdrive",
+            Path("dir/sub/Foo.md"),
         )
 
     def test_dropbox_with_unicode(self):
@@ -521,7 +538,7 @@ class TestIsCloudDuplicatePrecedence:
         assert result[1] == "gdrive"
 
     def test_dropbox_beats_finder(self):
-        """"copy" in hostname doesn't falsely match finder"""
+        """ "copy" in hostname doesn't falsely match finder"""
         path = Path("Foo (mbp's conflicted copy 2026-05-07).md")
         result = is_cloud_duplicate(path)
         assert result[1] == "dropbox"

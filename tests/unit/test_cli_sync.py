@@ -35,17 +35,15 @@ class TestSyncPush:
 
 class TestSyncResolve:
     def test_sync_resolve_merge_strategy_raises_friendly_error(self):
-        result = runner.invoke(
-            app, ["sync", "resolve", "conflict.md", "--strategy", "merge"]
-        )
+        result = runner.invoke(app, ["sync", "resolve", "conflict.md", "--strategy", "merge"])
         assert result.exit_code != 0
         assert "not yet implemented" in result.stdout.lower()
 
     def test_sync_resolve_ours_succeeds(self):
-        result = runner.invoke(
-            app, ["sync", "resolve", "conflict.md", "--strategy", "ours"]
+        result = runner.invoke(app, ["sync", "resolve", "conflict.md", "--strategy", "ours"])
+        assert result.exit_code == 0, (
+            f"sync resolve --strategy ours should succeed, got {result.output}"
         )
-        assert result.exit_code == 0, f"sync resolve --strategy ours should succeed, got {result.output}"
 
 
 class TestSyncHistory:
@@ -55,4 +53,6 @@ class TestSyncHistory:
 
     def test_sync_history_limit_option(self):
         result = runner.invoke(app, ["sync", "history", "source://test", "--limit", "5"])
-        assert result.exit_code == 0, f"sync history --limit should be accepted, got {result.output}"
+        assert result.exit_code == 0, (
+            f"sync history --limit should be accepted, got {result.output}"
+        )

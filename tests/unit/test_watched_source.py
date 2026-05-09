@@ -1,11 +1,10 @@
 """Unit tests for sources/base.py — WatchedSource extended coverage."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
-from corpus_forge.sources.base import WatchedSource, RawConversation, RawDocument, RawMessage
+from corpus_forge.sources.base import RawDocument, WatchedSource
 
 
 class MockSource(WatchedSource):

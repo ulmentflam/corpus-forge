@@ -1,12 +1,12 @@
 """Property-based (fuzz) tests using hypothesis."""
 
-from hypothesis import given, settings, strategies as st
-
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
-from corpus_forge.chunkers.base import MarkdownChunker, ConversationChunker, TextChunk
+from corpus_forge.chunkers.base import ConversationChunker, MarkdownChunker, TextChunk
 from corpus_forge.identity import content_hash
-from corpus_forge.sources.base import RawDocument, RawConversation, RawMessage
+from corpus_forge.sources.base import RawConversation, RawDocument, RawMessage
 
 pytestmark = pytest.mark.fuzz
 
@@ -18,7 +18,11 @@ class TestMarkdownChunkerProperties:
     """Property tests for the MarkdownChunker class."""
 
     @given(
-        text=st.text(min_size=1, max_size=100, alphabet=st.characters(blacklist_categories=("Cs",)),),
+        text=st.text(
+            min_size=1,
+            max_size=100,
+            alphabet=st.characters(blacklist_categories=("Cs",)),
+        ),
         max_chars=st.integers(min_value=10, max_value=500),
         overlap=st.integers(min_value=0, max_value=199).map(lambda o: min(o, 9)),
     )
@@ -30,7 +34,11 @@ class TestMarkdownChunkerProperties:
             assert len(chunk.text) > 0, f"Empty chunk body in text of length {len(text)}"
 
     @given(
-        text=st.text(min_size=10, max_size=100, alphabet=st.characters(blacklist_categories=("Cs",)),),
+        text=st.text(
+            min_size=10,
+            max_size=100,
+            alphabet=st.characters(blacklist_categories=("Cs",)),
+        ),
         max_chars=st.integers(min_value=10, max_value=500),
         overlap=st.integers(min_value=0, max_value=199).map(lambda o: min(o, 9)),
     )
@@ -44,7 +52,11 @@ class TestMarkdownChunkerProperties:
             )
 
     @given(
-        text=st.text(min_size=10, max_size=100, alphabet=st.characters(blacklist_categories=("Cs",)),),
+        text=st.text(
+            min_size=10,
+            max_size=100,
+            alphabet=st.characters(blacklist_categories=("Cs",)),
+        ),
         max_chars=st.integers(min_value=10, max_value=500),
         overlap=st.integers(min_value=0, max_value=199).map(lambda o: min(o, 9)),
     )
@@ -57,7 +69,9 @@ class TestMarkdownChunkerProperties:
             assert isinstance(chunk.text, str)
 
     @given(
-        text=st.text(alphabet=st.characters(blacklist_categories=("Cs",)),),
+        text=st.text(
+            alphabet=st.characters(blacklist_categories=("Cs",)),
+        ),
         max_chars=st.integers(min_value=10, max_value=500),
         overlap=st.integers(min_value=0, max_value=199).map(lambda o: min(o, 9)),
     )
@@ -68,7 +82,11 @@ class TestMarkdownChunkerProperties:
         assert chunks == []
 
     @given(
-        text=st.text(min_size=1, max_size=100, alphabet=st.characters(blacklist_categories=("Cs",)),),
+        text=st.text(
+            min_size=1,
+            max_size=100,
+            alphabet=st.characters(blacklist_categories=("Cs",)),
+        ),
         max_chars=st.integers(min_value=100, max_value=500),
         overlap=st.integers(min_value=0, max_value=199).map(lambda o: min(o, 99)),
     )

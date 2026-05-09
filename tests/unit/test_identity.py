@@ -69,7 +69,7 @@ def test_chunk_content_hash_empty_string():
 def test_chunk_content_hash_single_char():
     """Boundary: single character input."""
     result = chunk_content_hash("x")
-    expected = hashlib.sha256("x".encode("utf-8")).hexdigest()
+    expected = hashlib.sha256(b"x").hexdigest()
     assert result == expected
 
 

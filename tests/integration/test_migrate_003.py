@@ -19,33 +19,35 @@ def _make_backend(pg_dsn: str) -> PostgresBackend:
     return PostgresBackend(dsn=pg_dsn, schema="corpus")
 
 
-def _run_sql(pg, sql: str, params: tuple = ()) -> None:
-    with pg.get_connection() as conn, conn.cursor() as cur:
+def _run_sql(pg_dsn: str, sql: str, params: tuple = ()) -> None:
+    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
         cur.execute(sql, params)
+        conn.commit()
 
 
-def _fetch_one(pg, sql: str, params: tuple = ()):
-    with pg.get_connection() as conn, conn.cursor() as cur:
+def _fetch_one(pg_dsn: str, sql: str, params: tuple = ()):
+    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
         cur.execute(sql, params)
+        conn.commit()
         return cur.fetchone()
 
 
 class TestSyncMigrationSchema:
     """Verify 003_sync creates all schema objects on a fresh database."""
 
-    def test_document_revisions_table_exists(self, pg, pg_dsn):
+    def test_document_revisions_table_exists(self, pg_dsn):
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
         row = _fetch_one(
-            pg,
+            pg_dsn,
             "SELECT table_name FROM information_schema.tables "
             "WHERE table_schema = 'corpus' AND table_name = 'document_revisions'",
         )
         assert row is not None
 
-    def test_document_revisions_columns(self, pg, pg_dsn):
+    def test_document_revisions_columns(self, pg_dsn):
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
@@ -62,7 +64,7 @@ class TestSyncMigrationSchema:
             "metadata",
             "created_at",
         }
-        with pg.get_connection() as conn, conn.cursor() as cur:
+        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_schema = 'corpus' AND table_name = 'document_revisions'",
@@ -70,25 +72,25 @@ class TestSyncMigrationSchema:
             actual = {row[0] for row in cur.fetchall()}
         assert expected.issubset(actual), f"Missing columns: {expected - actual}"
 
-    def test_document_revisions_pkey(self, pg, pg_dsn):
+    def test_document_revisions_pkey(self, pg_dsn):
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
         row = _fetch_one(
-            pg,
+            pg_dsn,
             "SELECT constraint_name FROM information_schema.table_constraints "
             "WHERE table_schema = 'corpus' AND table_name = 'document_revisions' "
             "AND constraint_type = 'PRIMARY KEY'",
         )
         assert row is not None
 
-    def test_document_revisions_unique_constraint(self, pg, pg_dsn):
+    def test_document_revisions_unique_constraint(self, pg_dsn):
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
-        with pg.get_connection() as conn, conn.cursor() as cur:
+        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT constraint_name FROM information_schema.table_constraints "
                 "WHERE table_schema = 'corpus' AND table_name = 'document_revisions' "
@@ -97,25 +99,25 @@ class TestSyncMigrationSchema:
             names = [r[0] for r in cur.fetchall()]
         assert any("revision" in n.lower() or "document_id" in n.lower() for n in names)
 
-    def test_document_revisions_foreign_key(self, pg, pg_dsn):
+    def test_document_revisions_foreign_key(self, pg_dsn):
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
         row = _fetch_one(
-            pg,
+            pg_dsn,
             "SELECT constraint_name FROM information_schema.table_constraints "
             "WHERE table_schema = 'corpus' AND table_name = 'document_revisions' "
             "AND constraint_type = 'FOREIGN KEY'",
         )
         assert row is not None
 
-    def test_document_revisions_self_ref_fk(self, pg, pg_dsn):
+    def test_document_revisions_self_ref_fk(self, pg_dsn):
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
-        with pg.get_connection() as conn, conn.cursor() as cur:
+        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT tc.constraint_name, ccu.column_name, ccu.table_name AS ref_table "
                 "FROM information_schema.table_constraints tc "
@@ -128,12 +130,12 @@ class TestSyncMigrationSchema:
         ref_tables = {r[2] for r in rows}
         assert "document_revisions" in ref_tables
 
-    def test_document_revisions_indexes(self, pg, pg_dsn):
+    def test_document_revisions_indexes(self, pg_dsn):
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
-        with pg.get_connection() as conn, conn.cursor() as cur:
+        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT indexname FROM pg_indexes WHERE schemaname = 'corpus' "
                 "AND tablename = 'document_revisions'",
@@ -142,52 +144,52 @@ class TestSyncMigrationSchema:
         assert any("doc_idx" in n for n in names)
         assert any("parent_idx" in n for n in names)
 
-    def test_tombstoned_at_column_exists(self, pg, pg_dsn):
+    def test_tombstoned_at_column_exists(self, pg_dsn):
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
         row = _fetch_one(
-            pg,
+            pg_dsn,
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_schema = 'corpus' AND table_name = 'documents' "
             "AND column_name = 'tombstoned_at'",
         )
         assert row is not None
 
-    def test_sources_last_pulled_revision_id_column(self, pg, pg_dsn):
+    def test_sources_last_pulled_revision_id_column(self, pg_dsn):
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
         row = _fetch_one(
-            pg,
+            pg_dsn,
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_schema = 'corpus' AND table_name = 'sources' "
             "AND column_name = 'last_pulled_revision_id'",
         )
         assert row is not None
 
-    def test_sources_sync_enabled_column(self, pg, pg_dsn):
+    def test_sources_sync_enabled_column(self, pg_dsn):
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
         row = _fetch_one(
-            pg,
+            pg_dsn,
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_schema = 'corpus' AND table_name = 'sources' "
             "AND column_name = 'sync_enabled'",
         )
         assert row is not None
 
-    def test_tombstoned_at_nullable(self, pg, pg_dsn):
+    def test_tombstoned_at_nullable(self, pg_dsn):
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
         row = _fetch_one(
-            pg,
+            pg_dsn,
             "SELECT is_nullable FROM information_schema.columns "
             "WHERE table_schema = 'corpus' AND table_name = 'documents' "
             "AND column_name = 'tombstoned_at'",
@@ -195,13 +197,13 @@ class TestSyncMigrationSchema:
         assert row is not None
         assert row[0] == "YES"
 
-    def test_sync_enabled_default_false(self, pg, pg_dsn):
+    def test_sync_enabled_default_false(self, pg_dsn):
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
         row = _fetch_one(
-            pg,
+            pg_dsn,
             "SELECT column_default FROM information_schema.columns "
             "WHERE table_schema = 'corpus' AND table_name = 'sources' "
             "AND column_name = 'sync_enabled'",
@@ -219,14 +221,14 @@ class TestSyncMigrationIdempotent:
         apply_migrations(backend, _schema_dir())
         apply_migrations(backend, _schema_dir())
 
-    def test_table_still_exists_after_reapply(self, pg, pg_dsn):
+    def test_table_still_exists_after_reapply(self, pg_dsn):
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
         apply_migrations(backend, _schema_dir())
 
         row = _fetch_one(
-            pg,
+            pg_dsn,
             "SELECT table_name FROM information_schema.tables "
             "WHERE table_schema = 'corpus' AND table_name = 'document_revisions'",
         )
@@ -236,30 +238,30 @@ class TestSyncMigrationIdempotent:
 class TestSyncMigrationConstraints:
     """Foreign key and unique constraints fire correctly."""
 
-    def test_fk_rejects_invalid_document_id(self, pg, pg_dsn):
+    def test_fk_rejects_invalid_document_id(self, pg_dsn):
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
         with pytest.raises(psycopg.errors.ForeignKeyViolation):
             _run_sql(
-                pg,
+                pg_dsn,
                 "INSERT INTO corpus.document_revisions "
                 "(document_id, revision_number, content_hash, text, author_host) "
                 "VALUES (99999, 1, 'abc', 'text', 'host1')",
             )
 
-    def test_insert_valid_revision_succeeds(self, pg, pg_dsn):
+    def test_insert_valid_revision_succeeds(self, pg_dsn):
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
         _run_sql(
-            pg,
+            pg_dsn,
             "INSERT INTO corpus.datasets (name, kind) VALUES ('test_003_fk', 'text')",
         )
         row = _fetch_one(
-            pg,
+            pg_dsn,
             "INSERT INTO corpus.documents "
             "(dataset_id, source_uri, content_hash, title, text) "
             "VALUES ((SELECT id FROM corpus.datasets WHERE name = 'test_003_fk'), "
@@ -268,7 +270,7 @@ class TestSyncMigrationConstraints:
         doc_id = row[0]
 
         _run_sql(
-            pg,
+            pg_dsn,
             "INSERT INTO corpus.document_revisions "
             "(document_id, revision_number, content_hash, text, author_host) "
             "VALUES (%s, 1, 'abc', 'revision text', 'host1')",
@@ -276,23 +278,23 @@ class TestSyncMigrationConstraints:
         )
 
         row = _fetch_one(
-            pg,
+            pg_dsn,
             "SELECT id FROM corpus.document_revisions WHERE document_id = %s",
             (doc_id,),
         )
         assert row is not None
 
-    def test_unique_revision_number_per_document(self, pg, pg_dsn):
+    def test_unique_revision_number_per_document(self, pg_dsn):
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
         _run_sql(
-            pg,
+            pg_dsn,
             "INSERT INTO corpus.datasets (name, kind) VALUES ('test_003_unique', 'text')",
         )
         row = _fetch_one(
-            pg,
+            pg_dsn,
             "INSERT INTO corpus.documents "
             "(dataset_id, source_uri, content_hash, title, text) "
             "VALUES ((SELECT id FROM corpus.datasets WHERE name = 'test_003_unique'), "
@@ -301,7 +303,7 @@ class TestSyncMigrationConstraints:
         doc_id = row[0]
 
         _run_sql(
-            pg,
+            pg_dsn,
             "INSERT INTO corpus.document_revisions "
             "(document_id, revision_number, content_hash, text, author_host) "
             "VALUES (%s, 1, 'abc', 'first', 'host1')",
@@ -310,24 +312,24 @@ class TestSyncMigrationConstraints:
 
         with pytest.raises(psycopg.errors.UniqueViolation):
             _run_sql(
-                pg,
+                pg_dsn,
                 "INSERT INTO corpus.document_revisions "
                 "(document_id, revision_number, content_hash, text, author_host) "
                 "VALUES (%s, 1, 'def', 'second', 'host2')",
                 (doc_id,),
             )
 
-    def test_fk_rejects_invalid_parent_revision_id(self, pg, pg_dsn):
+    def test_fk_rejects_invalid_parent_revision_id(self, pg_dsn):
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
         _run_sql(
-            pg,
+            pg_dsn,
             "INSERT INTO corpus.datasets (name, kind) VALUES ('test_003_parent_fk', 'text')",
         )
         row = _fetch_one(
-            pg,
+            pg_dsn,
             "INSERT INTO corpus.documents "
             "(dataset_id, source_uri, content_hash, title, text) "
             "VALUES ((SELECT id FROM corpus.datasets WHERE name = 'test_003_parent_fk'), "
@@ -337,7 +339,7 @@ class TestSyncMigrationConstraints:
 
         with pytest.raises(psycopg.errors.ForeignKeyViolation):
             _run_sql(
-                pg,
+                pg_dsn,
                 "INSERT INTO corpus.document_revisions "
                 "(document_id, revision_number, parent_revision_id, content_hash, text, author_host) "
                 "VALUES (%s, 1, 99999, 'abc', 'text', 'host1')",

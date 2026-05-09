@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import psycopg
 import pytest
 
 from corpus_forge.backends.postgres import PostgresBackend
@@ -22,13 +23,13 @@ def _make_backend(pg_dsn: str) -> PostgresBackend:
 class TestChunkContentHashMigration:
     """Tests for 002_chunk_content_hash migration and backfill."""
 
-    def test_content_hash_column_exists(self, pg, pg_dsn):
+    def test_content_hash_column_exists(self, pg_dsn):
         """After apply_migrations, content_hash column exists on chunks table."""
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
-        with pg.get_connection() as conn, conn.cursor() as cur:
+        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT column_name
@@ -40,20 +41,20 @@ class TestChunkContentHashMigration:
             )
             assert cur.fetchone() is not None
 
-    def test_backfill_populates_content_hash(self, pg, pg_dsn):
+    def test_backfill_populates_content_hash(self, pg_dsn):
         """Insert chunks with NULL content_hash, re-run migration, expect backfill."""
         backend = _make_backend(pg_dsn)
         backend.migrate()
         apply_migrations(backend, _schema_dir())
 
-        with pg.get_connection() as conn, conn.cursor() as cur:
+        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO corpus.datasets (name, kind) VALUES ('test', 'text') RETURNING id"
+                "INSERT INTO corpus.datasets (name, kind) VALUES ('test_backfill', 'text') RETURNING id"
             )
             dataset_id = cur.fetchone()[0]
             cur.execute(
                 "INSERT INTO corpus.documents (dataset_id, source_uri, content_hash, title, text) "
-                "VALUES (%s, 'test://doc1', 'hash1', 'Doc 1', 'Hello world') RETURNING id",
+                "VALUES (%s, 'test://doc1_backfill', 'hash1', 'Doc 1', 'Hello world') RETURNING id",
                 (dataset_id,),
             )
             doc_id = cur.fetchone()[0]
@@ -62,10 +63,11 @@ class TestChunkContentHashMigration:
                 "VALUES (%s, 0, 'Hello world')",
                 (doc_id,),
             )
+            conn.commit()
 
         apply_migrations(backend, _schema_dir())
 
-        with pg.get_connection() as conn, conn.cursor() as cur:
+        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT content_hash FROM corpus.chunks WHERE document_id = %s",
                 (doc_id,),

@@ -4,25 +4,20 @@ These tests verify the full pipeline (config → source → chunk → backend)
 without requiring Docker. The backend is mocked to capture calls.
 """
 
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
 from corpus_forge.chunkers.markdown import MarkdownChunker
 from corpus_forge.config import (
-    Config,
-    BackendConfig,
-    DaemonConfig,
     DatasetConfig,
-    EmbedderConfig,
     DatasetSourceConfig,
 )
+from corpus_forge.sources.base import RawConversation, RawDocument
 from corpus_forge.sources.claude_code import ClaudeCodeSource
 from corpus_forge.sources.markdown_vault import MarkdownVaultSource
 from corpus_forge.sources.opencode import OpenCodeSource
-from corpus_forge.sources.base import RawConversation, RawDocument, RawMessage
 
 pytestmark = pytest.mark.smoke
 
@@ -297,7 +292,9 @@ class TestSmokeChunking:
 
     def test_large_file_splits_into_multiple_chunks(self):
         chunker = MarkdownChunker(max_chars=100, overlap=20)
-        long_text = "# Header\n\n" + "\n\n".join([f"Paragraph {i} with some content." for i in range(20)])
+        long_text = "# Header\n\n" + "\n\n".join(
+            [f"Paragraph {i} with some content." for i in range(20)]
+        )
         chunks = chunker.chunk(long_text)
         assert len(chunks) > 1
         for chunk in chunks:

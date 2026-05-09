@@ -43,9 +43,16 @@ class SentenceTransformersEmbedder(BaseEmbedder):
         """Lazy load the SentenceTransformer model."""
         if self._model is None and SENTENCE_TRANSFORMERS_AVAILABLE:
             import torch  # noqa: PLC0415
+
             device = self.device
             if device == "auto":
-                device = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
+                device = (
+                    "mps"
+                    if torch.backends.mps.is_available()
+                    else "cuda"
+                    if torch.cuda.is_available()
+                    else "cpu"
+                )
             self._model = SentenceTransformer(self.model_id, device=device)
 
     def warmup(self) -> None:
@@ -57,6 +64,9 @@ class SentenceTransformersEmbedder(BaseEmbedder):
 
     def encode(self, texts: Sequence[str], *, batch_size: int = 32) -> np.ndarray:
         """Encode texts into embeddings."""
+        if not texts:
+            return np.empty((0, self.dimension), dtype=np.float32)
+
         if not SENTENCE_TRANSFORMERS_AVAILABLE:
             raise ImportError("sentence-transformers package is required")
 

@@ -1,5 +1,6 @@
 """Markdown vault source plugin."""
 
+import fnmatch
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -14,17 +15,38 @@ class MarkdownVaultSource(WatchedSource):
     name = "markdown_vault"
     dataset_kind = "text"
 
-    def __init__(self, vault_root: Path, exclude_globs: list[str] | None = None, **kwargs):
-        super().__init__(vault_root, **kwargs)
-        self.exclude_globs = exclude_globs or [".obsidian/**", ".trash/**", ".*"]
+    def __init__(self, vault_root: Path | str, exclude_globs: list[str] | None = None, **kwargs):
+        super().__init__(Path(vault_root), **kwargs)
+        self.exclude_globs = exclude_globs or [".obsidian/**", ".trash/**"]
+
+    def _is_excluded(self, path: Path) -> bool:
+        """Return True if *path* matches any exclude glob pattern.
+
+        Patterns are matched against the relative path from the vault root and
+        against each individual path component, so that:
+          - ``.*``        excludes hidden files/dirs (any component starting with ``.``)
+          - ``.trash/**`` excludes anything under ``.trash``
+        """
+        try:
+            rel = path.relative_to(self.root)
+        except ValueError:
+            rel = path
+
+        rel_str = str(rel)
+        for pattern in self.exclude_globs:
+            # Match against the full relative path string (handles dir/** patterns)
+            if fnmatch.fnmatch(rel_str, pattern):
+                return True
+            # Match each individual path component (handles simple patterns like ".*")
+            for part in rel.parts:
+                if fnmatch.fnmatch(part, pattern):
+                    return True
+        return False
 
     def discover(self) -> Iterator[Path]:
         """Yield markdown files, respecting exclude patterns."""
-        # In a real implementation, we'd use proper globbing with exclude patterns
-        # For now, yield all .md files recursively
         for path in self.root.rglob("*.md"):
-            # Simple exclude check (would be more robust in practice)
-            if any(pattern in str(path) for pattern in self.exclude_globs):
+            if self._is_excluded(path):
                 continue
             yield path
 

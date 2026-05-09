@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS messages_external_idx
   ON messages(conversation_id, external_uuid);
 
--- Chunks (the embedded unit; XOR doc/conv) ----------------------------------
+-- Chunks (the embedded unit - XOR doc/conv) ---------------------------------
 CREATE TABLE IF NOT EXISTS chunks (
   id              BIGSERIAL PRIMARY KEY,
   document_id     BIGINT REFERENCES documents(id)     ON DELETE CASCADE,

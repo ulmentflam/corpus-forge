@@ -40,7 +40,7 @@ class TestPgDsnFixtureShape:
         """psycopg.conninfo.conninfo_to_dict must parse the DSN without raising."""
         try:
             info = psycopg.conninfo.conninfo_to_dict(pg_dsn)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             pytest.fail(
                 f"psycopg.conninfo.conninfo_to_dict raised {type(exc).__name__}: {exc}\n"
                 f"DSN was: {pg_dsn!r}"
@@ -56,9 +56,8 @@ class TestPgDsnLiveConnect:
 
     def test_connect_and_select_one(self, pg_dsn: str) -> None:
         """psycopg.connect(pg_dsn) must succeed and SELECT 1 must return 1."""
-        with psycopg.connect(pg_dsn) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-                row = cur.fetchone()
+        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            row = cur.fetchone()
         assert row is not None, "SELECT 1 returned no rows"
         assert row[0] == 1, f"Expected SELECT 1 → 1, got {row[0]!r}"
