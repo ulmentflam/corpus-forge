@@ -42,3 +42,37 @@ class StorageBackend(Protocol):
     def delete_document(self, dataset_id: int, source_uri: str) -> None: ...
 
     def delete_conversation(self, dataset_id: int, source_uri: str) -> None: ...
+
+    def resolve_document(self, dataset_id: int, source_uri: str) -> "dict | None": ...
+
+    def resolve_self_source(self, dataset_id: int, host: str) -> int: ...
+
+    def insert_revision(
+        self,
+        *,
+        document_id: int,
+        source_uri: str,
+        content_hash: str,
+        text: str,
+        parent_revision_id: "int | None",
+        author_host: str,
+        is_tombstone: bool,
+        metadata: "dict | None" = None,
+    ) -> dict: ...
+
+    def latest_revision(self, document_id: int) -> "dict | None": ...
+
+    def pending_remote_revisions(
+        self,
+        dataset_id: int,
+        last_pulled_revision_id: "int | None",
+        self_host: str,
+        *,
+        limit: int = 1024,
+    ) -> "list[dict]": ...
+
+    def mark_revision_pulled(self, source_id: int, revision_id: int) -> None: ...
+
+    def set_tombstone(self, document_id: int) -> None: ...
+
+    def clear_tombstone(self, document_id: int) -> None: ...

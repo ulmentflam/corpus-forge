@@ -211,7 +211,7 @@ class TestTombstoneDeleteOnA:
         # ── step 6: documents.tombstoned_at is set ──
         doc_rows = backend._execute(
             "SELECT tombstoned_at FROM corpus.documents "
-            "WHERE source_uri LIKE '%doomed.md' AND dataset_id = %s",
+            "WHERE source_uri LIKE '%%doomed.md' AND dataset_id = %s",
             (dataset_id,),
         )
         assert len(doc_rows) >= 1, "Expected a documents row for doomed.md"
@@ -349,7 +349,7 @@ class TestTombstoneDeleteOnA:
 
         rows = backend._execute(
             "SELECT tombstoned_at FROM corpus.documents "
-            "WHERE source_uri LIKE '%target.md' AND dataset_id = %s",
+            "WHERE source_uri LIKE '%%target.md' AND dataset_id = %s",
             (dataset_id,),
         )
         assert len(rows) >= 1, "Expected a documents row for target.md"
@@ -417,7 +417,7 @@ class TestTombstoneResurrection:
         # Confirm tombstoned_at was set
         rows_before = backend._execute(
             "SELECT tombstoned_at FROM corpus.documents "
-            "WHERE source_uri LIKE '%phoenix.md' AND dataset_id = %s",
+            "WHERE source_uri LIKE '%%phoenix.md' AND dataset_id = %s",
             (dataset_id,),
         )
         assert rows_before[0]["tombstoned_at"] is not None, (
@@ -442,7 +442,7 @@ class TestTombstoneResurrection:
         # ── step 4: tombstoned_at should be cleared ──
         rows_after = backend._execute(
             "SELECT tombstoned_at FROM corpus.documents "
-            "WHERE source_uri LIKE '%phoenix.md' AND dataset_id = %s",
+            "WHERE source_uri LIKE '%%phoenix.md' AND dataset_id = %s",
             (dataset_id,),
         )
         assert len(rows_after) >= 1, "Expected documents row for phoenix.md after resurrection"
@@ -568,7 +568,7 @@ class TestTombstonePushSideOnly:
 
         rows = backend._execute(
             "SELECT tombstoned_at FROM corpus.documents "
-            "WHERE source_uri LIKE '%tombstone-me.md' AND dataset_id = %s",
+            "WHERE source_uri LIKE '%%tombstone-me.md' AND dataset_id = %s",
             (dataset_id,),
         )
         assert rows, "document row should exist for tombstone-me.md"
@@ -745,7 +745,7 @@ class TestPullSideTombstone:
             pull_b.tick()
             rows = backend._execute(
                 "SELECT tombstoned_at FROM corpus.documents "
-                "WHERE source_uri LIKE '%marked.md' AND dataset_id = %s",
+                "WHERE source_uri LIKE '%%marked.md' AND dataset_id = %s",
                 (dataset_id,),
             )
             return bool(rows) and rows[0]["tombstoned_at"] is not None

@@ -207,6 +207,15 @@ class PostgresBackend(StorageBackend):
             if statement:
                 self._execute(statement)
 
+        # Apply numbered SQL migration files (002_chunk_content_hash.sql,
+        # 003_sync.sql, etc.) for columns/tables not covered by the inline DDL.
+        from pathlib import Path as _Path  # noqa: PLC0415
+
+        from corpus_forge.schema.migrate import apply_migrations  # noqa: PLC0415
+
+        schema_dir = _Path(__file__).parent.parent / "schema"
+        apply_migrations(self, schema_dir)
+
     def register_embedder(self, embedder) -> int:
         """Register an embedder and create its table."""
         # Sanitize embedder name for use as a SQL identifier in table_name.
@@ -300,7 +309,13 @@ class PostgresBackend(StorageBackend):
         chunks: list[tuple[str | None, str]],
         embedder_ids: list[int] | None = None,
     ) -> int:
-        """Insert or update a document and its chunks."""
+        """Insert or update a document and its chunks.
+
+        BUG-3 fix: on re-ingest we UPDATE chunks in-place where the content_hash
+        matches (preserving the chunk_id and therefore the embedding rows) rather
+        than DELETE-then-INSERT all chunks.  Only genuinely removed chunks are
+        deleted, and only truly new chunks are inserted.
+        """
         # Check if document already exists
         existing = self._execute(
             "SELECT id FROM corpus.documents WHERE dataset_id = %s AND source_uri = %s",
@@ -318,11 +333,11 @@ class PostgresBackend(StorageBackend):
                 # No change, return existing doc ID
                 return doc_id
 
-            # Update document
+            # Update document metadata
             self._execute(
                 """
-                UPDATE corpus.documents 
-                SET content_hash = %s, title = %s, text = %s, 
+                UPDATE corpus.documents
+                SET content_hash = %s, title = %s, text = %s,
                     modified_at = NOW(), metadata = %s
                 WHERE id = %s
                 """,
@@ -335,13 +350,81 @@ class PostgresBackend(StorageBackend):
                 ),
             )
 
-            # Delete existing chunks (we'll re-add them)
-            self._execute("DELETE FROM corpus.chunks WHERE document_id = %s", (doc_id,))
+            # Load prior chunks keyed by content_hash (for embedding reuse)
+            # and by chunk_index (for update-in-place matching).
+            prior_rows = self._execute(
+                "SELECT id, chunk_index, content_hash, heading FROM corpus.chunks WHERE document_id = %s ORDER BY chunk_index",
+                (doc_id,),
+            )
+            # content_hash -> first surviving chunk_id (for reuse cache seeding)
+            prior_by_hash: dict[str, int] = {}
+            # chunk_index -> chunk_id (for update-in-place)
+            prior_by_index: dict[int, dict] = {}
+            for pr in prior_rows:
+                prior_by_index[pr["chunk_index"]] = pr
+                if pr["content_hash"]:
+                    prior_by_hash.setdefault(pr["content_hash"], pr["id"])
+
+            # Compute the set of new content_hashes to determine which prior
+            # chunks to keep vs delete.
+            new_chunk_hashes = {chunk_content_hash(t) for _, t in chunks}
+
+            # Build a "reuse by hash" map: for chunks whose content_hash appears
+            # in the new set, match them to new chunk positions greedily.
+            # We update these in-place (keeping chunk_id → keeping embedding rows).
+            # For positions without a hash match, delete old + insert new.
+            reusable: dict[str, int] = {}  # content_hash -> prior chunk_id
+            for ph, pid in prior_by_hash.items():
+                if ph in new_chunk_hashes:
+                    reusable[ph] = pid
+
+            # Delete prior chunks that will NOT be reused (content_hash gone from new set)
+            for pr in prior_rows:
+                if pr["content_hash"] not in new_chunk_hashes:
+                    self._execute("DELETE FROM corpus.chunks WHERE id = %s", (pr["id"],))
+
+            # Upsert new chunks: UPDATE if we have a reusable prior chunk_id for this
+            # hash (preserves embedding rows); INSERT otherwise.
+            used_prior_ids: set[int] = set()
+            # Reuse cache for _copy_reusable_embeddings (cross-document or new chunks)
+            cache: dict[tuple[str, int], int] = {}
+
+            for i, (heading, text) in enumerate(chunks):
+                chunk_hash = chunk_content_hash(text)
+                prior_id = reusable.get(chunk_hash)
+                if prior_id is not None and prior_id not in used_prior_ids:
+                    # Update-in-place: change chunk_index/heading but keep id + embeddings
+                    self._execute(
+                        """
+                        UPDATE corpus.chunks
+                        SET chunk_index = %s, heading = %s, text = %s
+                        WHERE id = %s
+                        """,
+                        (i, heading, text, prior_id),
+                    )
+                    used_prior_ids.add(prior_id)
+                    # Embedding already exists for prior_id; no need to copy/encode
+                else:
+                    row = self._execute(
+                        """
+                        INSERT INTO corpus.chunks
+                        (document_id, chunk_index, heading, text, metadata, content_hash)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        RETURNING id
+                        """,
+                        (doc_id, i, heading, text, psycopg.types.json.Json({}), chunk_hash),
+                    )
+                    if embedder_ids is not None:
+                        self._copy_reusable_embeddings(
+                            row[0]["id"], chunk_hash, embedder_ids, cache
+                        )
+
+            return doc_id
         else:
             # Insert new document
             result = self._execute(
                 """
-                INSERT INTO corpus.documents 
+                INSERT INTO corpus.documents
                 (dataset_id, source_uri, content_hash, title, text, metadata)
                 VALUES (%s, %s, %s, %s, %s, %s)
                 RETURNING id
@@ -357,13 +440,13 @@ class PostgresBackend(StorageBackend):
             )
             doc_id = result[0]["id"]
 
-        # Add chunks
-        cache: dict = {}
+        # Add chunks for new document
+        cache: dict[tuple[str, int], int] = {}
         for i, (heading, text) in enumerate(chunks):
             chunk_hash = chunk_content_hash(text)
             row = self._execute(
                 """
-                INSERT INTO corpus.chunks 
+                INSERT INTO corpus.chunks
                 (document_id, chunk_index, heading, text, metadata, content_hash)
                 VALUES (%s, %s, %s, %s, %s, %s)
                 RETURNING id
@@ -590,11 +673,69 @@ class PostgresBackend(StorageBackend):
         """Delete a document and its chunks."""
         self._execute(
             """
-            DELETE FROM corpus.documents 
+            DELETE FROM corpus.documents
             WHERE dataset_id = %s AND source_uri = %s
             """,
             (dataset_id, source_uri),
         )
+
+    def resolve_document(self, dataset_id: int, source_uri: str) -> dict | None:
+        """Idempotently look up or CREATE a documents row by (dataset_id, source_uri).
+
+        Returns the row as a dict with at least ``id`` and ``content_hash``.
+        For new rows, inserts with empty text, empty content_hash, NULL title,
+        and empty metadata.  Returns None only if source_uri is an empty string.
+
+        Use this method when the caller must ensure a row exists (e.g. push
+        handle_change).  For delete-side lookups that should NOT create stubs,
+        use ``find_document`` instead.
+        """
+        if not source_uri:
+            return None
+        rows = self._execute(
+            "SELECT id, content_hash FROM corpus.documents WHERE dataset_id = %s AND source_uri = %s",
+            (dataset_id, source_uri),
+        )
+        if rows:
+            return rows[0]
+        result = self._execute(
+            """
+            INSERT INTO corpus.documents (dataset_id, source_uri, content_hash, text, metadata)
+            VALUES (%s, %s, '', '', '{}'::jsonb)
+            RETURNING id, content_hash
+            """,
+            (dataset_id, source_uri),
+        )
+        return result[0] if result else None
+
+    def find_document(self, dataset_id: int, source_uri: str) -> dict | None:
+        """Look up a documents row without creating one.
+
+        Returns None if no row exists for (dataset_id, source_uri).
+        """
+        rows = self._execute(
+            "SELECT id, content_hash FROM corpus.documents WHERE dataset_id = %s AND source_uri = %s",
+            (dataset_id, source_uri),
+        )
+        return rows[0] if rows else None
+
+    def resolve_self_source(self, dataset_id: int, host: str) -> int:
+        """Upsert a sources row for this host's pull tracker and return its id."""
+        rows = self._execute(
+            "SELECT id FROM corpus.sources WHERE dataset_id = %s AND plugin = %s AND identity = %s AND host = %s",
+            (dataset_id, "sync", "pull", host),
+        )
+        if rows:
+            return int(rows[0]["id"])
+        result = self._execute(
+            """
+            INSERT INTO corpus.sources (dataset_id, plugin, identity, host)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id
+            """,
+            (dataset_id, "sync", "pull", host),
+        )
+        return int(result[0]["id"])
 
     def _copy_reusable_embeddings(
         self,
@@ -649,8 +790,8 @@ class PostgresBackend(StorageBackend):
 
             self._execute(
                 f"""
-                INSERT INTO {embedder_table} (chunk_id, embedding)
-                SELECT %s, embedding FROM {embedder_table}
+                INSERT INTO {embedder_table} (chunk_id, embedder_id, embedding)
+                SELECT %s, embedder_id, embedding FROM {embedder_table}
                 WHERE chunk_id = %s
                 """,
                 (new_chunk_id, prior_chunk_id),
@@ -683,33 +824,37 @@ class PostgresBackend(StorageBackend):
         is_tombstone: bool,
         metadata: dict | None = None,
     ) -> dict:
-        """Insert a new revision under advisory lock, returning id + revision_number."""
-        with self.lock_source(source_uri):
-            max_row = self._execute(
-                "SELECT MAX(revision_number) AS max FROM corpus.document_revisions WHERE document_id = %s",
-                (document_id,),
-            )
-            revision_number = (max_row[0]["max"] or 0) + 1
-            result = self._execute(
-                """
-                INSERT INTO corpus.document_revisions
-                (document_id, revision_number, parent_revision_id, content_hash,
-                 text, author_host, is_tombstone, metadata, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                RETURNING id, revision_number
-                """,
-                (
-                    document_id,
-                    revision_number,
-                    parent_revision_id,
-                    content_hash,
-                    text,
-                    author_host,
-                    is_tombstone,
-                    psycopg.types.json.Json(metadata) if metadata else None,
-                ),
-            )
-            return {"id": result[0]["id"], "revision_number": result[0]["revision_number"]}
+        """Insert a new revision, returning id + revision_number.
+
+        Callers are expected to already hold ``lock_source(source_uri)`` so that
+        the ``MAX(revision_number)+1`` allocation is atomic.  The internal lock
+        acquisition was removed to avoid double-lock across separate connections.
+        """
+        max_row = self._execute(
+            "SELECT MAX(revision_number) AS max FROM corpus.document_revisions WHERE document_id = %s",
+            (document_id,),
+        )
+        revision_number = (max_row[0]["max"] or 0) + 1
+        result = self._execute(
+            """
+            INSERT INTO corpus.document_revisions
+            (document_id, revision_number, parent_revision_id, content_hash,
+             text, author_host, is_tombstone, metadata, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            RETURNING id, revision_number
+            """,
+            (
+                document_id,
+                revision_number,
+                parent_revision_id,
+                content_hash,
+                text,
+                author_host,
+                is_tombstone,
+                psycopg.types.json.Json(metadata) if metadata else psycopg.types.json.Json({}),
+            ),
+        )
+        return {"id": result[0]["id"], "revision_number": result[0]["revision_number"]}
 
     def latest_revision(self, document_id: int) -> dict | None:
         """Return the highest revision_number row for a document, or None."""
@@ -727,12 +872,21 @@ class PostgresBackend(StorageBackend):
         *,
         limit: int = 1024,
     ) -> list[dict]:
-        """Return revisions from other hosts not yet pulled."""
+        """Return revisions from other hosts not yet pulled.
+
+        Each returned dict includes ``source_uri`` (from documents) and
+        ``parent_content_hash`` (from the parent revision row) in addition to all
+        columns of document_revisions.
+        """
         last_id = last_pulled_revision_id if last_pulled_revision_id is not None else 0
         return self._execute(
             """
-            SELECT r.* FROM corpus.document_revisions r
+            SELECT r.*,
+                   d.source_uri AS source_uri,
+                   parent.content_hash AS parent_content_hash
+            FROM corpus.document_revisions r
             JOIN corpus.documents d ON d.id = r.document_id
+            LEFT JOIN corpus.document_revisions parent ON parent.id = r.parent_revision_id
             WHERE d.dataset_id = %s AND r.id > %s AND r.author_host <> %s
             ORDER BY r.id ASC LIMIT %s
             """,
