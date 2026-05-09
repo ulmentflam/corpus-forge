@@ -45,7 +45,22 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "ARG", "PTH", "RUF", "PL", "C4", "PT"]
-ignore = []
+ignore = ["PLR0911", "PLR0912", "PLR0913"]
+
+[tool.ruff.lint.per-file-ignores]
+# cli.py uses intentional lazy imports inside command functions for startup speed
+"corpus_forge/cli.py" = ["PLC0415"]
+# Tests use magic values, lambda args, broad raises, composite assertions freely
+"tests/**/*.py" = [
+    "PLR2004",  # magic-value-comparison
+    "ARG005",   # unused-lambda-argument
+    "ARG001",   # unused-function-argument
+    "ARG002",   # unused-method-argument
+    "PT011",    # pytest-raises-too-broad
+    "PT018",    # pytest-composite-assertion
+    "B017",     # assert-raises-exception
+    "PLC0415",  # import-outside-top-level (some test fixtures use lazy imports)
+]
 
 [tool.ruff.format]
 quote-style = "double"

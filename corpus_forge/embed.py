@@ -9,7 +9,7 @@ from .embedders.registry import registry
 logger = logging.getLogger(__name__)
 
 
-def backfill_embedder(  # noqa: PLR0912, PLR0915
+def backfill_embedder(  # noqa: PLR0915
     embedder_name: str, dataset_name: str | None = None, limit: int | None = None
 ) -> None:
     """Backfill embeddings for a specific embedder."""

@@ -18,7 +18,7 @@ from .base import BaseEmbedder
 class OpenAIEmbedder(BaseEmbedder):
     """OpenAI embedder."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         name: str,
         model_id: str,
