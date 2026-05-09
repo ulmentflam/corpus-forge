@@ -8,7 +8,8 @@ Flat ledger of every test file the plan calls for, plus tests we add along the w
 | `tests/unit/test_chunk_reuse.py` | unit | P0-04, P0-05, P0-06, P0-07 | fake/mock backend or in-memory psycopg fakes; no Docker | pending |
 | `tests/integration/test_migrate_002.py` | integration | P0-03 | testcontainers Postgres (`tests/conftest.py`) | pending |
 | `tests/integration/test_migrate_003.py` | integration | P1-02 | testcontainers Postgres | pending |
-| `tests/integration/test_chunk_reuse_e2e.py` | integration | P0-08 | testcontainers Postgres + active embedder fixture (fake or `FakeEmbedder` if present in conftest) | pending |
+| `tests/integration/test_chunk_reuse_e2e.py` | integration | P0-08 | testcontainers Postgres + active embedder fixture (fake or `FakeEmbedder` if present in conftest) | pending (Wave 13) |
+| `tests/integration/test_dsn_fixture.py` | integration | INT-01 | testcontainers Postgres; libpq DSN smoke (`psycopg.conninfo.conninfo_to_dict`) | pending (Wave 13) |
 | `tests/unit/test_config.py` (extension) | unit | P1-03 | `tmp_path`, monkeypatch | pending |
 | `tests/unit/test_config_extended.py` (extension) | unit | P1-04 | `tmp_path`, monkeypatch on `Path.home`/`socket.gethostname` | pending |
 | `tests/unit/test_sync_echo.py` | unit | P1-06 | injectable clock | pending |
@@ -21,9 +22,9 @@ Flat ledger of every test file the plan calls for, plus tests we add along the w
 | `tests/unit/test_sync_engine.py` | unit | P1-27 | mock pipelines; verify start/stop wiring | pending |
 | `tests/unit/test_daemon.py` (rewrite) | unit | P1-28 | monkeypatched `SyncEngine` and `ingest_main`; signal injection | pending |
 | `tests/unit/test_cli_sync.py` | unit | P1-29 | typer `CliRunner`; mock backend | pending |
-| `tests/integration/test_sync_push_pull.py` | integration | P1-30 | testcontainers Postgres; two `tmp_path` roots; tiny `sync_poll_interval_s` (e.g. 0.2s) | pending |
-| `tests/integration/test_sync_tombstone.py` | integration | P1-31 | testcontainers Postgres; `tmp_path` root; trash-dir under `tmp_path` | pending |
-| `tests/integration/test_sync_icloud_dupe.py` | integration | P1-32 | testcontainers Postgres; `tmp_path` simulating an iCloud-shaped dir | pending |
+| `tests/integration/test_sync_push_pull.py` | integration | P1-30 | testcontainers Postgres; two `tmp_path` roots; tiny `sync_poll_interval_s` (e.g. 0.5s) | pending (Wave 13) |
+| `tests/integration/test_sync_tombstone.py` | integration | P1-31 | testcontainers Postgres; `tmp_path` root; trash-dir under `tmp_path` | pending (Wave 13) |
+| `tests/integration/test_sync_icloud_dupe.py` | integration | P1-32 | testcontainers Postgres; `tmp_path` simulating an iCloud-shaped dir | pending (Wave 13) |
 
 ## Behaviors to pin down (in plain English) — per test file
 

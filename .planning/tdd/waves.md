@@ -173,3 +173,44 @@ Three new test files, fully parallel.
 | 12 | 3 (P1-30, P1-31, P1-32) |
 
 Maximum concurrent dispatch: 9 (Wave 0). Typical wave size: 2–3.
+
+## Wave 13 — Integration test rehab (post-Docker)
+
+Context: Docker came online after Wave 12 was originally classified "blocked". Re-run of `tests/integration` revealed (a) all five existing integration test files use `pg.get_connection_url()` which returns a SQLAlchemy-style DSN that `psycopg.connect()` rejects, producing 43 failures + 4 errors of one shape; (b) the four E2E test files for P0-08, P1-30, P1-31, P1-32 were never written.
+
+### Sub-waves
+
+| Sub-wave | Tasks | Parallelism |
+|----------|-------|-------------|
+| 13a | INT-01 | 1 |
+| 13b | P0-08, P1-30, P1-31, P1-32 | 4 (disjoint files; share fixtures from INT-01) |
+| 13c | INT-02 (conditional) | 0 or 1, only if 13a or 13b leaves any test red |
+| 13d | DOC-01 | 1 |
+
+Hard ordering: 13a must finish before 13b. 13c only spawned by principal if QA after 13b reports remaining failures. 13d closes the wave.
+
+### Testing policy for Wave 13
+
+The production code for each of P0-08 / P1-30 / P1-31 / P1-32 is **already shipped** (Waves 1–11). These are end-to-end behavior pins, not red-then-green TDD cycles in the strict sense. Policy:
+
+1. **tdd-tester writes the suite first**, runs it, and reports the result.
+2. **If the suite passes immediately**, hand off to tdd-qa for a confirmation run + sign-off. The "red" stage is permitted to be skipped — log the reason ("characterization tests against pre-existing production code; first run passed").
+3. **If the suite fails**, the principal triages: real production bug → spawn a tdd-coder task with the failure as input + a follow-up task id; test setup error → tdd-tester revises.
+4. **Never silently relax assertions** to make a test pass. The assertions are the contract from `tasks.md` acceptance details and `done-criteria.md`.
+
+For INT-01, normal red→green TDD applies. The DSN-shape micro-test gives the red signal; the conftest refactor is the green step.
+
+### Risks & mitigations
+
+- **PullPipeline absolute-path bug suspected**: `corpus_forge/sync/pull.py:71` does `path = self._source_root / rev["source_uri"]`. Push writes `source_uri = str(path.resolve())` (absolute). `Path("/A") / "/B"` returns `Path("/B")` — `source_root` is dropped. P1-30/P1-31 may surface this as a real bug. If they do, the principal opens a follow-up `INT-03` (or names it `BUG-PULL-PATH`) and routes to tdd-coder; do not paper over with test gymnastics.
+- **Pull-loop poll cost (Q3)**: P1-30 runs two `SyncEngine` instances against shared Postgres. Use `sync_poll_interval_s = 0.5` for tests (default is 5.0); fast enough to keep tests under ~10s, slow enough not to thrash the connection. No connection pool introduction; Q3 stays default-(c) deferred.
+- **Container start cost**: Centralize the testcontainers fixture at session scope in conftest. With one container shared across all integration tests, total wall time drops materially. The five existing files use `module` scope which means one container per file — INT-01 should consolidate.
+- **iCloud path simulation (P1-32)**: production `detect_cloud_provider` does substring match on `str(path.resolve())`, looking for `Library/Mobile Documents/com~apple~CloudDocs`. Build that suffix under `tmp_path` (e.g. `tmp_path / "Library/Mobile Documents/com~apple~CloudDocs/test-vault"`) — no need for real iCloud.
+- **Coverage gate**: integration tests do not contribute to the 85% unit-coverage gate. The full `make test` aggregates them, so adding 4 E2E files should not drop coverage; if the unit gate breaks, that's a regression elsewhere, not Wave 13's fault.
+
+### Wave 13 dispatch policy
+
+- 13a: 1 tdd-tester (writes the libpq DSN micro-test, confirms red), 1 tdd-coder (lands conftest fixture + refactors 5 files), 1 tdd-qa (re-runs `tests/integration/`).
+- 13b: 4 tdd-testers in parallel, one per E2E file (each with the testcontainers fixture from 13a, a fake embedder, and the acceptance details from tasks.md). Coders are spawned only for files whose first run is not green; QA always runs.
+- 13c: ad-hoc, only if QA reports residuals. Principal authors a sub-task list at that point.
+- 13d: principal-owned bookkeeping — no worker dispatch.
