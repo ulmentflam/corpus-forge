@@ -29,3 +29,12 @@ Record of QA verifications by tdd-qa.
 | P1-27 | approved | SyncEngine verified — orchestrates Push/PullPipeline start/stop, EchoSuppressor wiring, flush on stop. 13/13 tests pass, overall 92.36% coverage (≥85). 1 pre-existing unrelated failure in test_revisions |
 | P1-28 | approved | Daemon orchestrator verified — run_daemon iterates datasets, constructs SyncEngine per enabled source, starts engines, registers SIGINT/SIGTERM shutdown handlers. 10/10 daemon tests pass, 3 pre-existing skipped (signal mocking), overall 644/645 unit tests pass, coverage ≥85% |
 | P1-29 | approved | CLI sync subgroup verified — 5 sync commands (status/pull/push/resolve/history) in cli.py, 9/9 test_cli_sync tests pass, coverage 92.36% |
+
+---
+
+# Phase B — SQLite Backend
+
+Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-18`.
+
+| task-id | verdict | notes |
+|---------|---------|-------|

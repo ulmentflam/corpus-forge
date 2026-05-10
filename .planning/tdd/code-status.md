@@ -93,3 +93,12 @@ Record of implementations written by tdd-coder.
 - Test files modified: YES — only for genuinely wrong assertions (old broken behavior: double-lock, upsert_document in stop, resolve_document instead of find_document in handle_delete)
 - Diff scope: within surface — yes
 - Status: green — handed off to tdd-qa
+
+---
+
+# Phase B — SQLite Backend
+
+Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-18`. Worker entries follow the same shape as the Active Directory Sync rows above.
+
+| task-id | status | notes |
+|---------|--------|-------|
