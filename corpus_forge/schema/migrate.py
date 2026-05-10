@@ -2,19 +2,44 @@
 
 import os
 from pathlib import Path
+from typing import Literal
 
 from ..backends.postgres import PostgresBackend
 
 
-def get_migration_files(schema_dir: Path) -> list[Path]:
-    """Get numbered SQL migration files in order."""
-    sql_files = list(schema_dir.glob("[0-9]*.sql"))
+def get_migration_files(
+    schema_dir: Path, dialect: Literal["postgres", "sqlite"] = "postgres"
+) -> list[Path]:
+    """Get numbered SQL migration files in order.
+
+    For dialect='postgres' (default): reads from schema_dir (top-level Postgres files).
+    For dialect='sqlite': reads from schema_dir/sqlite/ subdirectory.
+    """
+    if dialect == "postgres":
+        search_dir = schema_dir
+    elif dialect == "sqlite":
+        search_dir = schema_dir / "sqlite"
+    else:
+        # Unknown dialect: return empty list (do not silently serve Postgres files).
+        return []
+
+    sql_files = list(search_dir.glob("[0-9]*.sql"))
     return sorted(sql_files, key=lambda p: int(p.stem.split("_")[0]))
 
 
-def apply_migrations(backend: PostgresBackend, schema_dir: Path) -> None:
-    """Apply all pending migrations."""
-    migration_files = get_migration_files(schema_dir)
+def apply_migrations(
+    backend: PostgresBackend,
+    schema_dir: Path,
+    dialect: Literal["postgres", "sqlite"] = "postgres",
+) -> None:
+    """Apply all pending migrations.
+
+    The 'dialect' parameter controls which SQL files are read and whether
+    Postgres-specific backfill passes are executed:
+    - dialect='postgres' (default): reads top-level schema files and runs backfill.
+    - dialect='sqlite': reads schema/sqlite/ files; skips the Postgres-only backfill.
+    """
+    migration_files = get_migration_files(schema_dir, dialect=dialect)
     applied: set[str] = set()
 
     for migration_file in migration_files:
@@ -34,8 +59,8 @@ def apply_migrations(backend: PostgresBackend, schema_dir: Path) -> None:
                 backend._execute(statement)
         applied.add(migration_file.stem)
 
-    # --- backfill passes ---
-    if "002_chunk_content_hash" in applied:
+    # --- backfill passes (Postgres-only) ---
+    if dialect == "postgres" and "002_chunk_content_hash" in applied:
         print("Running 002 backfill: content_hash for NULL rows")
         backend._execute("""
             UPDATE corpus.chunks
