@@ -38,7 +38,51 @@ Record of test suites written by tdd-tester.
 | P1-30   | red    | E2E push/pull cross-host test — 4 tests, all failing due to real production bug: `push.py:84` calls `backend.resolve_document()` which does not exist on `PostgresBackend`. Routed to principal for INT-03 coder task. |
 | B-01    | red    | 21 tests written; 8 failing (loader module missing + pyproject sqlite extra absent), 9 skipped (loader/sqlite-vec not yet installed — correct), 4 passing (pyproject structural guards). |
 
+| B-02    | red    | 130 tests written across 4 files; 26 failed, 92 errors (fixture errors from missing SQL files), 12 passed. Red for correct reasons: SQL files don't exist; migrate.py lacks dialect param. |
+
 ## Phase B — SQLite Backend
+
+## B-02 — SQLite schema / migration SQL files
+- Test files:
+  - `tests/unit/test_migration_sqlite_001.py` (55 tests)
+  - `tests/unit/test_migration_sqlite_002.py` (22 tests)
+  - `tests/unit/test_migration_sqlite_003.py` (33 tests)
+  - `tests/unit/test_sqlite_migration_loader.py` (20 tests)
+- Run command: `PYTHONPATH=. uv run pytest tests/unit/test_migration_sqlite_001.py tests/unit/test_migration_sqlite_002.py tests/unit/test_migration_sqlite_003.py tests/unit/test_sqlite_migration_loader.py -v --no-header 2>&1 | tail -40`
+- Edge case checklist:
+  - [x] happy path — file exists at expected path; dialect dispatch routes correctly
+  - [x] boundaries — sort key numeric extraction; numeric ordering of 001/002/003; prefix > N checks
+  - [x] type/format — no Postgres-only types (BIGSERIAL, JSONB, TIMESTAMPTZ, ::jsonb, CREATE EXTENSION, SET search_path, CREATE SCHEMA, NOW()); SQLite-dialect types asserted (INTEGER PRIMARY KEY AUTOINCREMENT, TEXT for JSON/timestamps)
+  - [x] state — IF NOT EXISTS guards on every CREATE TABLE, CREATE INDEX, ALTER TABLE ADD COLUMN (idempotency)
+  - [x] N/A — concurrency (DDL file content tests, pure function)
+  - [x] failure paths — unknown dialect raises or returns empty (not silently returning Postgres files); missing file causes fixture error (correct red)
+  - [x] N/A — locale/time (file content tests)
+  - [x] production-realistic — table names, column names, FK names match Postgres source exactly; unqualified table refs (no corpus. prefix); index names preserved
+  - [x] regression hooks — postgres dispatch unchanged (no regression); sort-key stable on both dialects
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_migration_sqlite_001.py::TestFileExists::test_file_exists
+  FAILED tests/unit/test_migration_sqlite_001.py::TestFileExists::test_sqlite_subdir_exists
+  FAILED tests/unit/test_migration_sqlite_001.py::TestMigrationLoaderIntegration::test_glob_discovers_001_core
+  FAILED tests/unit/test_migration_sqlite_002.py::TestFileExists::test_file_exists
+  FAILED tests/unit/test_migration_sqlite_002.py::TestMigrationLoaderIntegration::test_glob_discovers_file
+  FAILED tests/unit/test_migration_sqlite_002.py::TestMigrationLoaderIntegration::test_file_includes_if_not_exists_guards
+  FAILED tests/unit/test_migration_sqlite_003.py::TestFileExists::test_file_exists
+  FAILED tests/unit/test_sqlite_migration_loader.py::TestGetMigrationFilesSignature::test_accepts_dialect_parameter
+  FAILED tests/unit/test_sqlite_migration_loader.py::TestGetMigrationFilesSignature::test_dialect_has_default_of_postgres
+  FAILED tests/unit/test_sqlite_migration_loader.py::TestApplyMigrationsSignature::test_accepts_dialect_parameter
+  FAILED tests/unit/test_sqlite_migration_loader.py::TestApplyMigrationsSignature::test_dialect_has_default_of_postgres
+  =================== 26 failed, 12 passed, 92 errors in 1.24s ===================
+  ```
+  Primary failure reasons:
+  1. `corpus_forge/schema/sqlite/` directory and all 3 SQL files do not exist yet.
+  2. `get_migration_files()` and `apply_migrations()` in `migrate.py` have no `dialect` parameter.
+  92 errors are fixture-level FileNotFoundError from autouse `sql` fixture on missing SQL files — correct red.
+- Plan ambiguities encountered:
+  - `test_migration_sqlite_002.py::TestDDLContent::test_statements_count` and `test_migration_sqlite_003.py::TestIdempotencyAndSafety::test_statements_count`: The Postgres 002 uses `corpus.chunks` (schema-qualified). The SQLite version must use bare `chunks`. Tests assert unqualified names — no ambiguity, correct per Q2 decision.
+  - `test_migration_sqlite_003.py::TestSQLiteDialect::test_no_bigint_for_pk`: asserting INTEGER PRIMARY KEY AUTOINCREMENT rather than BIGINT. The plan says "BIGSERIAL → INTEGER PRIMARY KEY AUTOINCREMENT" but the non-PK integer columns (revision_number, parent_revision_id) could use BIGINT (SQLite maps it to INTEGER affinity). Tests allow BIGINT for non-PK integer columns.
+  - `apply_migrations` postgres dispatch currently uses a backfill pass gated on `"002_chunk_content_hash" in applied`. After the coder adds the dialect param, the backfill pass is Postgres-only and must not run for SQLite. Not tested here (that's B-03 territory); flagged for coder awareness.
+- Status: red — handed off to tdd-coder
 
 
 ## P0-01 — `chunk_content_hash`
