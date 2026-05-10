@@ -56,7 +56,7 @@ class PostgresBackend(StorageBackend):
     def _execute(self, query: str, params: tuple = ()) -> list[dict]:
         """Execute a query and return results as list of dicts."""
         with self._get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(query, params)
+            cur.execute(query, params)  # pyrefly: ignore[bad-argument-type]  # query is internally constructed; psycopg's LiteralString stub is too strict for our usage
             rows = cur.fetchall() if cur.description else []
             conn.commit()
             return [dict(row) for row in rows]
@@ -659,7 +659,8 @@ class PostgresBackend(StorageBackend):
         with self._get_connection() as conn, conn.cursor() as cur:
             # Try to acquire advisory lock
             cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_key,))
-            acquired = cur.fetchone()[0]
+            row = cur.fetchone()
+            acquired = row[0] if row is not None else False
 
             if not acquired:
                 raise RuntimeError(f"Could not acquire lock for source: {key}")

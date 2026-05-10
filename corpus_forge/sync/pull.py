@@ -54,7 +54,7 @@ class PullPipeline:
             return self._source_root / p.name
         return self._source_root / p
 
-    def start(self, _source_root: Path, poll_interval_s: float = 5.0) -> None:
+    def start(self, source_root: Path, poll_interval_s: float = 5.0) -> None:  # noqa: ARG002 — kept for API symmetry with PushPipeline.start; source_root is already on self via __init__
         if self._thread is not None and self._thread.is_alive():
             raise RuntimeError("PullPipeline already started")
         self._stop_event.clear()

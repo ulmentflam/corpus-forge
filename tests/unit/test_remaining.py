@@ -122,9 +122,7 @@ class TestWriteEmbeddings:
             _write_embeddings_for_chunks(
                 mock_backend,
                 embedder_id=1,
-                _chunk_ids=[],
                 embedder=mock_embedder,
-                _fallback_text=None,
             )
 
         mock_embedder.encode.assert_not_called()
@@ -143,9 +141,7 @@ class TestWriteEmbeddings:
             _write_embeddings_for_chunks(
                 mock_backend,
                 embedder_id=1,
-                _chunk_ids=[1, 2],
                 embedder=mock_embedder,
-                _fallback_text=None,
             )
 
         mock_embedder.encode.assert_called_once()

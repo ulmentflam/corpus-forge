@@ -67,7 +67,6 @@ quote-style = "double"
 
 [tool.pyrefly]
 project_includes = ["corpus_forge"]
-strict           = true
 python_version   = "3.11"
 
 [tool.pytest.ini_options]

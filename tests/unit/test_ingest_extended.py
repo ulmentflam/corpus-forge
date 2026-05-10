@@ -172,7 +172,7 @@ class TestWriteEmbeddings:
         embedder = MagicMock()
         embedder.name = "test-embed"
 
-        _write_embeddings_for_chunks(backend, 1, [1, 2], embedder, "text")
+        _write_embeddings_for_chunks(backend, 1, embedder)
         embedder.encode.assert_not_called()
 
     def test_write_embeddings_with_chunks(self):
@@ -184,7 +184,7 @@ class TestWriteEmbeddings:
         embedder.name = "test-embed"
         embedder.encode.return_value = [[0.1] * 384, [0.2] * 384]
 
-        _write_embeddings_for_chunks(backend, 1, [1, 2], embedder, "text")
+        _write_embeddings_for_chunks(backend, 1, embedder)
         embedder.encode.assert_called_once()
         backend.write_embeddings.assert_called_once()
 

@@ -134,4 +134,7 @@ def main(embedder: str, dataset: str | None = None, limit: int | None = None) ->
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(
+        "Use `corpus-forge embed` (the Typer CLI); "
+        "python -m corpus_forge.embed is no longer supported."
+    )

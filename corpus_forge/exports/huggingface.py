@@ -3,6 +3,7 @@
 import os
 
 try:
+    # pyrefly: ignore[missing-import]  # optional dep, install via [hf] extra
     from datasets import Dataset
 
     HF_AVAILABLE = True
