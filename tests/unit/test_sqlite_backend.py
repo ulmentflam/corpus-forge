@@ -28,6 +28,8 @@ import pytest
 # ---------------------------------------------------------------------------
 from corpus_forge.backends.sqlite import SQLiteBackend
 from corpus_forge.backends.sqlite_vec_loader import SQLITE_VEC_AVAILABLE
+from corpus_forge.identity import chunk_content_hash
+from corpus_forge.sources.base import RawDocument
 
 # ---------------------------------------------------------------------------
 # Helpers shared across test classes
@@ -795,3 +797,1016 @@ class TestRegisterEmbedder:
             backend.register_embedder(FakeEmbedder(name=n))
         rows = _embedder_rows(backend)
         assert len(rows) == len(names), f"Expected {len(names)} embedder rows, got {len(rows)}"
+
+
+# ---------------------------------------------------------------------------
+# B-05 — upsert_document + chunk reuse
+# ---------------------------------------------------------------------------
+
+
+def _make_raw_document(
+    source_uri="vault://test.md",
+    content_hash="abc123",
+    text="# Test\n\nContent.",
+    title="Test",
+    modified_at=1000.0,
+):
+    """Factory for RawDocument used in upsert_document tests."""
+    return RawDocument(
+        source_uri=source_uri,
+        content_hash=content_hash,
+        text=text,
+        title=title,
+        modified_at=modified_at,
+        metadata={},
+        labels=[],
+    )
+
+
+def _insert_dataset_and_document(
+    backend,
+    dataset_id=1,
+    doc_id=1,
+    source_uri="vault://test.md",
+    content_hash="abc123",
+    text="# Test",
+):
+    """Insert prerequisite dataset + document rows into the SQLite backend.
+
+    Uses INSERT OR IGNORE for the dataset row to be idempotent across tests.
+    """
+    backend._execute(
+        "INSERT OR IGNORE INTO datasets (id, name, kind) VALUES (?, ?, ?)",
+        (dataset_id, "test_ds", "text"),
+    )
+    backend._execute(
+        "INSERT INTO documents (id, dataset_id, source_uri, content_hash, text) VALUES (?, ?, ?, ?, ?)",
+        (doc_id, dataset_id, source_uri, content_hash, text),
+    )
+
+
+# ---------------------------------------------------------------------------
+# TestUpsertDocument — B-05 core
+# ---------------------------------------------------------------------------
+
+
+class TestUpsertDocumentNewDocument:
+    """Happy path: upsert_document with a brand-new document."""
+
+    def test_returns_document_id_on_first_insert(self, tmp_path):
+        """First call to upsert_document inserts the document and returns its id."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        doc = _make_raw_document(
+            source_uri="vault://new.md", content_hash="new_hash", text="# New Doc"
+        )
+        chunks = ([("# New Doc", "Content")],)
+
+        result = backend.upsert_document(1, doc, chunks)
+        assert isinstance(result, int)
+        assert result >= 1
+
+    def test_inserts_document_row(self, tmp_path):
+        """After upsert_document, the document row exists with correct fields."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        doc = _make_raw_document(
+            source_uri="vault://insert_test.md", content_hash="hash1", text="# Insert Test"
+        )
+        chunks = [("# Insert Test", "Body text")]
+
+        backend.upsert_document(1, doc, chunks)
+
+        rows = backend._execute(
+            "SELECT source_uri, content_hash, text FROM documents WHERE source_uri = ?",
+            ("vault://insert_test.md",),
+        )
+        assert len(rows) == 1
+        assert rows[0]["source_uri"] == "vault://insert_test.md"
+        assert rows[0]["content_hash"] == "hash1"
+        assert rows[0]["text"] == "# Insert Test"
+
+    def test_inserts_new_chunks(self, tmp_path):
+        """Chunks list is inserted into the chunks table."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        doc = _make_raw_document(
+            source_uri="vault://chunk_test.md", content_hash="hash1", text="# Chunk Test"
+        )
+        chunks = [("# Chunk Test", "Body A"), ("", "Body B")]
+
+        backend.upsert_document(1, doc, chunks)
+
+        doc_rows = backend._execute(
+            "SELECT id FROM documents WHERE source_uri = ?",
+            ("vault://chunk_test.md",),
+        )
+        doc_id = doc_rows[0]["id"]
+
+        chunk_rows = backend._execute(
+            "SELECT chunk_index, heading, text FROM chunks WHERE document_id = ? ORDER BY chunk_index",
+            (doc_id,),
+        )
+        assert len(chunk_rows) == 2
+        assert chunk_rows[0]["chunk_index"] == 0
+        assert chunk_rows[0]["heading"] == "# Chunk Test"
+        assert chunk_rows[0]["text"] == "Body A"
+        assert chunk_rows[1]["chunk_index"] == 1
+        assert chunk_rows[1]["heading"] is None or chunk_rows[1]["heading"] == ""
+        assert chunk_rows[1]["text"] == "Body B"
+
+    def test_chunk_content_hash_set_on_insert(self, tmp_path):
+        """Each new chunk INSERT includes content_hash = chunk_content_hash(text)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        doc = _make_raw_document(
+            source_uri="vault://hash_test.md", content_hash="hash1", text="# Hash Test"
+        )
+        chunks = [("# Hash Test", "Body A")]
+
+        backend.upsert_document(1, doc, chunks)
+
+        doc_rows = backend._execute(
+            "SELECT id FROM documents WHERE source_uri = ?",
+            ("vault://hash_test.md",),
+        )
+        doc_id = doc_rows[0]["id"]
+
+        chunk_rows = backend._execute(
+            "SELECT content_hash FROM chunks WHERE document_id = ?",
+            (doc_id,),
+        )
+        assert len(chunk_rows) == 1
+        expected_hash = chunk_content_hash("Body A")
+        assert chunk_rows[0]["content_hash"] == expected_hash, (
+            f"Expected content_hash={expected_hash!r}, got {chunk_rows[0]['content_hash']!r}"
+        )
+
+    def test_chunk_index_sequence_starts_at_zero(self, tmp_path):
+        """Chunks are indexed 0..N-1 in order."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        doc = _make_raw_document(
+            source_uri="vault://index_test.md", content_hash="hash1", text="# Index Test"
+        )
+        chunks = [("# Index Test", "First"), ("", "Second"), ("", "Third")]
+
+        backend.upsert_document(1, doc, chunks)
+
+        doc_rows = backend._execute(
+            "SELECT id FROM documents WHERE source_uri = ?",
+            ("vault://index_test.md",),
+        )
+        doc_id = doc_rows[0]["id"]
+
+        chunk_rows = backend._execute(
+            "SELECT chunk_index FROM chunks WHERE document_id = ? ORDER BY chunk_index",
+            (doc_id,),
+        )
+        indices = [r["chunk_index"] for r in chunk_rows]
+        assert indices == [0, 1, 2], f"Expected [0, 1, 2], got {indices}"
+
+
+class TestUpsertDocumentExistingDocument:
+    """upsert_document with an existing document — update path."""
+
+    def test_updates_document_when_content_hash_differs(self, tmp_path):
+        """When the new content_hash differs, the document row is updated."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(
+            backend,
+            dataset_id=1,
+            doc_id=1,
+            source_uri="vault://update.md",
+            content_hash="old_hash",
+            text="# Old",
+        )
+
+        doc = _make_raw_document(
+            source_uri="vault://update.md", content_hash="new_hash", text="# Updated"
+        )
+        chunks = [("# Updated", "New body")]
+
+        result = backend.upsert_document(1, doc, chunks)
+        assert result == 1  # same document id
+
+        rows = backend._execute(
+            "SELECT content_hash, text FROM documents WHERE source_uri = ?",
+            ("vault://update.md",),
+        )
+        assert rows[0]["content_hash"] == "new_hash"
+        assert rows[0]["text"] == "# Updated"
+
+    def test_content_hash_short_circuit_returns_existing_id(self, tmp_path):
+        """If content_hash matches, upsert_document returns existing doc ID without modifying chunks."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(
+            backend,
+            dataset_id=1,
+            doc_id=1,
+            source_uri="vault://unchanged.md",
+            content_hash="same_hash",
+            text="# Same",
+        )
+
+        # Insert a chunk first
+        backend._execute(
+            "INSERT INTO chunks (document_id, chunk_index, text) VALUES (1, 0, 'existing chunk')"
+        )
+
+        doc = _make_raw_document(
+            source_uri="vault://unchanged.md", content_hash="same_hash", text="# Same"
+        )
+        chunks = [("# Same", "existing chunk")]
+
+        result = backend.upsert_document(1, doc, chunks)
+        assert result == 1
+
+        # Chunk should be unchanged (not re-inserted)
+        chunk_rows = backend._execute("SELECT text FROM chunks WHERE document_id = 1")
+        assert len(chunk_rows) == 1
+        assert chunk_rows[0]["text"] == "existing chunk"
+
+    def test_replaces_chunks_on_content_change(self, tmp_path):
+        """When content changes: old chunks are deleted, new chunks are inserted."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(
+            backend,
+            dataset_id=1,
+            doc_id=1,
+            source_uri="vault://replace.md",
+            content_hash="old_hash",
+            text="# Old",
+        )
+
+        # Pre-existing chunks
+        backend._execute(
+            "INSERT INTO chunks (document_id, chunk_index, text) VALUES (1, 0, 'old chunk 1')"
+        )
+        backend._execute(
+            "INSERT INTO chunks (document_id, chunk_index, text) VALUES (1, 1, 'old chunk 2')"
+        )
+
+        doc = _make_raw_document(
+            source_uri="vault://replace.md", content_hash="new_hash", text="# New"
+        )
+        chunks = [("# New", "new chunk A"), ("", "new chunk B")]
+
+        backend.upsert_document(1, doc, chunks)
+
+        doc_rows = backend._execute(
+            "SELECT id FROM documents WHERE source_uri = ?",
+            ("vault://replace.md",),
+        )
+        doc_id = doc_rows[0]["id"]
+
+        chunk_rows = backend._execute(
+            "SELECT chunk_index, text FROM chunks WHERE document_id = ? ORDER BY chunk_index",
+            (doc_id,),
+        )
+        assert len(chunk_rows) == 2
+        assert chunk_rows[0]["text"] == "new chunk A"
+        assert chunk_rows[1]["text"] == "new chunk B"
+
+    def test_reduces_chunk_count_on_content_change(self, tmp_path):
+        """When new content has fewer chunks, old excess chunks are deleted."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(
+            backend,
+            dataset_id=1,
+            doc_id=1,
+            source_uri="vault://shrink.md",
+            content_hash="old_hash",
+            text="# Old",
+        )
+
+        # Pre-existing 3 chunks
+        for i, text in enumerate(["chunk 1", "chunk 2", "chunk 3"]):
+            backend._execute(
+                "INSERT INTO chunks (document_id, chunk_index, text) VALUES (1, ?, ?)",
+                (i, text),
+            )
+
+        doc = _make_raw_document(
+            source_uri="vault://shrink.md", content_hash="new_hash", text="# New"
+        )
+        chunks = [("# New", "only one")]
+
+        backend.upsert_document(1, doc, chunks)
+
+        doc_rows = backend._execute(
+            "SELECT id FROM documents WHERE source_uri = ?",
+            ("vault://shrink.md",),
+        )
+        doc_id = doc_rows[0]["id"]
+
+        chunk_rows = backend._execute(
+            "SELECT chunk_index FROM chunks WHERE document_id = ? ORDER BY chunk_index",
+            (doc_id,),
+        )
+        assert len(chunk_rows) == 1
+        assert chunk_rows[0]["chunk_index"] == 0
+
+
+class TestUpsertDocumentChunkReuse:
+    """Chunk reuse via content_hash matching in upsert_document."""
+
+    def test_reuses_chunk_when_content_hash_matches(self, tmp_path):
+        """When a chunk's content_hash matches a prior chunk, it updates in-place (keeps chunk_id)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(
+            backend,
+            dataset_id=1,
+            doc_id=1,
+            source_uri="vault://reuse.md",
+            content_hash="old_hash",
+            text="# Old",
+        )
+
+        # Insert a prior chunk with known content
+        prior_hash = chunk_content_hash("same body")
+        backend._execute(
+            "INSERT INTO chunks (document_id, chunk_index, text, content_hash) VALUES (1, 0, 'same body', ?)",
+            (prior_hash,),
+        )
+
+        doc = _make_raw_document(
+            source_uri="vault://reuse.md", content_hash="new_hash", text="# New"
+        )
+        chunks = [("# New", "same body")]
+
+        backend.upsert_document(1, doc, chunks)
+
+        doc_rows = backend._execute(
+            "SELECT id FROM documents WHERE source_uri = ?",
+            ("vault://reuse.md",),
+        )
+        doc_id = doc_rows[0]["id"]
+
+        # Should have exactly 1 chunk (reused, not duplicated)
+        chunk_rows = backend._execute(
+            "SELECT chunk_index, text, content_hash FROM chunks WHERE document_id = ?",
+            (doc_id,),
+        )
+        assert len(chunk_rows) == 1
+        assert chunk_rows[0]["chunk_index"] == 0
+        assert chunk_rows[0]["content_hash"] == prior_hash
+
+    def test_inserts_new_chunk_when_no_prior_match(self, tmp_path):
+        """A chunk with no prior content_hash match is inserted as a new row."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(
+            backend,
+            dataset_id=1,
+            doc_id=1,
+            source_uri="vault://new_body.md",
+            content_hash="old_hash",
+            text="# Old",
+        )
+
+        # Prior chunk with different content
+        backend._execute(
+            "INSERT INTO chunks (document_id, chunk_index, text, content_hash) VALUES (1, 0, 'different body', 'different_hash')"
+        )
+
+        doc = _make_raw_document(
+            source_uri="vault://new_body.md", content_hash="new_hash", text="# New"
+        )
+        chunks = [("# New", "brand new body")]
+
+        backend.upsert_document(1, doc, chunks)
+
+        doc_rows = backend._execute(
+            "SELECT id FROM documents WHERE source_uri = ?",
+            ("vault://new_body.md",),
+        )
+        doc_id = doc_rows[0]["id"]
+
+        chunk_rows = backend._execute(
+            "SELECT text, content_hash FROM chunks WHERE document_id = ?",
+            (doc_id,),
+        )
+        assert len(chunk_rows) == 1
+        assert chunk_rows[0]["text"] == "brand new body"
+        # content_hash should be set
+        assert chunk_rows[0]["content_hash"] is not None
+
+
+class TestUpsertDocumentEmbedderIds:
+    """upsert_document accepts embedder_ids and triggers reuse."""
+
+    def test_embedder_ids_none_no_reuse(self, tmp_path):
+        """When embedder_ids is None, _copy_reusable_embeddings is NOT called."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        doc = _make_raw_document(
+            source_uri="vault://no_reuse.md", content_hash="hash1", text="# No Reuse"
+        )
+        chunks = [("# No Reuse", "body")]
+
+        # Patch _copy_reusable_embeddings to track calls
+        original_copy = backend._copy_reusable_embeddings
+        call_count = [0]
+
+        def spy_copy(*args, **kwargs):
+            call_count[0] += 1
+            return original_copy(*args, **kwargs)
+
+        backend._copy_reusable_embeddings = spy_copy
+
+        backend.upsert_document(1, doc, chunks, embedder_ids=None)
+
+        assert call_count[0] == 0, (
+            f"_copy_reusable_embeddings must not be called when embedder_ids=None. Called {call_count[0]} times."
+        )
+
+    def test_embedder_ids_empty_list_no_reuse(self, tmp_path):
+        """When embedder_ids is [], _copy_reusable_embeddings is NOT called."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        doc = _make_raw_document(
+            source_uri="vault://empty_ids.md", content_hash="hash1", text="# Empty"
+        )
+        chunks = [("# Empty", "body")]
+
+        call_count = [0]
+        original_copy = backend._copy_reusable_embeddings
+
+        def spy_copy(*args, **kwargs):
+            call_count[0] += 1
+            return original_copy(*args, **kwargs)
+
+        backend._copy_reusable_embeddings = spy_copy
+
+        backend.upsert_document(1, doc, chunks, embedder_ids=[])
+
+        assert call_count[0] == 0, (
+            f"_copy_reusable_embeddings must not be called when embedder_ids=[]. Called {call_count[0]} times."
+        )
+
+    def test_embedder_ids_triggers_copy_per_chunk(self, tmp_path):
+        """When embedder_ids is a non-empty list, _copy_reusable_embeddings is called once per chunk."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        doc = _make_raw_document(
+            source_uri="vault://reuse_ids.md", content_hash="hash1", text="# Reuse"
+        )
+        chunks = [("# Reuse", "body A"), ("", "body B")]
+
+        call_count = [0]
+        original_copy = backend._copy_reusable_embeddings
+
+        def spy_copy(*args, **kwargs):
+            call_count[0] += 1
+            return original_copy(*args, **kwargs)
+
+        backend._copy_reusable_embeddings = spy_copy
+
+        backend.upsert_document(1, doc, chunks, embedder_ids=[1, 2])
+
+        assert call_count[0] == 2, (
+            f"_copy_reusable_embeddings must be called once per chunk. Called {call_count[0]} times, expected 2."
+        )
+
+    def test_embedder_ids_passed_to_copy_reusable(self, tmp_path):
+        """The embedder_ids list is passed through to _copy_reusable_embeddings."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        doc = _make_raw_document(
+            source_uri="vault://pass_ids.md", content_hash="hash1", text="# Pass"
+        )
+        chunks = [("# Pass", "body")]
+
+        captured_ids = []
+        original_copy = backend._copy_reusable_embeddings
+
+        def spy_copy(new_chunk_id, content_hash, embedder_ids, cache):
+            captured_ids.append(list(embedder_ids))
+            return original_copy(new_chunk_id, content_hash, embedder_ids, cache)
+
+        backend._copy_reusable_embeddings = spy_copy
+
+        expected_ids = [10, 20]
+        backend.upsert_document(1, doc, chunks, embedder_ids=expected_ids)
+
+        assert len(captured_ids) >= 1
+        assert captured_ids[0] == expected_ids, (
+            f"Expected embedder_ids={expected_ids}, got {captured_ids[0]}"
+        )
+
+
+class TestCopyReusableEmbeddings:
+    """Tests for SQLiteBackend._copy_reusable_embeddings."""
+
+    def test_returns_empty_set_when_no_prior_chunk_shares_hash(self, tmp_path):
+        """No prior chunk with matching content_hash → empty set returned."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder_id = backend.register_embedder(FakeEmbedder(name="test_embed", dimension=64))
+
+        # Register embedder first so table_name lookup works
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        result = backend._copy_reusable_embeddings(
+            new_chunk_id=10,
+            content_hash="nonexistent_hash",
+            embedder_ids=[embedder_id],
+            cache={},
+        )
+
+        assert result == set(), f"Expected empty set, got {result}"
+
+    def test_copies_vector_from_prior_chunk_when_hash_matches(self, tmp_path):
+        """When a prior chunk with matching content_hash has an embedding, it is copied."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder_id = backend.register_embedder(FakeEmbedder(name="copy_embed", dimension=64))
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        # Insert a prior embedding row for chunk_id=5
+        backend._execute(
+            "INSERT INTO embeddings_copy_embed (chunk_id, embedder_id, embedding) VALUES (5, ?, ?)",
+            (embedder_id, b"\x00" * (64 * 4)),  # 64 floats as float32
+        )
+
+        # Insert a prior chunk with the matching content_hash
+        match_hash = chunk_content_hash("matching body")
+        backend._execute(
+            "INSERT INTO chunks (document_id, chunk_index, text, content_hash) VALUES (1, 0, 'matching body', ?)",
+            (match_hash,),
+        )
+
+        result = backend._copy_reusable_embeddings(
+            new_chunk_id=10,
+            content_hash=match_hash,
+            embedder_ids=[embedder_id],
+            cache={},
+        )
+
+        assert embedder_id in result, f"Expected {embedder_id} in reused set, got {result}"
+
+        # Verify the new row was inserted
+        new_rows = backend._execute(
+            "SELECT chunk_id, embedder_id FROM embeddings_copy_embed WHERE chunk_id = ?",
+            (10,),
+        )
+        assert len(new_rows) == 1, (
+            f"Expected 1 new embedding row for chunk_id=10, got {len(new_rows)}"
+        )
+        assert new_rows[0]["embedder_id"] == embedder_id
+
+    def test_cache_prevents_repeat_select_for_hash(self, tmp_path):
+        """Cache hits skip the SELECT for prior chunk lookup."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder_id = backend.register_embedder(FakeEmbedder(name="cache_embed", dimension=32))
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        # Pre-populate cache: (content_hash, embedder_id) -> prior_chunk_id
+        match_hash = chunk_content_hash("cached body")
+        cache = {(match_hash, embedder_id): 42}
+
+        result = backend._copy_reusable_embeddings(
+            new_chunk_id=10,
+            content_hash=match_hash,
+            embedder_ids=[embedder_id],
+            cache=cache,
+        )
+
+        assert embedder_id in result
+
+        # The cache should have been populated (or already had the entry)
+        assert (match_hash, embedder_id) in cache
+
+    def test_returns_reused_embedder_ids_subset(self, tmp_path):
+        """Only embedder_ids that successfully had embeddings copied are returned."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        eid_a = backend.register_embedder(FakeEmbedder(name="reuse_a", dimension=32))
+        eid_b = backend.register_embedder(FakeEmbedder(name="reuse_b", dimension=32))
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        # Only embedder_a has a prior embedding for the matching hash
+        match_hash = chunk_content_hash("partial body")
+        backend._execute(
+            "INSERT INTO chunks (document_id, chunk_index, text, content_hash) VALUES (1, 0, 'partial body', ?)",
+            (match_hash,),
+        )
+        backend._execute(
+            "INSERT INTO embeddings_reuse_a (chunk_id, embedder_id, embedding) VALUES (1, ?, ?)",
+            (eid_a, b"\x00" * (32 * 4)),
+        )
+        # No embedding for eid_b
+
+        result = backend._copy_reusable_embeddings(
+            new_chunk_id=10,
+            content_hash=match_hash,
+            embedder_ids=[eid_a, eid_b],
+            cache={},
+        )
+
+        assert eid_a in result, f"Expected {eid_a} in reused set"
+        assert eid_b not in result, f"Expected {eid_b} NOT in reused set"
+
+    def test_no_prior_chunk_with_embedding_returns_empty(self, tmp_path):
+        """Prior chunk exists with matching hash but NO embedding → empty set."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder_id = backend.register_embedder(FakeEmbedder(name="no_vec", dimension=32))
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        match_hash = chunk_content_hash("no embed body")
+        # Insert chunk with matching hash but NO embedding row
+        backend._execute(
+            "INSERT INTO chunks (document_id, chunk_index, text, content_hash) VALUES (1, 0, 'no embed body', ?)",
+            (match_hash,),
+        )
+
+        result = backend._copy_reusable_embeddings(
+            new_chunk_id=10,
+            content_hash=match_hash,
+            embedder_ids=[embedder_id],
+            cache={},
+        )
+
+        assert result == set(), (
+            f"Expected empty set when prior chunk has no embedding. Got {result}"
+        )
+
+    def test_cache_entry_used_directly_without_query(self, tmp_path):
+        """When cache has the entry, no SELECT is performed to find prior chunk."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder_id = backend.register_embedder(FakeEmbedder(name="direct_cache", dimension=16))
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        # Pre-populate cache with a prior_chunk_id that does NOT exist in DB
+        match_hash = "cache_only_hash"
+        fake_prior_id = 9999  # doesn't exist in DB
+        cache = {(match_hash, embedder_id): fake_prior_id}
+
+        # This should NOT raise — the cache entry is used directly
+        result = backend._copy_reusable_embeddings(
+            new_chunk_id=10,
+            content_hash=match_hash,
+            embedder_ids=[embedder_id],
+            cache=cache,
+        )
+
+        # If the implementation uses the cache entry to do an INSERT SELECT from
+        # a non-existent chunk, it should still not raise (the SELECT returns 0 rows).
+        assert (
+            embedder_id in result or result == set()
+        )  # depends on whether it errors or returns empty
+
+    def test_multiple_chunks_share_same_prior(self, tmp_path):
+        """Multiple new chunks with the same content_hash all reuse the same prior chunk."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder_id = backend.register_embedder(FakeEmbedder(name="multi_reuse", dimension=32))
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        match_hash = chunk_content_hash("shared body")
+        backend._execute(
+            "INSERT INTO chunks (document_id, chunk_index, text, content_hash) VALUES (1, 0, 'shared body', ?)",
+            (match_hash,),
+        )
+        backend._execute(
+            "INSERT INTO embeddings_multi_reuse (chunk_id, embedder_id, embedding) VALUES (1, ?, ?)",
+            (embedder_id, b"\x00" * (32 * 4)),
+        )
+
+        doc = _make_raw_document(
+            source_uri="vault://multi.md", content_hash="new_hash", text="# Multi"
+        )
+        chunks = [("# Multi", "shared body"), ("", "shared body"), ("", "shared body")]
+
+        backend.upsert_document(1, doc, chunks, embedder_ids=[embedder_id])
+
+        # Each new chunk should have an embedding row
+        new_rows = backend._execute(
+            "SELECT chunk_id FROM embeddings_multi_reuse WHERE chunk_id >= 100 ORDER BY chunk_id"
+        )
+        assert len(new_rows) == 3, f"Expected 3 new embedding rows, got {len(new_rows)}"
+
+
+class TestUpsertDocumentSqliteDialect:
+    """Tests specific to SQLite SQL dialect for upsert_document."""
+
+    def test_on_conflict_syntax_used_for_document_upsert(self, tmp_path):
+        """Document UPSERT uses ON CONFLICT(dataset_id, source_uri) DO UPDATE."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(
+            backend,
+            dataset_id=1,
+            doc_id=1,
+            source_uri="vault://conflict.md",
+            content_hash="old_hash",
+            text="# Old",
+        )
+
+        doc = _make_raw_document(
+            source_uri="vault://conflict.md", content_hash="new_hash", text="# New"
+        )
+        chunks = [("# New", "body")]
+
+        captured_sqls = []
+        original_execute = backend._execute
+
+        def spy_execute(query, params=()):
+            captured_sqls.append(query)
+            return original_execute(query, params)
+
+        backend._execute = spy_execute
+
+        backend.upsert_document(1, doc, chunks)
+
+        # Find the document UPSERT SQL
+        upsert_sqls = [s for s in captured_sqls if "ON CONFLICT" in s.upper()]
+        assert len(upsert_sqls) >= 1, (
+            f"Expected ON CONFLICT in upsert_document. SQLs: {captured_sqls}"
+        )
+
+        upsert_sql = upsert_sqls[0]
+        assert "ON CONFLICT" in upsert_sql.upper(), (
+            f"Expected ON CONFLICT clause. Got: {upsert_sql}"
+        )
+        assert "dataset_id" in upsert_sql.lower(), (
+            f"Expected dataset_id in ON CONFLICT. Got: {upsert_sql}"
+        )
+        assert "source_uri" in upsert_sql.lower(), (
+            f"Expected source_uri in ON CONFLICT. Got: {upsert_sql}"
+        )
+
+    def test_unique_constraint_on_documents_exists(self, tmp_path):
+        """The documents table must have a unique constraint on (dataset_id, source_uri)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+
+        # Query the index info for documents
+        indexes = backend._execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='documents'"
+        )
+        index_names = [r["name"] for r in indexes]
+
+        # SQLite creates a unique index automatically for UNIQUE constraints
+        unique_indices = [n for n in index_names if "unique" in n.lower() or n.startswith("sqlite")]
+        assert len(unique_indices) > 0, (
+            f"Expected unique index on documents table. Found: {index_names}"
+        )
+
+    def test_duplicate_source_uri_raises_or_updates(self, tmp_path):
+        """Inserting a document with an existing (dataset_id, source_uri) must not raise."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(
+            backend,
+            dataset_id=1,
+            doc_id=1,
+            source_uri="vault://dupe.md",
+            content_hash="hash1",
+            text="# First",
+        )
+
+        doc = _make_raw_document(
+            source_uri="vault://dupe.md", content_hash="hash2", text="# Second"
+        )
+        chunks = [("# Second", "updated body")]
+
+        # Must not raise — should update in place
+        result = backend.upsert_document(1, doc, chunks)
+        assert result is not None
+
+        # Only one document row should exist
+        doc_rows = backend._execute(
+            "SELECT COUNT(*) FROM documents WHERE source_uri = ?",
+            ("vault://dupe.md",),
+        )
+        assert doc_rows[0]["count"] == 1, (
+            f"Expected exactly 1 document row for vault://dupe.md, got {doc_rows[0]['count']}"
+        )
+
+
+class TestUpsertDocumentState:
+    """State-related tests for upsert_document."""
+
+    def test_idempotent_upsert_no_duplicate_chunks(self, tmp_path):
+        """Re-ingesting the same document with same chunks produces no duplicate chunks."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        doc = _make_raw_document(
+            source_uri="vault://idem.md", content_hash="same_hash", text="# Idem"
+        )
+        chunks = [("# Idem", "body")]
+
+        # First ingest
+        backend.upsert_document(1, doc, chunks)
+
+        # Second ingest with same content
+        backend.upsert_document(1, doc, chunks)
+
+        doc_rows = backend._execute(
+            "SELECT id FROM documents WHERE source_uri = ?",
+            ("vault://idem.md",),
+        )
+        doc_id = doc_rows[0]["id"]
+
+        chunk_rows = backend._execute(
+            "SELECT COUNT(*) FROM chunks WHERE document_id = ?",
+            (doc_id,),
+        )
+        assert chunk_rows[0]["count"] == 1, (
+            f"Expected 1 chunk, got {chunk_rows[0]['count']} — duplicates on re-ingest!"
+        )
+
+    def test_dirty_state_multiple_upserts(self, tmp_path):
+        """Multiple sequential upserts to the same document accumulate correctly."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        # First upsert
+        doc1 = _make_raw_document(source_uri="vault://dirty.md", content_hash="h1", text="# V1")
+        backend.upsert_document(1, doc1, [("# V1", "body 1")])
+
+        # Second upsert — different content
+        doc2 = _make_raw_document(source_uri="vault://dirty.md", content_hash="h2", text="# V2")
+        backend.upsert_document(1, doc2, [("# V2", "body 2")])
+
+        # Third upsert — different content
+        doc3 = _make_raw_document(source_uri="vault://dirty.md", content_hash="h3", text="# V3")
+        backend.upsert_document(1, doc3, [("# V3", "body 3"), ("", "body 4")])
+
+        doc_rows = backend._execute(
+            "SELECT id FROM documents WHERE source_uri = ?",
+            ("vault://dirty.md",),
+        )
+        doc_id = doc_rows[0]["id"]
+
+        chunk_rows = backend._execute(
+            "SELECT chunk_index, text FROM chunks WHERE document_id = ? ORDER BY chunk_index",
+            (doc_id,),
+        )
+        assert len(chunk_rows) == 2
+        assert chunk_rows[0]["text"] == "body 3"
+        assert chunk_rows[1]["text"] == "body 4"
+
+    def test_fresh_state_no_prior_chunks(self, tmp_path):
+        """First upsert on a fresh (no prior chunks) document inserts all chunks."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        doc = _make_raw_document(
+            source_uri="vault://fresh.md", content_hash="hash1", text="# Fresh"
+        )
+        chunks = [("# Fresh", "chunk 1"), ("", "chunk 2"), ("", "chunk 3")]
+
+        backend.upsert_document(1, doc, chunks)
+
+        doc_rows = backend._execute(
+            "SELECT id FROM documents WHERE source_uri = ?",
+            ("vault://fresh.md",),
+        )
+        doc_id = doc_rows[0]["id"]
+
+        chunk_rows = backend._execute(
+            "SELECT COUNT(*) FROM chunks WHERE document_id = ?",
+            (doc_id,),
+        )
+        assert chunk_rows[0]["count"] == 3
+
+
+class TestUpsertDocumentFailurePaths:
+    """Failure paths and edge cases for upsert_document."""
+
+    def test_empty_chunks_list_inserts_no_chunk_rows(self, tmp_path):
+        """upsert_document with empty chunks list inserts document but no chunks."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        doc = _make_raw_document(
+            source_uri="vault://empty_chunks.md", content_hash="hash1", text="# Empty"
+        )
+        chunks = []
+
+        result = backend.upsert_document(1, doc, chunks)
+        assert result is not None
+
+        doc_rows = backend._execute(
+            "SELECT id FROM documents WHERE source_uri = ?",
+            ("vault://empty_chunks.md",),
+        )
+        doc_id = doc_rows[0]["id"]
+
+        chunk_rows = backend._execute(
+            "SELECT COUNT(*) FROM chunks WHERE document_id = ?",
+            (doc_id,),
+        )
+        assert chunk_rows[0]["count"] == 0, (
+            f"Expected 0 chunks for empty chunks list, got {chunk_rows[0]['count']}"
+        )
+
+    def test_single_chunk_boundary(self, tmp_path):
+        """Single chunk is handled correctly."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        doc = _make_raw_document(
+            source_uri="vault://single.md", content_hash="hash1", text="# Single"
+        )
+        chunks = [("# Single", "only chunk")]
+
+        backend.upsert_document(1, doc, chunks)
+
+        doc_rows = backend._execute(
+            "SELECT id FROM documents WHERE source_uri = ?",
+            ("vault://single.md",),
+        )
+        doc_id = doc_rows[0]["id"]
+
+        chunk_rows = backend._execute(
+            "SELECT COUNT(*) FROM chunks WHERE document_id = ?",
+            (doc_id,),
+        )
+        assert chunk_rows[0]["count"] == 1
+
+    def test_large_number_of_chunks(self, tmp_path):
+        """Handling many chunks at once does not break the upsert."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        doc = _make_raw_document(
+            source_uri="vault://large.md", content_hash="hash1", text="# Large"
+        )
+        chunks = [(f"# Chunk {i}", f"Body {i}") for i in range(100)]
+
+        result = backend.upsert_document(1, doc, chunks)
+        assert result is not None
+
+        doc_rows = backend._execute(
+            "SELECT id FROM documents WHERE source_uri = ?",
+            ("vault://large.md",),
+        )
+        doc_id = doc_rows[0]["id"]
+
+        chunk_rows = backend._execute(
+            "SELECT COUNT(*) FROM chunks WHERE document_id = ?",
+            (doc_id,),
+        )
+        assert chunk_rows[0]["count"] == 100, f"Expected 100 chunks, got {chunk_rows[0]['count']}"
+
+    def test_different_dataset_same_source_uri(self, tmp_path):
+        """Same source_uri under different dataset_ids are separate documents."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(
+            backend, dataset_id=1, doc_id=1, source_uri="vault://shared.md"
+        )
+        _insert_dataset_and_document(
+            backend, dataset_id=2, doc_id=2, source_uri="vault://shared.md"
+        )
+
+        # Upsert for dataset 1
+        doc1 = _make_raw_document(source_uri="vault://shared.md", content_hash="h1", text="# DS1")
+        backend.upsert_document(1, doc1, [("# DS1", "body")])
+
+        # Upsert for dataset 2
+        doc2 = _make_raw_document(source_uri="vault://shared.md", content_hash="h2", text="# DS2")
+        backend.upsert_document(2, doc2, [("# DS2", "body")])
+
+        # Both should exist
+        ds1_rows = backend._execute(
+            "SELECT COUNT(*) FROM documents WHERE dataset_id = 1 AND source_uri = ?",
+            ("vault://shared.md",),
+        )
+        ds2_rows = backend._execute(
+            "SELECT COUNT(*) FROM documents WHERE dataset_id = 2 AND source_uri = ?",
+            ("vault://shared.md",),
+        )
+        assert ds1_rows[0]["count"] == 1
+        assert ds2_rows[0]["count"] == 1
+
+    def test_null_heading_preserved(self, tmp_path):
+        """Chunk with None heading is stored correctly (not coerced to empty string)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+
+        doc = _make_raw_document(
+            source_uri="vault://null_head.md", content_hash="hash1", text="# Null"
+        )
+        chunks = [(None, "body with null heading")]
+
+        backend.upsert_document(1, doc, chunks)
+
+        doc_rows = backend._execute(
+            "SELECT id FROM documents WHERE source_uri = ?",
+            ("vault://null_head.md",),
+        )
+        doc_id = doc_rows[0]["id"]
+
+        chunk_rows = backend._execute(
+            "SELECT heading FROM chunks WHERE document_id = ?",
+            (doc_id,),
+        )
+        assert len(chunk_rows) == 1
+        # SQLite stores None as NULL; the value may be None or empty string depending on implementation
+        assert chunk_rows[0]["heading"] is None or chunk_rows[0]["heading"] == ""

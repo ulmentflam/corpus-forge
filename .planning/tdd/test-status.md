@@ -117,6 +117,69 @@ Record of test suites written by tdd-tester.
   - `apply_migrations` postgres dispatch currently uses a backfill pass gated on `"002_chunk_content_hash" in applied`. After the coder adds the dialect param, the backfill pass is Postgres-only and must not run for SQLite. Not tested here (that's B-03 territory); flagged for coder awareness.
 - Status: red — handed off to tdd-coder
 
+## B-05 — `upsert_document` + chunk reuse
+- Test files: `tests/unit/test_sqlite_backend.py` (appended 8 test classes, 32 tests)
+  - `TestUpsertDocumentNewDocument` (5 tests): first insert, document row, chunk rows, content_hash, index sequence
+  - `TestUpsertDocumentExistingDocument` (4 tests): content change update, short-circuit, chunk replacement, chunk reduction
+  - `TestUpsertDocumentChunkReuse` (2 tests): reuse via content_hash match, insert new when no match
+  - `TestUpsertDocumentEmbedderIds` (5 tests): None/empty list no-reuse, triggers copy per chunk, ids passed through
+  - `TestCopyReusableEmbeddings` (6 tests): no-prior-match, copy from prior, cache skip, partial reuse subset, no-embedding prior, cache-only query
+  - `TestUpsertDocumentSqliteDialect` (2 tests): ON CONFLICT syntax, unique constraint existence
+  - `TestUpsertDocumentState` (3 tests): idempotent re-ingest, dirty state multiple upserts, fresh state
+  - `TestUpsertDocumentFailurePaths` (5 tests): empty chunks, single chunk, 100 chunks, cross-dataset, null heading
+- Run command: `PYTHONPATH=. uv run pytest tests/unit/test_sqlite_backend.py -v -k "TestUpsert or TestCopyReusable" 2>&1 | tail -40`
+- Edge case checklist:
+  - [x] happy path — new document insert, existing document update, chunk reuse via content_hash
+  - [x] boundaries — empty chunks list, single chunk, 100 chunks, null heading
+  - [x] type/format — embedder_ids None/empty/non-empty; content_hash comparison
+  - [x] state — idempotent re-ingest (no duplicate chunks), dirty state (sequential upserts), fresh state (no prior chunks)
+  - [ ] N/A — concurrency (single-connection per _execute call; B-08 covers BEGIN IMMEDIATE locking)
+  - [x] failure paths — empty chunks, large chunk count (100), null heading preservation
+  - [ ] N/A — locale/time (no locale/time dependencies in upsert logic)
+  - [x] production-realistic — multiple dataset_ids with same source_uri, cross-dataset isolation
+  - [x] regression hooks — `test_idempotent_upsert_no_duplicate_chunks` pins no-duplicate-chunk contract; `test_different_dataset_same_source_uri` pins cross-dataset isolation
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentNewDocument::test_returns_document_id_on_first_insert
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentNewDocument::test_inserts_document_row
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentNewDocument::test_inserts_new_chunks
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentNewDocument::test_chunk_content_hash_set_on_insert
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentNewDocument::test_chunk_index_sequence_starts_at_zero
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentExistingDocument::test_updates_document_when_content_hash_differs
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentExistingDocument::test_content_hash_short_circuit_returns_existing_id
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentExistingDocument::test_replaces_chunks_on_content_change
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentExistingDocument::test_reduces_chunk_count_on_content_change
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentChunkReuse::test_reuses_chunk_when_content_hash_matches
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentChunkReuse::test_inserts_new_chunk_when_no_prior_match
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentEmbedderIds::test_embedder_ids_none_no_reuse
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentEmbedderIds::test_embedder_ids_empty_list_no_reuse
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentEmbedderIds::test_embedder_ids_triggers_copy_per_chunk
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentEmbedderIds::test_embedder_ids_passed_to_copy_reusable
+  FAILED tests/unit/test_sqlite_backend.py::TestCopyReusableEmbeddings::test_returns_empty_set_when_no_prior_chunk_shares_hash
+  FAILED tests/unit/test_sqlite_backend.py::TestCopyReusableEmbeddings::test_copies_vector_from_prior_chunk_when_hash_matches
+  FAILED tests/unit/test_sqlite_backend.py::TestCopyReusableEmbeddings::test_cache_prevents_repeat_select_for_hash
+  FAILED tests/unit/test_sqlite_backend.py::TestCopyReusableEmbeddings::test_returns_reused_embedder_ids_subset
+  FAILED tests/unit/test_sqlite_backend.py::TestCopyReusableEmbeddings::test_no_prior_chunk_with_embedding_returns_empty
+  FAILED tests/unit/test_sqlite_backend.py::TestCopyReusableEmbeddings::test_cache_entry_used_directly_without_query
+  FAILED tests/unit/test_sqlite_backend.py::TestCopyReusableEmbeddings::test_multiple_chunks_share_same_prior
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentSqliteDialect::test_on_conflict_syntax_used_for_document_upsert
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentSqliteDialect::test_duplicate_source_uri_raises_or_updates
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentState::test_idempotent_upsert_no_duplicate_chunks
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentState::test_dirty_state_multiple_upserts
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentState::test_fresh_state_no_prior_chunks
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentFailurePaths::test_empty_chunks_list_inserts_no_chunk_rows
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentFailurePaths::test_single_chunk_boundary
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentFailurePaths::test_large_number_of_chunks
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentFailurePaths::test_different_dataset_same_source_uri
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertDocumentFailurePaths::test_null_heading_preserved
+  ============================== 32 failed, 1 passed in 1.60s ==============================
+  ```
+  All 32 B-05 tests fail with: `AttributeError: 'SQLiteBackend' object has no attribute 'upsert_document'`
+  The 1 passed test (`test_unique_constraint_on_documents_exists`) validates the pre-existing schema's UNIQUE constraint — correct green.
+  All 48 pre-existing tests (B-03 + B-04) still pass.
+- Status: red — handed off to tdd-coder
+
+
 ## B-04 — `register_embedder` + per-embedder vector table
 - Test files: `tests/unit/test_sqlite_backend.py` (appended `TestRegisterEmbedder` class, lines ~490–800)
 - Run command: `PYTHONPATH=. uv run pytest tests/unit/test_sqlite_backend.py -v --no-header 2>&1 | tail -40`
