@@ -1,4 +1,5 @@
 """Tests for SQLiteBackend.__init__ + migrate() — B-03.
+Tests for SQLiteBackend.register_embedder() + per-embedder vector table — B-04.
 
 Verifies:
 - Constructor accepts path (str or Path) and schema, stores path, does NOT open a
@@ -9,6 +10,9 @@ Verifies:
 - All expected tables exist after migrate().
 - The Postgres-only 002 backfill does NOT run for dialect="sqlite".
 - Failure modes: directory path and missing parent directory.
+- register_embedder() inserts or updates the embedders row and returns an int id.
+- register_embedder() creates a per-embedder virtual table (sqlite-vec) or blob table (fallback).
+- register_embedder() is idempotent — same id on re-registration, no duplicate tables.
 """
 
 import sqlite3
@@ -23,6 +27,7 @@ import pytest
 # which is the desired red signal.
 # ---------------------------------------------------------------------------
 from corpus_forge.backends.sqlite import SQLiteBackend
+from corpus_forge.backends.sqlite_vec_loader import SQLITE_VEC_AVAILABLE
 
 # ---------------------------------------------------------------------------
 # Helpers shared across test classes
@@ -480,3 +485,313 @@ class TestFailureModes:
         # Must not raise
         backend = SQLiteBackend(path=nonexistent_parent)
         assert backend is not None
+
+
+# ---------------------------------------------------------------------------
+# B-04 helpers
+# ---------------------------------------------------------------------------
+
+
+class FakeEmbedder:
+    """Minimal embedder stub matching the Embedder protocol (corpus_forge/embedders/base.py).
+
+    Attributes match what PostgresBackend.register_embedder reads:
+        name, provider, model_id, dimension, normalized, distance.
+    The optional `active` attribute is also included because postgres.py
+    uses ``getattr(embedder, "active", True)`` — we replicate that pattern.
+    """
+
+    def __init__(
+        self,
+        name: str = "test_embedder",
+        provider: str = "sentence_transformers",
+        model_id: str = "test/model-v1",
+        dimension: int = 384,
+        normalized: bool = True,
+        distance: str = "cosine",
+        active: bool = True,
+    ) -> None:
+        self.name = name
+        self.provider = provider
+        self.model_id = model_id
+        self.dimension = dimension
+        self.normalized = normalized
+        self.distance = distance
+        self.active = active
+
+    def encode(self, texts, *, batch_size: int = 32):  # pragma: no cover
+        import numpy as np
+
+        return np.zeros((len(texts), self.dimension), dtype="float32")
+
+    def warmup(self) -> None:  # pragma: no cover
+        pass
+
+
+def _migrated_backend(tmp_path_or_memory):
+    """Return a migrated SQLiteBackend ready for register_embedder tests."""
+    backend = SQLiteBackend(path=tmp_path_or_memory)
+    backend.migrate()
+    return backend
+
+
+def _table_names(backend: SQLiteBackend) -> list[str]:
+    """Return all table names (including virtual tables) from the backend's DB."""
+    result = backend._execute(
+        "SELECT name FROM sqlite_master WHERE type IN ('table', 'shadow') ORDER BY name"
+    )
+    # Also capture virtual tables explicitly
+    vt = backend._execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+    all_names = {row["name"] for row in result} | {row["name"] for row in vt}
+    return sorted(all_names)
+
+
+def _embedder_rows(backend: SQLiteBackend) -> list[dict]:
+    """Return all rows from the embedders table."""
+    return backend._execute("SELECT * FROM embedders ORDER BY id")
+
+
+# ---------------------------------------------------------------------------
+# TestRegisterEmbedder — B-04
+# ---------------------------------------------------------------------------
+
+
+class TestRegisterEmbedder:
+    """register_embedder() — insert/update embedders row + per-embedder table."""
+
+    # ------------------------------------------------------------------ happy path
+
+    def test_register_returns_integer_id(self, tmp_path):
+        """Happy path: register_embedder returns an int (the embedder_id)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder = FakeEmbedder()
+        result = backend.register_embedder(embedder)
+        assert isinstance(result, int), f"register_embedder must return int, got {type(result)}"
+
+    def test_register_inserts_embedders_row(self, tmp_path):
+        """Happy path: after register_embedder, a row exists in the embedders table."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder = FakeEmbedder(name="alpha_embedder")
+        backend.register_embedder(embedder)
+        rows = _embedder_rows(backend)
+        assert len(rows) == 1, f"Expected 1 embedders row, got {len(rows)}"
+        row = rows[0]
+        assert row["name"] == "alpha_embedder"
+        assert row["provider"] == embedder.provider
+        assert row["model_id"] == embedder.model_id
+        assert row["dimension"] == embedder.dimension
+
+    def test_register_sets_table_name_column(self, tmp_path):
+        """Happy path: embedders.table_name is set to 'embeddings_<embedder.name>'."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder = FakeEmbedder(name="my_model")
+        backend.register_embedder(embedder)
+        rows = _embedder_rows(backend)
+        assert rows[0]["table_name"] == "embeddings_my_model", (
+            f"table_name must be 'embeddings_my_model', got {rows[0]['table_name']!r}"
+        )
+
+    def test_register_creates_per_embedder_table(self, tmp_path):
+        """Happy path: a table named 'embeddings_<name>' is created after registration."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder = FakeEmbedder(name="beta_model")
+        backend.register_embedder(embedder)
+        tables = _table_names(backend)
+        assert "embeddings_beta_model" in tables, (
+            f"'embeddings_beta_model' table must exist after registration. Tables: {tables}"
+        )
+
+    def test_register_in_memory_returns_id(self):
+        """Happy path on ':memory:' backend: returns int id."""
+        backend = _migrated_backend(":memory:")
+        embedder = FakeEmbedder(name="mem_embedder")
+        result = backend.register_embedder(embedder)
+        assert isinstance(result, int)
+        assert result >= 1
+
+    # ------------------------------------------------------------------ idempotency
+
+    def test_register_twice_same_id(self, tmp_path):
+        """Idempotency: same embedder registered twice yields the same id."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder = FakeEmbedder(name="stable_name")
+        id1 = backend.register_embedder(embedder)
+        id2 = backend.register_embedder(embedder)
+        assert id1 == id2, (
+            f"register_embedder must be idempotent — expected same id, got {id1} vs {id2}"
+        )
+
+    def test_register_twice_single_row(self, tmp_path):
+        """Idempotency: registering the same embedder twice produces exactly one row."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder = FakeEmbedder(name="one_row_embedder")
+        backend.register_embedder(embedder)
+        backend.register_embedder(embedder)
+        rows = _embedder_rows(backend)
+        assert len(rows) == 1, (
+            "Exactly 1 embedders row expected after two registrations of the same name; "
+            f"got {len(rows)}"
+        )
+
+    def test_register_twice_no_duplicate_table(self, tmp_path):
+        """Idempotency: IF NOT EXISTS guard ensures no error on second registration."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder = FakeEmbedder(name="no_dup")
+        backend.register_embedder(embedder)
+        # Must not raise — IF NOT EXISTS on the CREATE TABLE/VIRTUAL TABLE
+        backend.register_embedder(embedder)
+        # Table still exists, still one row
+        tables = _table_names(backend)
+        assert "embeddings_no_dup" in tables
+
+    # ------------------------------------------------------------------ update-on-collision
+
+    def test_update_on_same_name_different_dimension(self, tmp_path):
+        """Update path: re-registering same name with different dimension updates the row."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder_v1 = FakeEmbedder(name="evolving_model", dimension=128)
+        id1 = backend.register_embedder(embedder_v1)
+
+        embedder_v2 = FakeEmbedder(name="evolving_model", dimension=256)
+        id2 = backend.register_embedder(embedder_v2)
+
+        # Same id (keyed on name)
+        assert id1 == id2, "Same name must return the same row id on update"
+
+        # Dimension should be updated to the new value
+        rows = _embedder_rows(backend)
+        assert len(rows) == 1
+        assert rows[0]["dimension"] == 256, (
+            f"dimension must be updated to 256, got {rows[0]['dimension']}"
+        )
+
+    def test_update_on_same_name_different_model_id(self, tmp_path):
+        """Update path: re-registering same name with different model_id updates the row."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        e1 = FakeEmbedder(name="versioned", model_id="vendor/model-v1")
+        backend.register_embedder(e1)
+
+        e2 = FakeEmbedder(name="versioned", model_id="vendor/model-v2")
+        backend.register_embedder(e2)
+
+        rows = _embedder_rows(backend)
+        assert rows[0]["model_id"] == "vendor/model-v2", (
+            f"model_id must update to 'vendor/model-v2', got {rows[0]['model_id']!r}"
+        )
+
+    def test_two_distinct_embedders_get_distinct_ids(self, tmp_path):
+        """Two embedders with different names get distinct integer ids."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        id_a = backend.register_embedder(FakeEmbedder(name="embedder_a"))
+        id_b = backend.register_embedder(FakeEmbedder(name="embedder_b"))
+        assert id_a != id_b, "Different embedder names must receive different ids"
+
+    # ---------------------------------------------------------------- table shape (sqlite-vec path)
+
+    @pytest.mark.skipif(
+        not SQLITE_VEC_AVAILABLE,
+        reason="sqlite-vec extra not installed; vec0 virtual table not available",
+    )
+    def test_vec0_virtual_table_has_required_columns(self, tmp_path):
+        """With sqlite-vec: vec0 virtual table exposes chunk_id, embedder_id, embedding."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder = FakeEmbedder(name="vec_model", dimension=64)
+        backend.register_embedder(embedder)
+
+        # Query the virtual table's columns via PRAGMA table_info
+        rows = backend._execute("PRAGMA table_info(embeddings_vec_model)")
+        col_names = [r["name"] for r in rows]
+        for required in ("chunk_id", "embedder_id", "embedding"):
+            assert required in col_names, (
+                f"Column '{required}' missing from vec0 virtual table. Columns: {col_names}"
+            )
+
+    # ------------------------------------------------------------------ fallback table shape
+
+    def test_fallback_blob_table_created_when_vec_unavailable(self, tmp_path, monkeypatch):
+        """Fallback path: when SQLITE_VEC_AVAILABLE is False, a plain BLOB table is created."""
+        import corpus_forge.backends.sqlite as sqlite_mod
+        import corpus_forge.backends.sqlite_vec_loader as loader_mod
+
+        # Monkeypatch both the loader module flag and the sqlite module's imported reference
+        monkeypatch.setattr(loader_mod, "SQLITE_VEC_AVAILABLE", False)
+        monkeypatch.setattr(sqlite_mod, "SQLITE_VEC_AVAILABLE", False)
+
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder = FakeEmbedder(name="blob_model", dimension=32)
+        backend.register_embedder(embedder)
+
+        # Table must exist
+        tables = _table_names(backend)
+        assert "embeddings_blob_model" in tables, (
+            f"Fallback table 'embeddings_blob_model' missing. Tables: {tables}"
+        )
+
+        # Table must have the required columns
+        col_rows = backend._execute("PRAGMA table_info(embeddings_blob_model)")
+        col_names = [r["name"] for r in col_rows]
+        for required in ("chunk_id", "embedder_id", "embedding"):
+            assert required in col_names, (
+                f"Fallback table missing column '{required}'. Columns: {col_names}"
+            )
+
+    def test_fallback_embedding_column_is_blob(self, tmp_path, monkeypatch):
+        """Fallback path: the embedding column in the plain table is typed BLOB."""
+        import corpus_forge.backends.sqlite as sqlite_mod
+        import corpus_forge.backends.sqlite_vec_loader as loader_mod
+
+        monkeypatch.setattr(loader_mod, "SQLITE_VEC_AVAILABLE", False)
+        monkeypatch.setattr(sqlite_mod, "SQLITE_VEC_AVAILABLE", False)
+
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder = FakeEmbedder(name="blob_typed", dimension=16)
+        backend.register_embedder(embedder)
+
+        col_rows = backend._execute("PRAGMA table_info(embeddings_blob_typed)")
+        col_by_name = {r["name"]: r for r in col_rows}
+        assert "embedding" in col_by_name, "embedding column must exist in fallback table"
+        col_type = col_by_name["embedding"]["type"].upper()
+        assert "BLOB" in col_type, f"Fallback embedding column must be BLOB type, got {col_type!r}"
+
+    # ------------------------------------------------------------------ return type contract
+
+    def test_returned_id_matches_embedders_row_id(self, tmp_path):
+        """The returned id matches the actual id column in the embedders table."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder = FakeEmbedder(name="id_check")
+        returned_id = backend.register_embedder(embedder)
+        rows = _embedder_rows(backend)
+        assert rows[0]["id"] == returned_id, (
+            f"Returned id {returned_id} does not match embedders.id {rows[0]['id']}"
+        )
+
+    def test_returned_id_is_positive_integer(self, tmp_path):
+        """The returned embedder_id is a positive integer (>= 1)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder = FakeEmbedder(name="positive_id")
+        result = backend.register_embedder(embedder)
+        assert result >= 1, f"embedder_id must be >= 1, got {result}"
+
+    # ------------------------------------------------------------------ multiple embedders
+
+    def test_multiple_embedders_each_get_own_table(self, tmp_path):
+        """Registering N distinct embedders creates N distinct embedding tables."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        names = ["alpha", "beta", "gamma"]
+        for n in names:
+            backend.register_embedder(FakeEmbedder(name=n, dimension=64))
+
+        tables = _table_names(backend)
+        for n in names:
+            assert f"embeddings_{n}" in tables, (
+                f"embeddings_{n} missing after registering embedder '{n}'. Tables: {tables}"
+            )
+
+    def test_multiple_embedders_rows_all_present(self, tmp_path):
+        """Registering N distinct embedders produces N rows in the embedders table."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        names = ["x1", "x2", "x3", "x4"]
+        for n in names:
+            backend.register_embedder(FakeEmbedder(name=n))
+        rows = _embedder_rows(backend)
+        assert len(rows) == len(names), f"Expected {len(names)} embedder rows, got {len(rows)}"
