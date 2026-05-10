@@ -36,6 +36,9 @@ Record of test suites written by tdd-tester.
 | P1-28   | red    | Daemon orchestrator tests written |
 | P1-29   | red    | CLI sync tests written |
 | P1-30   | red    | E2E push/pull cross-host test — 4 tests, all failing due to real production bug: `push.py:84` calls `backend.resolve_document()` which does not exist on `PostgresBackend`. Routed to principal for INT-03 coder task. |
+| B-01    | red    | 21 tests written; 8 failing (loader module missing + pyproject sqlite extra absent), 9 skipped (loader/sqlite-vec not yet installed — correct), 4 passing (pyproject structural guards). |
+
+## Phase B — SQLite Backend
 
 
 ## P0-01 — `chunk_content_hash`
@@ -818,3 +821,34 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   ======================== 4 failed, 7 warnings in 34.25s ========================
   ```
 - Status: red — real production bugs (BUG-PUSH-RESOLVE, BUG-PUSH-INSERT-REVISION, BUG-PULL-SOURCE-URI, BUG-PULL-SOURCE-ID). Handed off to principal for INT-03 coder routing. Tests must NOT be relaxed.
+
+---
+
+## B-01 — sqlite-vec optional dep + import-guarded loader
+- Test files: `tests/unit/test_sqlite_vec_loader.py`, `tests/unit/test_phase_b_pyproject.py`
+- Run command: `PYTHONPATH=. uv run pytest tests/unit/test_sqlite_vec_loader.py tests/unit/test_phase_b_pyproject.py -v`
+- Edge case checklist:
+  - [x] happy path — `load_sqlite_vec` on `:memory:` + `SELECT vec_version()` (skipif no sqlite-vec)
+  - [x] boundaries — N/A (no numeric boundaries; the loader is a single-call extension loader)
+  - [x] type/format — `SQLITE_VEC_AVAILABLE` is exactly `bool`, not truthy int or None
+  - [x] state — idempotent second call (re-enables extension each time); import-guard survives module reload
+  - [x] concurrency — N/A (pure function, no shared state)
+  - [x] failure paths — `enable_load_extension` raises `AttributeError`; raises `OperationalError`; no silent no-op
+  - [x] locale/time — N/A (no locale/time involvement)
+  - [x] production-realistic — uses real `sqlite3.connect(":memory:")` for skipif tests
+  - [x] regression — import-guard: module must survive absent sqlite_vec; SQLITE_VEC_AVAILABLE must be False
+  - [x] pyproject pin — `sqlite` extra present, `sqlite-vec>=0.1` present, PEP 508 valid
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_sqlite_vec_loader.py::TestImportGuard::test_module_importable_without_sqlite_vec
+  FAILED tests/unit/test_sqlite_vec_loader.py::TestImportGuard::test_load_sqlite_vec_importable_without_sqlite_vec
+  FAILED tests/unit/test_phase_b_pyproject.py::TestSqliteExtra::test_sqlite_extra_key_exists
+  FAILED tests/unit/test_phase_b_pyproject.py::TestSqliteExtra::test_sqlite_extra_is_a_list
+  FAILED tests/unit/test_phase_b_pyproject.py::TestSqliteExtra::test_sqlite_extra_is_nonempty
+  FAILED tests/unit/test_phase_b_pyproject.py::TestSqliteExtra::test_sqlite_extra_contains_sqlite_vec
+  FAILED tests/unit/test_phase_b_pyproject.py::TestSqliteExtra::test_sqlite_vec_version_pin_gte_0_1
+  FAILED tests/unit/test_phase_b_pyproject.py::TestSqliteExtra::test_sqlite_vec_entry_is_valid_pep508
+  ==================== 8 failed, 4 passed, 9 skipped in 0.15s ====================
+  ```
+- Notes: 9 tests are correctly SKIPped — they guard behavior that requires either the loader module (coder task) or the sqlite-vec library to be installed. The 4 PASSing tests pin pre-existing pyproject.toml structure that the coder must not break.
+- Status: red — handed off to tdd-coder
