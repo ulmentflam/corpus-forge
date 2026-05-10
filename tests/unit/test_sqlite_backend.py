@@ -15,6 +15,7 @@ Verifies:
 - register_embedder() is idempotent — same id on re-registration, no duplicate tables.
 """
 
+import json
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch
@@ -29,7 +30,7 @@ import pytest
 from corpus_forge.backends.sqlite import SQLiteBackend
 from corpus_forge.backends.sqlite_vec_loader import SQLITE_VEC_AVAILABLE
 from corpus_forge.identity import chunk_content_hash
-from corpus_forge.sources.base import RawDocument
+from corpus_forge.sources.base import RawConversation, RawDocument, RawMessage
 
 # ---------------------------------------------------------------------------
 # Helpers shared across test classes
@@ -1826,3 +1827,626 @@ class TestUpsertDocumentFailurePaths:
         # SQLite stores None as NULL; the value may be None or empty string
         # depending on implementation
         assert chunk_rows[0]["heading"] is None or chunk_rows[0]["heading"] == ""
+
+
+# ---------------------------------------------------------------------------
+# B-06 — upsert_conversation helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_raw_message(
+    role: str = "user",
+    content: str = "Hello",
+    external_uuid: str | None = None,
+    parent_uuid: str | None = None,
+    tool_calls: list | None = None,
+    tool_results: list | None = None,
+    ts: float | None = None,
+    metadata: dict | None = None,
+) -> RawMessage:
+    """Factory for RawMessage used in upsert_conversation tests."""
+    return RawMessage(
+        external_uuid=external_uuid,
+        parent_uuid=parent_uuid,
+        role=role,
+        content=content,
+        tool_calls=tool_calls,
+        tool_results=tool_results,
+        ts=ts,
+        metadata=metadata if metadata is not None else {},
+    )
+
+
+def _make_raw_conversation(
+    source_uri: str = "claude-code://proj/sess-001",
+    content_hash: str = "convhash001",
+    title: str | None = "Test Conversation",
+    external_id: str | None = "ext-001",
+    started_at: float | None = 1_700_000_000.0,
+    ended_at: float | None = 1_700_001_000.0,
+    messages: list[RawMessage] | None = None,
+    metadata: dict | None = None,
+) -> RawConversation:
+    """Factory for RawConversation used in upsert_conversation tests."""
+    if messages is None:
+        messages = [
+            _make_raw_message(role="user", content="Hi"),
+            _make_raw_message(role="assistant", content="Hello!"),
+        ]
+    return RawConversation(
+        source_uri=source_uri,
+        external_id=external_id,
+        content_hash=content_hash,
+        title=title,
+        started_at=started_at,
+        ended_at=ended_at,
+        messages=messages,
+        metadata=metadata if metadata is not None else {},
+        labels=[],
+    )
+
+
+def _insert_dataset_for_conv(
+    backend,
+    dataset_id: int = 1,
+    name: str | None = None,
+    kind: str = "chat",
+) -> None:
+    """Insert a prerequisite dataset row for conversation tests.
+
+    Uses INSERT OR IGNORE so tests that share a dataset_id do not collide.
+    Each caller that needs a unique dataset should pass a distinct dataset_id
+    and name — hardcoding "test_ds" for every dataset causes a UNIQUE violation
+    on the name column when two datasets share id=1 (the B-05 lesson).
+    """
+    unique_name = name if name is not None else f"conv_ds_{dataset_id}"
+    backend._execute(
+        "INSERT OR IGNORE INTO datasets (id, name, kind) VALUES (?, ?, ?)",
+        (dataset_id, unique_name, kind),
+    )
+
+
+def _conv_rows(backend, dataset_id: int, source_uri: str) -> list:
+    """Return conversation rows matching (dataset_id, source_uri)."""
+    return backend._execute(
+        "SELECT * FROM conversations WHERE dataset_id = ? AND source_uri = ?",
+        (dataset_id, source_uri),
+    )
+
+
+def _message_rows(backend, conv_id: int) -> list:
+    """Return message rows for a conversation ordered by turn_index."""
+    return backend._execute(
+        "SELECT * FROM messages WHERE conversation_id = ? ORDER BY turn_index",
+        (conv_id,),
+    )
+
+
+def _chunk_rows_for_conv(backend, conv_id: int) -> list:
+    """Return chunk rows for a conversation ordered by message_id, chunk_index."""
+    return backend._execute(
+        "SELECT * FROM chunks WHERE conversation_id = ? ORDER BY message_id, chunk_index",
+        (conv_id,),
+    )
+
+
+# ---------------------------------------------------------------------------
+# TestUpsertConversationNew — B-06
+# ---------------------------------------------------------------------------
+
+
+class TestUpsertConversationNew:
+    """Happy path: fresh conversation is inserted and returns correct data."""
+
+    def test_returns_integer_id_on_first_insert(self, tmp_path):
+        """First call to upsert_conversation returns a positive integer id."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        conv = _make_raw_conversation(source_uri="claude-code://p/s1")
+        chunked = [[(None, "Hello chunk")], [(None, "Hello! chunk")]]
+
+        result = backend.upsert_conversation(1, conv, chunked)
+        assert isinstance(result, int), f"upsert_conversation must return int, got {type(result)}"
+        assert result >= 1, f"Returned id must be >= 1, got {result}"
+
+    def test_conversation_row_written(self, tmp_path):
+        """After upsert_conversation, the conversations table has a matching row."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        conv = _make_raw_conversation(
+            source_uri="claude-code://p/s2",
+            content_hash="hash-new",
+            title="My Session",
+        )
+        chunked = [[(None, "chunk a")], [(None, "chunk b")]]
+
+        conv_id = backend.upsert_conversation(1, conv, chunked)
+
+        rows = _conv_rows(backend, 1, "claude-code://p/s2")
+        assert len(rows) == 1, f"Expected 1 conversations row, got {len(rows)}"
+        assert rows[0]["id"] == conv_id
+        assert rows[0]["content_hash"] == "hash-new"
+        assert rows[0]["title"] == "My Session"
+
+    def test_messages_written_for_new_conversation(self, tmp_path):
+        """upsert_conversation inserts one messages row per message."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        messages = [
+            _make_raw_message(role="user", content="Question?"),
+            _make_raw_message(role="assistant", content="Answer."),
+            _make_raw_message(role="user", content="Follow-up?"),
+        ]
+        conv = _make_raw_conversation(
+            source_uri="claude-code://p/s3",
+            messages=messages,
+        )
+        chunked = [[(None, "q chunk")], [(None, "a chunk")], [(None, "fu chunk")]]
+
+        conv_id = backend.upsert_conversation(1, conv, chunked)
+
+        msg_rows = _message_rows(backend, conv_id)
+        assert len(msg_rows) == 3, f"Expected 3 message rows, got {len(msg_rows)}"
+
+    def test_chunks_written_for_new_conversation(self, tmp_path):
+        """upsert_conversation inserts chunk rows linked to messages."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        messages = [
+            _make_raw_message(role="user", content="Q"),
+            _make_raw_message(role="assistant", content="A"),
+        ]
+        conv = _make_raw_conversation(
+            source_uri="claude-code://p/s4",
+            messages=messages,
+        )
+        chunked = [
+            [(None, "user chunk 1"), ("# heading", "user chunk 2")],
+            [(None, "assistant chunk")],
+        ]
+
+        conv_id = backend.upsert_conversation(1, conv, chunked)
+
+        chunk_rows = _chunk_rows_for_conv(backend, conv_id)
+        assert len(chunk_rows) == 3, f"Expected 3 chunk rows (2+1), got {len(chunk_rows)}"
+
+    def test_in_memory_backend_works(self):
+        """upsert_conversation works on a ':memory:' backend."""
+        backend = _migrated_backend(":memory:")
+        backend._execute(
+            "INSERT OR IGNORE INTO datasets (id, name, kind) VALUES (?, ?, ?)",
+            (1, "mem_ds", "chat"),
+        )
+
+        conv = _make_raw_conversation(source_uri="claude-code://mem/s1")
+        chunked = [[(None, "c1")], [(None, "c2")]]
+
+        result = backend.upsert_conversation(1, conv, chunked)
+        assert isinstance(result, int) and result >= 1
+
+
+# ---------------------------------------------------------------------------
+# TestUpsertConversationExisting — B-06
+# ---------------------------------------------------------------------------
+
+
+class TestUpsertConversationExisting:
+    """Existing conversation: same hash → no-op; different hash → UPDATE."""
+
+    def test_same_hash_returns_existing_id(self, tmp_path):
+        """Second call with same (dataset_id, source_uri, content_hash) returns same id."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        conv = _make_raw_conversation(
+            source_uri="claude-code://p/existing",
+            content_hash="stable-hash",
+        )
+        chunked = [[(None, "chunk")], [(None, "chunk2")]]
+
+        id1 = backend.upsert_conversation(1, conv, chunked)
+        id2 = backend.upsert_conversation(1, conv, chunked)
+        assert id1 == id2, f"Same hash must return same id on re-upsert; got {id1} vs {id2}"
+
+    def test_same_hash_no_op_preserves_messages(self, tmp_path):
+        """No-op re-upsert (same hash) must not add duplicate messages."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        conv = _make_raw_conversation(
+            source_uri="claude-code://p/noop",
+            content_hash="fixed-hash",
+        )
+        chunked = [[(None, "c1")], [(None, "c2")]]
+
+        conv_id = backend.upsert_conversation(1, conv, chunked)
+        backend.upsert_conversation(1, conv, chunked)
+
+        msg_rows = _message_rows(backend, conv_id)
+        assert len(msg_rows) == 2, (
+            f"No-op re-upsert must not duplicate messages; got {len(msg_rows)}"
+        )
+
+    def test_different_hash_updates_conversation_row(self, tmp_path):
+        """When content_hash changes, the conversations row is updated."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        conv_v1 = _make_raw_conversation(
+            source_uri="claude-code://p/updated",
+            content_hash="hash-v1",
+            title="Session V1",
+        )
+        chunked_v1 = [[(None, "old user")], [(None, "old assistant")]]
+
+        id1 = backend.upsert_conversation(1, conv_v1, chunked_v1)
+
+        conv_v2 = _make_raw_conversation(
+            source_uri="claude-code://p/updated",
+            content_hash="hash-v2",
+            title="Session V2",
+            messages=[
+                _make_raw_message(role="user", content="New question"),
+                _make_raw_message(role="assistant", content="New answer"),
+            ],
+        )
+        chunked_v2 = [[(None, "new user")], [(None, "new assistant")]]
+
+        id2 = backend.upsert_conversation(1, conv_v2, chunked_v2)
+
+        assert id1 == id2, f"Update must preserve same conv id; got {id1} vs {id2}"
+
+        rows = _conv_rows(backend, 1, "claude-code://p/updated")
+        assert rows[0]["content_hash"] == "hash-v2"
+        assert rows[0]["title"] == "Session V2"
+
+    def test_different_hash_replaces_messages(self, tmp_path):
+        """When content_hash changes, old messages are replaced by new ones."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        conv_v1 = _make_raw_conversation(
+            source_uri="claude-code://p/replace-msgs",
+            content_hash="h1",
+            messages=[
+                _make_raw_message(role="user", content="Old Q"),
+                _make_raw_message(role="assistant", content="Old A"),
+            ],
+        )
+        chunked_v1 = [[(None, "old q chunk")], [(None, "old a chunk")]]
+        conv_id = backend.upsert_conversation(1, conv_v1, chunked_v1)
+
+        conv_v2 = _make_raw_conversation(
+            source_uri="claude-code://p/replace-msgs",
+            content_hash="h2",
+            messages=[
+                _make_raw_message(role="user", content="New Q"),
+                _make_raw_message(role="assistant", content="New A"),
+            ],
+        )
+        chunked_v2 = [[(None, "new q chunk")], [(None, "new a chunk")]]
+        backend.upsert_conversation(1, conv_v2, chunked_v2)
+
+        msg_rows = _message_rows(backend, conv_id)
+        assert len(msg_rows) == 2, f"Replacement must yield exactly 2 messages; got {len(msg_rows)}"
+        contents = [r["content"] for r in msg_rows]
+        assert "New Q" in contents, f"New Q not found in messages: {contents}"
+        assert "Old Q" not in contents, f"Old Q still present after update: {contents}"
+
+
+# ---------------------------------------------------------------------------
+# TestUpsertConversationMessages — B-06
+# ---------------------------------------------------------------------------
+
+
+class TestUpsertConversationMessages:
+    """Messages table: turn_index, roles, ts, tool_calls/results, JSON storage."""
+
+    def test_turn_index_zero_based_sequential(self, tmp_path):
+        """N messages produce turn_index 0..N-1 in order."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        n = 4
+        messages = [
+            _make_raw_message(role="user" if i % 2 == 0 else "assistant", content=f"msg {i}")
+            for i in range(n)
+        ]
+        conv = _make_raw_conversation(
+            source_uri="claude-code://p/turn-idx",
+            messages=messages,
+        )
+        chunked = [[(None, f"chunk {i}")] for i in range(n)]
+
+        conv_id = backend.upsert_conversation(1, conv, chunked)
+
+        msg_rows = _message_rows(backend, conv_id)
+        indices = [r["turn_index"] for r in msg_rows]
+        assert indices == list(range(n)), f"Expected turn_indices {list(range(n))}, got {indices}"
+
+    def test_role_preserved_per_message(self, tmp_path):
+        """Message roles ('user', 'assistant', 'system') are stored correctly."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        messages = [
+            _make_raw_message(role="system", content="System prompt."),
+            _make_raw_message(role="user", content="User input."),
+            _make_raw_message(role="assistant", content="Assistant reply."),
+        ]
+        conv = _make_raw_conversation(
+            source_uri="claude-code://p/roles",
+            messages=messages,
+        )
+        chunked = [[(None, "s")], [(None, "u")], [(None, "a")]]
+
+        conv_id = backend.upsert_conversation(1, conv, chunked)
+
+        msg_rows = _message_rows(backend, conv_id)
+        roles = [r["role"] for r in msg_rows]
+        assert roles == ["system", "user", "assistant"], (
+            f"Expected ['system', 'user', 'assistant'], got {roles}"
+        )
+
+    def test_tool_calls_serialized_as_json_text(self, tmp_path):
+        """tool_calls are stored as JSON TEXT, not as None."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        tool_payload = [{"name": "bash", "input": {"cmd": "ls"}}]
+        messages = [
+            _make_raw_message(
+                role="assistant",
+                content="Running tool.",
+                tool_calls=tool_payload,
+            ),
+        ]
+        conv = _make_raw_conversation(
+            source_uri="claude-code://p/tool-calls",
+            messages=messages,
+        )
+        chunked = [[(None, "tool chunk")]]
+
+        conv_id = backend.upsert_conversation(1, conv, chunked)
+
+        msg_rows = _message_rows(backend, conv_id)
+        assert len(msg_rows) == 1
+        stored = msg_rows[0]["tool_calls"]
+        assert stored is not None, "tool_calls must not be NULL when provided"
+        # Must round-trip as valid JSON
+        parsed = json.loads(stored)
+        assert parsed == tool_payload, (
+            f"tool_calls JSON round-trip failed: {parsed!r} != {tool_payload!r}"
+        )
+
+    def test_tool_results_serialized_as_json_text(self, tmp_path):
+        """tool_results are stored as JSON TEXT, not as None."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        results_payload = [{"tool_use_id": "t1", "content": "ok"}]
+        messages = [
+            _make_raw_message(
+                role="tool",
+                content="Tool output.",
+                tool_results=results_payload,
+            ),
+        ]
+        conv = _make_raw_conversation(
+            source_uri="claude-code://p/tool-results",
+            messages=messages,
+        )
+        chunked = [[(None, "tool result chunk")]]
+
+        conv_id = backend.upsert_conversation(1, conv, chunked)
+
+        msg_rows = _message_rows(backend, conv_id)
+        stored = msg_rows[0]["tool_results"]
+        assert stored is not None, "tool_results must not be NULL when provided"
+        parsed = json.loads(stored)
+        assert parsed == results_payload, (
+            f"tool_results JSON round-trip failed: {parsed!r} != {results_payload!r}"
+        )
+
+    def test_ts_column_populated_when_provided(self, tmp_path):
+        """When message.ts is set, the ts column in messages is non-NULL."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        messages = [
+            _make_raw_message(role="user", content="Timed message.", ts=1_700_500_000.0),
+        ]
+        conv = _make_raw_conversation(
+            source_uri="claude-code://p/ts-test",
+            messages=messages,
+        )
+        chunked = [[(None, "ts chunk")]]
+
+        conv_id = backend.upsert_conversation(1, conv, chunked)
+
+        msg_rows = _message_rows(backend, conv_id)
+        assert msg_rows[0]["ts"] is not None, "ts must be stored when message.ts is provided"
+
+    def test_null_tool_calls_stored_as_null(self, tmp_path):
+        """When tool_calls is None, the column is stored as NULL."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        messages = [_make_raw_message(role="user", content="No tools.", tool_calls=None)]
+        conv = _make_raw_conversation(
+            source_uri="claude-code://p/no-tools",
+            messages=messages,
+        )
+        chunked = [[(None, "no tool chunk")]]
+
+        conv_id = backend.upsert_conversation(1, conv, chunked)
+
+        msg_rows = _message_rows(backend, conv_id)
+        assert msg_rows[0]["tool_calls"] is None, "tool_calls must be NULL when not provided"
+
+
+# ---------------------------------------------------------------------------
+# TestUpsertConversationChunks — B-06
+# ---------------------------------------------------------------------------
+
+
+class TestUpsertConversationChunks:
+    """Chunks table: conversation_id set, document_id NULL, message_id set, chunk_index."""
+
+    def test_chunks_have_conversation_id_set(self, tmp_path):
+        """Every inserted chunk has conversation_id matching the conversation."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        messages = [
+            _make_raw_message(role="user", content="Q"),
+            _make_raw_message(role="assistant", content="A"),
+        ]
+        conv = _make_raw_conversation(
+            source_uri="claude-code://p/conv-id-chunks",
+            messages=messages,
+        )
+        chunked = [[(None, "q chunk")], [(None, "a chunk")]]
+
+        conv_id = backend.upsert_conversation(1, conv, chunked)
+
+        chunk_rows = _chunk_rows_for_conv(backend, conv_id)
+        for row in chunk_rows:
+            assert row["conversation_id"] == conv_id, (
+                f"chunk.conversation_id must be {conv_id}, got {row['conversation_id']}"
+            )
+
+    def test_chunks_have_document_id_null(self, tmp_path):
+        """Conversation chunks must have document_id = NULL (XOR-check)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        messages = [_make_raw_message(role="user", content="Q")]
+        conv = _make_raw_conversation(
+            source_uri="claude-code://p/doc-null",
+            messages=messages,
+        )
+        chunked = [[(None, "chunk"), ("# h", "chunk2")]]
+
+        conv_id = backend.upsert_conversation(1, conv, chunked)
+
+        chunk_rows = _chunk_rows_for_conv(backend, conv_id)
+        for row in chunk_rows:
+            assert row["document_id"] is None, (
+                f"Conversation chunk must have document_id=NULL, got {row['document_id']}"
+            )
+
+    def test_chunks_have_message_id_set(self, tmp_path):
+        """Each chunk's message_id must be the id of the owning message."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        messages = [
+            _make_raw_message(role="user", content="Q"),
+            _make_raw_message(role="assistant", content="A"),
+        ]
+        conv = _make_raw_conversation(
+            source_uri="claude-code://p/msg-id-chunks",
+            messages=messages,
+        )
+        chunked = [
+            [(None, "u chunk 1"), (None, "u chunk 2")],
+            [(None, "a chunk")],
+        ]
+
+        conv_id = backend.upsert_conversation(1, conv, chunked)
+
+        msg_rows = _message_rows(backend, conv_id)
+        msg_ids = [r["id"] for r in msg_rows]
+
+        chunk_rows = _chunk_rows_for_conv(backend, conv_id)
+        # All chunk message_ids must be one of the actual message ids
+        for row in chunk_rows:
+            assert row["message_id"] in msg_ids, (
+                f"chunk.message_id={row['message_id']} not in msg_ids={msg_ids}"
+            )
+
+    def test_chunk_index_per_message_starts_at_zero(self, tmp_path):
+        """chunk_index restarts at 0 for each message."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        messages = [
+            _make_raw_message(role="user", content="Q"),
+            _make_raw_message(role="assistant", content="A"),
+        ]
+        conv = _make_raw_conversation(
+            source_uri="claude-code://p/chunk-idx",
+            messages=messages,
+        )
+        chunked = [
+            [(None, "u0"), (None, "u1"), (None, "u2")],
+            [(None, "a0"), (None, "a1")],
+        ]
+
+        conv_id = backend.upsert_conversation(1, conv, chunked)
+
+        msg_rows = _message_rows(backend, conv_id)
+        for msg_row in msg_rows:
+            msg_id = msg_row["id"]
+            c_rows = backend._execute(
+                "SELECT chunk_index FROM chunks"
+                " WHERE conversation_id = ? AND message_id = ?"
+                " ORDER BY chunk_index",
+                (conv_id, msg_id),
+            )
+            indices = [r["chunk_index"] for r in c_rows]
+            expected = list(range(len(indices)))
+            assert indices == expected, (
+                f"message_id={msg_id}: expected chunk_indices {expected}, got {indices}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# TestUpsertConversationFailurePaths — B-06
+# ---------------------------------------------------------------------------
+
+
+class TestUpsertConversationFailurePaths:
+    """Failure paths: bad dataset_id, missing required fields."""
+
+    def test_invalid_dataset_id_raises_integrity_error(self, tmp_path):
+        """Passing a non-existent dataset_id violates the FK and raises IntegrityError."""
+        import sqlite3 as _sqlite3
+
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        # dataset_id=999 does not exist in the datasets table
+
+        conv = _make_raw_conversation(source_uri="claude-code://p/bad-ds")
+        chunked = [[(None, "chunk")], [(None, "chunk2")]]
+
+        with pytest.raises(_sqlite3.IntegrityError):
+            backend.upsert_conversation(999, conv, chunked)
+
+    def test_source_uri_none_raises_integrity_error(self, tmp_path):
+        """A conversation with source_uri=None violates NOT NULL and raises IntegrityError."""
+        import sqlite3 as _sqlite3
+
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_conv(backend, dataset_id=1)
+
+        # source_uri is NOT NULL in the schema; passing None must raise IntegrityError
+        conv = RawConversation(
+            source_uri=None,  # type: ignore[arg-type]
+            external_id=None,
+            content_hash="h",
+            title=None,
+            started_at=None,
+            ended_at=None,
+            messages=[_make_raw_message()],
+            metadata={},
+            labels=[],
+        )
+        chunked = [[(None, "chunk")]]
+
+        with pytest.raises(_sqlite3.IntegrityError):
+            backend.upsert_conversation(1, conv, chunked)

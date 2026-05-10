@@ -1061,3 +1061,52 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
 - lint/format: clean (ruff check + ruff format --check both pass)
 - Notes: No disagreements between sqlite_backend.md and this spec. The plan (§B-03) says `path: str` but accepting `str | Path` is strictly more compatible and is consistent with the acceptance spec. The `_tables()` helper queries the raw sqlite3 file so tests are independent of the backend's row_factory. The `test_get_connection_returns_fresh_connection_each_call` test was restructured to use sequential (not nested) context managers to satisfy SIM117.
 - Status: red — handed off to tdd-coder
+
+## B-06 — `upsert_conversation`
+- Test files: `tests/unit/test_sqlite_backend.py` (appended 5 test classes, 21 tests)
+  - `TestUpsertConversationNew` (5 tests): returns int id, conversations row written, messages
+    written, chunks written, in-memory backend works
+  - `TestUpsertConversationExisting` (4 tests): same hash returns same id, same hash no-op
+    preserves messages, different hash updates conversation row, different hash replaces messages
+  - `TestUpsertConversationMessages` (6 tests): turn_index zero-based sequential, role preserved,
+    tool_calls as JSON TEXT, tool_results as JSON TEXT, ts column non-null, null tool_calls NULL
+  - `TestUpsertConversationChunks` (4 tests): conversation_id set, document_id NULL (XOR),
+    message_id set, chunk_index per-message starts at zero
+  - `TestUpsertConversationFailurePaths` (2 tests): invalid dataset_id FK raises IntegrityError,
+    source_uri=None NOT NULL raises IntegrityError
+- Run command: `PYTHONPATH=. uv run pytest tests/unit/test_sqlite_backend.py -v --no-header -k "TestUpsertConversation" 2>&1 | tail -35`
+- Edge case checklist:
+  - [x] happy path — fresh insert returns int id; conversations/messages/chunks rows written
+  - [x] boundaries — in-memory backend; 4-message turn_index sequence; 3-chunk-per-message
+  - [x] type/format — tool_calls/tool_results as JSON TEXT with round-trip check; ts as non-NULL
+    TEXT; None tool_calls stored as NULL; role strings preserved verbatim
+  - [x] state — same-hash no-op (idempotency); different-hash UPDATE replaces messages;
+    messages replaced not duplicated on update
+  - [ ] N/A — concurrency (single-connection per _execute; B-08 covers BEGIN IMMEDIATE locking)
+  - [x] failure paths — invalid dataset_id FK violation → IntegrityError; source_uri=None NOT
+    NULL violation → IntegrityError
+  - [ ] N/A — locale/time (ts stored as ISO TEXT; started_at/ended_at translation tested
+    implicitly via ts column check; deep format assertions deferred to B-09)
+  - [x] production-realistic — RawConversation/RawMessage from real dataclasses; tool_calls
+    payload mirrors real Claude tool-use format; multi-role conversation (system/user/assistant)
+  - [x] regression hooks — `test_same_hash_no_op_preserves_messages` pins the no-duplicate
+    contract; `test_different_hash_replaces_messages` pins the old-msgs-gone contract;
+    `test_chunks_have_document_id_null` pins XOR invariant
+- B-05 tester-bug note (observed, not fixed): B-05 test classes use `row["count"]` for
+  `COUNT(*)` queries. The actual column name from `sqlite3.Row` is `COUNT(*)`, not `count`.
+  This is one of the 9 documented tester-side bugs in B-05. B-06 avoids this pattern by using
+  direct `len()` on result lists rather than `COUNT(*)` aliases.
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertConversationChunks::test_chunk_index_per_message_starts_at_zero
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertConversationFailurePaths::test_invalid_dataset_id_raises_integrity_error
+  FAILED tests/unit/test_sqlite_backend.py::TestUpsertConversationFailurePaths::test_source_uri_none_raises_integrity_error
+  ====================== 21 failed, 80 deselected in 1.10s ======================
+  All 21 B-06 tests fail with:
+  AttributeError: 'SQLiteBackend' object has no attribute 'upsert_conversation'
+  The 70 pre-existing tests (B-03 + B-04 + passing B-05) are unaffected.
+  ```
+- lint/format: `uv run ruff check` clean; `uv run ruff format --check` clean (moved
+  `import json` and `RawConversation/RawMessage` to top-level module import block).
+- Cross-link: B-06 row in `.planning/tdd/sqlite_backend.md`.
+- Status: red — handed off to tdd-coder
