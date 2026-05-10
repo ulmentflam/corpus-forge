@@ -39,8 +39,40 @@ Record of test suites written by tdd-tester.
 | B-01    | red    | 21 tests written; 8 failing (loader module missing + pyproject sqlite extra absent), 9 skipped (loader/sqlite-vec not yet installed — correct), 4 passing (pyproject structural guards). |
 
 | B-02    | red    | 130 tests written across 4 files; 26 failed, 92 errors (fixture errors from missing SQL files), 12 passed. Red for correct reasons: SQL files don't exist; migrate.py lacks dialect param. |
+| B-03-fix | green | Narrowed `test_no_postgres_backfill_sql_executed` assertion (Option 1: strip `--` comments). 29/29 tests pass. |
 
 ## Phase B — SQLite Backend
+
+## B-03-fix — Narrow backfill-gating assertion to ignore schema comments
+- Test files: `tests/unit/test_sqlite_backend.py` (lines 401-444, `TestBackfillGating::test_no_postgres_backfill_sql_executed`)
+- Run command: `PYTHONPATH=. uv run pytest tests/unit/test_sqlite_backend.py -v --no-header 2>&1 | tail -10`
+- Option chosen: **Option 1 — strip `--` comments** before checking for forbidden substrings.
+  - Reason: Most robust and generalizes — any future inline comment mentioning sha256 (e.g. in 002 or 003) will not cause false positives. Option 3 (regex on exact UPDATE shape) is equally precise but more brittle if the Postgres backfill SQL text ever changes slightly.
+- Lines touched: 416-444 in `tests/unit/test_sqlite_backend.py` (replaced 9 lines with 27 lines including the `strip_line_comments` helper and explanatory comment block).
+- Root cause: `001_core.sql` line 35 has inline DDL comment `-- sha256 of raw bytes (idempotency key)`. `apply_migrations` passes raw statement text (including that comment) to `backend._execute`. The spy saw "sha256" in the comment and raised a false positive assertion. The fix strips everything from `--` to end-of-line before checking for forbidden patterns.
+- Edge case checklist:
+  - [x] happy path — migrate() runs 3 schema files; none contain executable SHA256/ENCODE( calls; test passes
+  - [x] boundaries — N/A (pure string stripping function applied per line)
+  - [x] type/format — N/A (pure function)
+  - [x] state — N/A (not a stateful operation)
+  - [ ] N/A — concurrency (pure function, no shared state)
+  - [x] failure paths — the actual Postgres backfill UPDATE (if it ran for SQLite) would still be caught: `UPDATE corpus.chunks SET content_hash = encode(sha256(text::bytea), 'hex')` has no `--` prefix on the sha256/encode tokens
+  - [ ] N/A — locale/time
+  - [x] production-realistic — verified against actual 001_core.sql line 35 comment text
+  - [x] regression hooks — the 28 other tests in the file remain green; no regression introduced
+- Green output (tail):
+  ```
+  tests/unit/test_sqlite_backend.py::TestBackfillGating::test_apply_migrations_called_with_sqlite_dialect PASSED [ 79%]
+  tests/unit/test_sqlite_backend.py::TestBackfillGating::test_content_hash_null_not_backfilled PASSED [ 82%]
+  tests/unit/test_sqlite_backend.py::TestBackfillGating::test_no_postgres_backfill_sql_executed PASSED [ 86%]
+  tests/unit/test_sqlite_backend.py::TestFailureModes::test_path_is_directory_raises_operational_error PASSED [ 89%]
+  tests/unit/test_sqlite_backend.py::TestFailureModes::test_path_is_directory_error_is_raised_on_connection PASSED [ 93%]
+  tests/unit/test_sqlite_backend.py::TestFailureModes::test_missing_parent_directory_raises PASSED [ 96%]
+  tests/unit/test_sqlite_backend.py::TestFailureModes::test_missing_parent_constructor_does_not_raise PASSED [100%]
+
+  ============================== 29 passed in 0.74s ==============================
+  ```
+- Status: green — B-03 unblocked; 29/29 tests pass after tester narrowed the backfill-gating assertion
 
 ## B-02 — SQLite schema / migration SQL files
 - Test files:

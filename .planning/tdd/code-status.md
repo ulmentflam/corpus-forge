@@ -139,7 +139,7 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 |---------|--------|-------|
 | B-01 | green | sqlite-vec loader + pyproject sqlite extra |
 | B-02 | green | SQLite migration files 001/002/003 + dialect dispatch |
-| B-03 | blocked | 28/29 green; 1 test (`test_no_postgres_backfill_sql_executed`) is a B-02/B-03 schema conflict — see ## B-03 below |
+| B-03 | green | 29/29 tests green after tester narrowed the backfill-gating assertion to ignore inline schema comments |
 
 ## B-03
 - Source files: `corpus_forge/backends/sqlite.py` (new, 231 LOC)
@@ -157,5 +157,4 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
   4. `ALTER TABLE ADD COLUMN IF NOT EXISTS` — not supported in SQLite even at version 3.50.4. Rewrote to `ADD COLUMN` and caught `duplicate column name` `OperationalError` as a no-op for idempotency.
   5. `AUTOINCREMENT` — causes SQLite to create an internal `sqlite_sequence` table in `sqlite_master`, which conflicts with the B-03 test asserting exactly 12 user tables. Stripped `AUTOINCREMENT` keyword in `_execute`; semantically equivalent for corpus-forge (no strict-monotonic ID guarantee needed).
 - Surprises / conflicts:
-  - **TESTER BUG — requires Principal routing:** `test_no_postgres_backfill_sql_executed` (line 401-424 of `tests/unit/test_sqlite_backend.py`) spies on `backend._execute` and asserts no SQL argument contains "SHA256". However, `corpus_forge/schema/sqlite/001_core.sql` line 35 has an inline comment `-- sha256 of raw bytes (idempotency key)` in the documents CREATE TABLE DDL. `apply_migrations` passes the raw statement (including inline comments) to `_execute`; the spy sees "sha256" in that comment. The assertion is too broad — it should either (a) filter to UPDATE-only statements, or (b) strip comment text before checking, or (c) the B-02 schema inline comment should be reworded. Cannot fix without touching the frozen schema file or the test file. This is a B-02 × B-03 tester-conflict: route back to tdd-tester.
-- Status: blocked — 1/29 test requires tester fix (B-02 schema comment vs. B-03 test assertion conflict)
+- Status: green — 29/29 tests pass after tester narrowed the backfill-gating assertion to ignore inline schema comments (strip `--` comments before sha256/encode check in `test_no_postgres_backfill_sql_executed`).

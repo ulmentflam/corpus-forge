@@ -42,4 +42,4 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 |---------|---------|-------|
 | B-01    | qa-skipped | Principal override — gate matrix sufficient. 21/21 tests, format/lint/pyrefly clean, 689 unit + 101/102 integration green. |
 | B-02    | qa-skipped | Principal override — gate matrix sufficient. 130/130 tests, 819 unit + 102/102 integration, all gates clean. |
-| B-03    | blocked | 28/29 tests green; one tester-side assertion bug (`test_no_postgres_backfill_sql_executed` matches "sha256" against an inline schema comment, not just executed SQL). Routed back to tdd-tester for narrowing. QA pending resolution. |
+| B-03    | qa-skipped | Principal override — gate matrix sufficient. 29/29 tests green after tester narrowed the backfill-gating assertion to ignore inline schema comments. |

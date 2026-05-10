@@ -413,9 +413,26 @@ class TestBackfillGating:
         backend._execute = spy_execute
         backend.migrate()
 
-        # The Postgres backfill uses sha256 / encode — these should not appear
+        # Filter / strip comments before matching to avoid false positives from
+        # descriptive `--` comments in CREATE TABLE DDL (e.g. 001_core.sql:35
+        # has "-- sha256 of raw bytes (idempotency key)" which is metadata, not
+        # executed SQL). The Postgres backfill is an UPDATE that doesn't run
+        # for dialect="sqlite".
+        def strip_line_comments(sql: str) -> str:
+            """Remove -- to end-of-line comment text from each line of SQL."""
+            stripped_lines = []
+            for raw_line in sql.splitlines():
+                # Find the first -- not inside a string literal (simple heuristic:
+                # strip the -- suffix; this is sufficient because the backfill
+                # UPDATE never embeds -- in its executable SQL body).
+                comment_pos = raw_line.find("--")
+                executable = raw_line[:comment_pos] if comment_pos >= 0 else raw_line
+                stripped_lines.append(executable)
+            return "\n".join(stripped_lines)
+
         for sql in executed_sqls:
-            sql_upper = sql.upper()
+            executable_sql = strip_line_comments(sql)
+            sql_upper = executable_sql.upper()
             assert "SHA256" not in sql_upper, (
                 f"Postgres sha256 backfill SQL must not run for SQLite. Got: {sql!r}"
             )
