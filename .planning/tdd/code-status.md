@@ -141,6 +141,7 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 | B-02 | green | SQLite migration files 001/002/003 + dialect dispatch |
 | B-03 | green | 29/29 tests green after tester narrowed the backfill-gating assertion to ignore inline schema comments |
 | B-04 | green | register_embedder: 18/18 B-04 tests pass; SELECT-or-INSERT, UPDATE-on-collision, per-embedder vec0/BLOB table |
+| B-05 | red | 23/32 B-05 tests pass. 9 failures are tester-side bugs (see sqlite_backend.md B-05 row). Implementation complete: upsert_document with ON CONFLICT, chunk reuse via content_hash, _copy_reusable_embeddings. Gates: format ✓, lint ✓, typecheck ✓. |
 
 ## B-03
 - Source files: `corpus_forge/backends/sqlite.py` (new, 231 LOC)
