@@ -840,7 +840,8 @@ def _insert_dataset_and_document(
         (dataset_id, "test_ds", "text"),
     )
     backend._execute(
-        "INSERT INTO documents (id, dataset_id, source_uri, content_hash, text) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO documents"
+        " (id, dataset_id, source_uri, content_hash, text) VALUES (?, ?, ?, ?, ?)",
         (doc_id, dataset_id, source_uri, content_hash, text),
     )
 
@@ -907,7 +908,8 @@ class TestUpsertDocumentNewDocument:
         doc_id = doc_rows[0]["id"]
 
         chunk_rows = backend._execute(
-            "SELECT chunk_index, heading, text FROM chunks WHERE document_id = ? ORDER BY chunk_index",
+            "SELECT chunk_index, heading, text FROM chunks"
+            " WHERE document_id = ? ORDER BY chunk_index",
             (doc_id,),
         )
         assert len(chunk_rows) == 2
@@ -1003,7 +1005,8 @@ class TestUpsertDocumentExistingDocument:
         assert rows[0]["text"] == "# Updated"
 
     def test_content_hash_short_circuit_returns_existing_id(self, tmp_path):
-        """If content_hash matches, upsert_document returns existing doc ID without modifying chunks."""
+        """If content_hash matches, upsert_document returns existing doc ID
+        without modifying chunks."""
         backend = _migrated_backend(tmp_path / "corpus.db")
         _insert_dataset_and_document(
             backend,
@@ -1117,7 +1120,8 @@ class TestUpsertDocumentChunkReuse:
     """Chunk reuse via content_hash matching in upsert_document."""
 
     def test_reuses_chunk_when_content_hash_matches(self, tmp_path):
-        """When a chunk's content_hash matches a prior chunk, it updates in-place (keeps chunk_id)."""
+        """When a chunk's content_hash matches a prior chunk, it updates
+        in-place (keeps chunk_id)."""
         backend = _migrated_backend(tmp_path / "corpus.db")
         _insert_dataset_and_document(
             backend,
@@ -1131,7 +1135,8 @@ class TestUpsertDocumentChunkReuse:
         # Insert a prior chunk with known content
         prior_hash = chunk_content_hash("same body")
         backend._execute(
-            "INSERT INTO chunks (document_id, chunk_index, text, content_hash) VALUES (1, 0, 'same body', ?)",
+            "INSERT INTO chunks (document_id, chunk_index, text, content_hash)"
+            " VALUES (1, 0, 'same body', ?)",
             (prior_hash,),
         )
 
@@ -1171,7 +1176,8 @@ class TestUpsertDocumentChunkReuse:
 
         # Prior chunk with different content
         backend._execute(
-            "INSERT INTO chunks (document_id, chunk_index, text, content_hash) VALUES (1, 0, 'different body', 'different_hash')"
+            "INSERT INTO chunks (document_id, chunk_index, text, content_hash)"
+            " VALUES (1, 0, 'different body', 'different_hash')"
         )
 
         doc = _make_raw_document(
@@ -1223,7 +1229,8 @@ class TestUpsertDocumentEmbedderIds:
         backend.upsert_document(1, doc, chunks, embedder_ids=None)
 
         assert call_count[0] == 0, (
-            f"_copy_reusable_embeddings must not be called when embedder_ids=None. Called {call_count[0]} times."
+            f"_copy_reusable_embeddings must not be called when embedder_ids=None."
+            f" Called {call_count[0]} times."
         )
 
     def test_embedder_ids_empty_list_no_reuse(self, tmp_path):
@@ -1248,11 +1255,13 @@ class TestUpsertDocumentEmbedderIds:
         backend.upsert_document(1, doc, chunks, embedder_ids=[])
 
         assert call_count[0] == 0, (
-            f"_copy_reusable_embeddings must not be called when embedder_ids=[]. Called {call_count[0]} times."
+            f"_copy_reusable_embeddings must not be called when embedder_ids=[]."
+            f" Called {call_count[0]} times."
         )
 
     def test_embedder_ids_triggers_copy_per_chunk(self, tmp_path):
-        """When embedder_ids is a non-empty list, _copy_reusable_embeddings is called once per chunk."""
+        """When embedder_ids is a non-empty list, _copy_reusable_embeddings is called
+        once per chunk."""
         backend = _migrated_backend(tmp_path / "corpus.db")
         _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
 
@@ -1273,7 +1282,8 @@ class TestUpsertDocumentEmbedderIds:
         backend.upsert_document(1, doc, chunks, embedder_ids=[1, 2])
 
         assert call_count[0] == 2, (
-            f"_copy_reusable_embeddings must be called once per chunk. Called {call_count[0]} times, expected 2."
+            f"_copy_reusable_embeddings must be called once per chunk."
+            f" Called {call_count[0]} times, expected 2."
         )
 
     def test_embedder_ids_passed_to_copy_reusable(self, tmp_path):
@@ -1339,7 +1349,8 @@ class TestCopyReusableEmbeddings:
         # Insert a prior chunk with the matching content_hash
         match_hash = chunk_content_hash("matching body")
         backend._execute(
-            "INSERT INTO chunks (document_id, chunk_index, text, content_hash) VALUES (1, 0, 'matching body', ?)",
+            "INSERT INTO chunks (document_id, chunk_index, text, content_hash)"
+            " VALUES (1, 0, 'matching body', ?)",
             (match_hash,),
         )
 
@@ -1394,7 +1405,8 @@ class TestCopyReusableEmbeddings:
         # Only embedder_a has a prior embedding for the matching hash
         match_hash = chunk_content_hash("partial body")
         backend._execute(
-            "INSERT INTO chunks (document_id, chunk_index, text, content_hash) VALUES (1, 0, 'partial body', ?)",
+            "INSERT INTO chunks (document_id, chunk_index, text, content_hash)"
+            " VALUES (1, 0, 'partial body', ?)",
             (match_hash,),
         )
         backend._execute(
@@ -1422,7 +1434,8 @@ class TestCopyReusableEmbeddings:
         match_hash = chunk_content_hash("no embed body")
         # Insert chunk with matching hash but NO embedding row
         backend._execute(
-            "INSERT INTO chunks (document_id, chunk_index, text, content_hash) VALUES (1, 0, 'no embed body', ?)",
+            "INSERT INTO chunks (document_id, chunk_index, text, content_hash)"
+            " VALUES (1, 0, 'no embed body', ?)",
             (match_hash,),
         )
 
@@ -1470,11 +1483,13 @@ class TestCopyReusableEmbeddings:
 
         match_hash = chunk_content_hash("shared body")
         backend._execute(
-            "INSERT INTO chunks (document_id, chunk_index, text, content_hash) VALUES (1, 0, 'shared body', ?)",
+            "INSERT INTO chunks (document_id, chunk_index, text, content_hash)"
+            " VALUES (1, 0, 'shared body', ?)",
             (match_hash,),
         )
         backend._execute(
-            "INSERT INTO embeddings_multi_reuse (chunk_id, embedder_id, embedding) VALUES (1, ?, ?)",
+            "INSERT INTO embeddings_multi_reuse (chunk_id, embedder_id, embedding)"
+            " VALUES (1, ?, ?)",
             (embedder_id, b"\x00" * (32 * 4)),
         )
 
@@ -1808,5 +1823,6 @@ class TestUpsertDocumentFailurePaths:
             (doc_id,),
         )
         assert len(chunk_rows) == 1
-        # SQLite stores None as NULL; the value may be None or empty string depending on implementation
+        # SQLite stores None as NULL; the value may be None or empty string
+        # depending on implementation
         assert chunk_rows[0]["heading"] is None or chunk_rows[0]["heading"] == ""
