@@ -2481,3 +2481,404 @@ class TestUpsertConversationFailurePaths:
 
         with pytest.raises(_sqlite3.IntegrityError):
             backend.upsert_conversation(1, conv, chunked)
+
+
+# ---------------------------------------------------------------------------
+# B-07 — write_embeddings + chunks_missing_embedding
+# ---------------------------------------------------------------------------
+
+
+import numpy as np  # noqa: E402  (import at module level but appended here for readability)
+
+
+def _insert_dataset_for_embedding(backend, dataset_id: int = 1) -> None:
+    """Insert a minimal dataset row for B-07 tests."""
+    backend._execute(
+        "INSERT OR IGNORE INTO datasets (id, name, kind) VALUES (?, ?, ?)",
+        (dataset_id, f"emb_test_ds_{dataset_id}", "text"),
+    )
+
+
+def _insert_doc_and_chunk(
+    backend,
+    dataset_id: int,
+    source_uri: str,
+    chunk_text: str,
+) -> tuple[int, int]:
+    """Insert a document + one chunk row; return (doc_id, chunk_id)."""
+    doc_result = backend._execute(
+        "INSERT INTO documents"
+        " (dataset_id, source_uri, content_hash, text)"
+        " VALUES (?, ?, ?, ?) RETURNING id",
+        (dataset_id, source_uri, "hash_" + source_uri, chunk_text),
+    )
+    doc_id: int = doc_result[0]["id"]
+    chunk_result = backend._execute(
+        "INSERT INTO chunks"
+        " (document_id, chunk_index, text, metadata, content_hash)"
+        " VALUES (?, 0, ?, '{}', ?) RETURNING id",
+        (doc_id, chunk_text, "ch_" + chunk_text),
+    )
+    chunk_id: int = chunk_result[0]["id"]
+    return doc_id, chunk_id
+
+
+# ---------------------------------------------------------------------------
+# TestWriteEmbeddings — B-07
+# ---------------------------------------------------------------------------
+
+
+class TestWriteEmbeddings:
+    """write_embeddings(embedder_id, pairs) — insert serialized vectors."""
+
+    # ------------------------------------------------------------------ happy path
+
+    def test_single_pair_row_exists(self, tmp_path):
+        """Happy path: write_embeddings with one pair inserts one row."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="we_single", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+        _, chunk_id = _insert_doc_and_chunk(backend, 1, "vault://we/single.md", "hello world")
+
+        vec = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32)
+        backend.write_embeddings(emb_id, [(chunk_id, vec)])
+
+        rows = backend._execute(
+            "SELECT chunk_id FROM embeddings_we_single WHERE chunk_id = ?",
+            (chunk_id,),
+        )
+        assert len(rows) == 1, f"Expected 1 row after write_embeddings; got {len(rows)}"
+
+    def test_multiple_pairs_multiple_rows(self, tmp_path):
+        """write_embeddings with N pairs inserts N rows."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="we_multi", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+
+        chunk_ids: list[int] = []
+        for i in range(3):
+            _, cid = _insert_doc_and_chunk(
+                backend, 1, f"vault://we/multi_{i}.md", f"text chunk {i}"
+            )
+            chunk_ids.append(cid)
+
+        vecs = [np.array([float(i), 0.0, 0.0, 0.0], dtype=np.float32) for i in range(3)]
+        pairs = list(zip(chunk_ids, vecs, strict=True))
+        backend.write_embeddings(emb_id, pairs)
+
+        rows = backend._execute("SELECT chunk_id FROM embeddings_we_multi ORDER BY chunk_id")
+        assert len(rows) == 3, f"Expected 3 rows, got {len(rows)}"
+
+    def test_empty_pairs_is_noop(self, tmp_path):
+        """Empty pairs list must not raise and must not touch the table."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="we_empty", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+
+        # Must not raise
+        backend.write_embeddings(emb_id, [])
+
+        rows = backend._execute("SELECT chunk_id FROM embeddings_we_empty")
+        assert len(rows) == 0, "No rows should exist after write_embeddings([])"
+
+    # ------------------------------------------------------------------ float32 vs float64
+
+    def test_float64_input_accepted_and_stored(self, tmp_path):
+        """Float64 numpy array is accepted; implementation converts to float32 before storing."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="we_f64", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+        _, chunk_id = _insert_doc_and_chunk(backend, 1, "vault://we/f64.md", "float64 text")
+
+        vec_f64 = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float64)
+        # Must not raise
+        backend.write_embeddings(emb_id, [(chunk_id, vec_f64)])
+
+        rows = backend._execute(
+            "SELECT chunk_id FROM embeddings_we_f64 WHERE chunk_id = ?",
+            (chunk_id,),
+        )
+        assert len(rows) == 1, "float64 input must produce a stored row"
+
+    # ------------------------------------------------------------------ idempotency / REPLACE
+
+    def test_duplicate_chunk_id_is_idempotent(self, tmp_path):
+        """Inserting the same (chunk_id, embedder_id) twice must not raise (INSERT OR REPLACE)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="we_idem", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+        _, chunk_id = _insert_doc_and_chunk(backend, 1, "vault://we/idem.md", "idem text")
+
+        vec1 = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32)
+        vec2 = np.array([0.9, 0.8, 0.7, 0.6], dtype=np.float32)
+        backend.write_embeddings(emb_id, [(chunk_id, vec1)])
+        # Second call with same chunk_id must not raise
+        backend.write_embeddings(emb_id, [(chunk_id, vec2)])
+
+        rows = backend._execute(
+            "SELECT chunk_id FROM embeddings_we_idem WHERE chunk_id = ?",
+            (chunk_id,),
+        )
+        assert len(rows) == 1, "INSERT OR REPLACE on duplicate (chunk_id) must leave exactly 1 row"
+
+    # ------------------------------------------------------------------ fallback BLOB path
+
+    def test_fallback_blob_stores_bytes(self, tmp_path, monkeypatch):
+        """Fallback (no sqlite-vec): embedding is stored as raw float32 bytes in BLOB column."""
+        import corpus_forge.backends.sqlite as sqlite_mod
+        import corpus_forge.backends.sqlite_vec_loader as loader_mod
+
+        monkeypatch.setattr(loader_mod, "SQLITE_VEC_AVAILABLE", False)
+        monkeypatch.setattr(sqlite_mod, "SQLITE_VEC_AVAILABLE", False)
+
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="we_blob", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+        _, chunk_id = _insert_doc_and_chunk(backend, 1, "vault://we/blob.md", "blob path text")
+
+        vec = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
+        backend.write_embeddings(emb_id, [(chunk_id, vec)])
+
+        rows = backend._execute(
+            "SELECT embedding FROM embeddings_we_blob WHERE chunk_id = ?",
+            (chunk_id,),
+        )
+        assert len(rows) == 1, "Fallback path must insert a row"
+        blob = rows[0]["embedding"]
+        assert isinstance(blob, bytes), (
+            f"Fallback embedding must be stored as bytes (BLOB), got {type(blob)}"
+        )
+        recovered = np.frombuffer(blob, dtype=np.float32)
+        np.testing.assert_array_almost_equal(
+            recovered,
+            vec,
+            decimal=5,
+            err_msg="Recovered float32 bytes must match the original vector",
+        )
+
+    def test_fallback_blob_duplicate_idempotent(self, tmp_path, monkeypatch):
+        """Fallback path: second write on same chunk_id must not raise."""
+        import corpus_forge.backends.sqlite as sqlite_mod
+        import corpus_forge.backends.sqlite_vec_loader as loader_mod
+
+        monkeypatch.setattr(loader_mod, "SQLITE_VEC_AVAILABLE", False)
+        monkeypatch.setattr(sqlite_mod, "SQLITE_VEC_AVAILABLE", False)
+
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="we_blob_idem", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+        _, chunk_id = _insert_doc_and_chunk(backend, 1, "vault://we/blob_idem.md", "blob idem text")
+
+        vec = np.array([0.5, 0.5, 0.5, 0.5], dtype=np.float32)
+        backend.write_embeddings(emb_id, [(chunk_id, vec)])
+        # Must not raise
+        backend.write_embeddings(emb_id, [(chunk_id, vec)])
+
+        rows = backend._execute(
+            "SELECT chunk_id FROM embeddings_we_blob_idem WHERE chunk_id = ?",
+            (chunk_id,),
+        )
+        assert len(rows) == 1, "Duplicate insert on BLOB fallback must leave exactly 1 row"
+
+    # ------------------------------------------------------------------ sqlite-vec path
+
+    @pytest.mark.skipif(
+        not SQLITE_VEC_AVAILABLE,
+        reason="sqlite-vec extra not installed; vec0 virtual table not available",
+    )
+    def test_vec_path_row_retrievable(self, tmp_path):
+        """With sqlite-vec: written embedding row is retrievable via SELECT."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="we_vec", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+        _, chunk_id = _insert_doc_and_chunk(backend, 1, "vault://we/vec.md", "vec path text")
+
+        vec = np.array([0.25, 0.5, 0.75, 1.0], dtype=np.float32)
+        backend.write_embeddings(emb_id, [(chunk_id, vec)])
+
+        rows = backend._execute(
+            "SELECT chunk_id FROM embeddings_we_vec WHERE chunk_id = ?",
+            (chunk_id,),
+        )
+        assert len(rows) == 1, "vec0 path must produce a retrievable row"
+
+
+# ---------------------------------------------------------------------------
+# TestChunksMissingEmbedding — B-07
+# ---------------------------------------------------------------------------
+
+
+class TestChunksMissingEmbedding:
+    """chunks_missing_embedding(embedder_id, limit) — returns chunks without embeddings."""
+
+    # ------------------------------------------------------------------ happy path
+
+    def test_no_chunks_returns_empty(self, tmp_path):
+        """When no chunks exist, chunks_missing_embedding returns an empty result."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        embedder = FakeEmbedder(name="cme_empty", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+
+        result = list(backend.chunks_missing_embedding(emb_id))
+        assert result == [], f"Expected empty list when no chunks exist; got {result}"
+
+    def test_all_chunks_have_embeddings_returns_empty(self, tmp_path):
+        """When all chunks have embeddings, returns empty."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cme_all_covered", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+        _, chunk_id = _insert_doc_and_chunk(
+            backend, 1, "vault://cme/all_covered.md", "already embedded"
+        )
+
+        vec = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32)
+        backend.write_embeddings(emb_id, [(chunk_id, vec)])
+
+        result = list(backend.chunks_missing_embedding(emb_id))
+        assert result == [], f"Expected empty list when all chunks have embeddings; got {result}"
+
+    def test_missing_chunks_are_returned(self, tmp_path):
+        """Chunks without an embedding row are returned."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cme_missing", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+
+        _, chunk_id_1 = _insert_doc_and_chunk(
+            backend, 1, "vault://cme/missing_1.md", "missing chunk 1"
+        )
+        _, chunk_id_2 = _insert_doc_and_chunk(
+            backend, 1, "vault://cme/missing_2.md", "missing chunk 2"
+        )
+
+        result = list(backend.chunks_missing_embedding(emb_id))
+        returned_ids = [r[0] for r in result]
+        assert chunk_id_1 in returned_ids, (
+            f"chunk_id_1={chunk_id_1} must be in missing set; got {returned_ids}"
+        )
+        assert chunk_id_2 in returned_ids, (
+            f"chunk_id_2={chunk_id_2} must be in missing set; got {returned_ids}"
+        )
+
+    def test_only_missing_chunks_returned_not_covered(self, tmp_path):
+        """When some chunks have embeddings and some don't, only the missing ones are returned."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cme_partial", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+
+        _, chunk_id_covered = _insert_doc_and_chunk(
+            backend, 1, "vault://cme/covered.md", "covered chunk"
+        )
+        _, chunk_id_missing = _insert_doc_and_chunk(
+            backend, 1, "vault://cme/missing.md", "missing chunk"
+        )
+
+        vec = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        backend.write_embeddings(emb_id, [(chunk_id_covered, vec)])
+
+        result = list(backend.chunks_missing_embedding(emb_id))
+        returned_ids = [r[0] for r in result]
+
+        assert chunk_id_missing in returned_ids, (
+            f"chunk_id_missing must be in result; got {returned_ids}"
+        )
+        assert chunk_id_covered not in returned_ids, (
+            f"chunk_id_covered must NOT be in result; got {returned_ids}"
+        )
+
+    # ------------------------------------------------------------------ return shape
+
+    def test_returns_tuple_of_chunk_id_and_text(self, tmp_path):
+        """Each returned item is a (chunk_id: int, text: str) tuple."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cme_shape", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+        _, chunk_id = _insert_doc_and_chunk(backend, 1, "vault://cme/shape.md", "shape test text")
+
+        result = list(backend.chunks_missing_embedding(emb_id))
+        assert len(result) == 1
+        item = result[0]
+        assert len(item) == 2, f"Each item must be a 2-tuple; got {item!r}"
+        cid, text = item
+        assert isinstance(cid, int), f"chunk_id must be int, got {type(cid)}"
+        assert isinstance(text, str), f"text must be str, got {type(text)}"
+        assert cid == chunk_id
+        assert text == "shape test text"
+
+    # ------------------------------------------------------------------ limit honored
+
+    def test_limit_caps_number_of_results(self, tmp_path):
+        """The limit parameter caps how many rows are returned."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cme_limit", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+
+        # Insert 5 chunks, all missing embeddings
+        for i in range(5):
+            _insert_doc_and_chunk(backend, 1, f"vault://cme/limit_{i}.md", f"limit chunk {i}")
+
+        result = list(backend.chunks_missing_embedding(emb_id, limit=3))
+        assert len(result) <= 3, f"limit=3 must cap results at 3; got {len(result)}"
+
+    def test_default_limit_returns_all_when_few(self, tmp_path):
+        """Default limit (1024) returns all chunks when there are fewer than 1024."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cme_default_limit", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+
+        for i in range(10):
+            _insert_doc_and_chunk(backend, 1, f"vault://cme/def_{i}.md", f"default limit chunk {i}")
+
+        result = list(backend.chunks_missing_embedding(emb_id))
+        assert len(result) == 10, f"Default limit must return all 10 chunks; got {len(result)}"
+
+    # ------------------------------------------------------------------ multiple embedders
+
+    def test_multiple_embedders_are_independent(self, tmp_path):
+        """A chunk covered for embedder A is still missing for embedder B."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        emb_a = backend.register_embedder(FakeEmbedder(name="cme_indep_a", dimension=4))
+        emb_b = backend.register_embedder(FakeEmbedder(name="cme_indep_b", dimension=4))
+        _, chunk_id = _insert_doc_and_chunk(backend, 1, "vault://cme/indep.md", "independence test")
+
+        vec = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32)
+        # Write embedding only for embedder A
+        backend.write_embeddings(emb_a, [(chunk_id, vec)])
+
+        # Chunk is covered for A
+        result_a = list(backend.chunks_missing_embedding(emb_a))
+        assert all(r[0] != chunk_id for r in result_a), (
+            f"chunk_id should NOT appear in missing for embedder A; got {result_a}"
+        )
+
+        # Chunk is missing for B
+        result_b = list(backend.chunks_missing_embedding(emb_b))
+        b_ids = [r[0] for r in result_b]
+        assert chunk_id in b_ids, f"chunk_id must appear in missing for embedder B; got {result_b}"
+
+    # ------------------------------------------------------------------ unknown embedder_id
+
+    def test_unknown_embedder_id_returns_empty(self, tmp_path):
+        """Passing an unknown embedder_id returns empty (mirrors Postgres behavior)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        _, _chunk_id = _insert_doc_and_chunk(backend, 1, "vault://cme/unknown_emb.md", "some chunk")
+
+        # embedder_id=9999 does not exist
+        result = list(backend.chunks_missing_embedding(9999))
+        # Must not raise; return empty (no embedder table to join against)
+        assert result == [], f"Unknown embedder_id must return empty; got {result}"

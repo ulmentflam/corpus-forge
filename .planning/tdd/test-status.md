@@ -1118,3 +1118,56 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   `import json` and `RawConversation/RawMessage` to top-level module import block).
 - Cross-link: B-06 row in `.planning/tdd/sqlite_backend.md`.
 - Status: red — handed off to tdd-coder
+
+## B-07 — `write_embeddings` + `chunks_missing_embedding`
+- Test files: `tests/unit/test_sqlite_backend.py` (appended 2 test classes, 17 tests)
+  - `TestWriteEmbeddings` (8 tests): single pair row exists; multiple pairs; empty pairs noop;
+    float64 input accepted; duplicate chunk_id idempotent (INSERT OR REPLACE); fallback BLOB
+    stores bytes and round-trips correctly; fallback BLOB duplicate idempotent;
+    sqlite-vec path row retrievable (skipif no vec)
+  - `TestChunksMissingEmbedding` (9 tests): no chunks empty; all covered empty; missing
+    chunks returned; only missing (not covered) returned; returns (int, str) 2-tuples with
+    correct values; limit caps results; default limit returns all when few; multiple embedders
+    are independent (A covered, B missing); unknown embedder_id returns empty (not raise)
+- Run command: `PYTHONPATH=. uv run pytest tests/unit/test_sqlite_backend.py -v --no-header 2>&1 | tail -40`
+- Helper functions added:
+  - `_insert_dataset_for_embedding(backend, dataset_id)` — inserts a datasets row
+  - `_insert_doc_and_chunk(backend, dataset_id, source_uri, chunk_text)` — inserts a document
+    + one chunk, returns (doc_id, chunk_id)
+- Edge case checklist:
+  - [x] happy path — single write; all-missing returns correct set; covered not returned
+  - [x] boundaries — empty pairs list (noop); limit=3 on 5 chunks; default limit on 10
+  - [x] type/format — float64 input accepted; BLOB round-trip verified via np.frombuffer;
+    return type is (int, str) 2-tuple
+  - [x] state — idempotency on duplicate chunk_id for both vec0 and fallback BLOB paths
+  - [ ] N/A — concurrency (B-08 covers locking)
+  - [x] failure paths — unknown embedder_id returns empty (mirrors postgres.py early return)
+  - [ ] N/A — locale/time (no time surface in these methods)
+  - [x] production-realistic — numpy float32 arrays; multi-embedder independence test
+  - [x] regression hooks — test_fallback_blob_stores_bytes pins byte-level serialization;
+    test_multiple_embedders_are_independent pins per-embedder isolation invariant
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_sqlite_backend.py::TestWriteEmbeddings::test_single_pair_row_exists
+  FAILED tests/unit/test_sqlite_backend.py::TestWriteEmbeddings::test_multiple_pairs_multiple_rows
+  FAILED tests/unit/test_sqlite_backend.py::TestWriteEmbeddings::test_empty_pairs_is_noop
+  FAILED tests/unit/test_sqlite_backend.py::TestWriteEmbeddings::test_float64_input_accepted_and_stored
+  FAILED tests/unit/test_sqlite_backend.py::TestWriteEmbeddings::test_duplicate_chunk_id_is_idempotent
+  FAILED tests/unit/test_sqlite_backend.py::TestWriteEmbeddings::test_fallback_blob_stores_bytes
+  FAILED tests/unit/test_sqlite_backend.py::TestWriteEmbeddings::test_fallback_blob_duplicate_idempotent
+  FAILED tests/unit/test_sqlite_backend.py::TestWriteEmbeddings::test_vec_path_row_retrievable
+  FAILED tests/unit/test_sqlite_backend.py::TestChunksMissingEmbedding::test_no_chunks_returns_empty
+  FAILED tests/unit/test_sqlite_backend.py::TestChunksMissingEmbedding::test_all_chunks_have_embeddings_returns_empty
+  FAILED tests/unit/test_sqlite_backend.py::TestChunksMissingEmbedding::test_missing_chunks_are_returned
+  FAILED tests/unit/test_sqlite_backend.py::TestChunksMissingEmbedding::test_only_missing_chunks_returned_not_covered
+  FAILED tests/unit/test_sqlite_backend.py::TestChunksMissingEmbedding::test_returns_tuple_of_chunk_id_and_text
+  FAILED tests/unit/test_sqlite_backend.py::TestChunksMissingEmbedding::test_limit_caps_number_of_results
+  FAILED tests/unit/test_sqlite_backend.py::TestChunksMissingEmbedding::test_default_limit_returns_all_when_few
+  FAILED tests/unit/test_sqlite_backend.py::TestChunksMissingEmbedding::test_multiple_embedders_are_independent
+  FAILED tests/unit/test_sqlite_backend.py::TestChunksMissingEmbedding::test_unknown_embedder_id_returns_empty
+  17 failed, 101 passed in 4.46s
+  All 17 B-07 tests fail with AttributeError on write_embeddings or chunks_missing_embedding.
+  101 existing tests pass (no regression).
+  ```
+- lint/format: `uv run ruff check` clean; `uv run ruff format --check` clean.
+- Status: red — handed off to tdd-coder
