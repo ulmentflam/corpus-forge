@@ -6,14 +6,20 @@ no schema namespacing so the value is stored and ignored at query time.
 """
 
 import contextlib
+import json
 import re
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..identity import chunk_content_hash
 from ..schema import migrate as _migrate_module
 from ..sources.base import RawDocument
 from .sqlite_vec_loader import SQLITE_VEC_AVAILABLE, load_sqlite_vec
+
+if TYPE_CHECKING:
+    from ..sources.base import RawConversation
 
 
 class SQLiteBackend:
@@ -399,7 +405,8 @@ class SQLiteBackend:
 
             # Load prior chunks keyed by content_hash (for reuse cache seeding)
             prior_rows = self._execute(
-                "SELECT id, chunk_index, content_hash FROM chunks WHERE document_id = ? ORDER BY chunk_index",
+                "SELECT id, chunk_index, content_hash FROM chunks "
+                "WHERE document_id = ? ORDER BY chunk_index",
                 (doc_id,),
             )
             prior_by_hash: dict[str, int] = {}
@@ -495,9 +502,7 @@ class SQLiteBackend:
                 (doc_id, i, heading, text, chunk_hash),
             )
             if embedder_ids:
-                self._copy_reusable_embeddings(
-                    row[0]["id"], chunk_hash, embedder_ids, cache
-                )
+                self._copy_reusable_embeddings(row[0]["id"], chunk_hash, embedder_ids, cache)
 
         return doc_id
 
@@ -564,3 +569,152 @@ class SQLiteBackend:
             reused.add(embedder_id)
 
         return reused
+
+    @staticmethod
+    def _ts_to_iso(ts: float | None) -> str | None:
+        """Convert a Unix timestamp (float) to an ISO-8601 UTC string, or None."""
+        if ts is None:
+            return None
+        return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+
+    def upsert_conversation(
+        self,
+        dataset_id: int,
+        conv: "RawConversation",
+        chunked_messages: list[list[tuple[str | None, str]]],
+    ) -> int:
+        """Insert or update a conversation and its messages/chunks.
+
+        Mirrors ``PostgresBackend.upsert_conversation`` semantics in SQLite
+        dialect.  The flow is:
+
+        1. SELECT-or-INSERT the ``conversations`` row keyed on
+           ``(dataset_id, source_uri)`` UNIQUE constraint.
+           - Same ``content_hash`` → return existing id immediately (no-op).
+           - Changed ``content_hash`` → UPDATE the existing row's mutable
+             columns and delete all its old messages (cascading to chunks).
+        2. INSERT ``messages`` rows with ``turn_index`` 0..N-1.
+        3. For each message, INSERT ``chunks`` rows from
+           ``chunked_messages[i]``.  Each chunk gets:
+           - ``conversation_id`` set, ``document_id`` NULL.
+           - ``message_id`` pointing to the owning message.
+           - ``chunk_index`` starting at 0 per message.
+           - ``role`` echoed from the message.
+           - ``content_hash`` via ``chunk_content_hash(text)``.
+        4. Return the conversation id (int).
+        """
+        started_at = self._ts_to_iso(conv.started_at)
+        ended_at = self._ts_to_iso(conv.ended_at)
+
+        # --- Step 1: check for existing conversation ---
+        existing = self._execute(
+            "SELECT id, content_hash FROM conversations WHERE dataset_id = ? AND source_uri = ?",
+            (dataset_id, conv.source_uri),
+        )
+
+        if existing:
+            conv_id: int = existing[0]["id"]
+            if existing[0]["content_hash"] == conv.content_hash:
+                # No change — short-circuit.
+                return conv_id
+
+            # Hash changed: update the conversations row.
+            self._execute(
+                """
+                UPDATE conversations
+                SET content_hash = ?, title = ?, started_at = ?,
+                    ended_at = ?, message_count = ?, metadata = ?
+                WHERE id = ?
+                """,
+                (
+                    conv.content_hash,
+                    conv.title,
+                    started_at,
+                    ended_at,
+                    len(conv.messages),
+                    json.dumps(conv.metadata),
+                    conv_id,
+                ),
+            )
+
+            # Delete existing messages — ON DELETE CASCADE removes their chunks.
+            self._execute(
+                "DELETE FROM messages WHERE conversation_id = ?",
+                (conv_id,),
+            )
+        else:
+            # Insert new conversation row.
+            result = self._execute(
+                """
+                INSERT INTO conversations
+                (dataset_id, source_uri, external_id, title, started_at,
+                 ended_at, message_count, content_hash, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
+                """,
+                (
+                    dataset_id,
+                    conv.source_uri,
+                    conv.external_id,
+                    conv.title,
+                    started_at,
+                    ended_at,
+                    len(conv.messages),
+                    conv.content_hash,
+                    json.dumps(conv.metadata),
+                ),
+            )
+            conv_id = result[0]["id"]
+
+        # --- Step 2: insert messages ---
+        message_ids: list[int] = []
+        for i, message in enumerate(conv.messages):
+            msg_ts = self._ts_to_iso(message.ts)
+            msg_result = self._execute(
+                """
+                INSERT INTO messages
+                (conversation_id, external_uuid, parent_uuid, turn_index, role,
+                 content, tool_calls, tool_results, ts, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
+                """,
+                (
+                    conv_id,
+                    message.external_uuid,
+                    message.parent_uuid,
+                    i,
+                    message.role,
+                    message.content,
+                    json.dumps(message.tool_calls) if message.tool_calls is not None else None,
+                    json.dumps(message.tool_results) if message.tool_results is not None else None,
+                    msg_ts,
+                    json.dumps(message.metadata),
+                ),
+            )
+            message_ids.append(msg_result[0]["id"])
+
+        # --- Step 3: insert chunks per message ---
+        for msg_idx, chunks_in_msg in enumerate(chunked_messages):
+            message_id = message_ids[msg_idx]
+            message_role = conv.messages[msg_idx].role
+            for chunk_idx, (heading, text) in enumerate(chunks_in_msg):
+                chunk_hash = chunk_content_hash(text)
+                self._execute(
+                    """
+                    INSERT INTO chunks
+                    (conversation_id, message_id, chunk_index, heading, text,
+                     metadata, role, content_hash)
+                    VALUES (?, ?, ?, ?, ?, '{}', ?, ?)
+                    """,
+                    (
+                        conv_id,
+                        message_id,
+                        chunk_idx,
+                        heading,
+                        text,
+                        message_role,
+                        chunk_hash,
+                    ),
+                )
+
+        return conv_id
