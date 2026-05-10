@@ -34,6 +34,7 @@ Record of implementations written by tdd-coder.
 | DOC-01 | green | Wave 13 closeout. Stale "1 failed test" claim removed; Wave 6 + 12 flipped to DONE; Wave 13 summary appended to tasks.md. |
 | LINT-01 | green | Dropped ruff from 103→0 errors across corpus_forge + tests. 3 commits: production code fixes (postgres.py SQL wrapping, cli.py B904+ARG001, daemon.py ARG001, fs.py PTH+PLR2004, pull.py E402+ARG002+PLC0415, push.py PLC0415), test file fixes (SIM117 collapses, E501 wrapping, E741 renames, E402 import, PTH109, PLW1510), and pyproject.toml (PLR0911/0912/0913 global ignore + per-file-ignores for tests and cli.py). All 668 unit tests green, 97/102 integration tests green (5 pre-existing failures). |
 | B-01 | green | sqlite-vec loader + pyproject sqlite extra. 21/21 B-01 tests pass (0 skipped, 0 failed). Full unit suite: 689 passed, 8 skipped (pre-existing openai skips), 0 failed (B-02 pre-existing red tests not caused by B-01). Integration: 101/102 (1 pre-existing flaky timing test). All 4 gates clean. |
+| B-02 | green | SQLite migration files + dialect dispatch. 130/130 B-02 tests pass. Full unit suite: 819 passed, 8 skipped (689 pre-existing + 130 new B-02 tests), 0 failed. Integration: 102/102. All 4 gates clean. |
 
 ## B-01
 - Source files: `corpus_forge/backends/sqlite_vec_loader.py` (new), `pyproject.toml`, `uv.lock`
@@ -48,6 +49,24 @@ Record of implementations written by tdd-coder.
   - sqlite-vec 0.1.9 installed cleanly on aarch64-darwin (no blocker)
   - Untracked B-02 test files (`test_migration_sqlite_001.py`, `_002.py`, `_003.py`, `test_sqlite_migration_loader.py`) were on disk (placed by tester for B-02 wave) and blocked `ruff format --check tests`; applied whitespace-only auto-format to unblock gate
   - `test_icloud_dupe_diff_hash_renamed` is a flaky timing-sensitive test with a known embedded BUG-PUSH-DUPE comment; failed in full integration run, passed in isolation; pre-existing, not caused by B-01
+- Status: green — handed off to tdd-qa
+
+## B-02
+- Source files: `corpus_forge/schema/migrate.py`, `corpus_forge/schema/sqlite/001_core.sql` (new), `corpus_forge/schema/sqlite/002_chunk_content_hash.sql` (new), `corpus_forge/schema/sqlite/003_sync.sql` (new)
+- Gates:
+  - format: ✓ (`ruff format --check` — 90 files already formatted)
+  - lint: ✓ (`ruff check` — All checks passed)
+  - typecheck: ✓ (`pyrefly check corpus_forge` — 0 errors, 12 suppressed, 15 warnings not shown)
+  - test: ✓ (B-02 tests: 130 passed, 0 failed; unit suite: 819 passed, 8 skipped, 0 failed; integration: 102/102 passed)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (migrate.py + sqlite/ subdir new files)
+- Plan ambiguities resolved:
+  1. 002 backfill skip for sqlite: implemented as `if dialect == "postgres" and "002_chunk_content_hash" in applied` gate in apply_migrations(). The dialect param is passed through from get_migration_files() call to the backfill check.
+  2. Integer column style in 003: used `INTEGER` consistently for all non-PK integer columns (revision_number, parent_revision_id, last_pulled_revision_id, sync_enabled). One-line SQL comment at top of 003_sync.sql documents the choice.
+- Surprises:
+  - SQL comment lines containing Postgres keywords (BIGSERIAL, JSONB, etc.) caused test failures since tests check raw file content without excluding comments. Comments were reworded to avoid Postgres-specific terms.
+  - Comment lines mentioning `tombstoned_at` or `last_pulled_revision_id`/`sync_enabled` were matched first by tests that scan line-by-line; comments restructured to avoid column names in section headers.
+  - Integration suite ran 102/102 (the known flake `test_icloud_dupe_diff_hash_renamed` passed this run).
 - Status: green — handed off to tdd-qa
 
 ## INT-01
