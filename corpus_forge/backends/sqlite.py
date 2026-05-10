@@ -10,7 +10,9 @@ import re
 import sqlite3
 from pathlib import Path
 
+from ..identity import chunk_content_hash
 from ..schema import migrate as _migrate_module
+from ..sources.base import RawDocument
 from .sqlite_vec_loader import SQLITE_VEC_AVAILABLE, load_sqlite_vec
 
 
@@ -206,9 +208,13 @@ class SQLiteBackend:
                 if "duplicate column name" in str(exc).lower():
                     return []
                 raise
-            conn.commit()
+            # Fetch result rows before committing — this is required for
+            # RETURNING queries where the cursor still has pending results.
             if cursor.description is not None:
-                return [dict(row) for row in cursor.fetchall()]
+                rows = [dict(row) for row in cursor.fetchall()]
+                conn.commit()
+                return rows
+            conn.commit()
             return []
 
     def migrate(self) -> None:
@@ -336,3 +342,225 @@ class SQLiteBackend:
             )
 
         return embedder_id
+
+    def upsert_document(
+        self,
+        dataset_id: int,
+        doc: "RawDocument",
+        chunks: list[tuple[str | None, str]],
+        embedder_ids: list[int] | None = None,
+    ) -> int:
+        """Insert or update a document and its chunks.
+
+        On re-ingest we UPDATE chunks in-place where the content_hash
+        matches (preserving the chunk_id and therefore the embedding rows)
+        rather than DELETE-then-INSERT all chunks.  Only genuinely removed
+        chunks are deleted, and only truly new chunks are inserted.
+        """
+        # Check if document already exists
+        existing = self._execute(
+            "SELECT id, content_hash FROM documents WHERE dataset_id = ? AND source_uri = ?",
+            (dataset_id, doc.source_uri),
+        )
+
+        if existing:
+            doc_id = existing[0]["id"]
+            current_hash = existing[0]["content_hash"]
+
+            if current_hash == doc.content_hash:
+                # No change, return existing doc ID
+                return doc_id
+
+            # Use ON CONFLICT for the update path (UPSERT semantics).
+            # The conflict triggers because the document already exists
+            # with the same (dataset_id, source_uri), causing the
+            # DO UPDATE branch to fire — which is exactly what we want.
+            result = self._execute(
+                """
+                INSERT INTO documents
+                (dataset_id, source_uri, content_hash, title, text, metadata)
+                VALUES (?, ?, ?, ?, ?, '{}')
+                ON CONFLICT(dataset_id, source_uri) DO UPDATE SET
+                    content_hash = excluded.content_hash,
+                    title = excluded.title,
+                    text = excluded.text,
+                    modified_at = excluded.modified_at
+                RETURNING id
+                """,
+                (
+                    dataset_id,
+                    doc.source_uri,
+                    doc.content_hash,
+                    doc.title,
+                    doc.text,
+                ),
+            )
+            doc_id = result[0]["id"]
+
+            # Load prior chunks keyed by content_hash (for reuse cache seeding)
+            prior_rows = self._execute(
+                "SELECT id, chunk_index, content_hash FROM chunks WHERE document_id = ? ORDER BY chunk_index",
+                (doc_id,),
+            )
+            prior_by_hash: dict[str, int] = {}
+            for pr in prior_rows:
+                if pr["content_hash"]:
+                    prior_by_hash.setdefault(pr["content_hash"], pr["id"])
+
+            # Compute new chunk hashes
+            new_chunk_hashes = {chunk_content_hash(t) for _, t in chunks}
+
+            # Build reusable map: content_hash -> prior chunk_id
+            reusable: dict[str, int] = {}
+            for ph, pid in prior_by_hash.items():
+                if ph in new_chunk_hashes:
+                    reusable[ph] = pid
+
+            # Delete prior chunks whose content_hash is not in the new set
+            for pr in prior_rows:
+                if pr["content_hash"] not in new_chunk_hashes:
+                    self._execute("DELETE FROM chunks WHERE id = ?", (pr["id"],))
+
+            # Track which prior chunk_ids have been used for reuse
+            used_prior_ids: set[int] = set()
+            cache: dict[tuple[str, int], int] = {}
+
+            for i, (heading, text) in enumerate(chunks):
+                chunk_hash = chunk_content_hash(text)
+                prior_id = reusable.get(chunk_hash)
+                if prior_id is not None and prior_id not in used_prior_ids:
+                    # Update-in-place: keep chunk_id (preserves embedding rows)
+                    self._execute(
+                        """
+                        UPDATE chunks
+                        SET chunk_index = ?, heading = ?, text = ?
+                        WHERE id = ?
+                        """,
+                        (i, heading, text, prior_id),
+                    )
+                    used_prior_ids.add(prior_id)
+                else:
+                    # Insert new chunk
+                    row = self._execute(
+                        """
+                        INSERT INTO chunks
+                        (document_id, chunk_index, heading, text, metadata, content_hash)
+                        VALUES (?, ?, ?, ?, '{}', ?)
+                        RETURNING id
+                        """,
+                        (doc_id, i, heading, text, chunk_hash),
+                    )
+                    new_chunk_id = row[0]["id"]
+                    if embedder_ids:
+                        self._copy_reusable_embeddings(
+                            new_chunk_id, chunk_hash, embedder_ids, cache
+                        )
+
+            return doc_id
+        else:
+            # Insert new document with ON CONFLICT for safety
+            result = self._execute(
+                """
+                INSERT INTO documents
+                (dataset_id, source_uri, content_hash, title, text, metadata)
+                VALUES (?, ?, ?, ?, ?, '{}')
+                ON CONFLICT(dataset_id, source_uri) DO UPDATE SET
+                    content_hash = excluded.content_hash,
+                    title = excluded.title,
+                    text = excluded.text,
+                    modified_at = excluded.modified_at
+                RETURNING id
+                """,
+                (
+                    dataset_id,
+                    doc.source_uri,
+                    doc.content_hash,
+                    doc.title,
+                    doc.text,
+                ),
+            )
+            doc_id = result[0]["id"]
+
+        # Add chunks for new document
+        cache: dict[tuple[str, int], int] = {}
+        for i, (heading, text) in enumerate(chunks):
+            chunk_hash = chunk_content_hash(text)
+            row = self._execute(
+                """
+                INSERT INTO chunks
+                (document_id, chunk_index, heading, text, metadata, content_hash)
+                VALUES (?, ?, ?, ?, '{}', ?)
+                RETURNING id
+                """,
+                (doc_id, i, heading, text, chunk_hash),
+            )
+            if embedder_ids:
+                self._copy_reusable_embeddings(
+                    row[0]["id"], chunk_hash, embedder_ids, cache
+                )
+
+        return doc_id
+
+    def _copy_reusable_embeddings(
+        self,
+        new_chunk_id: int,
+        content_hash: str,
+        embedder_ids: list[int],
+        cache: dict,
+    ) -> set[int]:
+        """Copy embeddings from prior chunks with the same content hash.
+
+        For each embedder_id, looks up an existing chunk with the same content_hash
+        that already has an embedding vector stored. If found, the vector row is
+        copied (INSERT SELECT) for the new chunk. Cache entries skip the SELECT.
+
+        Returns the set of embedder_ids whose embeddings were reused.
+        """
+        reused = set()
+
+        # Look up embedder info for all requested embedder_ids
+        embedder_info: dict[int, dict] = {}
+        for eid in embedder_ids:
+            rows = self._execute(
+                "SELECT name, table_name FROM embedders WHERE id = ?",
+                (eid,),
+            )
+            if rows:
+                embedder_info[eid] = rows[0]
+
+        for embedder_id in sorted(embedder_ids, key=lambda x: (x % 2 == 0, x)):
+            if embedder_id not in embedder_info:
+                continue
+
+            info = embedder_info[embedder_id]
+            table_name = info["table_name"]
+
+            cache_key = (content_hash, embedder_id)
+            prior_chunk_id = cache.get(cache_key)
+
+            if prior_chunk_id is None:
+                rows = self._execute(
+                    f"""
+                    SELECT e.chunk_id FROM chunks c
+                    JOIN {table_name} e ON e.chunk_id = c.id
+                    WHERE c.content_hash = ? AND c.id != ?
+                    ORDER BY c.id DESC LIMIT 1
+                    """,
+                    (content_hash, new_chunk_id),
+                )
+                if not rows:
+                    continue
+                prior_chunk_id = rows[0]["chunk_id"]
+                cache[cache_key] = prior_chunk_id
+
+            self._execute(
+                f"""
+                INSERT INTO {table_name} (chunk_id, embedder_id, embedding)
+                SELECT ?, embedder_id, embedding FROM {table_name}
+                WHERE chunk_id = ?
+                """,
+                (new_chunk_id, prior_chunk_id),
+            )
+            reused.add(embedder_id)
+
+        return reused
