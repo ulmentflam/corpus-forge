@@ -17,9 +17,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-openai = ["openai>=1.30"]
-hf     = ["datasets>=2.20"]
-tokens = ["tiktoken>=0.7"]
+openai  = ["openai>=1.30"]
+hf      = ["datasets>=2.20"]
+tokens  = ["tiktoken>=0.7"]
+sqlite  = ["sqlite-vec>=0.1"]
 
 [project.scripts]
 corpus-forge = "corpus_forge.cli:app"
