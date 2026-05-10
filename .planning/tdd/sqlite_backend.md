@@ -46,8 +46,8 @@ SQLite integration tests **do not require Docker** — sqlite3 ships with Python
 
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
-| B-01 | sqlite-vec optional dep + import-guarded loader | — | `pyproject.toml`, `corpus_forge/backends/sqlite.py` (helper) | low | pending | — | Add `[project.optional-dependencies] sqlite = ["sqlite-vec>=0.1"]`. Loader applies the extension via `sqlite_vec.load(conn)` after `enable_load_extension(True)`. Tests should mark sqlite-vec tests `pytest.mark.skipif(not SQLITE_VEC_AVAILABLE)` so the test suite still works when the extra is not installed. |
-| B-02 | SQLite schema files (001, 002, 003) | — | `corpus_forge/schema/sqlite/001_core.sql`, `002_chunk_content_hash.sql`, `003_sync.sql` | med | pending | — | Translations: `BIGSERIAL` → `INTEGER PRIMARY KEY AUTOINCREMENT`; `JSONB` → `TEXT` (with `json()` validator + `json_object()` for INSERT); `TIMESTAMPTZ` → `TEXT` (ISO-8601, UTC); `'{}'::jsonb` → `'{}'`; `vector(N)` → handled separately via embedding tables (see B-04). Foreign-key declarations must be present BUT SQLite requires `PRAGMA foreign_keys = ON` per connection (loader responsibility). All `IF NOT EXISTS` guards preserved for idempotency. |
+| B-01 | sqlite-vec optional dep + import-guarded loader | — | `pyproject.toml`, `corpus_forge/backends/sqlite.py` (helper) | low | claimed | tdd-tester | Add `[project.optional-dependencies] sqlite = ["sqlite-vec>=0.1"]`. Loader applies the extension via `sqlite_vec.load(conn)` after `enable_load_extension(True)`. Tests should mark sqlite-vec tests `pytest.mark.skipif(not SQLITE_VEC_AVAILABLE)` so the test suite still works when the extra is not installed. |
+| B-02 | SQLite schema files (001, 002, 003) | — | `corpus_forge/schema/sqlite/001_core.sql`, `002_chunk_content_hash.sql`, `003_sync.sql` | med | claimed | tdd-tester | Translations: `BIGSERIAL` → `INTEGER PRIMARY KEY AUTOINCREMENT`; `JSONB` → `TEXT` (with `json()` validator + `json_object()` for INSERT); `TIMESTAMPTZ` → `TEXT` (ISO-8601, UTC); `'{}'::jsonb` → `'{}'`; `vector(N)` → handled separately via embedding tables (see B-04). Foreign-key declarations must be present BUT SQLite requires `PRAGMA foreign_keys = ON` per connection (loader responsibility). All `IF NOT EXISTS` guards preserved for idempotency. |
 | B-03 | `SQLiteBackend` skeleton + `migrate()` | B-01, B-02 | `corpus_forge/backends/sqlite.py`, `tests/unit/test_sqlite_backend.py` | med | pending | — | `__init__(path: str, schema: str = "corpus")` (schema is unused on SQLite — keep for protocol symmetry). `_get_connection()` → `sqlite3.Connection` with `row_factory = sqlite3.Row`, `PRAGMA foreign_keys = ON`, `PRAGMA journal_mode = WAL` (concurrent reads + serialized writes). `migrate()` reads from `corpus_forge/schema/sqlite/` and applies in numeric order. Schema name is ignored (no SQLite schemas). |
 | B-04 | `register_embedder` + per-embedder vector table | B-03 | `corpus_forge/backends/sqlite.py`, `tests/unit/test_sqlite_backend.py` | med | pending | — | Mirror Postgres semantics: insert/update `embedders` row, then `CREATE VIRTUAL TABLE IF NOT EXISTS embeddings_<name> USING vec0(chunk_id INTEGER PRIMARY KEY, embedder_id INTEGER, embedding FLOAT[<dim>])` if sqlite-vec is loaded; otherwise fall back to plain `CREATE TABLE … embedding BLOB` and document that nearest-neighbour search is unavailable in fallback mode. Returns the embedder_id. |
 | B-05 | `upsert_document` + chunk reuse | B-04 | `corpus_forge/backends/sqlite.py`, `tests/unit/test_sqlite_backend.py` | high | pending | — | Same shape as Postgres `upsert_document` (`postgres.py:296`): SELECT-or-INSERT document, snapshot prior chunks before DELETE, INSERT new chunks, call `_copy_reusable_embeddings` per embedder. SQLite UPSERT syntax: `INSERT ... ON CONFLICT(...) DO UPDATE SET ...`. RETURNING is supported in 3.35+. |
@@ -200,3 +200,46 @@ All boxes above checked. The Wave 8 commit appends a Phase B summary to this fil
 - **`BEGIN IMMEDIATE` contention under heavy ingest**: low risk in single-host scope, but write a stress test (10 concurrent threads inserting revisions) in B-08 to confirm.
 - **Migration ordering between top-level Postgres files and `sqlite/` subdir**: avoid by dispatching strictly on `dialect` parameter; tested in B-15.
 - **JSONB → TEXT translation for `metadata` columns**: storing JSON as TEXT loses query-side `->` operators. Phase B does not query into metadata (only round-trips it as a blob), so this is fine — but document it in `docs/schema.md`.
+
+## Phase B planning notes
+
+_Owner: tdd-principal. Decided 2026-05-09._
+
+### Board choice
+- This file is the **standalone Phase B board**. The task table above is authoritative; `claimed_by` and `status` columns track worker state.
+- `code-status.md` / `test-status.md` / `qa-status.md` get appended Phase B entries with `B-NN` task ids. They cross-link back here. The Active Directory Sync `tasks.md` and `waves.md` files are frozen for that feature and not extended.
+
+### Wave-level grouping (collapsed from the plan's 8-wave DAG)
+
+The principal cannot in this runtime fan out workers in parallel; everything is dispatched serially via the orchestrator. Adjacent waves that touch the same file naturally serialize. The plan's 8 waves collapse into 6 execution waves:
+
+| Exec wave | Plan-wave source | Tasks | Rationale |
+|-----------|------------------|-------|-----------|
+| **W0** | Plan W0 | B-01, B-02 | Foundation. Dispatched as 2 sequential tester→coder→QA cycles. Disjoint files (`pyproject.toml`+helper for B-01, `schema/sqlite/*.sql` for B-02) so dispatch order is interchangeable; we go B-01 first because the loader contract feeds B-04. |
+| **W1** | Plan W1 | B-03 | Skeleton. `SQLiteBackend.__init__` + `migrate()`. Reads B-02's files, uses B-01's loader. |
+| **W2** | Plan W2..W4 (collapsed) | B-04, B-05, B-06, B-07, B-08, B-09, B-10, B-11, B-12 | All edit `sqlite.py`. Serialize through tester→coder→QA cycles in dep order: B-04 → {B-05, B-06, B-07} → B-08 → B-09 → {B-10, B-11, B-12}. Collapsed because runtime can't parallelize; the order is the same as plan-W2 → plan-W3 → plan-W4 read top-to-bottom. |
+| **W3** | Plan W5 | B-13, B-14 | Wiring + sync gate. Disjoint files (`ingest.py`+`embed.py` vs `daemon.py`+`config.py`); dispatch one after the other since runtime can't parallelize. |
+| **W4** | Plan W6, W7 | B-15, B-16, B-18 | Integration tests + dual-backend parametrize + smoke. All in `tests/`. Disjoint files; serialize. (Plan-W6 and plan-W7 collapse here because there's no parallelism win anyway.) |
+| **W5** | Plan W8 | B-17 | Docs. |
+
+### Q1..Q5 default acceptance log
+- **Q1 (lock granularity)**: global `BEGIN IMMEDIATE` per default. **Honored.** Will pause + report only if B-08 stress test (10 concurrent threads) shows pathological stalls (>30s).
+- **Q2 (schema layout)**: subdir `corpus_forge/schema/sqlite/`, dispatch on `dialect` parameter to migrate.py. **Honored.**
+- **Q3 (vector index)**: sqlite-vec virtual table when loaded; raw BLOB fallback. **Honored.**
+- **Q4 (`dsn` repurposed as path)**: keep field name; document. **Honored.**
+- **Q5 (`chunks_missing_embedding` SQL form)**: use `WHERE NOT EXISTS (...)` portable form. **Honored.**
+
+### Pause-and-report triggers
+- sqlite-vec wheel does not load on this aarch64-darwin host (B-01).
+- `BEGIN IMMEDIATE` doesn't actually serialize as expected under the threaded stress test (B-08).
+- A schema feature genuinely cannot translate (B-02 — e.g. a Postgres-only constraint with no SQLite equivalent that breaks an existing test).
+- Any change required to the Postgres suite to keep it green (out of scope per prompt).
+
+### Commit prefix
+- Tester commits: `[tdd-tester] B-NN: <summary>`.
+- Coder commits: `[tdd-coder] B-NN: <summary>`.
+- Principal bookkeeping: `[tdd-principal] phase-b/<task-or-wave>: <summary>`.
+- 1Password signing flake → retry once after a brief sleep, never `--no-gpg-sign`.
+
+### First dispatch
+**W0.B-01 — tdd-tester.** Writes red unit + import-smoke tests for the sqlite-vec optional dep + loader. Spec is in the parent session prompt; principal will mark `status: red` once tester's report comes back.
