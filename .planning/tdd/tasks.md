@@ -4,6 +4,10 @@ _Owner: tdd-principal. Workers: read freely. Edit only your claimed row's `statu
 
 Source plan: `/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Workspace/playground/corpus-forge/.planning/active_directory_sync.md`
 
+**Phase A/C status**: Active Directory Sync (Waves 0–13) — **complete**. 668 unit + 102 integration tests green; ≥85% coverage; ruff/format/pyrefly all clean.
+
+**Phase B (active, separate board)**: SQLite backend at `.planning/tdd/sqlite_backend.md` (task ids `B-01..B-18`). Worker entries cross-linked into `code-status.md`, `test-status.md`, `qa-status.md` Phase B sections. Do NOT add `B-*` rows to the table below.
+
 ## Project gates
 
 - lint: `uv run ruff check corpus_forge tests`

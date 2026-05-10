@@ -214,3 +214,19 @@ For INT-01, normal red→green TDD applies. The DSN-shape micro-test gives the r
 - 13b: 4 tdd-testers in parallel, one per E2E file (each with the testcontainers fixture from 13a, a fake embedder, and the acceptance details from tasks.md). Coders are spawned only for files whose first run is not green; QA always runs.
 - 13c: ad-hoc, only if QA reports residuals. Principal authors a sub-task list at that point.
 - 13d: principal-owned bookkeeping — no worker dispatch.
+
+---
+
+## Phase B — SQLite Backend (separate board)
+
+The Active Directory Sync waves above (0–13) are closed. **Phase B is tracked in its own file**: `.planning/tdd/sqlite_backend.md`. That file owns the B-01..B-18 task table and the wave plan; this file (`waves.md`) is frozen for Phase A/C.
+
+Phase B execution waves (summary — see `sqlite_backend.md` for full DAG and rationale):
+- **W0** (✅ DONE): B-01 (sqlite-vec loader), B-02 (schema files + dialect dispatch).
+- **W1** (in progress): B-03 (SQLiteBackend skeleton + migrate). 28/29 tests green; 1 tester-side assertion bug routed back.
+- **W2** (pending): B-04 → {B-05, B-06, B-07} → B-08 → B-09 → {B-10, B-11, B-12} — all serialized on `corpus_forge/backends/sqlite.py`.
+- **W3** (pending): B-13 + B-14 — wiring (ingest/embed) + sync gate.
+- **W4** (pending): B-15, B-16, B-18 — integration tests, dual-backend parametrize, smoke.
+- **W5** (pending): B-17 — docs.
+
+**QA policy (Phase B)**: skipped for B-01..B-03 (foundation/skeleton); resumes at B-05 per principal override (logged in `qa-status.md`).

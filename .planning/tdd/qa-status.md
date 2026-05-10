@@ -36,5 +36,10 @@ Record of QA verifications by tdd-qa.
 
 Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-18`.
 
+**Principal QA-skip override (B-01..B-03)**: Foundation/skeleton tasks (B-01 loader + pyproject extra; B-02 schema files + dialect dispatch; B-03 SQLiteBackend skeleton + migrate) are mechanical surface where coder-run gate matrix is sufficient. Adding an independent QA pass earns nothing the gates didn't already verify. **QA resumes at B-05** (the first high-risk task in the wave plan, per `sqlite_backend.md` planning notes).
+
 | task-id | verdict | notes |
 |---------|---------|-------|
+| B-01    | qa-skipped | Principal override — gate matrix sufficient. 21/21 tests, format/lint/pyrefly clean, 689 unit + 101/102 integration green. |
+| B-02    | qa-skipped | Principal override — gate matrix sufficient. 130/130 tests, 819 unit + 102/102 integration, all gates clean. |
+| B-03    | blocked | 28/29 tests green; one tester-side assertion bug (`test_no_postgres_backfill_sql_executed` matches "sha256" against an inline schema comment, not just executed SQL). Routed back to tdd-tester for narrowing. QA pending resolution. |
