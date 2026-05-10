@@ -835,10 +835,12 @@ def _insert_dataset_and_document(
     """Insert prerequisite dataset + document rows into the SQLite backend.
 
     Uses INSERT OR IGNORE for the dataset row to be idempotent across tests.
+    The dataset name is parametrized by ``dataset_id`` so that calls with
+    different ``dataset_id`` values don't collide on the UNIQUE(name) constraint.
     """
     backend._execute(
         "INSERT OR IGNORE INTO datasets (id, name, kind) VALUES (?, ?, ?)",
-        (dataset_id, "test_ds", "text"),
+        (dataset_id, f"test_ds_{dataset_id}", "text"),
     )
     backend._execute(
         "INSERT INTO documents"
@@ -863,7 +865,7 @@ class TestUpsertDocumentNewDocument:
         doc = _make_raw_document(
             source_uri="vault://new.md", content_hash="new_hash", text="# New Doc"
         )
-        chunks = ([("# New Doc", "Content")],)
+        chunks = [("# New Doc", "Content")]
 
         result = backend.upsert_document(1, doc, chunks)
         assert isinstance(result, int)
@@ -1341,22 +1343,39 @@ class TestCopyReusableEmbeddings:
         embedder_id = backend.register_embedder(FakeEmbedder(name="copy_embed", dimension=64))
         _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
 
-        # Insert a prior embedding row for chunk_id=5
-        backend._execute(
-            "INSERT INTO embeddings_copy_embed (chunk_id, embedder_id, embedding) VALUES (5, ?, ?)",
-            (embedder_id, b"\x00" * (64 * 4)),  # 64 floats as float32
-        )
-
-        # Insert a prior chunk with the matching content_hash
+        # Insert a prior chunk with the matching content_hash, capture its real
+        # auto-incremented id (do NOT assume a specific id — auto-increment is
+        # not stable across test runs / fixtures).
         match_hash = chunk_content_hash("matching body")
         backend._execute(
             "INSERT INTO chunks (document_id, chunk_index, text, content_hash)"
             " VALUES (1, 0, 'matching body', ?)",
             (match_hash,),
         )
+        prior_chunk_id = backend._execute(
+            "SELECT id FROM chunks WHERE content_hash = ?",
+            (match_hash,),
+        )[0]["id"]
+
+        # Insert the embedding row at the chunk's real id (not a hardcoded value).
+        backend._execute(
+            "INSERT INTO embeddings_copy_embed (chunk_id, embedder_id, embedding) VALUES (?, ?, ?)",
+            (prior_chunk_id, embedder_id, b"\x00" * (64 * 4)),  # 64 floats as float32
+        )
+
+        # Insert the new chunk that should reuse the prior embedding.
+        backend._execute(
+            "INSERT INTO chunks (document_id, chunk_index, text, content_hash)"
+            " VALUES (1, 1, 'matching body', ?)",
+            (match_hash,),
+        )
+        new_chunk_id = backend._execute(
+            "SELECT id FROM chunks WHERE chunk_index = 1 AND content_hash = ?",
+            (match_hash,),
+        )[0]["id"]
 
         result = backend._copy_reusable_embeddings(
-            new_chunk_id=10,
+            new_chunk_id=new_chunk_id,
             content_hash=match_hash,
             embedder_ids=[embedder_id],
             cache={},
@@ -1364,13 +1383,13 @@ class TestCopyReusableEmbeddings:
 
         assert embedder_id in result, f"Expected {embedder_id} in reused set, got {result}"
 
-        # Verify the new row was inserted
+        # Verify the new row was inserted at the new chunk id.
         new_rows = backend._execute(
             "SELECT chunk_id, embedder_id FROM embeddings_copy_embed WHERE chunk_id = ?",
-            (10,),
+            (new_chunk_id,),
         )
         assert len(new_rows) == 1, (
-            f"Expected 1 new embedding row for chunk_id=10, got {len(new_rows)}"
+            f"Expected 1 new embedding row for chunk_id={new_chunk_id}, got {len(new_rows)}"
         )
         assert new_rows[0]["embedder_id"] == embedder_id
 
@@ -1480,7 +1499,12 @@ class TestCopyReusableEmbeddings:
         """Multiple new chunks with the same content_hash all reuse the same prior chunk."""
         backend = _migrated_backend(tmp_path / "corpus.db")
         embedder_id = backend.register_embedder(FakeEmbedder(name="multi_reuse", dimension=32))
-        _insert_dataset_and_document(backend, dataset_id=1, doc_id=1)
+        # Use a separate document id from the doc that upsert_document will create,
+        # so the prior chunk isn't deleted by upsert_document's
+        # snapshot-prior-chunks-then-DELETE pattern.
+        _insert_dataset_and_document(
+            backend, dataset_id=1, doc_id=1, source_uri="vault://prior_doc.md"
+        )
 
         match_hash = chunk_content_hash("shared body")
         backend._execute(
@@ -1488,10 +1512,14 @@ class TestCopyReusableEmbeddings:
             " VALUES (1, 0, 'shared body', ?)",
             (match_hash,),
         )
+        prior_chunk_id = backend._execute(
+            "SELECT id FROM chunks WHERE content_hash = ?",
+            (match_hash,),
+        )[0]["id"]
         backend._execute(
             "INSERT INTO embeddings_multi_reuse (chunk_id, embedder_id, embedding)"
-            " VALUES (1, ?, ?)",
-            (embedder_id, b"\x00" * (32 * 4)),
+            " VALUES (?, ?, ?)",
+            (prior_chunk_id, embedder_id, b"\x00" * (32 * 4)),
         )
 
         doc = _make_raw_document(
@@ -1501,9 +1529,12 @@ class TestCopyReusableEmbeddings:
 
         backend.upsert_document(1, doc, chunks, embedder_ids=[embedder_id])
 
-        # Each new chunk should have an embedding row
+        # The 3 new chunks should each get a reused embedding row, in addition
+        # to the prior embedding row. Filter by chunk_id != prior_chunk_id rather
+        # than by a hardcoded id range (auto-increment ids are not stable).
         new_rows = backend._execute(
-            "SELECT chunk_id FROM embeddings_multi_reuse WHERE chunk_id >= 100 ORDER BY chunk_id"
+            "SELECT chunk_id FROM embeddings_multi_reuse WHERE chunk_id != ? ORDER BY chunk_id",
+            (prior_chunk_id,),
         )
         assert len(new_rows) == 3, f"Expected 3 new embedding rows, got {len(new_rows)}"
 
@@ -1595,7 +1626,7 @@ class TestUpsertDocumentSqliteDialect:
 
         # Only one document row should exist
         doc_rows = backend._execute(
-            "SELECT COUNT(*) FROM documents WHERE source_uri = ?",
+            "SELECT COUNT(*) AS count FROM documents WHERE source_uri = ?",
             ("vault://dupe.md",),
         )
         assert doc_rows[0]["count"] == 1, (
@@ -1629,7 +1660,7 @@ class TestUpsertDocumentState:
         doc_id = doc_rows[0]["id"]
 
         chunk_rows = backend._execute(
-            "SELECT COUNT(*) FROM chunks WHERE document_id = ?",
+            "SELECT COUNT(*) AS count FROM chunks WHERE document_id = ?",
             (doc_id,),
         )
         assert chunk_rows[0]["count"] == 1, (
@@ -1686,7 +1717,7 @@ class TestUpsertDocumentState:
         doc_id = doc_rows[0]["id"]
 
         chunk_rows = backend._execute(
-            "SELECT COUNT(*) FROM chunks WHERE document_id = ?",
+            "SELECT COUNT(*) AS count FROM chunks WHERE document_id = ?",
             (doc_id,),
         )
         assert chunk_rows[0]["count"] == 3
@@ -1715,7 +1746,7 @@ class TestUpsertDocumentFailurePaths:
         doc_id = doc_rows[0]["id"]
 
         chunk_rows = backend._execute(
-            "SELECT COUNT(*) FROM chunks WHERE document_id = ?",
+            "SELECT COUNT(*) AS count FROM chunks WHERE document_id = ?",
             (doc_id,),
         )
         assert chunk_rows[0]["count"] == 0, (
@@ -1741,7 +1772,7 @@ class TestUpsertDocumentFailurePaths:
         doc_id = doc_rows[0]["id"]
 
         chunk_rows = backend._execute(
-            "SELECT COUNT(*) FROM chunks WHERE document_id = ?",
+            "SELECT COUNT(*) AS count FROM chunks WHERE document_id = ?",
             (doc_id,),
         )
         assert chunk_rows[0]["count"] == 1
@@ -1766,7 +1797,7 @@ class TestUpsertDocumentFailurePaths:
         doc_id = doc_rows[0]["id"]
 
         chunk_rows = backend._execute(
-            "SELECT COUNT(*) FROM chunks WHERE document_id = ?",
+            "SELECT COUNT(*) AS count FROM chunks WHERE document_id = ?",
             (doc_id,),
         )
         assert chunk_rows[0]["count"] == 100, f"Expected 100 chunks, got {chunk_rows[0]['count']}"
@@ -1791,11 +1822,11 @@ class TestUpsertDocumentFailurePaths:
 
         # Both should exist
         ds1_rows = backend._execute(
-            "SELECT COUNT(*) FROM documents WHERE dataset_id = 1 AND source_uri = ?",
+            "SELECT COUNT(*) AS count FROM documents WHERE dataset_id = 1 AND source_uri = ?",
             ("vault://shared.md",),
         )
         ds2_rows = backend._execute(
-            "SELECT COUNT(*) FROM documents WHERE dataset_id = 2 AND source_uri = ?",
+            "SELECT COUNT(*) AS count FROM documents WHERE dataset_id = 2 AND source_uri = ?",
             ("vault://shared.md",),
         )
         assert ds1_rows[0]["count"] == 1

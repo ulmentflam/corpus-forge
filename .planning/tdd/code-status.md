@@ -140,8 +140,8 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 | B-01 | green | sqlite-vec loader + pyproject sqlite extra |
 | B-02 | green | SQLite migration files 001/002/003 + dialect dispatch |
 | B-03 | green | 29/29 tests green after tester narrowed the backfill-gating assertion to ignore inline schema comments |
-| B-04 | green | register_embedder: 18/18 B-04 tests pass; SELECT-or-INSERT, UPDATE-on-collision, per-embedder vec0/BLOB table |
-| B-05 | red | 23/32 B-05 tests pass. 9 failures are tester-side bugs (see sqlite_backend.md B-05 row). Implementation complete: upsert_document with ON CONFLICT, chunk reuse via content_hash, _copy_reusable_embeddings. Gates: format ✓, lint ✓, typecheck ✓. |
+| B-04 | green | 18/18 B-04 tests pass. Follow-up at c33152a fixed 3 real bugs: name sanitization (`-` → `_`), safe JSON via json.dumps, FK on embedder_id + created_at on fallback BLOB table. |
+| B-05 | green | 32/32 tests green. Implementation untouched; 9 tester-side bugs fixed by lane A solo tester-fix pass: COUNT(*) aliased as `count`, chunks inserted before embeddings (capture real id), filter by `!= prior_id` not hardcoded ranges, dataset name parametrized by id, chunk arg shape corrected. |
 | B-06 | green | 21/21 tests green. `upsert_conversation` mirrors postgres.py semantics: SELECT-or-UPSERT keyed on (dataset_id, source_uri), replace-messages on hash mismatch, per-message chunk lists. sqlite.py grew from 466 → 722 LOC. All gates clean (ruff, format, pyrefly). |
 
 ## B-03
