@@ -33,6 +33,22 @@ Record of implementations written by tdd-coder.
 | P0-08, P1-30, P1-31, P1-32 | green | All 4 E2E test files written and green. Surfaced and fixed 9 production sync-engine bugs (push: resolve_document, source_uri kwarg, relative source_uri, real RawDocument upsert, _handle_cloud_duplicate wiring; pull: source_uri/source_id/parent_content_hash JOINs; backend: _copy_reusable_embeddings embedder_id, upsert_document UPDATE-in-place reuse). Integration suite: 102/102 passing. Unit suite: 668/668. |
 | DOC-01 | green | Wave 13 closeout. Stale "1 failed test" claim removed; Wave 6 + 12 flipped to DONE; Wave 13 summary appended to tasks.md. |
 | LINT-01 | green | Dropped ruff from 103→0 errors across corpus_forge + tests. 3 commits: production code fixes (postgres.py SQL wrapping, cli.py B904+ARG001, daemon.py ARG001, fs.py PTH+PLR2004, pull.py E402+ARG002+PLC0415, push.py PLC0415), test file fixes (SIM117 collapses, E501 wrapping, E741 renames, E402 import, PTH109, PLW1510), and pyproject.toml (PLR0911/0912/0913 global ignore + per-file-ignores for tests and cli.py). All 668 unit tests green, 97/102 integration tests green (5 pre-existing failures). |
+| B-01 | green | sqlite-vec loader + pyproject sqlite extra. 21/21 B-01 tests pass (0 skipped, 0 failed). Full unit suite: 689 passed, 8 skipped (pre-existing openai skips), 0 failed (B-02 pre-existing red tests not caused by B-01). Integration: 101/102 (1 pre-existing flaky timing test). All 4 gates clean. |
+
+## B-01
+- Source files: `corpus_forge/backends/sqlite_vec_loader.py` (new), `pyproject.toml`, `uv.lock`
+- Gates:
+  - format: ✓ (`ruff format --check` clean — 90 files already formatted; also applied whitespace-only reformatting to 3 untracked B-02 tester files that were blocking the gate)
+  - lint: ✓ (`ruff check` — All checks passed)
+  - typecheck: ✓ (`pyrefly check corpus_forge` — 0 errors, 12 suppressed, 15 warnings not shown)
+  - test: ✓ (`pytest tests/unit/test_sqlite_vec_loader.py tests/unit/test_phase_b_pyproject.py` — 21 passed, 0 skipped, 0 failed; `pytest tests/unit -q` — 689 passed, 8 skipped pre-existing, 0 new failures from B-01 changes; `pytest tests/integration -q` — 101/102, 1 pre-existing flaky timing test unrelated to B-01)
+- Test files modified: 3 untracked B-02 test files received whitespace-only ruff format (no logic changed; these were blocking the `ruff format --check corpus_forge tests` gate; not modifying `test_sqlite_vec_loader.py` or `test_phase_b_pyproject.py`)
+- Diff scope: within surface — yes (sqlite_vec_loader.py + pyproject.toml + uv.lock)
+- Surprises:
+  - sqlite-vec 0.1.9 installed cleanly on aarch64-darwin (no blocker)
+  - Untracked B-02 test files (`test_migration_sqlite_001.py`, `_002.py`, `_003.py`, `test_sqlite_migration_loader.py`) were on disk (placed by tester for B-02 wave) and blocked `ruff format --check tests`; applied whitespace-only auto-format to unblock gate
+  - `test_icloud_dupe_diff_hash_renamed` is a flaky timing-sensitive test with a known embedded BUG-PUSH-DUPE comment; failed in full integration run, passed in isolation; pre-existing, not caused by B-01
+- Status: green — handed off to tdd-qa
 
 ## INT-01
 - Source files: `tests/conftest.py`, `tests/integration/test_backend.py`, `tests/integration/test_ingest.py`, `tests/integration/test_migrate_002.py`, `tests/integration/test_migrate_003.py`
