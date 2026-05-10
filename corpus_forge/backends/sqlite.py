@@ -269,8 +269,14 @@ class SQLiteBackend:
         Returns:
             The integer primary-key ``id`` of the ``embedders`` row.
         """
-        table_name = f"embeddings_{embedder.name}"
-        config_json = f'{{"provider": "{embedder.provider}", "model_id": "{embedder.model_id}"}}'
+        # Sanitize the name so it forms a valid SQL identifier (mirror PostgresBackend
+        # which replaces "-" with "_"). Without this, hyphenated embedder names like
+        # "openai-3-large" produce invalid CREATE TABLE syntax and may risk injection.
+        safe_name = embedder.name.replace("-", "_")
+        table_name = f"embeddings_{safe_name}"
+        # Use json.dumps for safe serialization — manual f-string interpolation breaks
+        # for provider/model_id values containing quotes, backslashes, or non-ASCII.
+        config_json = json.dumps({"provider": embedder.provider, "model_id": embedder.model_id})
 
         # --- Check for existing row by name (UNIQUE constraint) ---
         existing = self._execute(
@@ -339,12 +345,18 @@ class SQLiteBackend:
             )
         else:
             # Fallback plain table — write-only embedding store (no ANN search).
+            # Mirrors PostgresBackend._create_embedder_table: FK on embedder_id
+            # for referential integrity, plus created_at for ingest-time tracking.
+            # (vec0 virtual tables can't carry FKs / DEFAULT columns, so this only
+            # applies to the plain-table fallback.)
             self._execute(
                 f"CREATE TABLE IF NOT EXISTS {table_name}"
                 f" (chunk_id INTEGER PRIMARY KEY,"
                 f" embedder_id INTEGER NOT NULL,"
                 f" embedding BLOB NOT NULL,"
-                f" FOREIGN KEY (chunk_id) REFERENCES chunks(id) ON DELETE CASCADE)"
+                f" created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                f" FOREIGN KEY (chunk_id) REFERENCES chunks(id) ON DELETE CASCADE,"
+                f" FOREIGN KEY (embedder_id) REFERENCES embedders(id))"
             )
 
         return embedder_id
