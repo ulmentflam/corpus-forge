@@ -224,3 +224,115 @@ class SQLiteBackend:
         """
         schema_dir = Path(__file__).parent.parent / "schema"
         _migrate_module.apply_migrations(self, schema_dir=schema_dir, dialect="sqlite")  # pyrefly: ignore[bad-argument-type]  # migrate.py annotates backend as PostgresBackend; SQLiteBackend is structurally compatible
+
+    def register_embedder(self, embedder) -> int:  # pyrefly: ignore[missing-param-type]
+        """Register an embedder and ensure its per-embedder vector table exists.
+
+        Mirrors ``PostgresBackend.register_embedder`` semantics:
+
+        - If an ``embedders`` row with ``name == embedder.name`` already
+          exists, UPDATE it in-place (provider, model_id, dimension,
+          normalized, distance, active, table_name, config) and return its
+          existing ``id``.
+        - Otherwise INSERT a new row and return the new ``id``.
+        - In both cases, create the per-embedder embedding table
+          (idempotent via ``IF NOT EXISTS``):
+
+          * With sqlite-vec available:
+            ``CREATE VIRTUAL TABLE IF NOT EXISTS {table_name}
+              USING vec0(chunk_id INTEGER PRIMARY KEY, embedder_id INTEGER,
+                         embedding FLOAT[{dim}])``
+          * Without sqlite-vec (fallback):
+            ``CREATE TABLE IF NOT EXISTS {table_name}
+              (chunk_id INTEGER PRIMARY KEY, embedder_id INTEGER NOT NULL,
+               embedding BLOB NOT NULL,
+               FOREIGN KEY (chunk_id) REFERENCES chunks(id) ON DELETE CASCADE)``
+
+        Args:
+            embedder: Duck-typed against the ``Embedder`` protocol.  Required
+                attributes: ``name``, ``provider``, ``model_id``,
+                ``dimension``, ``normalized``, ``distance``.  Optional:
+                ``active`` (defaults to ``True`` via ``getattr``).
+
+        Returns:
+            The integer primary-key ``id`` of the ``embedders`` row.
+        """
+        table_name = f"embeddings_{embedder.name}"
+        config_json = f'{{"provider": "{embedder.provider}", "model_id": "{embedder.model_id}"}}'
+
+        # --- Check for existing row by name (UNIQUE constraint) ---
+        existing = self._execute(
+            "SELECT id FROM embedders WHERE name = ?",
+            (embedder.name,),
+        )
+
+        if existing:
+            embedder_id: int = existing[0]["id"]
+            self._execute(
+                """
+                UPDATE embedders
+                SET provider = ?, model_id = ?, dimension = ?,
+                    normalized = ?, distance = ?, active = ?,
+                    table_name = ?, config = ?
+                WHERE id = ?
+                """,
+                (
+                    embedder.provider,
+                    embedder.model_id,
+                    embedder.dimension,
+                    int(embedder.normalized),
+                    embedder.distance,
+                    int(getattr(embedder, "active", True)),
+                    table_name,
+                    config_json,
+                    embedder_id,
+                ),
+            )
+        else:
+            self._execute(
+                """
+                INSERT INTO embedders
+                  (name, provider, model_id, dimension, normalized, distance,
+                   active, table_name, config)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    embedder.name,
+                    embedder.provider,
+                    embedder.model_id,
+                    embedder.dimension,
+                    int(embedder.normalized),
+                    embedder.distance,
+                    int(getattr(embedder, "active", True)),
+                    table_name,
+                    config_json,
+                ),
+            )
+            # SQLite INSERT without RETURNING returns []; fetch id separately.
+            id_row = self._execute(
+                "SELECT id FROM embedders WHERE name = ?",
+                (embedder.name,),
+            )
+            embedder_id = id_row[0]["id"]
+
+        # --- Create the per-embedder embedding table (idempotent) ---
+        dim = embedder.dimension
+        if SQLITE_VEC_AVAILABLE:
+            # sqlite-vec virtual table — supports nearest-neighbour search.
+            self._execute(
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS {table_name}"
+                f" USING vec0(chunk_id INTEGER PRIMARY KEY,"
+                f" embedder_id INTEGER,"
+                f" embedding FLOAT[{dim}])"
+            )
+        else:
+            # Fallback plain table — write-only embedding store (no ANN search).
+            self._execute(
+                f"CREATE TABLE IF NOT EXISTS {table_name}"
+                f" (chunk_id INTEGER PRIMARY KEY,"
+                f" embedder_id INTEGER NOT NULL,"
+                f" embedding BLOB NOT NULL,"
+                f" FOREIGN KEY (chunk_id) REFERENCES chunks(id) ON DELETE CASCADE)"
+            )
+
+        return embedder_id

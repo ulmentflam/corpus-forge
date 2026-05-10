@@ -140,6 +140,7 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 | B-01 | green | sqlite-vec loader + pyproject sqlite extra |
 | B-02 | green | SQLite migration files 001/002/003 + dialect dispatch |
 | B-03 | green | 29/29 tests green after tester narrowed the backfill-gating assertion to ignore inline schema comments |
+| B-04 | green | register_embedder: 18/18 B-04 tests pass; SELECT-or-INSERT, UPDATE-on-collision, per-embedder vec0/BLOB table |
 
 ## B-03
 - Source files: `corpus_forge/backends/sqlite.py` (new, 231 LOC)
@@ -158,3 +159,22 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
   5. `AUTOINCREMENT` — causes SQLite to create an internal `sqlite_sequence` table in `sqlite_master`, which conflicts with the B-03 test asserting exactly 12 user tables. Stripped `AUTOINCREMENT` keyword in `_execute`; semantically equivalent for corpus-forge (no strict-monotonic ID guarantee needed).
 - Surprises / conflicts:
 - Status: green — 29/29 tests pass after tester narrowed the backfill-gating assertion to ignore inline schema comments (strip `--` comments before sha256/encode check in `test_no_postgres_backfill_sql_executed`).
+
+## B-04
+- Source files: `corpus_forge/backends/sqlite.py` (additive — `register_embedder` method, ~115 LOC)
+- Gates:
+  - format: ✓ (`ruff format --check corpus_forge/backends/sqlite.py` — already formatted; test file format failure in `tests/unit/test_sqlite_backend.py` is pre-existing from B-05 tester's commit `2671b4a`, not caused by B-04)
+  - lint: ✓ (`ruff check corpus_forge/backends/sqlite.py` — All checks passed; lint failures in test file are pre-existing from B-05 tester's commit)
+  - typecheck: ✓ (`pyrefly check corpus_forge` — 0 errors, 14 suppressed, 15 warnings not shown)
+  - test: ✓ (B-04: `pytest tests/unit/test_sqlite_backend.py::TestRegisterEmbedder -v` — 18 passed, 0 failed; unit suite: `pytest tests/unit -q` — 867 passed, 8 skipped, 32 failed [all 32 are pre-existing B-05 red tests from commit 2671b4a]; integration: 102/102)
+- Test files modified: NONE (verified — `tests/unit/test_sqlite_backend.py` untouched by B-04)
+- Diff scope: within surface — yes (`corpus_forge/backends/sqlite.py` only, additive)
+- Plan ambiguities resolved:
+  1. `SQLITE_VEC_AVAILABLE` lookup at call time — the monkeypatch in the fallback tests sets `sqlite_mod.SQLITE_VEC_AVAILABLE = False`; Python's global lookup finds the patched value correctly since `SQLITE_VEC_AVAILABLE` is referenced as a module-level global in the function body.
+  2. INSERT + SELECT for id — SQLite 3.35+ supports RETURNING but the existing `_execute` helper is simpler to use without it; after INSERT, a second `SELECT id FROM embedders WHERE name = ?` retrieves the id. Race-condition safe because the `name` column has a UNIQUE constraint.
+  3. `normalized` and `active` stored as `int()` to match SQLite's boolean-as-INTEGER schema (001_core.sql documents `INTEGER NOT NULL DEFAULT 1`).
+  4. Pre-existing lint/format failures in test file: 55 ruff errors (E402, E501) and 1 ruff format reformat — all introduced by B-05 tester's commit `2671b4a`, not B-04. Documented here; gate verdict for B-04 source file is clean.
+- Surprises:
+  - B-05 tester committed test file with lint/format violations before B-04 coder ran gates; pre-existing, confirmed by git stash test.
+  - sqlite-vec IS available in this environment (SQLITE_VEC_AVAILABLE=True), so `test_vec0_virtual_table_has_required_columns` ran (not skipped) and passed.
+- Status: green — handed off to tdd-qa
