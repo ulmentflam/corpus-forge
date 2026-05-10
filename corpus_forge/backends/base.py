@@ -19,8 +19,14 @@ class StorageBackend(Protocol):
     def register_embedder(self, embedder: "Embedder") -> int: ...
 
     def upsert_document(
-        self, dataset_id: int, doc: "RawDocument", chunks: list[tuple[str | None, str]]
+        self,
+        dataset_id: int,
+        doc: "RawDocument",
+        chunks: list[tuple[str | None, str]],
+        embedder_ids: "list[int] | None" = None,
     ) -> int: ...
+
+    def find_document(self, dataset_id: int, source_uri: str) -> "dict | None": ...
 
     def upsert_conversation(
         self,

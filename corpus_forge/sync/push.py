@@ -63,7 +63,7 @@ class PushPipeline:
         self._echo_suppressor = echo_suppressor
         self._host_id = host_id
         self._mtime_cache: dict[str, float] = {}
-        self._observer: observers.Observer | None = None
+        self._observer: observers.Observer | None = None  # pyrefly: ignore[unsupported-operation]  # watchdog's Observer is a callable factory; runtime annotation works
         self._handler: _DebouncedHandler | None = None
         # Set by start(); None when pipeline is used without watchdog (direct calls)
         self._source_root: Path | None = None

@@ -89,25 +89,17 @@ def ingest_one(
         if isinstance(raw, RawDocument):
             # Process document
             chunk_data = _process_document(raw, chunker)
-            chunk_ids = backend.upsert_document(
-                dataset_id, raw, chunk_data, embedder_ids=embedder_ids
-            )
+            backend.upsert_document(dataset_id, raw, chunk_data, embedder_ids=embedder_ids)
         else:  # RawConversation
             # Process conversation
             chunked_messages = _process_conversation(raw, chunker)
-            chunk_ids = backend.upsert_conversation(dataset_id, raw, chunked_messages)
+            backend.upsert_conversation(dataset_id, raw, chunked_messages)
 
         # Generate embeddings for each active embedder
         # This loop remains to handle chunks not covered by bulk copy
         for embedder in embedders:
             embedder_id = backend.register_embedder(embedder)
-            _write_embeddings_for_chunks(
-                backend,
-                embedder_id,
-                chunk_ids,
-                embedder,
-                raw.text if isinstance(raw, RawDocument) else None,
-            )
+            _write_embeddings_for_chunks(backend, embedder_id, embedder)
 
 
 def _process_document(doc: RawDocument, chunker: Chunker) -> list[tuple[str | None, str]]:
@@ -164,9 +156,7 @@ def _process_conversation(
 def _write_embeddings_for_chunks(
     backend: StorageBackend,
     embedder_id: int,
-    _chunk_ids: list[int],
     embedder: Embedder,
-    _fallback_text: str | None,
 ) -> None:
     """Write embeddings for chunks."""
     # Get texts for chunks that need embeddings
@@ -241,7 +231,7 @@ def ingest_once(config: Config) -> None:
 def _get_or_create_dataset(backend: StorageBackend, dataset_config) -> int:
     """Get or create dataset record, returning dataset ID."""
     # Check if dataset exists
-    existing = backend._execute(
+    existing = backend._execute(  # pyrefly: ignore[missing-attribute]  # _execute is PostgresBackend-specific; helper functions are internal
         "SELECT id FROM corpus.datasets WHERE name = %s", (dataset_config.name,)
     )
 
@@ -249,7 +239,7 @@ def _get_or_create_dataset(backend: StorageBackend, dataset_config) -> int:
         return existing[0]["id"]
 
     # Create new dataset
-    result = backend._execute(
+    result = backend._execute(  # pyrefly: ignore[missing-attribute]  # _execute is PostgresBackend-specific; helper functions are internal
         """
         INSERT INTO corpus.datasets (name, kind, description)
         VALUES (%s, %s, %s)

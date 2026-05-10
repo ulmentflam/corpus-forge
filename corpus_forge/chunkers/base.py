@@ -11,7 +11,7 @@ class TextChunk:
     heading: str | None = None
     role: str | None = None
     token_count: int | None = None
-    metadata: dict = None
+    metadata: dict | None = None
 
     def __post_init__(self):
         if self.metadata is None:
@@ -72,7 +72,7 @@ class Chunker:
 
         return chunks
 
-    def _find_split_point(self, text: str, _start: int, max_end: int) -> int | None:
+    def _find_split_point(self, text: str, start: int, max_end: int) -> int | None:  # noqa: ARG002 — start unused in default impl; subclasses use it
         """
         Find the best split point between start and max_end.
         Subclasses should override this to implement their splitting logic.
@@ -145,11 +145,11 @@ class ConversationChunker(Chunker):
         if mode not in ("per_message", "sliding_window"):
             raise ValueError("Mode must be 'per_message' or 'sliding_window'")
 
-    def _find_split_point(self, _text: str, _start: int, _max_end: int) -> int | None:
+    def _find_split_point(self, text: str, start: int, max_end: int) -> int | None:  # noqa: ARG002 — Conversation overrides chunk() entirely; this is unreachable
         """Not used — ConversationChunker overrides chunk() entirely."""
         return None
 
-    def chunk(self, texts: list[str]) -> list[TextChunk]:
+    def chunk(self, texts: list[str]) -> list[TextChunk]:  # type: ignore[bad-override-param-name]  # intentional: chat input is list[str]
         """
         Override base chunk method to handle list of texts (messages).
         """

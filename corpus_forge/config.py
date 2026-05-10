@@ -37,7 +37,7 @@ class BackendConfig(BaseModel):
 
     kind: str = Field(default="postgres", pattern="^(postgres|sqlite)$")
     dsn: EnvInterpolatedStr
-    schema: str = Field(default="corpus")
+    schema: str = Field(default="corpus")  # pyrefly: ignore[bad-override-mutable-attribute]  # Pydantic v2's BaseModel.schema() is deprecated; field shadow is intentional
 
 
 class DaemonConfig(BaseModel):

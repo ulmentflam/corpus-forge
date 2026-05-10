@@ -6,6 +6,7 @@ from collections.abc import Sequence
 import numpy as np
 
 try:
+    # pyrefly: ignore[missing-import]  # optional dep, install via [openai] extra
     from openai import OpenAI
 
     OPENAI_AVAILABLE = True

@@ -91,9 +91,9 @@ def is_icloud_placeholder(path: Path) -> bool:
 
 def is_dataless(path: Path) -> bool:
     try:
-        os.getxattr(str(path), b"com.apple.fileprovider.materialized")
+        os.getxattr(str(path), b"com.apple.fileprovider.materialized")  # pyrefly: ignore[missing-attribute]  # macOS/Linux only; AttributeError caught below
         return True
-    except OSError:
+    except (OSError, AttributeError):
         return False
     except Exception:
         return False
