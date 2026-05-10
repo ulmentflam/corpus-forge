@@ -142,6 +142,7 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 | B-03 | green | 29/29 tests green after tester narrowed the backfill-gating assertion to ignore inline schema comments |
 | B-04 | green | register_embedder: 18/18 B-04 tests pass; SELECT-or-INSERT, UPDATE-on-collision, per-embedder vec0/BLOB table |
 | B-05 | red | 23/32 B-05 tests pass. 9 failures are tester-side bugs (see sqlite_backend.md B-05 row). Implementation complete: upsert_document with ON CONFLICT, chunk reuse via content_hash, _copy_reusable_embeddings. Gates: format ✓, lint ✓, typecheck ✓. |
+| B-06 | green | 21/21 tests green. `upsert_conversation` mirrors postgres.py semantics: SELECT-or-UPSERT keyed on (dataset_id, source_uri), replace-messages on hash mismatch, per-message chunk lists. sqlite.py grew from 466 → 722 LOC. All gates clean (ruff, format, pyrefly). |
 
 ## B-03
 - Source files: `corpus_forge/backends/sqlite.py` (new, 231 LOC)
