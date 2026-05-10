@@ -40,6 +40,7 @@ Record of test suites written by tdd-tester.
 
 | B-02    | red    | 130 tests written across 4 files; 26 failed, 92 errors (fixture errors from missing SQL files), 12 passed. Red for correct reasons: SQL files don't exist; migrate.py lacks dialect param. |
 | B-03-fix | green | Narrowed `test_no_postgres_backfill_sql_executed` assertion (Option 1: strip `--` comments). 29/29 tests pass. |
+| B-04    | red    | 18 tests written for register_embedder; all failing with AttributeError (method not yet implemented). 848 existing tests still pass. |
 
 ## Phase B — SQLite Backend
 
@@ -114,6 +115,47 @@ Record of test suites written by tdd-tester.
   - `test_migration_sqlite_002.py::TestDDLContent::test_statements_count` and `test_migration_sqlite_003.py::TestIdempotencyAndSafety::test_statements_count`: The Postgres 002 uses `corpus.chunks` (schema-qualified). The SQLite version must use bare `chunks`. Tests assert unqualified names — no ambiguity, correct per Q2 decision.
   - `test_migration_sqlite_003.py::TestSQLiteDialect::test_no_bigint_for_pk`: asserting INTEGER PRIMARY KEY AUTOINCREMENT rather than BIGINT. The plan says "BIGSERIAL → INTEGER PRIMARY KEY AUTOINCREMENT" but the non-PK integer columns (revision_number, parent_revision_id) could use BIGINT (SQLite maps it to INTEGER affinity). Tests allow BIGINT for non-PK integer columns.
   - `apply_migrations` postgres dispatch currently uses a backfill pass gated on `"002_chunk_content_hash" in applied`. After the coder adds the dialect param, the backfill pass is Postgres-only and must not run for SQLite. Not tested here (that's B-03 territory); flagged for coder awareness.
+- Status: red — handed off to tdd-coder
+
+## B-04 — `register_embedder` + per-embedder vector table
+- Test files: `tests/unit/test_sqlite_backend.py` (appended `TestRegisterEmbedder` class, lines ~490–800)
+- Run command: `PYTHONPATH=. uv run pytest tests/unit/test_sqlite_backend.py -v --no-header 2>&1 | tail -40`
+- Edge case checklist:
+  - [x] happy path — register fresh embedder → int id returned; row in embedders table; per-embedder table created
+  - [x] boundaries — register with ':memory:' backend; register 4 distinct embedders each get own table and row
+  - [x] type/format — return type is `int` (not str, not None); dimension and model_id stored correctly
+  - [x] state — idempotency: same embedder registered twice → same id, single row, no error; UPDATE-on-collision: same name + different dimension/model_id updates existing row
+  - [ ] N/A — concurrency (single-connection per _execute call; concurrent safety tested in B-08)
+  - [x] failure paths — fallback path: monkeypatched SQLITE_VEC_AVAILABLE=False → plain BLOB table created with correct columns and BLOB type for embedding column
+  - [ ] N/A — locale/time (no timestamp assertions in this task; timestamps use SQLite defaults)
+  - [x] production-realistic — FakeEmbedder mirrors full Embedder protocol (name, provider, model_id, dimension, normalized, distance, active); embedder names matching real naming patterns (alpha_embedder, bert_base, etc.)
+  - [x] regression hooks — `test_register_twice_single_row` pins the UNIQUE constraint + INSERT-or-UPDATE contract so a naive double-INSERT would be caught
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_sqlite_backend.py::TestRegisterEmbedder::test_register_returns_integer_id
+  FAILED tests/unit/test_sqlite_backend.py::TestRegisterEmbedder::test_register_inserts_embedders_row
+  FAILED tests/unit/test_sqlite_backend.py::TestRegisterEmbedder::test_register_sets_table_name_column
+  FAILED tests/unit/test_sqlite_backend.py::TestRegisterEmbedder::test_register_creates_per_embedder_table
+  FAILED tests/unit/test_sqlite_backend.py::TestRegisterEmbedder::test_register_in_memory_returns_id
+  FAILED tests/unit/test_sqlite_backend.py::TestRegisterEmbedder::test_register_twice_same_id
+  FAILED tests/unit/test_sqlite_backend.py::TestRegisterEmbedder::test_register_twice_single_row
+  FAILED tests/unit/test_sqlite_backend.py::TestRegisterEmbedder::test_register_twice_no_duplicate_table
+  FAILED tests/unit/test_sqlite_backend.py::TestRegisterEmbedder::test_update_on_same_name_different_dimension
+  FAILED tests/unit/test_sqlite_backend.py::TestRegisterEmbedder::test_update_on_same_name_different_model_id
+  FAILED tests/unit/test_sqlite_backend.py::TestRegisterEmbedder::test_two_distinct_embedders_get_distinct_ids
+  FAILED tests/unit/test_sqlite_backend.py::TestRegisterEmbedder::test_vec0_virtual_table_has_required_columns
+  FAILED tests/unit/test_sqlite_backend.py::TestRegisterEmbedder::test_fallback_blob_table_created_when_vec_unavailable
+  FAILED tests/unit/test_sqlite_backend.py::TestRegisterEmbedder::test_fallback_embedding_column_is_blob
+  FAILED tests/unit/test_sqlite_backend.py::TestRegisterEmbedder::test_returned_id_matches_embedders_row_id
+  FAILED tests/unit/test_sqlite_backend.py::TestRegisterEmbedder::test_returned_id_is_positive_integer
+  FAILED tests/unit/test_sqlite_backend.py::TestRegisterEmbedder::test_multiple_embedders_each_get_own_table
+  FAILED tests/unit/test_sqlite_backend.py::TestRegisterEmbedder::test_multiple_embedders_rows_all_present
+  18 failed, 848 passed, 8 skipped, 1 warning in 6.73s
+  ```
+  All 18 B-04 tests fail with: `AttributeError: 'SQLiteBackend' object has no attribute 'register_embedder'`
+  All 848 pre-existing tests (including 29 B-03 tests) still pass.
+- Lint: `uv run ruff check tests/unit/test_sqlite_backend.py` — clean (All checks passed)
+- Format: `uv run ruff format --check tests/unit/test_sqlite_backend.py` — clean (1 file already formatted)
 - Status: red — handed off to tdd-coder
 
 
