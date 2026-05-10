@@ -66,7 +66,19 @@ B-06 GREEN. Implementation committed (forthcoming hash). 21/21 tests pass. Lane 
 
 When you come back online: claim via this section. The 9 B-05 tester-side bugs are still open and the natural starting point for you. B-07 + B-08 also open.
 
-#### (your reply here, lane B)
+#### 2026-05-09T22:15Z — `946880f9` (lane A, solo)
+
+Lane B confirmed broken (user). Lane A solo from here. Status:
+
+- B-04 fix at `c33152a`: 3 real bugs in B-04 production code (name sanitization, JSON construction, FK + created_at). 18/18 still pass.
+- B-05 GREEN: tester-fix pass at upcoming commit. 32/32 tests pass. Implementation untouched.
+- B-06 GREEN at `948d347` (21/21).
+
+Now: 920 unit / 102 integration / all gates clean. Next: B-07 (`write_embeddings` + `chunks_missing_embedding`).
+
+`sqlite.py` write-lock claimed by lane A (no other lane).
+
+#### (lane B reply space — paused)
 
 ## Context
 
@@ -116,7 +128,7 @@ SQLite integration tests **do not require Docker** — sqlite3 ships with Python
 | B-02 | SQLite schema files (001, 002, 003) | — | `corpus_forge/schema/sqlite/001_core.sql`, `002_chunk_content_hash.sql`, `003_sync.sql` | med | green | tdd-coder | Translations: `BIGSERIAL` → `INTEGER PRIMARY KEY AUTOINCREMENT`; `JSONB` → `TEXT` (with `json()` validator + `json_object()` for INSERT); `TIMESTAMPTZ` → `TEXT` (ISO-8601, UTC); `'{}'::jsonb` → `'{}'`; `vector(N)` → handled separately via embedding tables (see B-04). Foreign-key declarations must be present BUT SQLite requires `PRAGMA foreign_keys = ON` per connection (loader responsibility). All `IF NOT EXISTS` guards preserved for idempotency. |
 | B-03 | `SQLiteBackend` skeleton + `migrate()` | B-01, B-02 | `corpus_forge/backends/sqlite.py`, `tests/unit/test_sqlite_backend.py` | med | green | tdd-coder | 29/29 tests green. Tester narrowed `test_no_postgres_backfill_sql_executed` to strip `--` inline comments before checking for sha256/encode patterns, resolving false positive from `001_core.sql` line 35 descriptive comment. |
 | B-04 | `register_embedder` + per-embedder vector table | B-03 | `corpus_forge/backends/sqlite.py`, `tests/unit/test_sqlite_backend.py` | med | green | tdd-coder | 18/18 tests green. SELECT-or-INSERT on `name` UNIQUE key; UPDATE on collision; per-embedder vec0 virtual table (sqlite-vec) or BLOB fallback table. Returns int embedder_id. |
-| B-05 | `upsert_document` + chunk reuse | B-04 | `corpus_forge/backends/sqlite.py`, `tests/unit/test_sqlite_backend.py` | high | red | tdd-coder | 23/32 tests pass. 9 remaining failures are all tester-side bugs: (1) 6 tests use `row["count"]` for `COUNT(*)` queries (column name is `COUNT(*)` not `count`); (2) `test_different_dataset_same_source_uri` — helper inserts hardcoded dataset name "test_ds" causing UNIQUE conflict on second call, FK fails; (3) `test_copies_vector_from_prior_chunk_when_hash_matches` — embedding `chunk_id=5` doesn't match auto-incremented chunk `id=1`; (4) `test_multiple_chunks_share_same_prior` — filter `chunk_id >= 100` doesn't match actual chunk ids; (5) `test_returns_document_id_on_first_insert` — chunk arg is `([tuple],)` tuple-of-list not list-of-tuples. All 9 require tester fixes. |
+| B-05 | `upsert_document` + chunk reuse | B-04 | `corpus_forge/backends/sqlite.py`, `tests/unit/test_sqlite_backend.py` | high | green | tdd-tester | **32/32 tests green** after lane A solo tester-fix pass. Fixes: (1) `SELECT COUNT(*)` aliased to `AS count` everywhere (6 tests); (2) `test_returns_document_id_on_first_insert` — chunk arg flattened from tuple-of-list to plain list-of-tuples; (3) `test_copies_vector_from_prior_chunk_when_hash_matches` — chunk inserted first, real id captured, embedding inserted at captured id; (4) `test_multiple_chunks_share_same_prior` — filter `chunk_id != prior_chunk_id` instead of hardcoded `>= 100`; (5) `_insert_dataset_and_document` helper now uses `f"test_ds_{dataset_id}"` for UNIQUE-safe parametrization. Implementation untouched (it was correct from the start). |
 | B-06 | `upsert_conversation` | B-04 | `corpus_forge/backends/sqlite.py`, `tests/unit/test_sqlite_backend.py` | med | green | tdd-coder | **21/21 tests green.** `upsert_conversation` mirrors `postgres.py` semantics: SELECT-or-UPSERT conversations row keyed on `(dataset_id, source_uri)`; replace messages + chunks on hash mismatch; per-message chunks with `conversation_id`/`message_id` set, `document_id` NULL (XOR); content_hash via `chunk_content_hash`. Coder API-overloaded post-implementation; principal preserved work + finalized bookkeeping. |
 | B-07 | `write_embeddings` + `chunks_missing_embedding` | B-04 | `corpus_forge/backends/sqlite.py`, `tests/unit/test_sqlite_backend.py` | med | pending | — | sqlite-vec accepts numpy arrays as serialized FLOAT32 blobs. Use `sqlite_vec.serialize_float32(np_array)`. Fallback (no sqlite-vec): pickle.dumps or `np.tobytes()` straight to BLOB column. `chunks_missing_embedding(embedder_id)` returns chunk rows lacking a row in `embeddings_<name>` for that `embedder_id`. |
 | B-08 | `lock_source(key)` — SQLite mutex strategy | B-03 | `corpus_forge/backends/sqlite.py`, `tests/unit/test_sqlite_backend.py` | high | pending | — | SQLite has no advisory locks. **Decision (Q1):** use `BEGIN IMMEDIATE` to acquire the database write lock for the duration of the context manager. This serializes all writers globally; per-source granularity is unnecessary on a single-machine backend with low concurrency. Alternative considered: row-level mutex via an `advisory_locks(key, holder, ts)` table with INSERT-OR-FAIL — rejected as over-engineering for the single-host model. Acceptance: contextmanager that holds an exclusive write lock; concurrent attempts wait or fail with `OperationalError` ("database is locked") — handled with retry+timeout. |
