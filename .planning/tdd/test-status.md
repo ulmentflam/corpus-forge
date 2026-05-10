@@ -896,3 +896,31 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   ```
 - Notes: 9 tests are correctly SKIPped — they guard behavior that requires either the loader module (coder task) or the sqlite-vec library to be installed. The 4 PASSing tests pin pre-existing pyproject.toml structure that the coder must not break.
 - Status: red — handed off to tdd-coder
+
+## B-03
+- Test files: `tests/unit/test_sqlite_backend.py`
+- Run command: `PYTHONPATH=. uv run pytest tests/unit/test_sqlite_backend.py -v --no-header`
+- Test count: 29
+- Edge case checklist:
+  - [x] happy path — str path, pathlib.Path, :memory:, migrate() completes
+  - [x] boundaries — N/A (no numeric/size boundaries; path variants cover boundary cases)
+  - [x] type/format — str vs Path vs special ":memory:" string all accepted
+  - [x] state — lazy construction (no file created before connection), idempotent migrate()
+  - [x] concurrency — N/A (single-connection per _get_connection(); B-08 covers locking)
+  - [x] failure paths — directory path raises OperationalError, missing parent raises OperationalError
+  - [x] locale/time — N/A (no locale/time involvement in __init__/migrate)
+  - [x] production-realistic — tmp_path fixture for file-backed DBs; :memory: for ephemeral
+  - [x] regression — 002 backfill gating (dialect='sqlite' must not run Postgres sha256 UPDATE)
+- Red output (tail):
+  ```
+  ERROR tests/unit/test_sqlite_backend.py
+  ImportError while importing test module '...tests/unit/test_sqlite_backend.py'.
+  tests/unit/test_sqlite_backend.py:25: in <module>
+      from corpus_forge.backends.sqlite import SQLiteBackend
+  E   ModuleNotFoundError: No module named 'corpus_forge.backends.sqlite'
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  1 error in 0.18s
+  ```
+- lint/format: clean (ruff check + ruff format --check both pass)
+- Notes: No disagreements between sqlite_backend.md and this spec. The plan (§B-03) says `path: str` but accepting `str | Path` is strictly more compatible and is consistent with the acceptance spec. The `_tables()` helper queries the raw sqlite3 file so tests are independent of the backend's row_factory. The `test_get_connection_returns_fresh_connection_each_call` test was restructured to use sequential (not nested) context managers to satisfy SIM117.
+- Status: red — handed off to tdd-coder
