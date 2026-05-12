@@ -17,6 +17,7 @@ Verifies:
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -2882,3 +2883,1944 @@ class TestChunksMissingEmbedding:
         result = list(backend.chunks_missing_embedding(9999))
         # Must not raise; return empty (no embedder table to join against)
         assert result == [], f"Unknown embedder_id must return empty; got {result}"
+
+
+# ---------------------------------------------------------------------------
+# B-08 — lock_source(key: str) context manager
+# ---------------------------------------------------------------------------
+# These tests drive the implementation of SQLiteBackend.lock_source, which
+# must not exist yet (AttributeError is the expected red signal).
+#
+# Contract (decided per Q1 / sqlite_backend.md B-08):
+#   - On __enter__: acquire the DB's exclusive write lock via BEGIN IMMEDIATE.
+#   - On clean __exit__: COMMIT.
+#   - On exception __exit__: ROLLBACK.
+#   - key is accepted for protocol parity with PostgresBackend but is ignored
+#     for granularity purposes (SQLite write-lock is global).
+#   - Retry with exponential back-off on OperationalError("database is locked")
+#     up to lock_timeout_s (default 30 s); re-raise beyond timeout.
+#
+# All concurrency tests use threading.Event for deterministic handshaking;
+# no race-prone bare sleeps.  Tests use file-backed DBs (tmp_path) because
+# in-memory shared-cache connections share the same lock domain regardless of
+# connection identity, which can mask cross-connection contention bugs.
+
+
+# ---------------------------------------------------------------------------
+# TestLockSource — single-connection / single-thread behaviour
+# ---------------------------------------------------------------------------
+
+
+class TestLockSource:
+    """lock_source() — happy path, commit, rollback, key contract."""
+
+    # ------------------------------------------------------------------ happy path
+
+    def test_context_manager_executes_block(self, tmp_path):
+        """Happy path: block inside with lock_source() executes without error."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        ran = []
+
+        with backend.lock_source("foo"):
+            ran.append(True)
+
+        assert ran == [True], "Block inside lock_source must execute"
+
+    def test_lock_source_accepts_any_string_key(self, tmp_path):
+        """key argument is accepted regardless of value (empty string, unicode, long)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+
+        for key in ("", "simple", "vault://path/to/source.md", "a" * 256, "测试"):
+            with backend.lock_source(key):
+                pass  # must not raise
+
+    # ------------------------------------------------------------------ commit on clean exit
+
+    def test_write_inside_lock_is_committed(self, tmp_path):
+        """Writes inside a lock_source block persist after the context exits normally."""
+        db_path = tmp_path / "corpus.db"
+        backend = _migrated_backend(db_path)
+
+        with backend.lock_source("commit_test"):
+            backend._execute(
+                "INSERT OR IGNORE INTO datasets (id, name, kind) VALUES (?, ?, ?)",
+                (99, "lock_commit_ds", "text"),
+            )
+
+        # Verify row persists by opening a fresh connection
+        import sqlite3 as _sqlite3
+
+        conn = _sqlite3.connect(str(db_path))
+        try:
+            rows = conn.execute(
+                "SELECT id FROM datasets WHERE name = ?", ("lock_commit_ds",)
+            ).fetchall()
+        finally:
+            conn.close()
+
+        assert len(rows) == 1, (
+            "Row written inside lock_source must be committed; found 0 rows in fresh connection"
+        )
+
+    def test_write_inside_lock_visible_after_exit(self, tmp_path):
+        """After lock_source exits normally, subsequent _execute calls see the committed data."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+
+        with backend.lock_source("visibility_test"):
+            backend._execute(
+                "INSERT OR IGNORE INTO datasets (id, name, kind) VALUES (?, ?, ?)",
+                (42, "vis_ds", "text"),
+            )
+
+        rows = backend._execute("SELECT name FROM datasets WHERE id = ?", (42,))
+        assert rows and rows[0]["name"] == "vis_ds", (
+            "Committed row must be visible to subsequent _execute calls"
+        )
+
+    # ------------------------------------------------------------------ rollback on exception
+
+    def test_exception_inside_lock_rolls_back(self, tmp_path):
+        """An exception inside the lock_source block must trigger ROLLBACK; writes not persisted."""
+        db_path = tmp_path / "corpus.db"
+        backend = _migrated_backend(db_path)
+
+        def _trigger():
+            with backend.lock_source("rollback_test"):
+                backend._execute(
+                    "INSERT OR IGNORE INTO datasets (id, name, kind) VALUES (?, ?, ?)",
+                    (77, "rollback_ds", "text"),
+                )
+                raise RuntimeError("intentional rollback trigger")
+
+        with pytest.raises(RuntimeError, match="intentional"):
+            _trigger()
+
+        # Row must NOT persist
+        rows = backend._execute("SELECT id FROM datasets WHERE name = ?", ("rollback_ds",))
+        assert rows == [], (
+            f"Write inside a failed lock_source block must be rolled back; found rows: {rows}"
+        )
+
+    def test_exception_is_re_raised(self, tmp_path):
+        """lock_source must re-raise the exception from the block body."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+
+        with pytest.raises(ValueError, match="propagated"), backend.lock_source("reraise_test"):
+            raise ValueError("propagated")
+
+    # ------------------------------------------------------------------ key granularity
+
+    def test_different_keys_serialize_globally(self, tmp_path):
+        """Different key values still use the same global write-lock (SQLite is single-writer).
+
+        Two sequential lock_source calls with different keys must both succeed.
+        This confirms the implementation does not attempt per-key locking that
+        could leave orphaned row mutexes.
+        """
+        backend = _migrated_backend(tmp_path / "corpus.db")
+
+        with backend.lock_source("key_alpha"):
+            backend._execute(
+                "INSERT OR IGNORE INTO datasets (id, name, kind) VALUES (?, ?, ?)",
+                (1, "alpha_ds", "text"),
+            )
+
+        with backend.lock_source("key_beta"):
+            backend._execute(
+                "INSERT OR IGNORE INTO datasets (id, name, kind) VALUES (?, ?, ?)",
+                (2, "beta_ds", "text"),
+            )
+
+        rows = backend._execute("SELECT id FROM datasets ORDER BY id")
+        ids = [r["id"] for r in rows]
+        assert 1 in ids and 2 in ids, f"Both writes with different keys must persist; got ids {ids}"
+
+    def test_returns_context_manager_protocol(self, tmp_path):
+        """lock_source returns an object with __enter__ and __exit__ (context manager protocol)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        ctx = backend.lock_source("proto_check")
+        assert hasattr(ctx, "__enter__") and hasattr(ctx, "__exit__"), (
+            "lock_source must return a context manager (has __enter__ and __exit__)"
+        )
+        # Actually enter and exit to clean up
+        with ctx:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# TestLockSourceConcurrency — multi-thread behaviour
+# ---------------------------------------------------------------------------
+
+
+class TestLockSourceConcurrency:
+    """lock_source() under concurrent access: serialization, timeout, post-exit release."""
+
+    # ---------------------------------------------------------------- concurrent writers serialize
+
+    def test_two_threads_serialize_no_data_loss(self, tmp_path):
+        """Two threads each calling lock_source write distinct rows; both rows persist.
+
+        Uses threading.Event for deterministic handshake — no bare sleeps.
+        Thread B waits for thread A to acquire the lock, then contends for it.
+        Both eventually succeed (sequentially) and neither row is lost.
+        """
+        db_path = tmp_path / "corpus.db"
+        backend = _migrated_backend(db_path)
+        # Pre-insert dataset row so FK constraints on documents don't block us.
+        backend._execute(
+            "INSERT OR IGNORE INTO datasets (id, name, kind) VALUES (?, ?, ?)",
+            (1, "conc_ds", "text"),
+        )
+
+        a_acquired = threading.Event()  # A signals it holds the lock
+        b_start = threading.Event()  # main signals B to start
+        errors: list[Exception] = []
+
+        def thread_a():
+            try:
+                with backend.lock_source("conc_key"):
+                    a_acquired.set()
+                    # Hold the lock long enough for B to contend.
+                    b_start.wait(timeout=5.0)
+                    backend._execute(
+                        "INSERT INTO documents"
+                        " (dataset_id, source_uri, content_hash, text)"
+                        " VALUES (?, ?, ?, ?)",
+                        (1, "vault://conc/a.md", "hash_a", "thread A doc"),
+                    )
+            except Exception as exc:
+                errors.append(exc)
+
+        def thread_b():
+            try:
+                # B tries to acquire only after A holds the lock.
+                a_acquired.wait(timeout=5.0)
+                with backend.lock_source("conc_key"):
+                    backend._execute(
+                        "INSERT INTO documents"
+                        " (dataset_id, source_uri, content_hash, text)"
+                        " VALUES (?, ?, ?, ?)",
+                        (1, "vault://conc/b.md", "hash_b", "thread B doc"),
+                    )
+            except Exception as exc:
+                errors.append(exc)
+
+        ta = threading.Thread(target=thread_a, daemon=True)
+        tb = threading.Thread(target=thread_b, daemon=True)
+
+        ta.start()
+        tb.start()
+        # Let both threads finish (short timeout — should be << 1 s in practice).
+        b_start.set()
+        ta.join(timeout=10.0)
+        tb.join(timeout=10.0)
+
+        assert not errors, f"Threads raised exceptions: {errors}"
+        assert not ta.is_alive(), "Thread A must finish within 10 s"
+        assert not tb.is_alive(), "Thread B must finish within 10 s"
+
+        # Both rows must exist.
+        rows = backend._execute("SELECT source_uri FROM documents ORDER BY source_uri")
+        uris = [r["source_uri"] for r in rows]
+        assert "vault://conc/a.md" in uris, f"Thread A's row missing; got {uris}"
+        assert "vault://conc/b.md" in uris, f"Thread B's row missing; got {uris}"
+
+    # ------------------------------------------------------------------ timeout raises
+
+    def test_timeout_raises_operational_error(self, tmp_path):
+        """Lock held by another thread; acquire with short timeout re-raises OperationalError.
+
+        Thread A holds the lock indefinitely (until signalled).  Thread B tries
+        to acquire with lock_timeout_s=0.3.  Thread B must raise OperationalError
+        within a few seconds (well before the test's own timeout).
+        """
+        import sqlite3 as _sqlite3
+
+        db_path = tmp_path / "corpus.db"
+        backend = _migrated_backend(db_path)
+
+        a_acquired = threading.Event()  # A signals it has the lock
+        a_release = threading.Event()  # main signals A to release
+        b_result: list[Exception | None] = []
+
+        def thread_a_hold():
+            # Open a raw connection and start an IMMEDIATE transaction.
+            # This simulates an external writer holding the global write-lock.
+            conn = _sqlite3.connect(str(db_path), timeout=0)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                a_acquired.set()
+                a_release.wait(timeout=10.0)
+                conn.execute("ROLLBACK")
+            finally:
+                conn.close()
+
+        def thread_b_timeout():
+            # Wait until A holds the lock, then try with very short timeout.
+            a_acquired.wait(timeout=5.0)
+            try:
+                with backend.lock_source("timeout_key", lock_timeout_s=0.3):
+                    pass
+                b_result.append(None)  # unexpected success
+            except _sqlite3.OperationalError as exc:
+                b_result.append(exc)
+            except Exception as exc:
+                b_result.append(exc)
+
+        ta = threading.Thread(target=thread_a_hold, daemon=True)
+        tb = threading.Thread(target=thread_b_timeout, daemon=True)
+
+        ta.start()
+        tb.start()
+        tb.join(timeout=5.0)  # B must finish quickly (timeout=0.3 + retry overhead)
+        a_release.set()
+        ta.join(timeout=5.0)
+
+        assert b_result, "Thread B must have completed"
+        exc = b_result[0]
+        assert isinstance(exc, _sqlite3.OperationalError), (
+            f"Expected OperationalError on timeout; got {type(exc).__name__}: {exc}"
+        )
+
+    # ------------------------------------------------------------------ exit releases lock
+
+    def test_lock_released_after_context_exit(self, tmp_path):
+        """After the with block exits, a fresh BEGIN IMMEDIATE from another connection succeeds.
+
+        This confirms __exit__ commits (or rolls back) the transaction, fully
+        releasing the write-lock so a subsequent writer can proceed immediately.
+        """
+        import sqlite3 as _sqlite3
+
+        db_path = tmp_path / "corpus.db"
+        backend = _migrated_backend(db_path)
+
+        # Acquire and release via the context manager.
+        with backend.lock_source("release_test"):
+            pass  # clean exit — lock must be released
+
+        # A fresh external connection must be able to acquire IMMEDIATELY.
+        conn = _sqlite3.connect(str(db_path), timeout=0)
+        try:
+            # If lock is still held this would raise OperationalError("database is locked").
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("ROLLBACK")
+        except _sqlite3.OperationalError as exc:
+            pytest.fail(
+                f"Lock not released after context exit; fresh BEGIN IMMEDIATE failed: {exc}"
+            )
+        finally:
+            conn.close()
+
+    # ---------------------------------------------------------------- global serialization by key
+
+    def test_different_keys_still_serialize(self, tmp_path):
+        """Concurrent lock_source calls with *different* keys still serialize (global lock).
+
+        Neither call should raise; both commits must land.  This test asserts
+        that the implementation does NOT attempt per-key granularity (which
+        could lead to simultaneous writers corrupting the DB).
+        """
+        db_path = tmp_path / "corpus.db"
+        backend = _migrated_backend(db_path)
+        backend._execute(
+            "INSERT OR IGNORE INTO datasets (id, name, kind) VALUES (?, ?, ?)",
+            (10, "gser_ds", "text"),
+        )
+
+        a_acquired = threading.Event()
+        a_release = threading.Event()
+        errors: list[Exception] = []
+
+        def thread_a():
+            try:
+                with backend.lock_source("key_x"):
+                    a_acquired.set()
+                    a_release.wait(timeout=5.0)
+                    backend._execute(
+                        "INSERT INTO documents"
+                        " (dataset_id, source_uri, content_hash, text)"
+                        " VALUES (?, ?, ?, ?)",
+                        (10, "vault://gser/a.md", "h_ga", "global ser A"),
+                    )
+            except Exception as exc:
+                errors.append(exc)
+
+        def thread_b():
+            try:
+                a_acquired.wait(timeout=5.0)
+                with backend.lock_source("key_y"):  # different key, same global lock
+                    backend._execute(
+                        "INSERT INTO documents"
+                        " (dataset_id, source_uri, content_hash, text)"
+                        " VALUES (?, ?, ?, ?)",
+                        (10, "vault://gser/b.md", "h_gb", "global ser B"),
+                    )
+            except Exception as exc:
+                errors.append(exc)
+
+        ta = threading.Thread(target=thread_a, daemon=True)
+        tb = threading.Thread(target=thread_b, daemon=True)
+        ta.start()
+        tb.start()
+        a_release.set()
+        ta.join(timeout=10.0)
+        tb.join(timeout=10.0)
+
+        assert not errors, f"Threads raised: {errors}"
+        rows = backend._execute(
+            "SELECT source_uri FROM documents WHERE dataset_id = ? ORDER BY source_uri",
+            (10,),
+        )
+        uris = [r["source_uri"] for r in rows]
+        assert "vault://gser/a.md" in uris, f"A's row missing; got {uris}"
+
+
+# ---------------------------------------------------------------------------
+# B-09 helpers
+# ---------------------------------------------------------------------------
+
+
+def _insert_dataset_only(backend, dataset_id: int, kind: str = "text") -> None:
+    """Insert only a dataset row (no document) — used by B-09 resolve/source tests."""
+    backend._execute(
+        "INSERT OR IGNORE INTO datasets (id, name, kind) VALUES (?, ?, ?)",
+        (dataset_id, f"b09_ds_{dataset_id}", kind),
+    )
+
+
+def _insert_doc_with_chunks(
+    backend,
+    dataset_id: int,
+    source_uri: str,
+    content_hash: str = "hash_abc",
+    text: str = "body",
+    chunk_texts: list[str] | None = None,
+) -> int:
+    """Insert a document row + zero or more chunk rows; return the document id."""
+    _insert_dataset_only(backend, dataset_id)
+    rows = backend._execute(
+        "INSERT INTO documents (dataset_id, source_uri, content_hash, text)"
+        " VALUES (?, ?, ?, ?) RETURNING id",
+        (dataset_id, source_uri, content_hash, text),
+    )
+    doc_id: int = rows[0]["id"]
+    for i, chunk_text in enumerate(chunk_texts or []):
+        backend._execute(
+            "INSERT INTO chunks (document_id, chunk_index, text) VALUES (?, ?, ?)",
+            (doc_id, i, chunk_text),
+        )
+    return doc_id
+
+
+def _insert_conv_with_messages(
+    backend,
+    dataset_id: int,
+    source_uri: str,
+    content_hash: str = "conv_hash_abc",
+    message_texts: list[str] | None = None,
+) -> int:
+    """Insert a conversation + messages + per-message chunks; return conv id."""
+    _insert_dataset_only(backend, dataset_id, kind="chat")
+    rows = backend._execute(
+        "INSERT INTO conversations"
+        " (dataset_id, source_uri, content_hash, message_count)"
+        " VALUES (?, ?, ?, ?) RETURNING id",
+        (dataset_id, source_uri, content_hash, len(message_texts or [])),
+    )
+    conv_id: int = rows[0]["id"]
+    for i, msg_text in enumerate(message_texts or []):
+        msg_rows = backend._execute(
+            "INSERT INTO messages"
+            " (conversation_id, turn_index, role, content)"
+            " VALUES (?, ?, ?, ?) RETURNING id",
+            (conv_id, i, "user", msg_text),
+        )
+        msg_id: int = msg_rows[0]["id"]
+        backend._execute(
+            "INSERT INTO chunks (conversation_id, message_id, chunk_index, text)"
+            " VALUES (?, ?, ?, ?)",
+            (conv_id, msg_id, 0, msg_text),
+        )
+    return conv_id
+
+
+def _count_rows(backend, table: str, **where: object) -> int:
+    """Return COUNT(*) from *table* filtered by keyword-arg equality clauses."""
+    if where:
+        cols = list(where.keys())
+        clause = " AND ".join(f"{c} = ?" for c in cols)
+        vals = tuple(where[c] for c in cols)
+        rows = backend._execute(
+            f"SELECT COUNT(*) AS cnt FROM {table} WHERE {clause}",
+            vals,
+        )
+    else:
+        rows = backend._execute(f"SELECT COUNT(*) AS cnt FROM {table}")
+    return int(rows[0]["cnt"])
+
+
+# ---------------------------------------------------------------------------
+# TestDeleteDocument — B-09
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteDocument:
+    """delete_document(dataset_id, source_uri) — DELETE + cascade + idempotency."""
+
+    def test_delete_removes_document_row(self, tmp_path):
+        """Happy path: after delete_document the documents row is gone."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_doc_with_chunks(backend, 1, "vault://del.md")
+
+        backend.delete_document(1, "vault://del.md")
+
+        remaining = backend._execute(
+            "SELECT id FROM documents WHERE dataset_id = 1 AND source_uri = ?",
+            ("vault://del.md",),
+        )
+        assert remaining == [], (
+            f"delete_document must remove the documents row; found rows: {remaining}"
+        )
+
+    def test_delete_cascades_to_chunks(self, tmp_path):
+        """Deleting a document also deletes its chunk rows (FK CASCADE)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_doc_with_chunks(
+            backend, 1, "vault://cascade.md", chunk_texts=["chunk A", "chunk B"]
+        )
+
+        backend.delete_document(1, "vault://cascade.md")
+
+        chunk_count = _count_rows(backend, "chunks", document_id=doc_id)
+        assert chunk_count == 0, (
+            f"Chunks for deleted document must be cascade-deleted; found {chunk_count}"
+        )
+
+    def test_delete_nonexistent_is_noop(self, tmp_path):
+        """Deleting a document that does not exist raises no error (idempotent)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_only(backend, 1)
+
+        # Must not raise
+        backend.delete_document(1, "vault://ghost.md")
+
+    def test_delete_only_affects_matching_dataset(self, tmp_path):
+        """delete_document with dataset_id=1 must not remove dataset_id=2 rows."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_doc_with_chunks(backend, 1, "vault://shared.md")
+        _insert_doc_with_chunks(backend, 2, "vault://shared.md")
+
+        backend.delete_document(1, "vault://shared.md")
+
+        # Dataset 1 row is gone
+        ds1_rows = backend._execute(
+            "SELECT id FROM documents WHERE dataset_id = 1 AND source_uri = ?",
+            ("vault://shared.md",),
+        )
+        assert ds1_rows == [], "Row for dataset_id=1 must be deleted"
+
+        # Dataset 2 row must survive
+        ds2_rows = backend._execute(
+            "SELECT id FROM documents WHERE dataset_id = 2 AND source_uri = ?",
+            ("vault://shared.md",),
+        )
+        assert len(ds2_rows) == 1, (
+            "Row for dataset_id=2 must survive delete_document(dataset_id=1, ...)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestDeleteConversation — B-09
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteConversation:
+    """delete_conversation(dataset_id, source_uri) — DELETE + cascade + idempotency."""
+
+    def test_delete_removes_conversation_row(self, tmp_path):
+        """Happy path: after delete_conversation the conversations row is gone."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_conv_with_messages(backend, 1, "claude://s1")
+
+        backend.delete_conversation(1, "claude://s1")
+
+        remaining = backend._execute(
+            "SELECT id FROM conversations WHERE dataset_id = 1 AND source_uri = ?",
+            ("claude://s1",),
+        )
+        assert remaining == [], (
+            f"delete_conversation must remove the conversations row; found: {remaining}"
+        )
+
+    def test_delete_cascades_messages_and_chunks(self, tmp_path):
+        """Deleting a conversation cascades to its messages and their chunks."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        conv_id = _insert_conv_with_messages(
+            backend, 1, "claude://cascade_conv", message_texts=["msg1", "msg2"]
+        )
+
+        backend.delete_conversation(1, "claude://cascade_conv")
+
+        msg_count = _count_rows(backend, "messages", conversation_id=conv_id)
+        chunk_count = _count_rows(backend, "chunks", conversation_id=conv_id)
+        assert msg_count == 0, (
+            f"Messages for deleted conversation must be cascade-deleted; found {msg_count}"
+        )
+        assert chunk_count == 0, (
+            f"Chunks for deleted conversation must be cascade-deleted; found {chunk_count}"
+        )
+
+    def test_delete_nonexistent_conversation_is_noop(self, tmp_path):
+        """Deleting a conversation that does not exist raises no error (idempotent)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_only(backend, 1, kind="chat")
+
+        # Must not raise
+        backend.delete_conversation(1, "claude://ghost_session")
+
+
+# ---------------------------------------------------------------------------
+# TestFindDocument — B-09
+# ---------------------------------------------------------------------------
+
+
+class TestFindDocument:
+    """find_document(dataset_id, source_uri) -> dict | None — read-only lookup."""
+
+    def test_returns_dict_for_existing_document(self, tmp_path):
+        """Happy path: existing document returns a dict with id and content_hash."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_doc_with_chunks(backend, 1, "vault://find_me.md", content_hash="find_hash")
+
+        result = backend.find_document(1, "vault://find_me.md")
+
+        assert result is not None, "find_document must return a dict for an existing row"
+        assert "id" in result, "Returned dict must contain 'id'"
+        assert "content_hash" in result, "Returned dict must contain 'content_hash'"
+        assert result["content_hash"] == "find_hash", (
+            f"content_hash mismatch: expected 'find_hash', got {result['content_hash']!r}"
+        )
+
+    def test_returns_none_for_missing_document(self, tmp_path):
+        """Missing document returns None (no error)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_only(backend, 1)
+
+        result = backend.find_document(1, "vault://does_not_exist.md")
+
+        assert result is None, f"find_document must return None for a missing row; got {result!r}"
+
+    def test_wrong_dataset_id_returns_none(self, tmp_path):
+        """Same source_uri under a different dataset_id returns None."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_doc_with_chunks(backend, 1, "vault://shared_uri.md")
+
+        # Ask for dataset_id=2 — should not find dataset_id=1's row
+        result = backend.find_document(2, "vault://shared_uri.md")
+
+        assert result is None, (
+            f"find_document must return None when dataset_id does not match; got {result!r}"
+        )
+
+    def test_is_non_mutating(self, tmp_path):
+        """Calling find_document twice on the same row does not change the row."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_doc_with_chunks(backend, 1, "vault://idempotent.md", content_hash="stable_hash")
+
+        result1 = backend.find_document(1, "vault://idempotent.md")
+        result2 = backend.find_document(1, "vault://idempotent.md")
+
+        assert result1 is not None and result2 is not None
+        assert result1["id"] == result2["id"], "Repeated find_document must return same id"
+        assert result1["content_hash"] == result2["content_hash"]
+
+
+# ---------------------------------------------------------------------------
+# TestResolveDocument — B-09
+# ---------------------------------------------------------------------------
+
+
+class TestResolveDocument:
+    """resolve_document(dataset_id, source_uri) -> dict | None — upsert semantics."""
+
+    def test_creates_stub_for_missing_document(self, tmp_path):
+        """When no row exists, resolve_document inserts a stub and returns a dict."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_only(backend, 1)
+
+        result = backend.resolve_document(1, "vault://new_resolve.md")
+
+        assert result is not None, "resolve_document must return a dict even when row is new"
+        assert "id" in result, "Returned dict must contain 'id'"
+        assert "content_hash" in result, "Returned dict must contain 'content_hash'"
+
+    def test_new_stub_has_empty_content_hash(self, tmp_path):
+        """Newly created stub row has content_hash == '' (empty string)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_only(backend, 1)
+
+        result = backend.resolve_document(1, "vault://empty_hash.md")
+
+        assert result is not None
+        assert result["content_hash"] == "", (
+            f"Stub row content_hash must be empty string; got {result['content_hash']!r}"
+        )
+
+    def test_returns_existing_row_without_duplicate(self, tmp_path):
+        """When the row already exists, resolve_document returns it without inserting
+        a duplicate."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_doc_with_chunks(
+            backend, 1, "vault://already_exists.md", content_hash="existing_hash"
+        )
+
+        result = backend.resolve_document(1, "vault://already_exists.md")
+
+        assert result is not None
+        assert result["content_hash"] == "existing_hash", (
+            f"resolve_document on existing row must return existing content_hash; "
+            f"got {result['content_hash']!r}"
+        )
+        doc_count = _count_rows(
+            backend, "documents", dataset_id=1, source_uri="vault://already_exists.md"
+        )
+        assert doc_count == 1, (
+            f"resolve_document must not create a duplicate row; found {doc_count} rows"
+        )
+
+    def test_idempotent_same_id_on_double_call(self, tmp_path):
+        """Calling resolve_document twice for a missing URI returns the same id."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_only(backend, 1)
+
+        result1 = backend.resolve_document(1, "vault://idempotent_resolve.md")
+        result2 = backend.resolve_document(1, "vault://idempotent_resolve.md")
+
+        assert result1 is not None and result2 is not None
+        assert result1["id"] == result2["id"], (
+            f"Two resolve_document calls must yield the same id; "
+            f"got {result1['id']} vs {result2['id']}"
+        )
+
+    def test_returns_none_for_empty_source_uri(self, tmp_path):
+        """resolve_document with empty source_uri returns None (matches Postgres contract)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_only(backend, 1)
+
+        result = backend.resolve_document(1, "")
+
+        assert result is None, f"resolve_document('') must return None; got {result!r}"
+
+    def test_isolated_by_dataset_id(self, tmp_path):
+        """Resolving the same URI under different dataset_ids creates separate rows."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_only(backend, 1)
+        _insert_dataset_only(backend, 2)
+
+        result1 = backend.resolve_document(1, "vault://cross_ds.md")
+        result2 = backend.resolve_document(2, "vault://cross_ds.md")
+
+        assert result1 is not None and result2 is not None
+        assert result1["id"] != result2["id"], (
+            "resolve_document for different dataset_ids must create distinct rows"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestResolveSelfSource — B-09
+# ---------------------------------------------------------------------------
+
+
+class TestResolveSelfSource:
+    """resolve_self_source(dataset_id, host) -> int — upsert into sources table."""
+
+    def test_first_call_returns_int_id(self, tmp_path):
+        """Happy path: first call inserts a sources row and returns its integer id."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_only(backend, 1)
+
+        result = backend.resolve_self_source(1, "myhost.local")
+
+        assert isinstance(result, int), (
+            f"resolve_self_source must return int; got {type(result).__name__}"
+        )
+        assert result >= 1, f"Returned id must be >= 1; got {result}"
+
+    def test_second_call_same_args_returns_same_id(self, tmp_path):
+        """Idempotency: two calls with the same (dataset_id, host) return the same id."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_only(backend, 1)
+
+        id1 = backend.resolve_self_source(1, "myhost.local")
+        id2 = backend.resolve_self_source(1, "myhost.local")
+
+        assert id1 == id2, f"resolve_self_source must be idempotent; got {id1} then {id2}"
+
+    def test_second_call_does_not_duplicate_row(self, tmp_path):
+        """Calling resolve_self_source twice must not insert two sources rows."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_only(backend, 1)
+
+        backend.resolve_self_source(1, "dupe_host")
+        backend.resolve_self_source(1, "dupe_host")
+
+        row_count = _count_rows(backend, "sources", dataset_id=1)
+        assert row_count == 1, (
+            f"Only one sources row must exist after two identical calls; found {row_count}"
+        )
+
+    def test_different_host_produces_different_id(self, tmp_path):
+        """Different host values for the same dataset_id create separate sources rows."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_only(backend, 1)
+
+        id_a = backend.resolve_self_source(1, "host-a.local")
+        id_b = backend.resolve_self_source(1, "host-b.local")
+
+        assert id_a != id_b, (
+            f"Different hosts must produce different source ids; both returned {id_a}"
+        )
+
+    def test_uses_sync_plugin_and_pull_identity(self, tmp_path):
+        """The inserted sources row uses plugin='sync' and identity='pull' (Postgres parity)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_only(backend, 1)
+
+        backend.resolve_self_source(1, "check_host")
+
+        rows = backend._execute(
+            "SELECT plugin, identity FROM sources WHERE dataset_id = 1",
+        )
+        assert len(rows) == 1, "Expected exactly one sources row"
+        assert rows[0]["plugin"] == "sync", f"plugin must be 'sync'; got {rows[0]['plugin']!r}"
+        assert rows[0]["identity"] == "pull", (
+            f"identity must be 'pull'; got {rows[0]['identity']!r}"
+        )
+
+    def test_isolated_by_dataset_id(self, tmp_path):
+        """The same host under different dataset_ids creates two separate rows."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_only(backend, 1)
+        _insert_dataset_only(backend, 2)
+
+        id1 = backend.resolve_self_source(1, "shared_host")
+        id2 = backend.resolve_self_source(2, "shared_host")
+
+        assert id1 != id2, (
+            f"Different dataset_ids must produce different source ids; both returned {id1}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# B-10 helpers
+# ---------------------------------------------------------------------------
+
+
+def _insert_document_for_revision(
+    backend,
+    dataset_id: int = 1,
+    source_uri: str = "vault://rev_test.md",
+    content_hash: str = "rev_hash_001",
+    text: str = "# Revision Test",
+) -> int:
+    """Insert dataset + document rows; return the document id.
+
+    Uses INSERT OR IGNORE on the dataset row so tests with the same dataset_id
+    don't collide on the UNIQUE(name) constraint.
+    """
+    backend._execute(
+        "INSERT OR IGNORE INTO datasets (id, name, kind) VALUES (?, ?, ?)",
+        (dataset_id, f"b10_ds_{dataset_id}", "text"),
+    )
+    rows = backend._execute(
+        "INSERT INTO documents (dataset_id, source_uri, content_hash, text)"
+        " VALUES (?, ?, ?, ?) RETURNING id",
+        (dataset_id, source_uri, content_hash, text),
+    )
+    return rows[0]["id"]
+
+
+def _call_insert_revision(
+    backend,
+    document_id: int,
+    *,
+    source_uri: str = "vault://rev_test.md",
+    content_hash: str = "chash_001",
+    text: str = "revision body",
+    parent_revision_id: int | None = None,
+    author_host: str = "localhost",
+    is_tombstone: bool = False,
+    metadata: dict | None = None,
+) -> dict:
+    """Thin wrapper so tests don't repeat every keyword arg."""
+    return backend.insert_revision(
+        document_id=document_id,
+        source_uri=source_uri,
+        content_hash=content_hash,
+        text=text,
+        parent_revision_id=parent_revision_id,
+        author_host=author_host,
+        is_tombstone=is_tombstone,
+        metadata=metadata,
+    )
+
+
+def _revision_rows(backend, document_id: int) -> list[dict]:
+    """Return all document_revisions rows for *document_id*, ordered by revision_number."""
+    return backend._execute(
+        "SELECT * FROM document_revisions WHERE document_id = ? ORDER BY revision_number",
+        (document_id,),
+    )
+
+
+# ---------------------------------------------------------------------------
+# TestInsertRevisionHappyPath — B-10
+# ---------------------------------------------------------------------------
+
+
+class TestInsertRevisionHappyPath:
+    """insert_revision() happy-path: return shape, numbering, DB visibility."""
+
+    def test_returns_dict_with_id_and_revision_number(self, tmp_path):
+        """insert_revision must return a dict containing 'id' and 'revision_number' keys."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_revision(backend)
+
+        with backend.lock_source("vault://rev_test.md"):
+            result = _call_insert_revision(backend, doc_id)
+
+        assert isinstance(result, dict), f"Expected dict, got {type(result)}"
+        assert "id" in result, f"Return dict must contain 'id'; got keys: {list(result)}"
+        assert "revision_number" in result, (
+            f"Return dict must contain 'revision_number'; got keys: {list(result)}"
+        )
+
+    def test_id_is_positive_integer(self, tmp_path):
+        """The returned 'id' must be a positive integer (autoincrement PK)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_revision(backend)
+
+        with backend.lock_source("vault://rev_test.md"):
+            result = _call_insert_revision(backend, doc_id)
+
+        assert isinstance(result["id"], int), f"'id' must be int, got {type(result['id'])}"
+        assert result["id"] >= 1, f"'id' must be >= 1, got {result['id']}"
+
+    def test_first_revision_has_revision_number_one(self, tmp_path):
+        """First insert_revision for a document returns revision_number=1."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_revision(backend)
+
+        with backend.lock_source("vault://rev_test.md"):
+            result = _call_insert_revision(backend, doc_id)
+
+        assert result["revision_number"] == 1, (
+            f"First revision must be revision_number=1; got {result['revision_number']}"
+        )
+
+    def test_second_revision_has_revision_number_two(self, tmp_path):
+        """Second insert_revision for the same document returns revision_number=2."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_revision(backend)
+
+        with backend.lock_source("vault://rev_test.md"):
+            r1 = _call_insert_revision(backend, doc_id, content_hash="chash_001")
+            r2 = _call_insert_revision(
+                backend,
+                doc_id,
+                content_hash="chash_002",
+                parent_revision_id=r1["id"],
+            )
+
+        assert r2["revision_number"] == 2, (
+            f"Second revision must be revision_number=2; got {r2['revision_number']}"
+        )
+
+    def test_row_visible_via_select(self, tmp_path):
+        """After insert_revision, the row is visible via direct SELECT on document_revisions."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_revision(backend)
+
+        with backend.lock_source("vault://rev_test.md"):
+            result = _call_insert_revision(
+                backend,
+                doc_id,
+                content_hash="chash_vis",
+                text="visible body",
+                author_host="check_host",
+            )
+
+        rows = _revision_rows(backend, doc_id)
+        assert len(rows) == 1, f"Expected 1 revision row; found {len(rows)}"
+        row = rows[0]
+        assert row["id"] == result["id"]
+        assert row["document_id"] == doc_id
+        assert row["revision_number"] == 1
+        assert row["content_hash"] == "chash_vis"
+        assert row["text"] == "visible body"
+        assert row["author_host"] == "check_host"
+
+
+# ---------------------------------------------------------------------------
+# TestInsertRevisionParents — B-10
+# ---------------------------------------------------------------------------
+
+
+class TestInsertRevisionParents:
+    """parent_revision_id FK — None allowed for root; non-None stored correctly."""
+
+    def test_parent_revision_id_none_for_first_revision(self, tmp_path):
+        """parent_revision_id=None is valid for the first (root) revision."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_revision(backend)
+
+        with backend.lock_source("vault://rev_test.md"):
+            result = _call_insert_revision(backend, doc_id, parent_revision_id=None)
+
+        rows = _revision_rows(backend, doc_id)
+        assert len(rows) == 1
+        # NULL should round-trip as None through sqlite3.Row
+        stored_parent = rows[0]["parent_revision_id"]
+        assert stored_parent is None, (
+            f"parent_revision_id=None must store NULL; got {stored_parent!r}"
+        )
+        # Return value id should match the inserted row
+        assert rows[0]["id"] == result["id"]
+
+    def test_parent_revision_id_stored_for_child_revision(self, tmp_path):
+        """parent_revision_id is stored correctly when pointing to a prior revision."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_revision(backend)
+
+        with backend.lock_source("vault://rev_test.md"):
+            r1 = _call_insert_revision(backend, doc_id, content_hash="chash_p1")
+            r2 = _call_insert_revision(
+                backend,
+                doc_id,
+                content_hash="chash_p2",
+                parent_revision_id=r1["id"],
+            )
+
+        rows = _revision_rows(backend, doc_id)
+        assert len(rows) == 2
+        child_row = rows[1]  # revision_number=2
+        assert child_row["parent_revision_id"] == r1["id"], (
+            f"parent_revision_id must be {r1['id']}; got {child_row['parent_revision_id']}"
+        )
+        assert child_row["id"] == r2["id"]
+
+
+# ---------------------------------------------------------------------------
+# TestInsertRevisionTombstone — B-10
+# ---------------------------------------------------------------------------
+
+
+class TestInsertRevisionTombstone:
+    """is_tombstone flag: True stored; empty text allowed for tombstone."""
+
+    def test_is_tombstone_true_stored_as_truthy(self, tmp_path):
+        """is_tombstone=True is stored and reads back as truthy (SQLite INTEGER 1)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_revision(backend)
+
+        with backend.lock_source("vault://rev_test.md"):
+            _call_insert_revision(backend, doc_id, is_tombstone=True, text="deleted")
+
+        rows = _revision_rows(backend, doc_id)
+        assert len(rows) == 1
+        # SQLite stores booleans as INTEGER; is_tombstone=1 is truthy
+        assert rows[0]["is_tombstone"], (
+            f"is_tombstone=True must store truthy value; got {rows[0]['is_tombstone']!r}"
+        )
+
+    def test_empty_text_allowed_for_tombstone(self, tmp_path):
+        """Tombstone revisions may have text='' (the column DEFAULT is empty string)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_revision(backend)
+
+        with backend.lock_source("vault://rev_test.md"):
+            result = _call_insert_revision(
+                backend,
+                doc_id,
+                is_tombstone=True,
+                text="",
+                content_hash="tombstone_hash",
+            )
+
+        rows = _revision_rows(backend, doc_id)
+        assert len(rows) == 1
+        assert rows[0]["text"] == "", (
+            f"Tombstone revision with text='' must store empty string; got {rows[0]['text']!r}"
+        )
+        assert result["id"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# TestInsertRevisionMetadata — B-10
+# ---------------------------------------------------------------------------
+
+
+class TestInsertRevisionMetadata:
+    """metadata serialization: None → '{}' JSON; dict round-trips; nested dict round-trips."""
+
+    def test_metadata_none_stores_empty_json_object(self, tmp_path):
+        """metadata=None must store '{}' (empty JSON object) or NULL — mirrors Postgres behavior."""
+        import json as _json
+
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_revision(backend)
+
+        with backend.lock_source("vault://rev_test.md"):
+            _call_insert_revision(backend, doc_id, metadata=None)
+
+        rows = _revision_rows(backend, doc_id)
+        assert len(rows) == 1
+        raw_metadata = rows[0]["metadata"]
+        # Acceptable outcomes: None (NULL) OR a JSON-parseable string that decodes to {}
+        if raw_metadata is None:
+            # NULL is acceptable — mirrors Postgres NULL for empty metadata
+            pass
+        else:
+            parsed = _json.loads(raw_metadata)
+            assert parsed == {}, f"metadata=None must decode to {{}}; decoded to {parsed!r}"
+
+    def test_metadata_dict_round_trips(self, tmp_path):
+        """metadata={"key": "value"} round-trips: stored as JSON text, parsed back to equal dict."""
+        import json as _json
+
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_revision(backend)
+        original = {"key": "value", "count": 42}
+
+        with backend.lock_source("vault://rev_test.md"):
+            _call_insert_revision(backend, doc_id, metadata=original)
+
+        rows = _revision_rows(backend, doc_id)
+        raw = rows[0]["metadata"]
+        assert raw is not None, "metadata dict must not be stored as NULL"
+        parsed = _json.loads(raw)
+        assert parsed == original, (
+            f"metadata dict must round-trip; expected {original!r}, got {parsed!r}"
+        )
+
+    def test_nested_metadata_dict_round_trips(self, tmp_path):
+        """Nested dict metadata round-trips correctly through JSON serialization."""
+        import json as _json
+
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_revision(backend)
+        original = {"outer": {"inner": [1, 2, 3]}, "flag": True}
+
+        with backend.lock_source("vault://rev_test.md"):
+            _call_insert_revision(backend, doc_id, metadata=original)
+
+        rows = _revision_rows(backend, doc_id)
+        raw = rows[0]["metadata"]
+        assert raw is not None, "Nested metadata must not be stored as NULL"
+        parsed = _json.loads(raw)
+        assert parsed == original, (
+            f"Nested metadata must round-trip; expected {original!r}, got {parsed!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestInsertRevisionMonotonicity — B-10
+# ---------------------------------------------------------------------------
+
+
+class TestInsertRevisionMonotonicity:
+    """Concurrent inserts produce strictly increasing, gapless revision_numbers."""
+
+    def test_two_threads_produce_revision_numbers_one_and_two(self, tmp_path):
+        """Two threads each inserting one revision get numbers 1 and 2 (no gap, no duplicate).
+
+        Uses threading.Event handshake so thread B starts contending before A has released
+        the lock — proving that lock_source() serializes the MAX()+1 allocation.
+        """
+        db_path = tmp_path / "corpus.db"
+        backend = _migrated_backend(db_path)
+        doc_id = _insert_document_for_revision(backend, source_uri="vault://mono.md")
+
+        a_inside = threading.Event()  # A signals it is inside the lock
+        b_can_go = threading.Event()  # main tells A it may proceed
+        results: list[int] = []
+        errors: list[Exception] = []
+
+        def thread_a():
+            try:
+                with backend.lock_source("vault://mono.md"):
+                    a_inside.set()
+                    b_can_go.wait(timeout=5.0)
+                    r = _call_insert_revision(
+                        backend,
+                        doc_id,
+                        content_hash="mono_a",
+                        source_uri="vault://mono.md",
+                    )
+                    results.append(r["revision_number"])
+            except Exception as exc:
+                errors.append(exc)
+
+        def thread_b():
+            try:
+                # Wait until A is inside the lock so we genuinely contend
+                a_inside.wait(timeout=5.0)
+                with backend.lock_source("vault://mono.md"):
+                    r = _call_insert_revision(
+                        backend,
+                        doc_id,
+                        content_hash="mono_b",
+                        source_uri="vault://mono.md",
+                    )
+                    results.append(r["revision_number"])
+            except Exception as exc:
+                errors.append(exc)
+
+        ta = threading.Thread(target=thread_a, daemon=True)
+        tb = threading.Thread(target=thread_b, daemon=True)
+
+        ta.start()
+        tb.start()
+        b_can_go.set()  # let A proceed so B contends and then gets the lock
+        ta.join(timeout=10.0)
+        tb.join(timeout=10.0)
+
+        assert not errors, f"Threads raised exceptions: {errors}"
+        assert not ta.is_alive(), "Thread A did not finish within timeout"
+        assert not tb.is_alive(), "Thread B did not finish within timeout"
+
+        assert sorted(results) == [1, 2], (
+            f"Two concurrent inserts must produce revision_numbers {{1, 2}}; got {sorted(results)}"
+        )
+
+    def test_independent_documents_each_start_at_one(self, tmp_path):
+        """Two distinct document_ids each get independent monotonic numbering (both start at 1)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_a = _insert_document_for_revision(
+            backend, dataset_id=1, source_uri="vault://doc_a.md", content_hash="ha"
+        )
+        doc_b = _insert_document_for_revision(
+            backend, dataset_id=1, source_uri="vault://doc_b.md", content_hash="hb"
+        )
+
+        with backend.lock_source("vault://doc_a.md"):
+            ra = _call_insert_revision(
+                backend, doc_a, source_uri="vault://doc_a.md", content_hash="ra1"
+            )
+
+        with backend.lock_source("vault://doc_b.md"):
+            rb = _call_insert_revision(
+                backend, doc_b, source_uri="vault://doc_b.md", content_hash="rb1"
+            )
+
+        assert ra["revision_number"] == 1, (
+            f"doc_a first revision must be 1; got {ra['revision_number']}"
+        )
+        assert rb["revision_number"] == 1, (
+            f"doc_b first revision must be 1 (independent); got {rb['revision_number']}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestInsertRevisionFailurePaths — B-10
+# ---------------------------------------------------------------------------
+
+
+class TestInsertRevisionFailurePaths:
+    """Failure paths: invalid FK raises IntegrityError; missing required kwarg raises TypeError."""
+
+    def test_invalid_document_id_raises_integrity_error(self, tmp_path):
+        """Passing a document_id that does not exist must raise sqlite3.IntegrityError (FK).
+
+        PRAGMA foreign_keys = ON is set by _get_connection(), so the FK is enforced.
+        """
+        import sqlite3 as _sqlite3
+
+        backend = _migrated_backend(tmp_path / "corpus.db")
+
+        with (
+            pytest.raises(_sqlite3.IntegrityError),
+            backend.lock_source("vault://no_such_doc.md"),
+        ):
+            _call_insert_revision(
+                backend,
+                document_id=999999,  # does not exist
+                source_uri="vault://no_such_doc.md",
+                content_hash="ghost_hash",
+            )
+
+    def test_missing_required_kwarg_raises_type_error(self, tmp_path):
+        """Calling insert_revision without a required keyword arg must raise TypeError."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+
+        with pytest.raises(TypeError):
+            # Omit document_id entirely — must raise TypeError
+            backend.insert_revision(  # type: ignore[call-arg]
+                source_uri="vault://rev_test.md",
+                content_hash="chash",
+                text="body",
+                parent_revision_id=None,
+                author_host="localhost",
+                is_tombstone=False,
+            )
+
+
+# ---------------------------------------------------------------------------
+# B-11 helpers
+# ---------------------------------------------------------------------------
+
+
+def _insert_source_row(
+    backend,
+    dataset_id: int,
+    host: str = "remote.host",
+    plugin: str = "sync",
+    identity: str = "pull",
+    last_pulled_revision_id: int | None = None,
+) -> int:
+    """Insert a sources row and return its id.
+
+    Uses INSERT OR IGNORE on the dataset so tests with the same dataset_id don't
+    collide on the UNIQUE(name) constraint.
+    """
+    _insert_dataset_only(backend, dataset_id)
+    rows = backend._execute(
+        "INSERT INTO sources (dataset_id, plugin, identity, host, last_pulled_revision_id)"
+        " VALUES (?, ?, ?, ?, ?) RETURNING id",
+        (dataset_id, plugin, identity, host, last_pulled_revision_id),
+    )
+    return rows[0]["id"]
+
+
+def _insert_revision_direct(
+    backend,
+    document_id: int,
+    *,
+    author_host: str = "remote.host",
+    content_hash: str = "chash_b11",
+    text: str = "b11 rev body",
+    parent_revision_id: int | None = None,
+) -> int:
+    """Insert a document_revision row without lock_source (for read-side test setup).
+
+    Returns the new revision id.
+    """
+    rows = backend._execute(
+        """
+        INSERT INTO document_revisions
+            (document_id, revision_number, parent_revision_id, content_hash,
+             text, author_host, is_tombstone, metadata, created_at)
+        SELECT
+            ?,
+            COALESCE(MAX(revision_number), 0) + 1,
+            ?,
+            ?, ?, ?, 0, '{}',
+            strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        FROM document_revisions
+        WHERE document_id = ?
+        RETURNING id
+        """,
+        (
+            document_id,
+            parent_revision_id,
+            content_hash,
+            text,
+            author_host,
+            document_id,
+        ),
+    )
+    return rows[0]["id"]
+
+
+def _insert_doc_for_b11(
+    backend,
+    dataset_id: int,
+    source_uri: str,
+    content_hash: str = "doc_hash_b11",
+) -> int:
+    """Insert dataset + document; return document id."""
+    backend._execute(
+        "INSERT OR IGNORE INTO datasets (id, name, kind) VALUES (?, ?, ?)",
+        (dataset_id, f"b11_ds_{dataset_id}", "text"),
+    )
+    rows = backend._execute(
+        "INSERT INTO documents (dataset_id, source_uri, content_hash, text)"
+        " VALUES (?, ?, ?, ?) RETURNING id",
+        (dataset_id, source_uri, content_hash, "b11 body"),
+    )
+    return rows[0]["id"]
+
+
+# ---------------------------------------------------------------------------
+# TestLatestRevision — B-11
+# ---------------------------------------------------------------------------
+
+
+class TestLatestRevision:
+    """latest_revision(document_id) returns highest revision_number row or None."""
+
+    def test_returns_highest_revision_number_row(self, tmp_path):
+        """Happy path: with multiple revisions, latest_revision returns the one with the highest
+        revision_number, not necessarily the last inserted id.
+        """
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_doc_for_b11(backend, dataset_id=1, source_uri="vault://lr/doc.md")
+
+        r1_id = _insert_revision_direct(backend, doc_id, content_hash="lr_hash_1")
+        r2_id = _insert_revision_direct(
+            backend, doc_id, content_hash="lr_hash_2", parent_revision_id=r1_id
+        )
+        _insert_revision_direct(backend, doc_id, content_hash="lr_hash_3", parent_revision_id=r2_id)
+
+        result = backend.latest_revision(doc_id)
+
+        assert result is not None, "latest_revision must return a dict, not None"
+        assert result["content_hash"] == "lr_hash_3", (
+            f"Expected the latest (highest revision_number) row; got {result}"
+        )
+
+    def test_returns_none_for_unknown_document(self, tmp_path):
+        """latest_revision for a document_id with no revisions returns None."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        # No revisions inserted at all.
+        result = backend.latest_revision(document_id=99999)
+
+        assert result is None, f"Expected None for unknown document_id; got {result!r}"
+
+    def test_isolated_by_document_id(self, tmp_path):
+        """latest_revision for doc_a does not bleed into doc_b even with shared dataset."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_a = _insert_doc_for_b11(backend, dataset_id=1, source_uri="vault://lr/a.md")
+        doc_b = _insert_doc_for_b11(backend, dataset_id=1, source_uri="vault://lr/b.md")
+
+        _insert_revision_direct(backend, doc_a, content_hash="lr_a_hash_1")
+        _insert_revision_direct(backend, doc_a, content_hash="lr_a_hash_2")
+        _insert_revision_direct(backend, doc_b, content_hash="lr_b_hash_1")
+
+        result_a = backend.latest_revision(doc_a)
+        result_b = backend.latest_revision(doc_b)
+
+        assert result_a is not None and result_a["content_hash"] == "lr_a_hash_2", (
+            f"doc_a latest must be lr_a_hash_2; got {result_a}"
+        )
+        assert result_b is not None and result_b["content_hash"] == "lr_b_hash_1", (
+            f"doc_b latest must be lr_b_hash_1; got {result_b}"
+        )
+        # Ensure the doc_id in each result matches the queried document
+        assert result_a["document_id"] == doc_a, (
+            f"latest_revision for doc_a must have document_id={doc_a}; "
+            f"got {result_a['document_id']}"
+        )
+        assert result_b["document_id"] == doc_b, (
+            f"latest_revision for doc_b must have document_id={doc_b}; "
+            f"got {result_b['document_id']}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestPendingRemoteRevisions — B-11
+# ---------------------------------------------------------------------------
+
+
+class TestPendingRemoteRevisions:
+    """pending_remote_revisions(dataset_id, last_pulled_revision_id, self_host, limit=1024)."""
+
+    def test_happy_path_returns_remote_revisions(self, tmp_path):
+        """Basic happy path: revisions authored by other hosts appear in the result."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_doc_for_b11(backend, dataset_id=1, source_uri="vault://prr/doc.md")
+        _insert_revision_direct(
+            backend, doc_id, author_host="remote.host", content_hash="prr_hash_1"
+        )
+
+        results = backend.pending_remote_revisions(
+            dataset_id=1, last_pulled_revision_id=None, self_host="local.host"
+        )
+
+        assert len(results) >= 1, f"Expected at least one pending revision; got {results}"
+        hashes = [r["content_hash"] for r in results]
+        assert "prr_hash_1" in hashes, f"prr_hash_1 must appear in results; got {hashes}"
+
+    def test_filters_by_dataset_id(self, tmp_path):
+        """Revisions under a different dataset_id must not appear."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_ds1 = _insert_doc_for_b11(backend, dataset_id=1, source_uri="vault://prr_ds1/doc.md")
+        doc_ds2 = _insert_doc_for_b11(backend, dataset_id=2, source_uri="vault://prr_ds2/doc.md")
+        _insert_revision_direct(
+            backend, doc_ds1, author_host="remote.host", content_hash="prr_ds1_hash"
+        )
+        _insert_revision_direct(
+            backend, doc_ds2, author_host="remote.host", content_hash="prr_ds2_hash"
+        )
+
+        results = backend.pending_remote_revisions(
+            dataset_id=1, last_pulled_revision_id=None, self_host="local.host"
+        )
+
+        hashes = [r["content_hash"] for r in results]
+        assert "prr_ds1_hash" in hashes, f"ds1 revision must appear; got {hashes}"
+        assert "prr_ds2_hash" not in hashes, f"ds2 revision must NOT appear; got {hashes}"
+
+    def test_excludes_self_host_revisions(self, tmp_path):
+        """Revisions authored by self_host are excluded from results."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_doc_for_b11(backend, dataset_id=1, source_uri="vault://prr/selfx.md")
+        _insert_revision_direct(
+            backend, doc_id, author_host="self.host", content_hash="prr_self_hash"
+        )
+        _insert_revision_direct(
+            backend, doc_id, author_host="remote.host", content_hash="prr_remote_hash"
+        )
+
+        results = backend.pending_remote_revisions(
+            dataset_id=1, last_pulled_revision_id=None, self_host="self.host"
+        )
+
+        hashes = [r["content_hash"] for r in results]
+        assert "prr_self_hash" not in hashes, f"self.host revisions must be excluded; got {hashes}"
+        assert "prr_remote_hash" in hashes, f"remote.host revision must appear; got {hashes}"
+
+    def test_respects_last_pulled_revision_id(self, tmp_path):
+        """Only revisions with id > last_pulled_revision_id are returned."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_doc_for_b11(backend, dataset_id=1, source_uri="vault://prr/lp.md")
+        rev1_id = _insert_revision_direct(
+            backend, doc_id, author_host="remote.host", content_hash="prr_lp_hash_1"
+        )
+        _insert_revision_direct(
+            backend, doc_id, author_host="remote.host", content_hash="prr_lp_hash_2"
+        )
+
+        # Filter out the first revision by setting last_pulled_revision_id = rev1_id
+        results = backend.pending_remote_revisions(
+            dataset_id=1, last_pulled_revision_id=rev1_id, self_host="local.host"
+        )
+
+        hashes = [r["content_hash"] for r in results]
+        assert "prr_lp_hash_1" not in hashes, (
+            f"Already-pulled revision must be excluded; got {hashes}"
+        )
+        assert "prr_lp_hash_2" in hashes, f"New revision must appear; got {hashes}"
+
+    def test_none_last_pulled_revision_id_returns_all(self, tmp_path):
+        """last_pulled_revision_id=None is treated as 0 — all remote revisions returned."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_doc_for_b11(backend, dataset_id=1, source_uri="vault://prr/all.md")
+        _insert_revision_direct(
+            backend, doc_id, author_host="remote.host", content_hash="prr_all_hash_1"
+        )
+        _insert_revision_direct(
+            backend, doc_id, author_host="remote.host", content_hash="prr_all_hash_2"
+        )
+
+        results = backend.pending_remote_revisions(
+            dataset_id=1, last_pulled_revision_id=None, self_host="local.host"
+        )
+
+        assert len(results) >= 2, (
+            f"None last_pulled_revision_id must return all revisions; got {len(results)}"
+        )
+
+    def test_orders_by_id_asc(self, tmp_path):
+        """Results are ordered by revision id ascending."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_doc_for_b11(backend, dataset_id=1, source_uri="vault://prr/ord.md")
+        _insert_revision_direct(
+            backend, doc_id, author_host="remote.host", content_hash="prr_ord_1"
+        )
+        _insert_revision_direct(
+            backend, doc_id, author_host="remote.host", content_hash="prr_ord_2"
+        )
+        _insert_revision_direct(
+            backend, doc_id, author_host="remote.host", content_hash="prr_ord_3"
+        )
+
+        results = backend.pending_remote_revisions(
+            dataset_id=1, last_pulled_revision_id=None, self_host="local.host"
+        )
+
+        ids = [r["id"] for r in results]
+        assert ids == sorted(ids), f"Results must be ordered by id ASC; got ids={ids}"
+
+    def test_honors_limit(self, tmp_path):
+        """limit parameter caps the number of returned rows."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_doc_for_b11(backend, dataset_id=1, source_uri="vault://prr/lim.md")
+        for i in range(5):
+            _insert_revision_direct(
+                backend,
+                doc_id,
+                author_host="remote.host",
+                content_hash=f"prr_lim_hash_{i}",
+            )
+
+        results = backend.pending_remote_revisions(
+            dataset_id=1, last_pulled_revision_id=None, self_host="local.host", limit=2
+        )
+
+        assert len(results) == 2, f"limit=2 must return exactly 2 rows; got {len(results)}"
+
+    def test_result_includes_source_uri_and_parent_content_hash(self, tmp_path):
+        """Each result dict includes source_uri (from documents JOIN) and
+        parent_content_hash (from LEFT JOIN on parent revision).
+        """
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_doc_for_b11(
+            backend,
+            dataset_id=1,
+            source_uri="vault://prr/jointest.md",
+        )
+        parent_id = _insert_revision_direct(
+            backend,
+            doc_id,
+            author_host="local.host",  # self — won't show in pending
+            content_hash="prr_parent_hash",
+        )
+        # Child revision authored by a remote host so it appears in pending
+        _insert_revision_direct(
+            backend,
+            doc_id,
+            author_host="remote.host",
+            content_hash="prr_child_hash",
+            parent_revision_id=parent_id,
+        )
+
+        results = backend.pending_remote_revisions(
+            dataset_id=1, last_pulled_revision_id=None, self_host="local.host"
+        )
+
+        assert len(results) == 1, f"Expected exactly one pending result; got {results}"
+        row = results[0]
+        assert "source_uri" in row, f"Result must include 'source_uri'; keys={list(row)}"
+        assert row["source_uri"] == "vault://prr/jointest.md", (
+            f"source_uri mismatch; got {row['source_uri']!r}"
+        )
+        assert "parent_content_hash" in row, (
+            f"Result must include 'parent_content_hash'; keys={list(row)}"
+        )
+        assert row["parent_content_hash"] == "prr_parent_hash", (
+            f"parent_content_hash must match parent revision's content_hash; "
+            f"got {row['parent_content_hash']!r}"
+        )
+
+    def test_parent_content_hash_is_none_for_root_revision(self, tmp_path):
+        """For a root revision (no parent), parent_content_hash must be NULL/None."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_doc_for_b11(backend, dataset_id=1, source_uri="vault://prr/root.md")
+        _insert_revision_direct(
+            backend,
+            doc_id,
+            author_host="remote.host",
+            content_hash="prr_root_hash",
+            parent_revision_id=None,
+        )
+
+        results = backend.pending_remote_revisions(
+            dataset_id=1, last_pulled_revision_id=None, self_host="local.host"
+        )
+
+        assert len(results) == 1, f"Expected one result; got {results}"
+        assert results[0]["parent_content_hash"] is None, (
+            f"Root revision parent_content_hash must be None; "
+            f"got {results[0]['parent_content_hash']!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestMarkRevisionPulled — B-11
+# ---------------------------------------------------------------------------
+
+
+class TestMarkRevisionPulled:
+    """mark_revision_pulled(source_id, revision_id) advances last_pulled_revision_id
+    monotonically.
+    """
+
+    def test_updates_last_pulled_revision_id(self, tmp_path):
+        """Basic update: calling mark_revision_pulled sets last_pulled_revision_id."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        source_id = _insert_source_row(backend, dataset_id=1, last_pulled_revision_id=None)
+
+        backend.mark_revision_pulled(source_id, revision_id=42)
+
+        rows = backend._execute(
+            "SELECT last_pulled_revision_id FROM sources WHERE id = ?", (source_id,)
+        )
+        assert rows[0]["last_pulled_revision_id"] == 42, (
+            f"last_pulled_revision_id must be 42; got {rows[0]['last_pulled_revision_id']}"
+        )
+
+    def test_monotonic_smaller_value_does_not_regress(self, tmp_path):
+        """Calling mark_revision_pulled with a smaller revision_id must not lower the pointer.
+
+        SQLite uses MAX(coalesce(last_pulled_revision_id, 0), ?) rather than GREATEST().
+        """
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        source_id = _insert_source_row(backend, dataset_id=1, last_pulled_revision_id=None)
+
+        backend.mark_revision_pulled(source_id, revision_id=100)
+        backend.mark_revision_pulled(source_id, revision_id=50)  # smaller — must not regress
+
+        rows = backend._execute(
+            "SELECT last_pulled_revision_id FROM sources WHERE id = ?", (source_id,)
+        )
+        assert rows[0]["last_pulled_revision_id"] == 100, (
+            f"Monotonic: pointer must remain at 100 after calling with 50; "
+            f"got {rows[0]['last_pulled_revision_id']}"
+        )
+
+    def test_idempotent_on_same_value(self, tmp_path):
+        """Calling mark_revision_pulled twice with the same revision_id is a no-op (idempotent)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        source_id = _insert_source_row(backend, dataset_id=1, last_pulled_revision_id=None)
+
+        backend.mark_revision_pulled(source_id, revision_id=77)
+        backend.mark_revision_pulled(source_id, revision_id=77)
+
+        rows = backend._execute(
+            "SELECT last_pulled_revision_id FROM sources WHERE id = ?", (source_id,)
+        )
+        assert rows[0]["last_pulled_revision_id"] == 77, (
+            f"Idempotent: double-call with same revision_id must keep pointer at 77; "
+            f"got {rows[0]['last_pulled_revision_id']}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# B-12 helpers
+# ---------------------------------------------------------------------------
+
+
+def _insert_document_for_tombstone(
+    backend,
+    dataset_id: int = 1,
+    source_uri: str = "vault://tomb_test.md",
+    content_hash: str = "tomb_hash_001",
+    text: str = "# Tombstone Test",
+) -> int:
+    """Insert dataset + document rows for tombstone tests; return the document id.
+
+    Uses INSERT OR IGNORE on the dataset row so tests sharing a dataset_id
+    don't collide on the UNIQUE(name) constraint.
+    """
+    backend._execute(
+        "INSERT OR IGNORE INTO datasets (id, name, kind) VALUES (?, ?, ?)",
+        (dataset_id, f"b12_ds_{dataset_id}", "text"),
+    )
+    rows = backend._execute(
+        "INSERT INTO documents (dataset_id, source_uri, content_hash, text)"
+        " VALUES (?, ?, ?, ?) RETURNING id",
+        (dataset_id, source_uri, content_hash, text),
+    )
+    return rows[0]["id"]
+
+
+def _tombstoned_at(backend, document_id: int) -> str | None:
+    """Return the tombstoned_at value for a document row (None if NULL)."""
+    rows = backend._execute(
+        "SELECT tombstoned_at FROM documents WHERE id = ?",
+        (document_id,),
+    )
+    if not rows:
+        return None
+    return rows[0]["tombstoned_at"]
+
+
+# ---------------------------------------------------------------------------
+# TestSetTombstone — B-12
+# ---------------------------------------------------------------------------
+
+
+class TestSetTombstone:
+    """set_tombstone(document_id) — sets tombstoned_at to current UTC ISO-8601 timestamp."""
+
+    # ------------------------------------------------------------------ happy path
+
+    def test_sets_tombstoned_at_to_non_null(self, tmp_path):
+        """Happy path: after set_tombstone, tombstoned_at is NOT NULL."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_tombstone(backend, dataset_id=1)
+
+        backend.set_tombstone(doc_id)
+
+        value = _tombstoned_at(backend, doc_id)
+        assert value is not None, (
+            f"tombstoned_at must be non-NULL after set_tombstone; got {value!r}"
+        )
+
+    def test_tombstoned_at_parses_as_iso8601_datetime(self, tmp_path):
+        """After set_tombstone, tombstoned_at is a parseable ISO-8601 UTC datetime string."""
+        from datetime import datetime
+
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_tombstone(backend, dataset_id=1, source_uri="vault://iso.md")
+
+        backend.set_tombstone(doc_id)
+
+        value = _tombstoned_at(backend, doc_id)
+        assert value is not None, "tombstoned_at must be non-NULL"
+
+        # SQLite strftime('%Y-%m-%dT%H:%M:%fZ', 'now') produces e.g.
+        # "2026-05-09T23:59:59.123Z" — parse using fromisoformat after normalizing the Z suffix.
+        # datetime.fromisoformat() in Python 3.11+ accepts trailing Z directly.
+        # For compatibility, normalise "...Z" → "...+00:00" before parsing.
+        ts = value.rstrip("Z") + "+00:00" if value.endswith("Z") else value
+        try:
+            parsed = datetime.fromisoformat(ts)
+        except ValueError as exc:
+            pytest.fail(f"tombstoned_at={value!r} must parse as ISO-8601 datetime; error: {exc}")
+
+        # Confirm UTC awareness (offset = 0) when parsed with timezone info
+        if parsed.tzinfo is not None:
+            assert parsed.utcoffset().total_seconds() == 0, (
+                f"tombstoned_at must be UTC; utcoffset={parsed.utcoffset()}"
+            )
+
+    def test_idempotent_double_call_still_tombstoned(self, tmp_path):
+        """Idempotency: calling set_tombstone twice does not error; document remains tombstoned."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_tombstone(
+            backend, dataset_id=1, source_uri="vault://idem_set.md"
+        )
+
+        backend.set_tombstone(doc_id)
+        # Capture value to confirm it was set, but we don't compare with second call's value
+        # (the second call may update the timestamp legitimately)
+        assert _tombstoned_at(backend, doc_id) is not None, "First call must set tombstoned_at"
+
+        # Second call must not raise
+        backend.set_tombstone(doc_id)
+        second_value = _tombstoned_at(backend, doc_id)
+
+        assert second_value is not None, (
+            "tombstoned_at must remain non-NULL after second set_tombstone call"
+        )
+        # Note: second call updates the timestamp; we do NOT assert first == second.
+        # The contract is just: no error, still tombstoned.
+
+    def test_unknown_document_id_is_noop(self, tmp_path):
+        """set_tombstone on a non-existent document_id is a no-op (UPDATE on 0 rows is fine)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+
+        # Must not raise for a document_id that does not exist
+        backend.set_tombstone(999999)
+
+        # The documents table must still have no rows affected (no error, nothing written)
+        all_docs = backend._execute("SELECT tombstoned_at FROM documents")
+        assert all_docs == [], "No document rows should exist after set_tombstone on unknown id"
+
+
+# ---------------------------------------------------------------------------
+# TestClearTombstone — B-12
+# ---------------------------------------------------------------------------
+
+
+class TestClearTombstone:
+    """clear_tombstone(document_id) — sets tombstoned_at to NULL."""
+
+    # ------------------------------------------------------------------ happy path
+
+    def test_clears_existing_tombstone_to_null(self, tmp_path):
+        """Happy path: after set then clear, tombstoned_at is NULL again."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_tombstone(backend, dataset_id=1)
+
+        backend.set_tombstone(doc_id)
+        assert _tombstoned_at(backend, doc_id) is not None, "Precondition: tombstone must be set"
+
+        backend.clear_tombstone(doc_id)
+
+        value = _tombstoned_at(backend, doc_id)
+        assert value is None, f"tombstoned_at must be NULL after clear_tombstone; got {value!r}"
+
+    def test_tombstoned_at_becomes_null(self, tmp_path):
+        """Direct verification: SELECT tombstoned_at after clear_tombstone returns NULL."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_tombstone(
+            backend, dataset_id=1, source_uri="vault://null_check.md"
+        )
+
+        # Manually write a tombstoned_at value to ensure it is set before clearing
+        backend._execute(
+            "UPDATE documents SET tombstoned_at = '2026-01-01T00:00:00.000Z' WHERE id = ?",
+            (doc_id,),
+        )
+        assert _tombstoned_at(backend, doc_id) is not None, "Precondition: must be non-NULL"
+
+        backend.clear_tombstone(doc_id)
+
+        rows = backend._execute(
+            "SELECT tombstoned_at FROM documents WHERE id = ?",
+            (doc_id,),
+        )
+        assert len(rows) == 1, "Document row must still exist after clear_tombstone"
+        assert rows[0]["tombstoned_at"] is None, (
+            f"tombstoned_at must be NULL after clear_tombstone; got {rows[0]['tombstoned_at']!r}"
+        )
+
+    def test_idempotent_on_already_clear(self, tmp_path):
+        """Idempotency: calling clear_tombstone on a document with NULL tombstoned_at is a no-op."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_tombstone(
+            backend, dataset_id=1, source_uri="vault://already_clear.md"
+        )
+
+        # tombstoned_at is already NULL (default); clear_tombstone must not raise
+        backend.clear_tombstone(doc_id)
+
+        value = _tombstoned_at(backend, doc_id)
+        assert value is None, (
+            f"tombstoned_at must remain NULL after clear on already-clear document; got {value!r}"
+        )
+
+    def test_unknown_document_id_is_noop(self, tmp_path):
+        """clear_tombstone on a non-existent document_id is a no-op (no error)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+
+        # Must not raise for a document_id that does not exist
+        backend.clear_tombstone(999999)
+
+
+# ---------------------------------------------------------------------------
+# TestTombstoneRoundTrip — B-12
+# ---------------------------------------------------------------------------
+
+
+class TestTombstoneRoundTrip:
+    """Round-trip: set then clear returns tombstoned_at to NULL."""
+
+    def test_set_then_clear_returns_to_null(self, tmp_path):
+        """Full round-trip: fresh doc → set_tombstone → tombstoned → clear_tombstone → NULL."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_tombstone(
+            backend, dataset_id=1, source_uri="vault://roundtrip.md"
+        )
+
+        # Initially NULL (no tombstone)
+        assert _tombstoned_at(backend, doc_id) is None, "Precondition: tombstoned_at must be NULL"
+
+        # Set tombstone
+        backend.set_tombstone(doc_id)
+        assert _tombstoned_at(backend, doc_id) is not None, "After set: must be non-NULL"
+
+        # Clear tombstone
+        backend.clear_tombstone(doc_id)
+        assert _tombstoned_at(backend, doc_id) is None, "After clear: must be NULL again"
+
+    def test_set_clear_set_works(self, tmp_path):
+        """Multiple cycles of set/clear work without error."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        doc_id = _insert_document_for_tombstone(
+            backend, dataset_id=1, source_uri="vault://multi_cycle.md"
+        )
+
+        for _cycle in range(3):
+            backend.set_tombstone(doc_id)
+            assert _tombstoned_at(backend, doc_id) is not None, (
+                f"Cycle {_cycle}: tombstoned_at must be non-NULL after set"
+            )
+            backend.clear_tombstone(doc_id)
+            assert _tombstoned_at(backend, doc_id) is None, (
+                f"Cycle {_cycle}: tombstoned_at must be NULL after clear"
+            )

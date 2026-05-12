@@ -9,6 +9,10 @@ import contextlib
 import json
 import re
 import sqlite3
+import threading
+import time
+from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,7 +23,40 @@ from ..sources.base import RawDocument
 from .sqlite_vec_loader import SQLITE_VEC_AVAILABLE, load_sqlite_vec
 
 if TYPE_CHECKING:
+    import numpy as np
+
     from ..sources.base import RawConversation
+
+
+class _NoCommitConn:
+    """Thin proxy around ``sqlite3.Connection`` that turns ``commit()`` into a no-op.
+
+    Used inside ``lock_source`` so that ``_execute`` calls from the lock body
+    run within the lock's open ``BEGIN IMMEDIATE`` transaction without prematurely
+    committing it.  ``close()`` is also suppressed — the lock context manager
+    owns the connection lifetime.
+
+    All other attribute access is delegated to the underlying connection, so
+    ``execute``, ``row_factory``, ``cursor.description``, and similar attributes
+    behave exactly as on the real connection.
+    """
+
+    def __init__(self, conn: "sqlite3.Connection") -> None:
+        # Use object.__setattr__ so that __getattr__ is not triggered for _conn.
+        object.__setattr__(self, "_conn", conn)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(object.__getattribute__(self, "_conn"), name)
+
+    def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        conn: sqlite3.Connection = object.__getattribute__(self, "_conn")
+        return conn.execute(sql, params)
+
+    def commit(self) -> None:
+        """No-op: lock_source issues the final COMMIT or ROLLBACK."""
+
+    def close(self) -> None:
+        """No-op: lock_source manages the connection lifetime."""
 
 
 class SQLiteBackend:
@@ -102,6 +139,169 @@ class SQLiteBackend:
         if keeper is not None:
             with contextlib.suppress(Exception):
                 keeper.close()
+
+    def _open_connection(self) -> sqlite3.Connection:
+        """Open and return a fresh ``sqlite3.Connection`` for use by ``lock_source``.
+
+        Unlike ``_get_connection`` (a context manager that closes on exit), this
+        method returns the connection directly so that the caller controls its
+        lifetime.  Used by ``lock_source`` to hold a dedicated connection across
+        the entire duration of the context manager body.
+
+        Unlike ``_get_connection``, this helper intentionally does **not** issue
+        ``PRAGMA journal_mode = WAL``.  Changing the journal mode requires a
+        database write-lock, which may be held by a concurrent external writer
+        precisely when ``lock_source`` is contending for entry.  The database is
+        already in WAL mode after ``migrate()`` has run, so re-issuing the
+        PRAGMA is unnecessary.
+
+        The caller is responsible for calling ``conn.close()`` when done.
+        """
+        path_str = str(self.path)
+        # timeout=0: let our Python retry loop (in lock_source) manage the
+        # backoff instead of SQLite's built-in busy handler.  With SQLite's
+        # default timeout=5.0, BEGIN IMMEDIATE would block for up to 5 seconds
+        # internally, making lock_timeout_s unreliable.
+        if path_str == ":memory:":
+            uri = f"file:corpus_forge_mem_{id(self)}?mode=memory&cache=shared"
+            if self._memory_keeper is None:
+                self._memory_keeper = sqlite3.connect(uri, uri=True)
+            conn = sqlite3.connect(uri, uri=True, isolation_level=None, timeout=0)
+        else:
+            conn = sqlite3.connect(path_str, isolation_level=None, timeout=0)
+        conn.row_factory = sqlite3.Row
+        # PRAGMA foreign_keys is a per-connection flag — it does not write to
+        # the database file and does not require a write-lock.  Do NOT issue
+        # PRAGMA journal_mode = WAL here; that modifies the DB header and would
+        # block if another writer holds the write-lock (common during contention).
+        conn.execute("PRAGMA foreign_keys = ON")
+        if SQLITE_VEC_AVAILABLE:
+            load_sqlite_vec(conn)
+        return conn
+
+    # Per-instance write lock: serialises concurrent lock_source calls
+    # from threads within the same process.  This is the intra-process
+    # counterpart to the SQLite ``BEGIN IMMEDIATE`` write lock, which
+    # serialises writers from different processes.
+    _write_lock: threading.Lock
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)  # pyrefly: ignore[bad-argument-type]
+
+    @contextlib.contextmanager  # type: ignore[return]
+    def lock_source(
+        self,
+        key: str,  # noqa: ARG002 — accepted for StorageBackend protocol parity; SQLite uses the global write-lock, not per-key advisory locks
+        lock_timeout_s: float = 30.0,
+    ) -> "AbstractContextManager[None]":  # pyrefly: ignore[bad-return]  # @contextlib.contextmanager transforms the generator into a context manager at runtime; the public return type is AbstractContextManager[None]
+        """Acquire a write-lock for the duration of the ``with`` block.
+
+        SQLite has no per-source advisory locks (unlike ``pg_advisory_lock`` in
+        Postgres).  Instead, this context manager acquires the *global* SQLite
+        write lock via ``BEGIN IMMEDIATE`` on a dedicated connection, which
+        serialises all writers for the lifetime of the block.  The ``key``
+        argument is accepted for protocol parity with ``PostgresBackend.lock_source``
+        but is **ignored** — per-key granularity is unnecessary on a single-machine
+        backend where the global write lock already provides the required isolation.
+
+        On entry:
+            1. Acquire the instance-level Python ``threading.Lock`` to serialise
+               concurrent callers from within the same process.
+            2. Open a dedicated ``sqlite3.Connection`` (separate from ``_execute``
+               connections, which each open and close their own connections).
+            3. Issue ``BEGIN IMMEDIATE`` to acquire the database write lock.
+               If another writer holds the lock, retry with exponential back-off
+               (starting at 0.01 s, doubling each retry, capped at 1.0 s) until
+               ``lock_timeout_s`` seconds have elapsed, then re-raise the
+               ``OperationalError``.
+            4. Temporarily replace the ``_get_connection`` instance attribute
+               with a context manager that yields a ``_NoCommitConn`` proxy
+               wrapping the dedicated connection.  This causes all
+               ``_execute`` calls made in the lock body to run their SQL
+               within the same ``BEGIN IMMEDIATE`` transaction without
+               prematurely committing it.
+
+        On exit (no exception):
+            ``COMMIT`` the dedicated connection, restore ``_get_connection``,
+            and close the connection.  Releases the Python threading lock.
+
+        On exit (exception):
+            ``ROLLBACK`` the dedicated connection, restore ``_get_connection``,
+            and close the connection.  Releases the Python threading lock.
+            Re-raises the exception.
+
+        Args:
+            key: Advisory-lock key accepted for protocol symmetry.  **Ignored.**
+            lock_timeout_s: Maximum seconds to wait for ``BEGIN IMMEDIATE`` to
+                succeed before raising ``OperationalError``.  Default 30.0 s.
+
+        Yields:
+            None
+
+        Raises:
+            sqlite3.OperationalError: If the write lock cannot be acquired within
+                ``lock_timeout_s`` seconds.
+        """
+        if not hasattr(self, "_write_lock"):
+            # Lazily initialise the threading lock on the first call.
+            # A race on first access is harmless: two threads both constructing
+            # a Lock and one winning the attribute set is safe because
+            # threading.Lock is reentrant-free and the losing thread discards its
+            # Lock.  Use object.__setattr__ to bypass any future __setattr__.
+            object.__setattr__(self, "_write_lock", threading.Lock())
+
+        lock = self._write_lock
+        lock.acquire()
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = self._open_connection()
+            # Attempt BEGIN IMMEDIATE with exponential back-off.
+            deadline = time.monotonic() + lock_timeout_s
+            delay = 0.01
+            while True:
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if "database is locked" not in str(exc).lower():
+                        raise
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise
+                    sleep_for = min(delay, remaining)
+                    time.sleep(sleep_for)
+                    delay = min(delay * 2, 1.0)
+
+            # Build a _get_connection replacement that routes all _execute calls
+            # from the lock body through the dedicated connection (wrapped in
+            # _NoCommitConn to suppress premature commits).
+            _lock_conn = conn
+
+            @contextlib.contextmanager  # type: ignore[return]
+            def _lock_get_connection():  # type: ignore[return]
+                yield _NoCommitConn(_lock_conn)
+
+            # Shadow the class method with an instance attribute so that
+            # _execute's `with self._get_connection() as conn:` call picks up
+            # this proxy for the duration of the lock body.
+            self._get_connection = _lock_get_connection  # type: ignore[method-assign]
+            try:
+                yield
+            except BaseException:
+                with contextlib.suppress(Exception):
+                    _lock_conn.execute("ROLLBACK")
+                raise
+            else:
+                _lock_conn.execute("COMMIT")
+            finally:
+                # Always restore the original class-level _get_connection.
+                with contextlib.suppress(AttributeError):
+                    del self._get_connection  # type: ignore[misc]
+        finally:
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()
+            lock.release()
 
     # SQL keywords that begin a valid top-level statement.  Fragments that do
     # not start with one of these (after comment-stripping) are artefacts of
@@ -730,3 +930,311 @@ class SQLiteBackend:
                 )
 
         return conv_id
+
+    def write_embeddings(
+        self,
+        embedder_id: int,
+        pairs: list[tuple[int, "np.ndarray"]],  # pyrefly: ignore[missing-import]
+    ) -> None:
+        """Insert (or replace) embedding rows for a set of (chunk_id, vector) pairs.
+
+        Mirrors ``PostgresBackend.write_embeddings``:
+
+        - Empty ``pairs`` → no-op, no error.
+        - Unknown ``embedder_id`` → raises ``ValueError`` (same as Postgres).
+        - Duplicate ``chunk_id``: uses DELETE-then-INSERT for vec0 virtual tables
+          (which do not support ``ON CONFLICT``); uses ``INSERT OR REPLACE`` for
+          the plain-BLOB fallback table.
+        - Vectors are converted to ``float32`` before serialization.
+
+        Args:
+            embedder_id: Primary key from the ``embedders`` table.
+            pairs: List of ``(chunk_id, np.ndarray)`` pairs to store.
+        """
+        if not pairs:
+            return
+
+        import numpy as np  # noqa: PLC0415
+
+        embedder_rows = self._execute(
+            "SELECT table_name FROM embedders WHERE id = ?",
+            (embedder_id,),
+        )
+        if not embedder_rows:
+            raise ValueError(f"Embedder with ID {embedder_id} not found")
+
+        table_name = embedder_rows[0]["table_name"]
+
+        if SQLITE_VEC_AVAILABLE:
+            from sqlite_vec import serialize_float32  # noqa: PLC0415
+
+            for chunk_id, arr in pairs:
+                vec = np.asarray(arr, dtype=np.float32)
+                blob = serialize_float32(vec.tolist())
+                # vec0 does not support INSERT OR REPLACE / ON CONFLICT;
+                # use DELETE-then-INSERT to achieve idempotent upsert.
+                self._execute(
+                    f"DELETE FROM {table_name} WHERE chunk_id = ?",
+                    (chunk_id,),
+                )
+                self._execute(
+                    f"INSERT INTO {table_name} (chunk_id, embedder_id, embedding) VALUES (?, ?, ?)",
+                    (chunk_id, embedder_id, blob),
+                )
+        else:
+            for chunk_id, arr in pairs:
+                vec = np.asarray(arr, dtype=np.float32)
+                blob = vec.tobytes()
+                self._execute(
+                    f"INSERT OR REPLACE INTO {table_name}"
+                    f" (chunk_id, embedder_id, embedding)"
+                    f" VALUES (?, ?, ?)",
+                    (chunk_id, embedder_id, blob),
+                )
+
+    def chunks_missing_embedding(
+        self, embedder_id: int, limit: int = 1024
+    ) -> "Iterator[tuple[int, str]]":
+        """Return chunks that have no embedding for the given embedder.
+
+        Mirrors ``PostgresBackend.chunks_missing_embedding``:
+
+        - Unknown ``embedder_id`` → returns empty (no table to query).
+        - Returns a generator of ``(chunk_id: int, text: str)`` tuples.
+        - Results are ordered by ``chunks.id`` and capped by ``limit``.
+
+        Args:
+            embedder_id: Primary key from the ``embedders`` table.
+            limit: Maximum number of rows to return (default 1024).
+        """
+        embedder_rows = self._execute(
+            "SELECT table_name FROM embedders WHERE id = ?",
+            (embedder_id,),
+        )
+        if not embedder_rows:
+            return
+
+        table_name = embedder_rows[0]["table_name"]
+
+        rows = self._execute(
+            f"SELECT c.id, c.text FROM chunks c"
+            f" WHERE NOT EXISTS ("
+            f"   SELECT 1 FROM {table_name} e"
+            f"   WHERE e.chunk_id = c.id AND e.embedder_id = ?"
+            f" )"
+            f" ORDER BY c.id LIMIT ?",
+            (embedder_id, limit),
+        )
+        for row in rows:
+            yield (row["id"], row["text"])
+
+    # ── Document / Conversation lifecycle helpers (B-09) ─────────────────────
+
+    def delete_document(self, dataset_id: int, source_uri: str) -> None:
+        """Delete a document and its chunks (FK CASCADE).
+
+        Idempotent: deleting a non-existent row is a no-op.
+        """
+        self._execute(
+            "DELETE FROM documents WHERE dataset_id = ? AND source_uri = ?",
+            (dataset_id, source_uri),
+        )
+
+    def delete_conversation(self, dataset_id: int, source_uri: str) -> None:
+        """Delete a conversation and its messages/chunks (FK CASCADE).
+
+        Idempotent: deleting a non-existent row is a no-op.
+        """
+        self._execute(
+            "DELETE FROM conversations WHERE dataset_id = ? AND source_uri = ?",
+            (dataset_id, source_uri),
+        )
+
+    def find_document(self, dataset_id: int, source_uri: str) -> "dict | None":
+        """Look up a documents row without creating one.
+
+        Returns None if no row exists for (dataset_id, source_uri).
+        Read-only; never inserts.
+        """
+        rows = self._execute(
+            "SELECT id, content_hash FROM documents WHERE dataset_id = ? AND source_uri = ?",
+            (dataset_id, source_uri),
+        )
+        return rows[0] if rows else None
+
+    def resolve_document(self, dataset_id: int, source_uri: str) -> "dict | None":
+        """Idempotently look up or create a documents stub row.
+
+        Returns the row as a dict with at least ``id`` and ``content_hash``.
+        For new rows, inserts with empty text, empty content_hash, NULL title,
+        and empty metadata.  Returns None only if source_uri is an empty string.
+
+        Use this method when the caller must ensure a row exists (e.g. push
+        handle_change).  For delete-side lookups that must NOT create stubs,
+        use ``find_document`` instead.
+        """
+        if not source_uri:
+            return None
+        rows = self._execute(
+            "SELECT id, content_hash FROM documents WHERE dataset_id = ? AND source_uri = ?",
+            (dataset_id, source_uri),
+        )
+        if rows:
+            return rows[0]
+        result = self._execute(
+            "INSERT INTO documents (dataset_id, source_uri, content_hash, text, metadata)"
+            " VALUES (?, ?, '', '', '{}')"
+            " RETURNING id, content_hash",
+            (dataset_id, source_uri),
+        )
+        return result[0] if result else None
+
+    def resolve_self_source(self, dataset_id: int, host: str) -> int:
+        """Upsert a sources row for this host's pull tracker and return its id.
+
+        Keyed on (dataset_id, plugin='sync', identity='pull', host) UNIQUE.
+        Idempotent: same args always return the same integer id.
+        """
+        rows = self._execute(
+            "SELECT id FROM sources"
+            " WHERE dataset_id = ? AND plugin = ? AND identity = ? AND host = ?",
+            (dataset_id, "sync", "pull", host),
+        )
+        if rows:
+            return int(rows[0]["id"])
+        result = self._execute(
+            "INSERT INTO sources (dataset_id, plugin, identity, host)"
+            " VALUES (?, ?, ?, ?)"
+            " RETURNING id",
+            (dataset_id, "sync", "pull", host),
+        )
+        return int(result[0]["id"])
+
+    def insert_revision(
+        self,
+        *,
+        document_id: int,
+        source_uri: str,  # noqa: ARG002 — part of public API (base.py); not stored in SQL directly
+        content_hash: str,
+        text: str,
+        parent_revision_id: int | None,
+        author_host: str,
+        is_tombstone: bool,
+        metadata: dict | None = None,
+    ) -> dict:
+        """Insert a new revision, returning id + revision_number.
+
+        Callers are expected to already hold ``lock_source(source_uri)`` so that
+        the ``MAX(revision_number)+1`` allocation is atomic.  The lock is not
+        acquired internally to avoid double-lock (BEGIN IMMEDIATE is non-reentrant).
+        """
+        max_row = self._execute(
+            "SELECT MAX(revision_number) AS max FROM document_revisions WHERE document_id = ?",
+            (document_id,),
+        )
+        revision_number = (max_row[0]["max"] or 0) + 1
+        metadata_json = json.dumps(metadata if metadata is not None else {})
+        result = self._execute(
+            """
+            INSERT INTO document_revisions
+            (document_id, revision_number, parent_revision_id, content_hash,
+             text, author_host, is_tombstone, metadata,
+             created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?,
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            RETURNING id, revision_number
+            """,
+            (
+                document_id,
+                revision_number,
+                parent_revision_id,
+                content_hash,
+                text,
+                author_host,
+                int(is_tombstone),
+                metadata_json,
+            ),
+        )
+        return {"id": result[0]["id"], "revision_number": result[0]["revision_number"]}
+
+    def latest_revision(self, document_id: int) -> dict | None:
+        """Return the highest revision_number row for a document, or None."""
+        rows = self._execute(
+            "SELECT * FROM document_revisions"
+            " WHERE document_id = ? ORDER BY revision_number DESC LIMIT 1",
+            (document_id,),
+        )
+        return rows[0] if rows else None
+
+    def pending_remote_revisions(
+        self,
+        dataset_id: int,
+        last_pulled_revision_id: int | None,
+        self_host: str,
+        *,
+        limit: int = 1024,
+    ) -> list[dict]:
+        """Return revisions from other hosts not yet pulled.
+
+        Each returned dict includes ``source_uri`` (from documents) and
+        ``parent_content_hash`` (from the parent revision row) in addition to
+        all columns of document_revisions.
+
+        ``last_pulled_revision_id=None`` is coerced to 0 (return everything).
+        SQLite uses identical JOIN syntax to Postgres; no dialect changes needed.
+        """
+        last_id = last_pulled_revision_id if last_pulled_revision_id is not None else 0
+        return self._execute(
+            """
+            SELECT r.*,
+                   d.source_uri AS source_uri,
+                   parent.content_hash AS parent_content_hash
+            FROM document_revisions r
+            JOIN documents d ON d.id = r.document_id
+            LEFT JOIN document_revisions parent ON parent.id = r.parent_revision_id
+            WHERE d.dataset_id = ? AND r.id > ? AND r.author_host <> ?
+            ORDER BY r.id ASC LIMIT ?
+            """,
+            (dataset_id, last_id, self_host, limit),
+        )
+
+    def mark_revision_pulled(self, source_id: int, revision_id: int) -> None:
+        """Advance last_pulled_revision_id for a source, monotonically.
+
+        SQLite does not have GREATEST(); use MAX(a, b) which works as a scalar
+        function when called with two arguments in an expression context.
+        """
+        self._execute(
+            "UPDATE sources"
+            " SET last_pulled_revision_id = MAX(COALESCE(last_pulled_revision_id, 0), ?)"
+            " WHERE id = ?",
+            (revision_id, source_id),
+        )
+
+    # ── Tombstone helpers (B-12) ──────────────────────────────────────────────
+
+    def set_tombstone(self, document_id: int) -> None:
+        """Mark a document as tombstoned with the current UTC timestamp.
+
+        Uses SQLite's strftime to produce an ISO-8601 string with millisecond
+        precision ending in 'Z' (e.g. "2026-05-09T23:59:59.123Z").
+        Idempotent: calling again updates tombstoned_at to the new current time.
+        Unknown document_id is a no-op (UPDATE on 0 rows).
+        """
+        self._execute(
+            "UPDATE documents"
+            " SET tombstoned_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+            " WHERE id = ?",
+            (document_id,),
+        )
+
+    def clear_tombstone(self, document_id: int) -> None:
+        """Remove tombstone from a document by setting tombstoned_at to NULL.
+
+        Idempotent: calling on a document already NULL is a no-op.
+        Unknown document_id is a no-op (UPDATE on 0 rows).
+        """
+        self._execute(
+            "UPDATE documents SET tombstoned_at = NULL WHERE id = ?",
+            (document_id,),
+        )
