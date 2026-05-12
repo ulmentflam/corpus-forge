@@ -127,6 +127,19 @@ class Config(BaseModel):
                 raise ValueError(f"Dataset '{dataset.name}' must have at least one source")
         return self
 
+    @model_validator(mode="after")
+    def validate_sync_gate(self):
+        """Reject sync_enabled=True for any dataset when backend is sqlite.
+
+        SQLite is single-host; cross-host sync requires the Postgres backend.
+        """
+        if self.backend.kind == "sqlite" and any(ds.sync_enabled for ds in self.datasets):
+            raise ValueError(
+                "Cross-host sync requires the postgres backend; SQLite is single-host. "
+                "Set sync_enabled = false or switch backend.kind to 'postgres'."
+            )
+        return self
+
     def host_id(self) -> str:
         if self.daemon.host_id:
             return self.daemon.host_id
