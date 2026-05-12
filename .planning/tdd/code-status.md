@@ -146,6 +146,7 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 | B-07 | green | 17/17 tests green. `write_embeddings` (DELETE+INSERT for vec0, INSERT OR REPLACE for BLOB fallback) + `chunks_missing_embedding` (NOT EXISTS subquery). sqlite.py grew by ~90 LOC. All gates clean. |
 | B-08 | green | 12/12 tests green. `lock_source` implemented with threading.Lock + BEGIN IMMEDIATE + `_NoCommitConn` proxy. All gates clean. |
 | B-09 | green | 23/23 tests green. 5 additive methods: delete_document, delete_conversation, find_document, resolve_document, resolve_self_source. All 4 gates clean. |
+| B-14 | green | 86 passed, 1 xfailed (scoped: test_config_extended.py + test_daemon.py). Full unit suite: 1056 passed, 8 skipped, 1 xfailed, 0 B-14 regressions (3 pre-existing B-13 WT failures unaffected). Validator: `validate_sync_gate` on `Config`. |
 
 ## B-07
 - Source files: `corpus_forge/backends/sqlite.py` (additive — two new methods)
