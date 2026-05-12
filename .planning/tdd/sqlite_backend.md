@@ -133,6 +133,25 @@ To unblock: the user needs to either (a) start the next principal session in an 
 
 State at W4 close: 1067 unit + 243 integration + 10 smoke green; coverage 91.86%; all 4 gates clean. Ready for **W5 (B-17 docs)** — the final wave of Phase B.
 
+#### 2026-05-12T17:00Z — lane A (orchestrator) — W5 COMPLETE / Phase B COMPLETE
+
+**W5 closed.** B-17 docs landed across four files (architecture, schema, README, config.example.toml).
+
+Surprises grounded during writing:
+- Postgres schema SQL lives at top-level `corpus_forge/schema/` (not `schema/postgres/` as the board spec implied). Docs reflect actual layout.
+- `_execute` strips `AUTOINCREMENT` at runtime even though SQLite DDL files contain it; called out in dialect table.
+- `lock_source(key)` accepts the key arg but ignores it on SQLite (uses the global write lock); called out in both architecture comparison and schema dialect docs.
+- README's "Supported backends" + "[backend] kind" still listed SQLite as planned — both flipped to shipped reality (trivially in-scope cleanup).
+
+**Phase B COMPLETE.** All 18 tasks (B-01..B-18) qa-approved or green. SQLiteBackend is feature-complete, wired into the ingest + embed entry points, gated against cross-host sync at config-construction time, integration-tested (107 sqlite + 34 dual-backend), E2E-smoked, and documented.
+
+Final tally:
+- Production code: `corpus_forge/backends/sqlite.py` (full StorageBackend protocol), `corpus_forge/backends/base.py` (3 new protocol methods), `corpus_forge/backends/postgres.py` (parity impls), `corpus_forge/ingest.py` + `embed.py` (wiring + sources registration), `corpus_forge/config.py` (`validate_sync_gate`).
+- Tests: 1067 unit + 243 integration + 10 smoke; coverage 91.86%; pyrefly `missing-attribute` suppressions reduced 18 → 14 (real leaks removed, not bypassed).
+- Docs: SQLite section in architecture + schema; SQLite quickstart in README; SQLite config example.
+
+All 4 gates clean at phase close. No outstanding follow-ups.
+
 ## Context
 
 corpus-forge currently has one storage backend (`PostgresBackend`, 924 LOC) implementing the full `StorageBackend` protocol. Phase B adds a second backend, `SQLiteBackend`, so single-machine users can run corpus-forge without a Postgres server. SQLite is well-suited for the single-host use case: low setup cost, file-based, fast for sub-million-row corpora.
