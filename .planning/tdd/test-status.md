@@ -1421,3 +1421,37 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   All failures: AttributeError: 'SQLiteBackend' object has no attribute 'set_tombstone'
   ```
 - Status: red — handed off to tdd-coder
+
+## B-14
+- Test files:
+  - `tests/unit/test_config_extended.py` (class `TestSyncGateValidator`, 14 new methods — 9 rejection/happy-path + 1 xfail + 4 toml/field-order variants)
+  - `tests/unit/test_daemon.py` (class `TestDaemonRespectsConfigValidator`, 3 new methods)
+- Run command: `PYTHONPATH=. uv run pytest tests/unit/test_config_extended.py::TestSyncGateValidator tests/unit/test_daemon.py::TestDaemonRespectsConfigValidator -v`
+- Edge case checklist:
+  - [x] happy path — sqlite+all-sync-disabled OK; postgres+mixed-sync OK (2 happy tests in config_extended)
+  - [x] boundaries — empty datasets list; single offending dataset; last-of-three offending dataset
+  - [x] type/format — TOML-based load path tested; constructor dict path tested
+  - [x] state — field-order invariance (datasets-first vs backend-first in kwargs dict)
+  - [N/A] concurrency — pure Pydantic validator, no shared state
+  - [N/A] failure paths — validator IS the failure path; tested via rejection tests
+  - [N/A] locale/time — not applicable
+  - [x] production-realistic — TOML fixture mirrors real user config shape
+  - [x] regression hooks — daemon test pins the contract that validator fires before run_daemon
+  - [x] optional nice-to-have — xfail test for "names offending dataset in error" (non-strict)
+- Red output (tail):
+  ```
+  XFAIL tests/unit/test_config_extended.py::TestSyncGateValidator::test_optional_error_names_offending_dataset
+  FAILED tests/unit/test_config_extended.py::TestSyncGateValidator::test_rejection_single_dataset_sync_enabled_sqlite
+  FAILED tests/unit/test_config_extended.py::TestSyncGateValidator::test_rejection_error_message_exact_text
+  FAILED tests/unit/test_config_extended.py::TestSyncGateValidator::test_rejection_multiple_datasets_one_sync_enabled
+  FAILED tests/unit/test_config_extended.py::TestSyncGateValidator::test_rejection_second_dataset_triggers_validator
+  FAILED tests/unit/test_config_extended.py::TestSyncGateValidator::test_rejection_all_datasets_sync_enabled_sqlite
+  FAILED tests/unit/test_config_extended.py::TestSyncGateValidator::test_field_order_invariance_datasets_first
+  FAILED tests/unit/test_config_extended.py::TestSyncGateValidator::test_field_order_invariance_backend_first
+  FAILED tests/unit/test_config_extended.py::TestSyncGateValidator::test_rejection_via_toml_load
+  FAILED tests/unit/test_daemon.py::TestDaemonRespectsConfigValidator::test_config_construction_raises_before_run_daemon
+  FAILED tests/unit/test_daemon.py::TestDaemonRespectsConfigValidator::test_run_daemon_never_called_with_offending_config
+  10 failed, 6 passed, 1 xfailed in 2.29s
+  All failures: Failed: DID NOT RAISE <class 'pydantic_core._pydantic_core.ValidationError'>
+  ```
+- Status: red — handed off to tdd-coder
