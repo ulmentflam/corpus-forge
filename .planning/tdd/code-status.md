@@ -265,3 +265,24 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 - Diff scope: within surface — yes (`corpus_forge/backends/sqlite.py` only, additive)
 - Design notes: `set_tombstone` uses `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` for ISO-8601 with millisecond precision UTC (SQLite equivalent of Postgres `NOW()`). `clear_tombstone` sets `tombstoned_at = NULL`. Both are idempotent; unknown document_id is a no-op (UPDATE on 0 rows). W2 complete: B-04..B-12 all green.
 - Status: green — handed off to tdd-qa
+
+## B-18 follow-up (dialect-lift fix)
+- Source files:
+  - `corpus_forge/backends/base.py` — added `get_or_create_dataset`, `find_dataset_id_by_name`, `register_source` to protocol
+  - `corpus_forge/backends/postgres.py` — implemented all 3 methods with `%s` + `corpus.` prefix
+  - `corpus_forge/backends/sqlite.py` — implemented all 3 methods with `?` + bare table names + `RETURNING id`
+  - `corpus_forge/ingest.py` — `_get_or_create_dataset` now delegates to `backend.get_or_create_dataset()`; `ingest_once` calls `backend.register_source()` per source; `import socket` added
+  - `corpus_forge/embed.py` — dataset lookup now uses `backend.find_dataset_id_by_name()`; drops `backend._execute` call
+- Test files modified: YES — 3 unit test files updated (justified: they tested the OLD `_execute`-based implementation that used Postgres-specific SQL, which is exactly the dialect leak being fixed)
+  - `tests/unit/test_ingest_core.py` — `TestGetOrCreateDataset` mocks updated from `_execute` to `get_or_create_dataset`
+  - `tests/unit/test_ingest_extended.py` — same
+  - `tests/unit/test_embed_extended.py` — `TestBackfillDatasetFiltering.test_backfill_with_dataset_filter` mock updated from `_execute` to `find_dataset_id_by_name`
+- Gates:
+  - format: ✓ (`ruff format --check corpus_forge tests` — 98 files already formatted)
+  - lint: ✓ (`ruff check corpus_forge tests` — All checks passed)
+  - typecheck: ✓ (`pyrefly check corpus_forge` — 0 errors, 14 suppressed down from 18; 2 `pyrefly: ignore[missing-attribute]` removed from ingest.py, 1 from embed.py; 1 suppressed warning unrelated to this task also collapsed)
+  - test: ✓ (smoke: 1/1 green; unit: 1067 passed, 1 xfailed, 0 failed, 91.86% coverage; integration: 243/243 passed)
+- Diff scope: within surface — yes (base.py, postgres.py, sqlite.py, ingest.py, embed.py + 3 test files for sympathetic mock updates)
+- SQLite choice: used `RETURNING id` (already used extensively throughout sqlite.py — the project targets SQLite >= 3.35). `lastrowid` not needed.
+- Other dialect leaks found beyond the 3 known sites: NONE. The smoke test surface is the contract.
+- Status: green — handed off to tdd-qa

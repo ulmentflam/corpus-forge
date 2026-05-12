@@ -234,22 +234,21 @@ class TestGetOrCreateDataset:
     def test_get_existing_dataset(self):
         """Test getting an existing dataset."""
         backend = MagicMock()
-        backend._execute.return_value = [{"id": 42}]
+        backend.get_or_create_dataset.return_value = 42
 
         dataset_config = MagicMock()
         dataset_config.name = "existing-dataset"
+        dataset_config.kind = "text"
+        dataset_config.description = ""
 
         result = _get_or_create_dataset(backend, dataset_config)
         assert result == 42
-        backend._execute.assert_called_once()
+        backend.get_or_create_dataset.assert_called_once()
 
     def test_create_new_dataset(self):
         """Test creating a new dataset."""
         backend = MagicMock()
-        backend._execute.side_effect = [
-            [],  # not found
-            [{"id": 99}],  # RETURNING id
-        ]
+        backend.get_or_create_dataset.return_value = 99
 
         dataset_config = MagicMock()
         dataset_config.name = "new-dataset"
@@ -258,7 +257,9 @@ class TestGetOrCreateDataset:
 
         result = _get_or_create_dataset(backend, dataset_config)
         assert result == 99
-        assert backend._execute.call_count == 2
+        backend.get_or_create_dataset.assert_called_once_with(
+            name="new-dataset", kind="text", description="A new dataset"
+        )
 
 
 class TestInstantiateSource:

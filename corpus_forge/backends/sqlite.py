@@ -1238,3 +1238,59 @@ class SQLiteBackend:
             "UPDATE documents SET tombstoned_at = NULL WHERE id = ?",
             (document_id,),
         )
+
+    # ── Dataset helpers (B-18 dialect-lift) ──────────────────────────────────
+
+    def get_or_create_dataset(self, name: str, kind: str, description: str) -> int:
+        """Return the id of the named dataset, creating it if absent.
+
+        SELECT-first then INSERT pattern: avoids INSERT OR IGNORE semantics
+        so that the description/kind are always set correctly on first creation.
+        Uses bare table name ``datasets`` (no ``corpus.`` prefix — SQLite has
+        no schema namespacing) and ``?`` placeholders.
+        """
+        existing = self._execute(
+            "SELECT id FROM datasets WHERE name = ?",
+            (name,),
+        )
+        if existing:
+            return existing[0]["id"]
+        result = self._execute(
+            """
+            INSERT INTO datasets (name, kind, description)
+            VALUES (?, ?, ?)
+            RETURNING id
+            """,
+            (name, kind, description),
+        )
+        return result[0]["id"]
+
+    def find_dataset_id_by_name(self, name: str) -> int | None:
+        """Return the id of the named dataset, or None if it does not exist."""
+        rows = self._execute(
+            "SELECT id FROM datasets WHERE name = ?",
+            (name,),
+        )
+        return rows[0]["id"] if rows else None
+
+    def register_source(self, dataset_id: int, plugin: str, identity: str, host: str) -> int:
+        """Upsert a sources row for a plugin/identity/host triple and return its id.
+
+        Mirrors ``resolve_self_source`` but accepts arbitrary plugin and identity
+        values, so ingest can register the actual source plugin (e.g.
+        ``plugin='markdown_vault'``) rather than the sync-specific ``'sync'/'pull'``.
+        """
+        rows = self._execute(
+            "SELECT id FROM sources"
+            " WHERE dataset_id = ? AND plugin = ? AND identity = ? AND host = ?",
+            (dataset_id, plugin, identity, host),
+        )
+        if rows:
+            return int(rows[0]["id"])
+        result = self._execute(
+            "INSERT INTO sources (dataset_id, plugin, identity, host)"
+            " VALUES (?, ?, ?, ?)"
+            " RETURNING id",
+            (dataset_id, plugin, identity, host),
+        )
+        return int(result[0]["id"])

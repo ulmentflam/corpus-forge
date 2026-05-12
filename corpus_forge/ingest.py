@@ -1,6 +1,7 @@
 """Ingestion orchestrator for corpus-forge."""
 
 import logging
+import socket
 
 from .backends.base import StorageBackend
 from .chunkers.base import Chunker
@@ -221,6 +222,15 @@ def ingest_once(config: Config) -> None:
             # Instantiate source
             source = _instantiate_source(source_config)
 
+            # Register source in the DB (idempotent) so the sources table
+            # tracks which plugin/identity/host contributed to this dataset.
+            backend.register_source(
+                dataset_id,
+                source.name,
+                source.identity(),
+                socket.gethostname(),
+            )
+
             # Get chunker for this source
             chunker = get_chunker_for_source(source, config)
 
@@ -236,24 +246,11 @@ def ingest_once(config: Config) -> None:
 
 def _get_or_create_dataset(backend: StorageBackend, dataset_config) -> int:
     """Get or create dataset record, returning dataset ID."""
-    # Check if dataset exists
-    existing = backend._execute(  # pyrefly: ignore[missing-attribute]  # _execute is PostgresBackend-specific; helper functions are internal
-        "SELECT id FROM corpus.datasets WHERE name = %s", (dataset_config.name,)
+    return backend.get_or_create_dataset(
+        name=dataset_config.name,
+        kind=dataset_config.kind,
+        description=dataset_config.description or "",
     )
-
-    if existing:
-        return existing[0]["id"]
-
-    # Create new dataset
-    result = backend._execute(  # pyrefly: ignore[missing-attribute]  # _execute is PostgresBackend-specific; helper functions are internal
-        """
-        INSERT INTO corpus.datasets (name, kind, description)
-        VALUES (%s, %s, %s)
-        RETURNING id
-        """,
-        (dataset_config.name, dataset_config.kind, dataset_config.description or ""),
-    )
-    return result[0]["id"]
 
 
 def _instantiate_source(source_config):
