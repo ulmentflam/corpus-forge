@@ -1536,3 +1536,30 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   ============================= 107 passed in 4.99s ==============================
   ```
 - Status: green — characterization tests pass against existing production code
+
+## B-18
+- Test files: `tests/smoke/test_smoke_sqlite.py`
+- Run command: `PYTHONPATH=. uv run pytest tests/smoke/test_smoke_sqlite.py -v`
+- Edge case checklist:
+  - [x] happy path — 3-file vault, 1 embedder, all rows verified after ingest_once
+  - [ ] N/A — boundaries (smoke = one happy path; edge cases belong to unit suite)
+  - [ ] N/A — type/format (smoke test does not test invalid inputs)
+  - [ ] N/A — state (first-run only; idempotency covered by existing unit tests)
+  - [ ] N/A — concurrency (single-threaded smoke; SQLite concurrency in B-08 unit tests)
+  - [ ] N/A — failure paths (smoke = happy path only)
+  - [ ] N/A — locale/time (no time-sensitive assertions)
+  - [x] production-realistic data — real markdown files, real Config object, real SQLite db file under tmp_path
+  - [ ] N/A — regression hooks (no specific bug referenced)
+- Bug surfaced: `ingest.py:_get_or_create_dataset` uses `corpus.datasets` schema-qualified table name and `%s` Postgres-style placeholders. SQLite has no `corpus` attached schema and its sqlite3 module requires `?` placeholders. Both issues raise `sqlite3.OperationalError: near "%": syntax error` on the first `_execute` call inside `ingest_once`. This function was not updated as part of B-13 wiring. Coder must fix `_get_or_create_dataset` to use unqualified table names and `?` placeholders (or backend-dispatch the placeholder style).
+- Red output (tail):
+  ```
+  with self._get_connection() as conn:
+      try:
+  >       cursor = conn.execute(sql_body, params)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  E   sqlite3.OperationalError: near "%": syntax error
+  
+  corpus_forge/backends/sqlite.py:410: OperationalError
+  ============================= 1 failed, 1 warning in 3.79s ============================
+  ```
+- Status: red — handed off to tdd-coder. Root cause: `ingest.py:_get_or_create_dataset` is Postgres-specific. Coder must make it SQLite-compatible (unqualified table names + `?` placeholders).
