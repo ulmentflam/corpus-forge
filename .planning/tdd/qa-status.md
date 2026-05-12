@@ -43,3 +43,4 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 | B-01    | qa-skipped | Principal override — gate matrix sufficient. 21/21 tests, format/lint/pyrefly clean, 689 unit + 101/102 integration green. |
 | B-02    | qa-skipped | Principal override — gate matrix sufficient. 130/130 tests, 819 unit + 102/102 integration, all gates clean. |
 | B-03    | qa-skipped | Principal override — gate matrix sufficient. 29/29 tests green after tester narrowed the backfill-gating assertion to ignore inline schema comments. |
+| B-15    | approved | 107/0/0 scoped; 209/0/0 full integration; 1067/1/8skipped unit; 93.04% coverage; format clean; lint clean; pyrefly 0 errors (16 suppressed); stray-file check clean; production code unchanged (zero diff vs 3907c82); vec0 gating verified; assertions substantive; missing-coverage justified. **qa: approved 2026-05-12.** |
