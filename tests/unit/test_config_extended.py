@@ -831,6 +831,419 @@ class TestConfigHostId:
         assert result == "persisted-host"
 
 
+EXACT_ERROR_MSG = (
+    "Cross-host sync requires the postgres backend; SQLite is single-host. "
+    "Set sync_enabled = false or switch backend.kind to 'postgres'."
+)
+
+
+def _make_text_source() -> DatasetSourceConfig:
+    """Return a minimal text DatasetSourceConfig."""
+    return DatasetSourceConfig(
+        plugin="markdown_vault",
+        vault_root="/tmp/vault",
+        chunker="markdown",
+    )
+
+
+def _make_embedder() -> EmbedderConfig:
+    """Return a minimal EmbedderConfig."""
+    return EmbedderConfig(
+        name="test-embedder",
+        provider="sentence_transformers",
+        model_id="test/model",
+        dimension=384,
+    )
+
+
+def _sqlite_backend() -> BackendConfig:
+    return BackendConfig(kind="sqlite", dsn="~/corpus.db")
+
+
+def _postgres_backend() -> BackendConfig:
+    return BackendConfig(kind="postgres", dsn="postgresql://user:pass@localhost/db")
+
+
+def _minimal_daemon() -> DaemonConfig:
+    return DaemonConfig(debounce_seconds=2.0, log_level="INFO", log_format="text")
+
+
+class TestSyncGateValidator:
+    """B-14: Config rejects sqlite + sync_enabled=True combination.
+
+    Exact error message:
+        'Cross-host sync requires the postgres backend; SQLite is single-host.
+        Set sync_enabled = false or switch backend.kind to 'postgres'.'
+    """
+
+    # ------------------------------------------------------------------ #
+    # Happy-path A: sqlite backend, all datasets sync_enabled=False → OK  #
+    # ------------------------------------------------------------------ #
+
+    def test_happy_path_sqlite_all_sync_disabled(self):
+        """sqlite backend + all datasets sync_enabled=False should construct OK."""
+        config = Config(
+            backend=_sqlite_backend(),
+            daemon=_minimal_daemon(),
+            datasets=[
+                DatasetConfig(
+                    name="ds1",
+                    kind="text",
+                    sync_enabled=False,
+                    sources=[_make_text_source()],
+                ),
+                DatasetConfig(
+                    name="ds2",
+                    kind="text",
+                    sync_enabled=False,
+                    sources=[_make_text_source()],
+                ),
+            ],
+            embedders=[_make_embedder()],
+        )
+        assert config.backend.kind == "sqlite"
+        assert all(not ds.sync_enabled for ds in config.datasets)
+
+    def test_happy_path_sqlite_empty_datasets(self):
+        """sqlite backend + no datasets at all should construct OK."""
+        config = Config(
+            backend=_sqlite_backend(),
+            daemon=_minimal_daemon(),
+            datasets=[],
+            embedders=[_make_embedder()],
+        )
+        assert config.backend.kind == "sqlite"
+
+    # ------------------------------------------------------------------ #
+    # Happy-path B: postgres backend, mixed sync_enabled → OK             #
+    # ------------------------------------------------------------------ #
+
+    def test_happy_path_postgres_mixed_sync(self):
+        """postgres backend + mixed sync_enabled (true + false) should construct OK."""
+        config = Config(
+            backend=_postgres_backend(),
+            daemon=_minimal_daemon(),
+            datasets=[
+                DatasetConfig(
+                    name="synced",
+                    kind="text",
+                    sync_enabled=True,
+                    sources=[_make_text_source()],
+                ),
+                DatasetConfig(
+                    name="not-synced",
+                    kind="text",
+                    sync_enabled=False,
+                    sources=[_make_text_source()],
+                ),
+            ],
+            embedders=[_make_embedder()],
+        )
+        assert config.backend.kind == "postgres"
+
+    def test_happy_path_postgres_all_sync_enabled(self):
+        """postgres backend + all datasets sync_enabled=True should construct OK."""
+        config = Config(
+            backend=_postgres_backend(),
+            daemon=_minimal_daemon(),
+            datasets=[
+                DatasetConfig(
+                    name="ds1",
+                    kind="text",
+                    sync_enabled=True,
+                    sources=[_make_text_source()],
+                ),
+                DatasetConfig(
+                    name="ds2",
+                    kind="text",
+                    sync_enabled=True,
+                    sources=[_make_text_source()],
+                ),
+            ],
+            embedders=[_make_embedder()],
+        )
+        assert config.backend.kind == "postgres"
+
+    # ------------------------------------------------------------------ #
+    # Rejection: sqlite + single dataset sync_enabled=True                #
+    # ------------------------------------------------------------------ #
+
+    def test_rejection_single_dataset_sync_enabled_sqlite(self):
+        """sqlite backend + one dataset with sync_enabled=True raises ValidationError."""
+        with pytest.raises(ValidationError) as exc_info:
+            Config(
+                backend=_sqlite_backend(),
+                daemon=_minimal_daemon(),
+                datasets=[
+                    DatasetConfig(
+                        name="my-vault",
+                        kind="text",
+                        sync_enabled=True,
+                        sources=[_make_text_source()],
+                    )
+                ],
+                embedders=[_make_embedder()],
+            )
+        error_str = str(exc_info.value)
+        assert EXACT_ERROR_MSG in error_str
+
+    def test_rejection_error_message_exact_text(self):
+        """Verify the exact error message text matches the spec."""
+        with pytest.raises(ValidationError) as exc_info:
+            Config(
+                backend=_sqlite_backend(),
+                daemon=_minimal_daemon(),
+                datasets=[
+                    DatasetConfig(
+                        name="vault",
+                        kind="text",
+                        sync_enabled=True,
+                        sources=[_make_text_source()],
+                    )
+                ],
+                embedders=[_make_embedder()],
+            )
+        # Must contain the verbatim spec message
+        assert "Cross-host sync requires the postgres backend; SQLite is single-host." in str(
+            exc_info.value
+        )
+        assert "Set sync_enabled = false or switch backend.kind to 'postgres'." in str(
+            exc_info.value
+        )
+
+    # ------------------------------------------------------------------ #
+    # Rejection: sqlite + multiple datasets, only one sync_enabled        #
+    # ------------------------------------------------------------------ #
+
+    def test_rejection_multiple_datasets_one_sync_enabled(self):
+        """sqlite + two datasets where only one has sync_enabled=True raises ValidationError.
+
+        Confirms the validator scans all datasets, not just the first.
+        """
+        with pytest.raises(ValidationError) as exc_info:
+            Config(
+                backend=_sqlite_backend(),
+                daemon=_minimal_daemon(),
+                datasets=[
+                    DatasetConfig(
+                        name="ok-dataset",
+                        kind="text",
+                        sync_enabled=False,
+                        sources=[_make_text_source()],
+                    ),
+                    DatasetConfig(
+                        name="bad-dataset",
+                        kind="text",
+                        sync_enabled=True,
+                        sources=[_make_text_source()],
+                    ),
+                ],
+                embedders=[_make_embedder()],
+            )
+        assert EXACT_ERROR_MSG in str(exc_info.value)
+
+    def test_rejection_second_dataset_triggers_validator(self):
+        """Validator triggers even when the FIRST dataset is fine but a later one is not."""
+        with pytest.raises(ValidationError) as exc_info:
+            Config(
+                backend=_sqlite_backend(),
+                daemon=_minimal_daemon(),
+                datasets=[
+                    DatasetConfig(
+                        name="safe",
+                        kind="text",
+                        sync_enabled=False,
+                        sources=[_make_text_source()],
+                    ),
+                    DatasetConfig(
+                        name="safe-too",
+                        kind="text",
+                        sync_enabled=False,
+                        sources=[_make_text_source()],
+                    ),
+                    DatasetConfig(
+                        name="offender",
+                        kind="text",
+                        sync_enabled=True,
+                        sources=[_make_text_source()],
+                    ),
+                ],
+                embedders=[_make_embedder()],
+            )
+        assert EXACT_ERROR_MSG in str(exc_info.value)
+
+    def test_rejection_all_datasets_sync_enabled_sqlite(self):
+        """sqlite + all datasets sync_enabled=True raises ValidationError."""
+        with pytest.raises(ValidationError):
+            Config(
+                backend=_sqlite_backend(),
+                daemon=_minimal_daemon(),
+                datasets=[
+                    DatasetConfig(
+                        name="a",
+                        kind="text",
+                        sync_enabled=True,
+                        sources=[_make_text_source()],
+                    ),
+                    DatasetConfig(
+                        name="b",
+                        kind="text",
+                        sync_enabled=True,
+                        sources=[_make_text_source()],
+                    ),
+                ],
+                embedders=[_make_embedder()],
+            )
+
+    # ------------------------------------------------------------------ #
+    # Field-order invariance                                               #
+    # ------------------------------------------------------------------ #
+
+    def test_field_order_invariance_datasets_first(self):
+        """Config(**dict) with datasets listed before backend still raises.
+
+        Tests that Pydantic's model construction order doesn't mask the error.
+        Python dicts preserve insertion order (3.7+) but Pydantic validates all
+        fields before running model_validators, so the order should not matter.
+        """
+        kwargs = {
+            "datasets": [
+                DatasetConfig(
+                    name="vault",
+                    kind="text",
+                    sync_enabled=True,
+                    sources=[_make_text_source()],
+                )
+            ],
+            "backend": _sqlite_backend(),
+            "daemon": _minimal_daemon(),
+            "embedders": [_make_embedder()],
+        }
+        with pytest.raises(ValidationError) as exc_info:
+            Config(**kwargs)
+        assert EXACT_ERROR_MSG in str(exc_info.value)
+
+    def test_field_order_invariance_backend_first(self):
+        """Config(**dict) with backend listed before datasets still raises."""
+        kwargs = {
+            "backend": _sqlite_backend(),
+            "datasets": [
+                DatasetConfig(
+                    name="vault",
+                    kind="text",
+                    sync_enabled=True,
+                    sources=[_make_text_source()],
+                )
+            ],
+            "daemon": _minimal_daemon(),
+            "embedders": [_make_embedder()],
+        }
+        with pytest.raises(ValidationError) as exc_info:
+            Config(**kwargs)
+        assert EXACT_ERROR_MSG in str(exc_info.value)
+
+    # ------------------------------------------------------------------ #
+    # TOML-based rejection                                                 #
+    # ------------------------------------------------------------------ #
+
+    def test_rejection_via_toml_load(self, temp_dir):
+        """Loading a TOML file with sqlite + sync_enabled=true raises ValidationError."""
+        toml_content = """\
+[backend]
+kind = "sqlite"
+dsn = "~/corpus.db"
+
+[daemon]
+debounce_seconds = 2.0
+log_level = "INFO"
+log_format = "text"
+
+[[datasets]]
+name = "my-vault"
+kind = "text"
+sync_enabled = true
+  [[datasets.sources]]
+  plugin = "markdown_vault"
+  vault_root = "~/vault"
+  chunker = "markdown"
+
+[[embedders]]
+name = "test-embedder"
+provider = "sentence_transformers"
+model_id = "test/model"
+dimension = 384
+"""
+        config_file = temp_dir / "config.toml"
+        config_file.write_text(toml_content)
+        with pytest.raises(ValidationError) as exc_info:
+            Config.load(config_path=config_file)
+        assert EXACT_ERROR_MSG in str(exc_info.value)
+
+    def test_acceptance_via_toml_load_sqlite_sync_disabled(self, temp_dir):
+        """Loading a TOML with sqlite + sync_enabled=false is accepted."""
+        toml_content = """\
+[backend]
+kind = "sqlite"
+dsn = "~/corpus.db"
+
+[daemon]
+debounce_seconds = 2.0
+log_level = "INFO"
+log_format = "text"
+
+[[datasets]]
+name = "my-vault"
+kind = "text"
+sync_enabled = false
+  [[datasets.sources]]
+  plugin = "markdown_vault"
+  vault_root = "~/vault"
+  chunker = "markdown"
+
+[[embedders]]
+name = "test-embedder"
+provider = "sentence_transformers"
+model_id = "test/model"
+dimension = 384
+"""
+        config_file = temp_dir / "config.toml"
+        config_file.write_text(toml_content)
+        config = Config.load(config_path=config_file)
+        assert config.backend.kind == "sqlite"
+        assert config.datasets[0].sync_enabled is False
+
+    # ------------------------------------------------------------------ #
+    # Optional: naming the offending dataset in the error                 #
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.xfail(
+        strict=False,
+        reason="Nice-to-have: spec does not require naming the offending dataset in the error.",
+    )
+    def test_optional_error_names_offending_dataset(self):
+        """OPTIONAL: ValidationError message names the offending dataset.
+
+        The spec does not mandate this, but a good implementation might include
+        it. If the implementation includes the dataset name, this test will pass;
+        if not, it is an acceptable xfail (non-strict).
+        """
+        with pytest.raises(ValidationError) as exc_info:
+            Config(
+                backend=_sqlite_backend(),
+                daemon=_minimal_daemon(),
+                datasets=[
+                    DatasetConfig(
+                        name="offending-vault",
+                        kind="text",
+                        sync_enabled=True,
+                        sources=[_make_text_source()],
+                    )
+                ],
+                embedders=[_make_embedder()],
+            )
+        assert "offending-vault" in str(exc_info.value)
+
+
 class TestConfigGetReload:
     def test_get_config_lazy_load(self):
         """Test that get_config lazily loads config."""
