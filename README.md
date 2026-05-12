@@ -18,11 +18,11 @@ corpus-forge ingests text and chat data from personal sources (Obsidian vaults, 
 - ✅ OpenAI API (text-embedding-3-large, etc.)
 
 **Supported backends:**
-- ✅ PostgreSQL + pgvector (current)
-- 🔄 SQLite + sqlite-vec (planned)
+- ✅ PostgreSQL + pgvector (multi-host, sync-capable)
+- ✅ SQLite + sqlite-vec (single-host, zero-setup; sync disabled)
 
 **Current limitations:**
-- PostgreSQL-only backend (SQLite follow-up in progress)
+- SQLite backend is single-host only — cross-host sync requires PostgreSQL
 - No HF Hub push authentication in CI (cost/security)
 - Live OpenAI embedder not contract-tested in CI (cost)
 
@@ -105,9 +105,41 @@ Sources:    Chunkers:    Orchestrator:  Backend:
 See `config.example.toml` and `secrets.env.example` for full reference. Key sections:
 
 ### [backend]
-- `kind`: "postgres" (planned: "sqlite")
-- `dsn`: PostgreSQL connection string with `${VAR}` interpolation
-- `schema`: Database schema (default: "corpus")
+- `kind`: `"postgres"` | `"sqlite"`
+- `dsn`: PostgreSQL connection string with `${VAR}` interpolation when `kind = "postgres"`; doubles as the SQLite file path (or `":memory:"`) when `kind = "sqlite"` — the field name is repurposed
+- `schema`: Database schema (default: `"corpus"`); ignored by the SQLite backend (kept for protocol parity)
+
+#### Local-only with SQLite
+
+SQLite is the zero-setup option for single-machine use — no Postgres server, no `pgvector` extension, no daemons. The `dsn` field is repurposed as the path to the database file. Cross-host sync (`sync_enabled = true`) is rejected at config-load with the SQLite backend; for that you need PostgreSQL.
+
+Install the optional `sqlite-vec` extra for `vec0`-backed nearest-neighbour search (without it the backend falls back to write-only BLOB storage):
+
+```bash
+pip install 'corpus-forge[sqlite]'   # or: uv sync --extra sqlite
+```
+
+Minimal `config.toml`:
+
+```toml
+[backend]
+kind = "sqlite"
+dsn  = "~/Library/Application Support/corpus-forge/corpus.db"
+
+[[datasets]]
+name = "obsidian-vault"
+kind = "text"
+  [[datasets.sources]]
+  plugin     = "markdown_vault"
+  vault_root = "~/Documents/vault"
+  chunker    = "markdown"
+
+[[embedders]]
+name      = "qwen3_8b"
+provider  = "sentence_transformers"
+model_id  = "Qwen/Qwen3-Embedding-8B"
+dimension = 4096
+```
 
 ### [daemon]
 - `debounce_seconds`: File change debounce (default: 2.0)

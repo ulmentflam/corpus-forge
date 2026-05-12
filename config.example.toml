@@ -5,6 +5,16 @@ kind   = "postgres"
 dsn    = "postgresql://${PG_USER}:${PG_PASSWORD}@${PG_HOST}:${PG_PORT}/${PG_DB}"
 schema = "corpus"
 
+# ── Alternative: SQLite (single-host, zero-setup) ──────────────────────────
+# Comment out the [backend] block above and uncomment this one to use SQLite.
+# `dsn` is repurposed as the path to the database file (or ":memory:").
+# Install the optional vec0 extension with: pip install 'corpus-forge[sqlite]'.
+# NOTE: sync_enabled = true on any dataset is rejected with kind = "sqlite".
+#
+# [backend]
+# kind = "sqlite"
+# dsn  = "~/Library/Application Support/corpus-forge/corpus.db"
+
 [daemon]
 debounce_seconds     = 2.0
 log_level            = "INFO"
