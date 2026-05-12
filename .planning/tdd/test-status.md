@@ -1499,3 +1499,40 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   embed postgres migrate test: AssertionError: Expected 'migrate' to have been called once (embed.py does not call migrate() today)
   ```
 - Status: red — handed off to tdd-coder
+- Status: red — handed off to tdd-coder (B-13)
+
+## B-15 — Integration tests for SQLiteBackend (mirror PG suite)
+- Test files:
+  - `tests/integration/test_backend_sqlite.py` (~590 LOC, 63 tests)
+  - `tests/integration/test_migrate_sqlite.py` (~270 LOC, 44 tests)
+- Run command: `PYTHONPATH=. uv run pytest tests/integration/test_backend_sqlite.py tests/integration/test_migrate_sqlite.py -v`
+- Edge case checklist:
+  - [x] happy path — migrate creates all tables, upsert_document inserts/updates, all CRUD methods return expected results
+  - [x] boundaries — empty embedding list, unknown embedder id, missing document, empty source_uri, single-message conversation
+  - [x] type/format — JSON metadata round-tripped via json.loads, ISO-8601 timestamp format validated, integer FK ids checked
+  - [x] state — idempotency on double-migrate, double-register_embedder, double-write_embeddings, double-set_tombstone/clear_tombstone
+  - [x] concurrency — threading.Lock serialization smoke test (two threads both complete)
+  - [x] failure paths — FK violation (IntegrityError), UNIQUE violation, unknown embedder raises ValueError, lock_source reraises exception
+  - [x] locale/time — tombstoned_at stored as ISO-8601 TEXT ending in Z (UTC), validated with string prefix checks
+  - [x] production-realistic — SQLite PRAGMA introspection for column/FK/index assertions mirrors Postgres information_schema approach
+  - [x] regression hooks — get_migration_files path behavior: must pass schema root NOT sqlite/ subdir (double-nesting bug caught)
+- Notes on SQLite-vs-Postgres analogs not written:
+  - N/A — pg_extension / CREATE EXTENSION: SQLite uses sqlite-vec loaded at runtime; vec0 tested with `SQLITE_VEC_AVAILABLE` gate
+  - N/A — pg_advisory_lock conflict test (Postgres test_advisory_lock_conflict uses nested lock_source which raises RuntimeError on Postgres; SQLite BEGIN IMMEDIATE does not support nested re-entry in same thread — omitted from SQLite suite since the lock is thread-level, not connection-level)
+  - N/A — pgvector `register_vector` / vector type queries: SQLite uses raw BLOB or vec0; assertions use backend._get_connection() to load vec0 extension
+  - N/A — information_schema queries replaced by PRAGMA table_info, PRAGMA foreign_key_list, sqlite_master
+- PRAGMA patterns used:
+  - `SELECT name FROM sqlite_master WHERE type='table'` — table enumeration
+  - `PRAGMA table_info(<table>)` — column presence
+  - `PRAGMA foreign_key_list(<table>)` — FK declarations
+  - `PRAGMA foreign_keys` — per-connection FK enforcement flag (ON=1 vs OFF=0)
+  - `SELECT name FROM sqlite_master WHERE type='index' AND tbl_name = ?` — index presence
+- vec0-gated subset: `TestWriteEmbeddings::test_write_embeddings_vec0_stores_vector` is gated on `@pytest.mark.skipif(not SQLITE_VEC_AVAILABLE, ...)`. On this machine sqlite-vec IS available so the test ran and passed.
+- Green output (tail):
+  ```
+  tests/integration/test_migrate_sqlite.py::TestMigrateSQLiteConstraints::test_datasets_name_unique_constraint PASSED [ 99%]
+  tests/integration/test_migrate_sqlite.py::TestMigrateSQLiteConstraints::test_documents_dataset_source_unique_constraint PASSED [100%]
+
+  ============================= 107 passed in 4.99s ==============================
+  ```
+- Status: green — characterization tests pass against existing production code
