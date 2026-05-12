@@ -922,3 +922,42 @@ class PostgresBackend(StorageBackend):
             "UPDATE corpus.documents SET tombstoned_at = NULL WHERE id = %s",
             (document_id,),
         )
+
+    def get_or_create_dataset(self, name: str, kind: str, description: str) -> int:
+        """Return the id of the named dataset, creating it if absent."""
+        existing = self._execute("SELECT id FROM corpus.datasets WHERE name = %s", (name,))
+        if existing:
+            return existing[0]["id"]
+        result = self._execute(
+            """
+            INSERT INTO corpus.datasets (name, kind, description)
+            VALUES (%s, %s, %s)
+            RETURNING id
+            """,
+            (name, kind, description),
+        )
+        return result[0]["id"]
+
+    def find_dataset_id_by_name(self, name: str) -> int | None:
+        """Return the id of the named dataset, or None if it does not exist."""
+        rows = self._execute("SELECT id FROM corpus.datasets WHERE name = %s", (name,))
+        return rows[0]["id"] if rows else None
+
+    def register_source(self, dataset_id: int, plugin: str, identity: str, host: str) -> int:
+        """Upsert a sources row for a plugin/identity/host triple and return its id."""
+        rows = self._execute(
+            "SELECT id FROM corpus.sources"
+            " WHERE dataset_id = %s AND plugin = %s AND identity = %s AND host = %s",
+            (dataset_id, plugin, identity, host),
+        )
+        if rows:
+            return int(rows[0]["id"])
+        result = self._execute(
+            """
+            INSERT INTO corpus.sources (dataset_id, plugin, identity, host)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id
+            """,
+            (dataset_id, plugin, identity, host),
+        )
+        return int(result[0]["id"])

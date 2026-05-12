@@ -59,17 +59,14 @@ active = true
             ):
                 mock_backend = MagicMock()
                 mock_backend.register_embedder.return_value = 1
-                mock_backend._execute.return_value = [{"id": 42}]  # dataset found
+                mock_backend.find_dataset_id_by_name.return_value = 42  # dataset found
                 mock_backend.chunks_missing_embedding.return_value = []
                 mock_backend_cls.return_value = mock_backend
 
                 backfill_embedder("test-embedder", dataset_name="my-dataset")
 
-                # Verify _execute was called with dataset query
-                dataset_queries = [
-                    c for c in mock_backend._execute.call_args_list if "datasets" in str(c)
-                ]
-                assert len(dataset_queries) >= 1
+                # Verify find_dataset_id_by_name was called with the dataset name
+                mock_backend.find_dataset_id_by_name.assert_called_once_with("my-dataset")
 
     def test_backfill_dataset_filter_no_chunks_after_filter(self, temp_dir):
         """Test backfill where dataset filter removes all chunks."""

@@ -391,19 +391,23 @@ class TestGetOrCreateDataset:
     def test_get_existing_dataset(self):
         """Test getting an existing dataset."""
         mock_backend = MagicMock()
-        mock_backend._execute.return_value = [{"id": 42}]
+        mock_backend.get_or_create_dataset.return_value = 42
 
         class MockDatasetConfig:
             name = "test-dataset"
+            kind = "text"
+            description = ""
 
         result = _get_or_create_dataset(mock_backend, MockDatasetConfig())
         assert result == 42
+        mock_backend.get_or_create_dataset.assert_called_once_with(
+            name="test-dataset", kind="text", description=""
+        )
 
     def test_create_new_dataset(self):
         """Test creating a new dataset."""
         mock_backend = MagicMock()
-        # First call (check) returns empty, second call (insert) returns new ID
-        mock_backend._execute.side_effect = [[], [{"id": 99}]]
+        mock_backend.get_or_create_dataset.return_value = 99
 
         class MockDatasetConfig:
             name = "new-dataset"
@@ -412,8 +416,9 @@ class TestGetOrCreateDataset:
 
         result = _get_or_create_dataset(mock_backend, MockDatasetConfig())
         assert result == 99
-        # Should have been called twice: once to check, once to insert
-        assert mock_backend._execute.call_count == 2
+        mock_backend.get_or_create_dataset.assert_called_once_with(
+            name="new-dataset", kind="text", description="A test dataset"
+        )
 
 
 class TestIngestOneEmbedderIds:

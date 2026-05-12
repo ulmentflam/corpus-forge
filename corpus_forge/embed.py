@@ -67,10 +67,9 @@ def backfill_embedder(  # noqa: PLR0915
     dataset_id = None
     if dataset_name:
         # Get dataset ID from name
-        result = backend._execute("SELECT id FROM corpus.datasets WHERE name = %s", (dataset_name,))
-        if not result:
+        dataset_id = backend.find_dataset_id_by_name(dataset_name)
+        if dataset_id is None:
             raise ValueError(f"Dataset '{dataset_name}' not found")
-        dataset_id = result[0]["id"]
         logger.info(f"Limiting backfill to dataset: {dataset_name} (ID: {dataset_id})")
 
     # Backfill embeddings
