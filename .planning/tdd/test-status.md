@@ -1455,3 +1455,47 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   All failures: Failed: DID NOT RAISE <class 'pydantic_core._pydantic_core.ValidationError'>
   ```
 - Status: red — handed off to tdd-coder
+
+## B-13 — ingest.py + embed.py wiring for kind=="sqlite"
+- Test files:
+  - `tests/unit/test_ingest_sqlite_wiring.py` (15 tests across 4 classes)
+  - `tests/unit/test_embed_sqlite_wiring.py` (15 tests across 4 classes)
+- Run command: `PYTHONPATH=. uv run pytest tests/unit/test_ingest_sqlite_wiring.py tests/unit/test_embed_sqlite_wiring.py -v`
+- Edge case checklist:
+  - [x] happy path — kind=="sqlite" dispatches to SQLiteBackend; kind=="postgres" still dispatches to PostgresBackend (no regression)
+  - [x] boundaries — constructor kwargs: path= present, schema= present, dsn= absent for SQLite; dsn= present for Postgres
+  - [N/A] type/format — dispatch logic only; no type coercion tested
+  - [x] state — migrate() called exactly once on the instantiated backend
+  - [N/A] concurrency — pure synchronous wiring; no shared state
+  - [x] failure paths — unknown kind ("duckdb", "notarealbackend") raises ValueError containing the kind name
+  - [N/A] locale/time — not applicable
+  - [x] production-realistic — dsn value mirrors real macOS path "~/Library/Application Support/corpus-forge/corpus.db"
+  - [x] regression hooks — Postgres regression tests confirm existing wiring unchanged; postgres migrate-once test for embed.py flags that embed.py currently never calls migrate() on the backend
+- Lazy import test approach:
+  - `test_sqlite_backend_import_is_not_at_module_level` (ingest): uses importlib isolation to verify that re-importing corpus_forge.ingest does not pull in corpus_forge.backends.sqlite. Passes today (sqlite import absent from ingest.py module level); pins contract for coder.
+  - `test_sqlite_backend_present_in_sys_modules_after_sqlite_call` (both files): after calling with kind="sqlite" (backends.sqlite.SQLiteBackend patched), asserts module is in sys.modules. Fails today (ValueError raised before lazy-import branch executes).
+  - `test_importing_embed_module_does_not_eagerly_import_sqlite_backend` (embed): passes today (no sqlite import in embed.py); pins no-eager-import contract.
+  - Eager postgres import in embed.py (line 5): noted but the test for this was left out per task guidance ("leave it out and just note it"). The board notes it as scope-eligible, not required.
+- Conflicting pre-existing test to remove: `tests/unit/test_embed_backfill.py::TestBackfillEmbedder::test_backfill_embedder_unsupported_backend` currently passes (expects kind=="sqlite" to raise ValueError). When B-13 is implemented, this test will break. The B-13 coder must delete or update it.
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_ingest_sqlite_wiring.py::TestIngestOnceSQLiteDispatch::test_sqlite_instantiates_sqlite_backend
+  FAILED tests/unit/test_ingest_sqlite_wiring.py::TestIngestOnceSQLiteDispatch::test_sqlite_backend_receives_path_kwarg
+  FAILED tests/unit/test_ingest_sqlite_wiring.py::TestIngestOnceSQLiteDispatch::test_sqlite_backend_receives_schema_kwarg
+  FAILED tests/unit/test_ingest_sqlite_wiring.py::TestIngestOnceSQLiteDispatch::test_sqlite_backend_does_not_receive_dsn_kwarg
+  FAILED tests/unit/test_ingest_sqlite_wiring.py::TestIngestOnceSQLiteDispatch::test_migrate_is_called_once_on_sqlite_backend
+  FAILED tests/unit/test_ingest_sqlite_wiring.py::TestIngestOnceSQLiteDispatch::test_sqlite_dispatch_does_not_call_postgres_backend
+  FAILED tests/unit/test_ingest_sqlite_wiring.py::TestIngestOnceSQLiteLazyImport::test_sqlite_backend_present_in_sys_modules_after_sqlite_call
+  FAILED tests/unit/test_embed_sqlite_wiring.py::TestBackfillEmbedderSQLiteDispatch::test_sqlite_instantiates_sqlite_backend
+  FAILED tests/unit/test_embed_sqlite_wiring.py::TestBackfillEmbedderSQLiteDispatch::test_sqlite_backend_receives_path_kwarg
+  FAILED tests/unit/test_embed_sqlite_wiring.py::TestBackfillEmbedderSQLiteDispatch::test_sqlite_backend_receives_schema_kwarg
+  FAILED tests/unit/test_embed_sqlite_wiring.py::TestBackfillEmbedderSQLiteDispatch::test_sqlite_backend_does_not_receive_dsn_kwarg
+  FAILED tests/unit/test_embed_sqlite_wiring.py::TestBackfillEmbedderSQLiteDispatch::test_migrate_called_once_on_sqlite_backend
+  FAILED tests/unit/test_embed_sqlite_wiring.py::TestBackfillEmbedderSQLiteDispatch::test_sqlite_dispatch_does_not_call_postgres_backend
+  FAILED tests/unit/test_embed_sqlite_wiring.py::TestBackfillEmbedderPostgresRegressionWiring::test_postgres_migrate_is_called_once
+  FAILED tests/unit/test_embed_sqlite_wiring.py::TestBackfillEmbedderSQLiteLazyImport::test_sqlite_backend_present_in_sys_modules_after_sqlite_call
+  15 failed, 15 passed, 1 warning in 2.39s
+  Primary failures: ValueError: Unsupported backend kind: sqlite (SQLite dispatch tests)
+  embed postgres migrate test: AssertionError: Expected 'migrate' to have been called once (embed.py does not call migrate() today)
+  ```
+- Status: red — handed off to tdd-coder
