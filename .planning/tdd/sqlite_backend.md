@@ -54,8 +54,8 @@ If you come back: append a message here with your status. Lane assignment table 
 
 | lane | session | active task | next task |
 |------|---------|-------------|-----------|
-| **A** (this principal, lead — currently driving) | `946880f9` | dispatching B-06 coder on `sqlite.py` (write-lock taken over) | B-05 tester-fix or B-07 |
-| **B** (parallel) | broken — pending re-engagement | (paused) | resume claim via this section when back online |
+| **A** (this principal, lead — solo) | `946880f9` (W2), new session 2026-05-12 (W3) | claiming W3: B-13 + B-14 in parallel (disjoint surface) | W4 (integration tests + dual-backend + smoke) |
+| **B** (parallel) | broken — confirmed offline | (paused) | resume claim via this section when back online |
 
 #### 2026-05-09T21:55Z — `946880f9` → lane B (B-06 green + open lanes)
 
@@ -95,6 +95,18 @@ B-09 GREEN. 23/23 tests pass across TestDeleteDocument (4), TestDeleteConversati
 B-12 GREEN. 10/10 tests pass (TestSetTombstone 4, TestClearTombstone 4, TestTombstoneRoundTrip 2). Implementation: 2 additive methods in `corpus_forge/backends/sqlite.py`. `set_tombstone` uses `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` for ISO-8601 with millisecond UTC; `clear_tombstone` sets `tombstoned_at = NULL`. All 4 gates clean: format (92 files), lint (0 errors), pyrefly (0 errors, 18 suppressed), unit 1013/1013+8skipped/0failed, integration 102/102.
 
 **W2 COMPLETE** — all 9 tasks (B-04..B-12) green. sqlite.py is now feature-complete through the core CRUD, lock, lifecycle, revision, and tombstone API surface. Ready for W3 (B-13, B-14 wiring).
+
+#### 2026-05-12T00:00Z — `946880f9` (lane A, solo) — claiming W3 (B-13 + B-14)
+
+W2 closed at `ecdd26e` (B-04..B-12 all green). Picking up W3.
+
+**Dispatch strategy: PARALLEL.** B-13 surface = `corpus_forge/ingest.py`, `corpus_forge/embed.py`, `tests/unit/test_ingest_*.py`, `tests/unit/test_embed_*.py`. B-14 surface = `corpus_forge/daemon.py`, `corpus_forge/config.py`, `tests/unit/test_daemon.py`, `tests/unit/test_config.py`. The two surfaces are fully disjoint at the file level. The plan-doc note "dispatch one after the other since runtime can't parallelize" is stale — we can issue concurrent Agent calls. Going parallel.
+
+Dependency note: the plan row marks B-14 as `depends_on: B-13`, but the dependency is logical-only (validator references `backend.kind` and `dataset.sync_enabled`, both of which already exist in `config.py`). Tests for B-14 do not import anything from `ingest.py`/`embed.py`, so they can be authored and made green independently of B-13.
+
+Plan: tester wave (parallel) → coder wave (parallel) → QA wave (parallel). QA required per board policy (resumed at B-05).
+
+`sqlite.py` write-lock: not relevant for W3 (neither task touches `sqlite.py`).
 
 #### (lane B reply space — paused)
 
@@ -154,8 +166,8 @@ SQLite integration tests **do not require Docker** — sqlite3 ships with Python
 | B-10 | `insert_revision` with monotonic `revision_number` | B-08 | `corpus_forge/backends/sqlite.py`, `tests/unit/test_sqlite_backend.py` | high | green | tdd-coder | Inside `lock_source(source_uri)` context: `MAX(revision_number)+1` then INSERT. SQLite serializes writes via `BEGIN IMMEDIATE`, so monotonicity is guaranteed by the lock. Returns `{"id", "revision_number"}` like Postgres. 16/16 tests green. |
 | B-11 | `latest_revision`, `pending_remote_revisions`, `mark_revision_pulled` | B-10 | `corpus_forge/backends/sqlite.py`, `tests/unit/test_sqlite_backend.py` | med | green | tdd-coder | 15/15 tests green. `pending_remote_revisions` JOIN syntax identical to Postgres (no dialect changes needed). `mark_revision_pulled` uses `MAX(COALESCE(..., 0), ?)` instead of `GREATEST(...)`. All 4 gates clean. |
 | B-12 | `set_tombstone`, `clear_tombstone` | B-09 | `corpus_forge/backends/sqlite.py`, `tests/unit/test_sqlite_backend.py` | low | green | tdd-coder | 10/10 tests green. `set_tombstone` uses `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`; `clear_tombstone` sets NULL. Both idempotent; unknown id is no-op. All 4 gates clean: format (92 files), lint (0 errors), pyrefly (0 errors, 18 suppressed), unit 1013/1013+8skipped/0failed, integration 102/102. W2 COMPLETE. |
-| B-13 | `ingest.py` + `embed.py` wiring for `kind == "sqlite"` | B-03 | `corpus_forge/ingest.py`, `corpus_forge/embed.py`, `tests/unit/test_ingest_*.py`, `tests/unit/test_embed_*.py` | low | pending | — | Replace the `else: raise ValueError(...)` branches at `ingest.py:194-195` and `embed.py:25-26`. Use lazy import (`from .backends.sqlite import SQLiteBackend  # noqa: PLC0415`) for parity with the Postgres branch. Constructor: `SQLiteBackend(path=config.backend.dsn, schema=config.backend.schema)` — `dsn` field doubles as the file path for SQLite (e.g. `"~/Library/Application Support/corpus-forge/corpus.db"`). Document this aliasing in a comment. |
-| B-14 | Daemon rejects `sync_enabled = true` for SQLite | B-13 | `corpus_forge/daemon.py`, `corpus_forge/config.py` (validator), `tests/unit/test_daemon.py`, `tests/unit/test_config.py` | low | pending | — | Validator on `Config` (cross-field): if any dataset has `sync_enabled = true` and `backend.kind == "sqlite"`, raise `ValidationError("Cross-host sync requires postgres backend; sqlite is single-host only")`. Tested via `test_config_extended.py`. Daemon's per-dataset SyncEngine construction is gated by this validator running first; no daemon-side changes needed if config rejects upfront. |
+| B-13 | `ingest.py` + `embed.py` wiring for `kind == "sqlite"` | B-03 | `corpus_forge/ingest.py`, `corpus_forge/embed.py`, `tests/unit/test_ingest_*.py`, `tests/unit/test_embed_*.py` | low | in_progress (red pending) | tdd-tester (W3) | Replace the `else: raise ValueError(...)` branches at `ingest.py:194-195` and `embed.py:25-26`. Use lazy import (`from .backends.sqlite import SQLiteBackend  # noqa: PLC0415`) for parity with the Postgres branch. Constructor: `SQLiteBackend(path=config.backend.dsn, schema=config.backend.schema)` — `dsn` field doubles as the file path for SQLite (e.g. `"~/Library/Application Support/corpus-forge/corpus.db"`). Document this aliasing in a comment. |
+| B-14 | Daemon rejects `sync_enabled = true` for SQLite | B-13 | `corpus_forge/daemon.py`, `corpus_forge/config.py` (validator), `tests/unit/test_daemon.py`, `tests/unit/test_config.py` | low | in_progress (red pending) | tdd-tester (W3) | Validator on `Config` (cross-field): if any dataset has `sync_enabled = true` and `backend.kind == "sqlite"`, raise `ValidationError("Cross-host sync requires postgres backend; sqlite is single-host only")`. Tested via `test_config_extended.py`. Daemon's per-dataset SyncEngine construction is gated by this validator running first; no daemon-side changes needed if config rejects upfront. |
 | B-15 | Integration tests for SQLite backend (mirror PG suite) | B-05..B-12 | `tests/integration/test_backend_sqlite.py`, `tests/integration/test_migrate_sqlite.py` | med | pending | — | New files mirroring `tests/integration/test_backend.py` and `tests/integration/test_migrate_002.py` / `test_migrate_003.py` shape. Use `tmp_path / "corpus.db"` fixture instead of testcontainers. NO `pytest.mark.integration` skip — these run anywhere with sqlite3 (always available). |
 | B-16 | Parametrize a subset of tests across both backends | B-15 | `tests/conftest.py`, `tests/integration/test_backend_dual.py` | med | pending | — | Add a `backend_kind` parametrize fixture yielding `"postgres"` (testcontainers, skipped without Docker) and `"sqlite"` (always). Run a representative slice (`test_chunk_reuse_e2e`, `test_revisions`) against both. **Do not** parametrize the sync E2E tests (P1-30..P1-32) — they explicitly require Postgres per the scope decision above. |
 | B-17 | Update `docs/architecture.md`, `docs/schema.md`, `README.md` | B-13 | `docs/architecture.md`, `docs/schema.md`, `README.md`, `config.example.toml` | low | pending | — | Add a "Backends" section explaining the postgres/sqlite split, when to choose each, and config snippets. Document the sync limitation. Add SQLite example to `config.example.toml`. |
