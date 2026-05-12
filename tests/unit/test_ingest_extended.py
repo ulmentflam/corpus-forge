@@ -306,11 +306,11 @@ class TestIngestOnceErrorHandling:
     """Tests for ingest_once error handling."""
 
     def test_ingest_once_unsupported_backend(self, temp_dir):
-        """Test ingest_once with unsupported backend."""
+        """Test ingest_once with unsupported backend kind."""
         config_content = """
 [backend]
-kind = "sqlite"
-dsn = "test.db"
+kind = "duckdb"
+dsn = "duckdb://memory"
 schema = "corpus"
 
 [daemon]
@@ -341,8 +341,8 @@ active = true
 
         with patch.object(Config, "load") as mock_load:
             mock_config = MagicMock()
-            mock_config.backend.kind = "sqlite"
-            mock_config.backend.dsn = "test.db"
+            mock_config.backend.kind = "duckdb"
+            mock_config.backend.dsn = "duckdb://memory"
             mock_config.backend.schema = "corpus"
             mock_config.daemon.debounce_seconds = 2.0
             mock_config.daemon.log_level = "INFO"

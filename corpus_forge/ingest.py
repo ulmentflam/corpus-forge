@@ -191,6 +191,12 @@ def ingest_once(config: Config) -> None:
         from .backends.postgres import PostgresBackend  # noqa: PLC0415
 
         backend = PostgresBackend(dsn=backend_config.dsn, schema=backend_config.schema)
+    elif backend_config.kind == "sqlite":
+        # `backend_config.dsn` doubles as the SQLite file path
+        # (e.g. "~/Library/Application Support/corpus-forge/corpus.db").
+        from .backends.sqlite import SQLiteBackend  # noqa: PLC0415
+
+        backend = SQLiteBackend(path=backend_config.dsn, schema=backend_config.schema)
     else:
         raise ValueError(f"Unsupported backend kind: {backend_config.kind}")
 
