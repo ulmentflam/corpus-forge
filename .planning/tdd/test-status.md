@@ -1563,3 +1563,37 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   ============================= 1 failed, 1 warning in 3.79s ============================
   ```
 - Status: red — handed off to tdd-coder. Root cause: `ingest.py:_get_or_create_dataset` is Postgres-specific. Coder must make it SQLite-compatible (unqualified table names + `?` placeholders).
+
+## B-16 — Dual-backend parametrize fixture + representative slice
+- Test files:
+  - `tests/conftest.py` (added `backend_kind` and `storage_backend` fixtures)
+  - `tests/integration/test_backend_dual.py` (new file — 17 parametrized tests x 2 backends = 34 executions)
+- Run command: `PYTHONPATH=. uv run pytest tests/integration/test_backend_dual.py -v`
+- Edge case checklist:
+  - [x] happy path — upsert_document, register_embedder, write_embeddings on both backends
+  - [x] boundaries — empty write_embeddings call (noop), unchanged content_hash short-circuit
+  - [x] type/format — return types are int, dict keys present on both backends
+  - [x] state — revision monotonicity; latest_revision reads back highest; idempotent reingest
+  - [x] N/A — concurrency (lock_source exercised via insert_revision; deeper concurrency is B-08 territory)
+  - [x] failure paths — Docker unavailable -> postgres param skips cleanly; SQLite always runs
+  - [x] N/A — locale/time (no locale/DST concerns in CRUD contract)
+  - [x] production-realistic — 12-section markdown doc, real MarkdownChunker, deterministic FakeEmbedder, actual ingest_one call
+  - [x] regression hooks — chunk_reuse_e2e analog; identical-reingest encode-count=0 pin; pending_remote_revisions self-host filter
+- Test breakdown:
+  - `TestUpsertDocumentSmoke` (8 tests): upsert_document contract, register_embedder, write_embeddings, chunks_missing_embedding, end-to-end ingest_one
+  - `TestChunkReuseE2E` (2 tests): append-reuse pin (>=7 reused, <=3 new encodes); identical-reingest noop
+  - `TestRevisions` (7 tests): insert_revision id+number, monotonic, latest_revision reads back highest, latest_revision None when empty, pending_remote_revisions self-filter, pending_remote_revisions remote included, pending_remote_revisions last_pulled pointer
+  - Total: 17 parametrized functions x 2 backends = 34 test executions
+- Docker availability behavior:
+  - Docker IS available (this run): both [postgres] and [sqlite] ids run -> 34/34 passed
+  - Docker NOT available: [postgres] ids -> SKIPPED (pytest.skip in storage_backend fixture); [sqlite] ids -> 17/17 passed
+- Run output (tail):
+  ```
+  tests/integration/test_backend_dual.py::TestRevisions::test_pending_remote_revisions_returns_remote[postgres] PASSED [ 91%]
+  tests/integration/test_backend_dual.py::TestRevisions::test_pending_remote_revisions_returns_remote[sqlite] PASSED [ 94%]
+  tests/integration/test_backend_dual.py::TestRevisions::test_pending_remote_revisions_respects_last_pulled[postgres] PASSED [ 97%]
+  tests/integration/test_backend_dual.py::TestRevisions::test_pending_remote_revisions_respects_last_pulled[sqlite] PASSED [100%]
+
+  ======================== 34 passed, 1 warning in 17.55s ========================
+  ```
+- Status: green — characterization tests pin shared StorageBackend contract. tdd-tester completed B-16.

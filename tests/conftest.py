@@ -218,6 +218,52 @@ def sample_conversation() -> RawConversation:
     )
 
 
+@pytest.fixture(params=["postgres", "sqlite"])
+def backend_kind(request: pytest.FixtureRequest) -> str:
+    """Parametrize fixture yielding each backend kind as a string.
+
+    - ``"postgres"`` — skipped at runtime when Docker / testcontainers are
+      unavailable (``pytest.skip`` inside ``storage_backend``).
+    - ``"sqlite"`` — always available; never requires Docker.
+
+    Consume this via the ``storage_backend`` fixture, which wires the correct
+    backend implementation.  Do **not** use ``backend_kind`` on its own in
+    tests — use ``storage_backend`` which handles Docker availability.
+    """
+    return request.param  # type: ignore[return-value]
+
+
+@pytest.fixture
+def storage_backend(backend_kind: str, request: pytest.FixtureRequest, tmp_path: Path):  # type: ignore[return]
+    """Yield a migrated StorageBackend instance for the requested backend kind.
+
+    - ``postgres``: skipped if Docker or testcontainers are unavailable.
+      Uses the session-scoped ``pg_dsn`` fixture (lazy via
+      ``request.getfixturevalue``).  Each test gets a fresh schema created
+      inside the shared container.
+    - ``sqlite``: always available.  Uses a per-test ``tmp_path / "corpus.db"``
+      file so tests are fully isolated.
+
+    This fixture is the entry point for B-16 dual-backend parametrized tests.
+    """
+    from corpus_forge.backends.sqlite import SQLiteBackend
+
+    if backend_kind == "postgres":
+        if not _docker_available() or not _testcontainers_available():
+            pytest.skip("Docker / testcontainers not available — skipping postgres backend")
+        from corpus_forge.backends.postgres import PostgresBackend
+
+        pg_dsn_value: str = request.getfixturevalue("pg_dsn")
+        backend = PostgresBackend(dsn=pg_dsn_value, schema="corpus")
+        backend.migrate()
+        yield backend
+    else:
+        db_path = tmp_path / "corpus.db"
+        backend = SQLiteBackend(path=str(db_path))
+        backend.migrate()
+        yield backend
+
+
 @pytest.fixture
 def sample_config_content() -> str:
     """Sample TOML configuration content."""
