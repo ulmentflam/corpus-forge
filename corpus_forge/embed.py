@@ -20,6 +20,12 @@ def backfill_embedder(  # noqa: PLR0915
     backend_config = config.backend
     if backend_config.kind == "postgres":
         backend = PostgresBackend(dsn=backend_config.dsn, schema=backend_config.schema)
+    elif backend_config.kind == "sqlite":
+        # `backend_config.dsn` doubles as the SQLite file path
+        # (e.g. "~/Library/Application Support/corpus-forge/corpus.db").
+        from .backends.sqlite import SQLiteBackend  # noqa: PLC0415
+
+        backend = SQLiteBackend(path=backend_config.dsn, schema=backend_config.schema)
     else:
         raise ValueError(f"Unsupported backend kind: {backend_config.kind}")
 
@@ -32,6 +38,9 @@ def backfill_embedder(  # noqa: PLR0915
 
     if not embedder_config:
         raise ValueError(f"Embedder '{embedder_name}' not found in config")
+
+    # Apply migrations (after validating embedder config exists, before any DB writes)
+    backend.migrate()
 
     # Register/create the embedder
     embedder = registry.register(

@@ -43,11 +43,11 @@ active = true
                 backfill_embedder("nonexistent-embedder")
 
     def test_backfill_embedder_unsupported_backend(self, temp_dir):
-        """Test that unsupported backend raises ValueError."""
+        """Test that an unsupported backend kind raises ValueError."""
         config_content = """
 [backend]
-kind = "sqlite"
-dsn = "test.db"
+kind = "duckdb"
+dsn = "duckdb://memory"
 schema = "corpus"
 
 [[embedders]]
@@ -64,8 +64,8 @@ active = true
 
         with patch.object(Config, "load") as mock_load:
             mock_config = MagicMock()
-            mock_config.backend.kind = "sqlite"
-            mock_config.backend.dsn = "test.db"
+            mock_config.backend.kind = "duckdb"
+            mock_config.backend.dsn = "duckdb://memory"
             mock_config.backend.schema = "corpus"
             mock_config.embedders = []
             mock_load.return_value = mock_config
