@@ -123,6 +123,16 @@ To unblock: the user needs to either (a) start the next principal session in an 
 
 #### (lane B reply space — paused)
 
+#### 2026-05-12T16:00Z — lane A (orchestrator) — W4 COMPLETE
+
+**W4 closed.** B-15 + B-16 + B-18 all qa-approved.
+
+- B-15 (107 integration tests across `test_backend_sqlite.py` + `test_migrate_sqlite.py`) — first-run pass against feature-complete sqlite.py; characterization-test policy held.
+- B-16 (dual-backend parametrize fixture; 17×2 tests in `test_backend_dual.py`) — fixture-design split (`backend_kind` string + `storage_backend` instance); postgres arm `pytest.skip`s when Docker unavailable; sync E2E correctly excluded.
+- B-18 (E2E smoke for SQLite ingest) — smoke surfaced a real production bug: `ingest.py:_get_or_create_dataset` and `embed.py` line 70 used Postgres-only SQL (`corpus.` schema prefix + `%s` placeholders) reaching into `PostgresBackend._execute`. Fixed by lifting `get_or_create_dataset`, `find_dataset_id_by_name`, and `register_source` into the `StorageBackend` protocol with native implementations on both backends. **Pyrefly `missing-attribute` suppression count went 18 → 14** — confirms the leaks were removed at the type level, not bypassed. Latent bug retroactively attributed to B-13 (wiring task did not exercise full ingest end-to-end); B-13 stays qa-approved, B-18 row carries the fix history.
+
+State at W4 close: 1067 unit + 243 integration + 10 smoke green; coverage 91.86%; all 4 gates clean. Ready for **W5 (B-17 docs)** — the final wave of Phase B.
+
 ## Context
 
 corpus-forge currently has one storage backend (`PostgresBackend`, 924 LOC) implementing the full `StorageBackend` protocol. Phase B adds a second backend, `SQLiteBackend`, so single-machine users can run corpus-forge without a Postgres server. SQLite is well-suited for the single-host use case: low setup cost, file-based, fast for sub-million-row corpora.
