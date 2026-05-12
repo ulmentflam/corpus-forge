@@ -1171,3 +1171,253 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   ```
 - lint/format: `uv run ruff check` clean; `uv run ruff format --check` clean.
 - Status: red — handed off to tdd-coder
+
+## B-08 — `lock_source(key: str)` context manager
+- Test files: `tests/unit/test_sqlite_backend.py` (appended 2 classes, 12 tests total)
+  - `TestLockSource` (8 tests): happy path execute, any-string key accepted, commit on clean exit,
+    write visible after exit, rollback on exception, exception re-raised, different keys serialize
+    globally, context manager protocol returned.
+  - `TestLockSourceConcurrency` (4 tests): two threads serialize with no data loss, timeout raises
+    OperationalError after threshold, lock released immediately after context exit, different keys
+    still serialize (global write-lock, not per-key).
+- Run command: `PYTHONPATH=. uv run pytest tests/unit/test_sqlite_backend.py::TestLockSource tests/unit/test_sqlite_backend.py::TestLockSourceConcurrency -v --no-header 2>&1 | tail -40`
+- Edge case checklist:
+  - [x] happy path — block executes, any string key accepted, clean exit commits write
+  - [x] boundaries — empty key, unicode key, 256-char key, all accepted without error
+  - [x] type/format — return value implements context manager protocol (__enter__/__exit__)
+  - [x] state — commit on clean exit persists; rollback on exception reverts; lock released after exit
+  - [x] concurrency — two threads serialize (no data loss); timeout raises OperationalError;
+        different keys still use global write-lock (no per-key granularity)
+  - [x] failure paths — exception inside block triggers ROLLBACK and is re-raised;
+        lock_timeout_s=0.3 raises OperationalError when lock is held by another thread
+  - [x] N/A — locale/time (no locale-sensitive paths in lock acquisition logic)
+  - [x] production-realistic — tests use file-backed DBs (tmp_path) to exercise real cross-connection
+        contention; concurrency tests use threading.Event handshakes (no race-prone bare sleeps)
+  - [x] regression hooks — `test_lock_released_after_context_exit` pins that BEGIN IMMEDIATE is
+        committed/rolled back (not left dangling); `test_exception_inside_lock_rolls_back` pins
+        the ROLLBACK-on-exception contract
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_sqlite_backend.py::TestLockSource::test_context_manager_executes_block
+  FAILED tests/unit/test_sqlite_backend.py::TestLockSource::test_lock_source_accepts_any_string_key
+  FAILED tests/unit/test_sqlite_backend.py::TestLockSource::test_write_inside_lock_is_committed
+  FAILED tests/unit/test_sqlite_backend.py::TestLockSource::test_write_inside_lock_visible_after_exit
+  FAILED tests/unit/test_sqlite_backend.py::TestLockSource::test_exception_inside_lock_rolls_back
+  FAILED tests/unit/test_sqlite_backend.py::TestLockSource::test_exception_is_re_raised
+  FAILED tests/unit/test_sqlite_backend.py::TestLockSource::test_different_keys_serialize_globally
+  FAILED tests/unit/test_sqlite_backend.py::TestLockSource::test_returns_context_manager_protocol
+  FAILED tests/unit/test_sqlite_backend.py::TestLockSourceConcurrency::test_two_threads_serialize_no_data_loss
+  FAILED tests/unit/test_sqlite_backend.py::TestLockSourceConcurrency::test_timeout_raises_operational_error
+  FAILED tests/unit/test_sqlite_backend.py::TestLockSourceConcurrency::test_lock_released_after_context_exit
+  FAILED tests/unit/test_sqlite_backend.py::TestLockSourceConcurrency::test_different_keys_still_serialize
+  12 failed, 118 passed in 14.70s
+  All 12 B-08 tests fail with AttributeError: 'SQLiteBackend' object has no attribute 'lock_source'.
+  118 existing tests pass (no regression).
+  ```
+- lint: `uv run ruff check tests/unit/test_sqlite_backend.py` — All checks passed.
+- format: `uv run ruff format --check tests/unit/test_sqlite_backend.py` — 1 file already formatted.
+- Notes:
+  - `lock_timeout_s` must be an accepted keyword argument of `lock_source` for the timeout test.
+    The default should be 30.0 s per the board spec; the concurrency test overrides it to 0.3 s.
+  - Re-entrancy (nested lock_source from the same connection) is NOT tested — SQLite's BEGIN
+    IMMEDIATE would deadlock on the same connection. Documented in class-level comment only.
+  - The `test_exception_is_re_raised` test uses `with pytest.raises(...), backend.lock_source(...):`
+    combined syntax (SIM117 compliance); the lock_source context manager must propagate the
+    exception from the body, not suppress it.
+
+## B-09
+- Test files: `tests/unit/test_sqlite_backend.py` (appended: TestDeleteDocument,
+  TestDeleteConversation, TestFindDocument, TestResolveDocument, TestResolveSelfSource)
+- Run command:
+  `PYTHONPATH=. uv run pytest tests/unit/test_sqlite_backend.py -v --no-header 2>&1 | tail -30`
+- Edge case checklist:
+  - [x] happy — all five methods have a basic "does it work" case
+  - [x] boundaries — empty source_uri for resolve_document returns None;
+        delete of non-existent row is a no-op
+  - [x] type / format — N/A (pure SQL; no format parsing in these methods)
+  - [x] state — idempotency on double-call (resolve_document, resolve_self_source);
+        dirty state (delete with chunks/messages present)
+  - [x] concurrency — N/A (single-threaded methods; lock_source concurrency covered in B-08)
+  - [x] failure paths — delete non-existent doc/conv is no-op (no error); find missing returns None
+  - [x] locale / time — N/A (no timestamps in B-09 surface)
+  - [x] production-realistic data — uses real source_uri patterns (vault://, claude://)
+        and dataset isolation patterns matching the rest of the suite
+  - [x] regression hooks — test_delete_only_affects_matching_dataset pins the
+        dataset isolation invariant; test_uses_sync_plugin_and_pull_identity pins
+        the exact plugin/identity values used by resolve_self_source (Postgres parity)
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_sqlite_backend.py::TestDeleteDocument::test_delete_removes_document_row
+  FAILED tests/unit/test_sqlite_backend.py::TestDeleteDocument::test_delete_cascades_to_chunks
+  FAILED tests/unit/test_sqlite_backend.py::TestDeleteDocument::test_delete_nonexistent_is_noop
+  FAILED tests/unit/test_sqlite_backend.py::TestDeleteDocument::test_delete_only_affects_matching_dataset
+  FAILED tests/unit/test_sqlite_backend.py::TestDeleteConversation::test_delete_removes_conversation_row
+  FAILED tests/unit/test_sqlite_backend.py::TestDeleteConversation::test_delete_cascades_messages_and_chunks
+  FAILED tests/unit/test_sqlite_backend.py::TestDeleteConversation::test_delete_nonexistent_conversation_is_noop
+  FAILED tests/unit/test_sqlite_backend.py::TestFindDocument::test_returns_dict_for_existing_document
+  FAILED tests/unit/test_sqlite_backend.py::TestFindDocument::test_returns_none_for_missing_document
+  FAILED tests/unit/test_sqlite_backend.py::TestFindDocument::test_wrong_dataset_id_returns_none
+  FAILED tests/unit/test_sqlite_backend.py::TestFindDocument::test_is_non_mutating
+  FAILED tests/unit/test_sqlite_backend.py::TestResolveDocument::test_creates_stub_for_missing_document
+  FAILED tests/unit/test_sqlite_backend.py::TestResolveDocument::test_new_stub_has_empty_content_hash
+  FAILED tests/unit/test_sqlite_backend.py::TestResolveDocument::test_returns_existing_row_without_duplicate
+  FAILED tests/unit/test_sqlite_backend.py::TestResolveDocument::test_idempotent_same_id_on_double_call
+  FAILED tests/unit/test_sqlite_backend.py::TestResolveDocument::test_returns_none_for_empty_source_uri
+  FAILED tests/unit/test_sqlite_backend.py::TestResolveDocument::test_isolated_by_dataset_id
+  FAILED tests/unit/test_sqlite_backend.py::TestResolveSelfSource::test_first_call_returns_int_id
+  FAILED tests/unit/test_sqlite_backend.py::TestResolveSelfSource::test_second_call_same_args_returns_same_id
+  FAILED tests/unit/test_sqlite_backend.py::TestResolveSelfSource::test_second_call_does_not_duplicate_row
+  FAILED tests/unit/test_sqlite_backend.py::TestResolveSelfSource::test_different_host_produces_different_id
+  FAILED tests/unit/test_sqlite_backend.py::TestResolveSelfSource::test_uses_sync_plugin_and_pull_identity
+  FAILED tests/unit/test_sqlite_backend.py::TestResolveSelfSource::test_isolated_by_dataset_id
+  23 failed, 130 passed in 15.26s
+  All 23 B-09 tests fail with AttributeError: 'SQLiteBackend' object has no attribute '<method>'.
+  130 existing tests pass (no regression).
+  ```
+- lint: `uv run ruff check tests/unit/test_sqlite_backend.py` — All checks passed.
+- format: `uv run ruff format --check tests/unit/test_sqlite_backend.py` — 1 file already formatted.
+- Notes:
+  - `resolve_self_source` uses plugin='sync', identity='pull' — verified directly from
+    `postgres.py` lines 726-743. The Postgres implementation does a SELECT-or-INSERT with
+    those exact string literals. The SQLite coder must match them exactly.
+  - `resolve_document` with empty source_uri must return None — this guard is explicit in
+    postgres.py lines 695-696.
+  - `delete_document` / `delete_conversation` cascade is guaranteed by
+    `PRAGMA foreign_keys = ON` which _get_connection sets per-connection. No explicit
+    cascade SQL needed in the method bodies.
+- Status: red — handed off to tdd-coder
+- Status: red — handed off to tdd-coder
+
+## B-10 — `insert_revision` with monotonic `revision_number`
+- Test files: `tests/unit/test_sqlite_backend.py` (appended 6 classes, 16 tests)
+  - `TestInsertRevisionHappyPath` (5 tests): returns dict with id+revision_number; id is positive int; first revision has revision_number=1; second has revision_number=2; row visible via SELECT
+  - `TestInsertRevisionParents` (2 tests): parent_revision_id=None stored as NULL; non-None parent_revision_id stored and FK preserved
+  - `TestInsertRevisionTombstone` (2 tests): is_tombstone=True stored as truthy; text="" allowed for tombstone
+  - `TestInsertRevisionMetadata` (3 tests): metadata=None stores NULL or '{}'  JSON; flat dict round-trips; nested dict round-trips
+  - `TestInsertRevisionMonotonicity` (2 tests): two threads with Event handshake produce revision_numbers {1,2} with no duplicate; two independent document_ids each independently start at 1
+  - `TestInsertRevisionFailurePaths` (2 tests): non-existent document_id raises IntegrityError (FK, enforced via PRAGMA foreign_keys=ON); missing required kwarg raises TypeError
+- Run command: `PYTHONPATH=. uv run pytest tests/unit/test_sqlite_backend.py -k "TestInsertRevision" -v --no-header 2>&1 | tail -25`
+- Edge case checklist:
+  - [x] happy path — basic insert, correct return shape, numbering from 1
+  - [x] boundaries — first revision (no prior MAX, so MAX=NULL → 0+1=1); second revision (MAX=1 → 2); text="" for tombstone
+  - [x] type / format — metadata=None (→ '{}' or NULL); dict metadata JSON serialization; nested dict
+  - [x] state — fresh state (no prior revisions → starts at 1); sequential state (two revisions → 1 and 2)
+  - [x] concurrency — two threads contending for lock_source; Event handshake ensures genuine contention; revision_numbers must be {1,2}
+  - [x] failure paths — invalid FK (document_id 999999) → IntegrityError; missing required kwarg → TypeError
+  - [ ] N/A — locale/time (created_at uses SQLite default strftime; not tested here)
+  - [x] production-realistic data — source_uri patterns matching vault://, content_hash strings, author_host values matching real hostname patterns
+  - [x] regression hooks — monotonicity test pins that lock_source() actually serializes the MAX()+1 allocation (the core B-10 invariant); the independent-document test pins that revision_number scope is per document_id
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_sqlite_backend.py::TestInsertRevisionHappyPath::test_returns_dict_with_id_and_revision_number
+  FAILED tests/unit/test_sqlite_backend.py::TestInsertRevisionHappyPath::test_id_is_positive_integer
+  FAILED tests/unit/test_sqlite_backend.py::TestInsertRevisionHappyPath::test_first_revision_has_revision_number_one
+  FAILED tests/unit/test_sqlite_backend.py::TestInsertRevisionHappyPath::test_second_revision_has_revision_number_two
+  FAILED tests/unit/test_sqlite_backend.py::TestInsertRevisionHappyPath::test_row_visible_via_select
+  FAILED tests/unit/test_sqlite_backend.py::TestInsertRevisionParents::test_parent_revision_id_none_for_first_revision
+  FAILED tests/unit/test_sqlite_backend.py::TestInsertRevisionParents::test_parent_revision_id_stored_for_child_revision
+  FAILED tests/unit/test_sqlite_backend.py::TestInsertRevisionTombstone::test_is_tombstone_true_stored_as_truthy
+  FAILED tests/unit/test_sqlite_backend.py::TestInsertRevisionTombstone::test_empty_text_allowed_for_tombstone
+  FAILED tests/unit/test_sqlite_backend.py::TestInsertRevisionMetadata::test_metadata_none_stores_empty_json_object
+  FAILED tests/unit/test_sqlite_backend.py::TestInsertRevisionMetadata::test_metadata_dict_round_trips
+  FAILED tests/unit/test_sqlite_backend.py::TestInsertRevisionMetadata::test_nested_metadata_dict_round_trips
+  FAILED tests/unit/test_sqlite_backend.py::TestInsertRevisionMonotonicity::test_two_threads_produce_revision_numbers_one_and_two
+  FAILED tests/unit/test_sqlite_backend.py::TestInsertRevisionMonotonicity::test_independent_documents_each_start_at_one
+  FAILED tests/unit/test_sqlite_backend.py::TestInsertRevisionFailurePaths::test_invalid_document_id_raises_integrity_error
+  FAILED tests/unit/test_sqlite_backend.py::TestInsertRevisionFailurePaths::test_missing_required_kwarg_raises_type_error
+  16 failed, 153 deselected in 1.21s
+  ```
+  All 16 B-10 tests fail with: `AttributeError: 'SQLiteBackend' object has no attribute 'insert_revision'`
+  153 pre-existing tests pass (no regression).
+- lint: `uv run ruff check tests/unit/test_sqlite_backend.py` — All checks passed.
+- format: `uv run ruff format --check tests/unit/test_sqlite_backend.py` — 1 file already formatted.
+- Notes:
+  - The `test_missing_required_kwarg_raises_type_error` test currently fails with `AttributeError`
+    (method absent) rather than `TypeError` (bad call signature). This is correct red — once the
+    coder adds `insert_revision`, calling it without `document_id` will raise `TypeError` as intended.
+  - The `test_invalid_document_id_raises_integrity_error` test uses `pytest.raises` + `lock_source`
+    combined with `with (A, B):` syntax (Python 3.10+) to satisfy SIM117 lint rule.
+  - `metadata=None` behavior: test allows either NULL or '{}' in the DB to give the coder freedom
+    matching the Postgres Json({}) pattern vs SQL NULL. If the coder stores '{}', the `json.loads`
+    path validates it; if NULL, the test passes the None branch. Both are acceptable.
+- Status: red — handed off to tdd-coder
+
+## B-11 — `latest_revision`, `pending_remote_revisions`, `mark_revision_pulled`
+- Test files: `tests/unit/test_sqlite_backend.py` (appended 3 test classes + helpers, 15 tests)
+  - `TestLatestRevision` (3 tests): highest revision_number returned; None for unknown doc; isolated by document_id
+  - `TestPendingRemoteRevisions` (8 tests): happy path; filters by dataset_id; excludes self_host; respects last_pulled_revision_id; None treated as 0; ordered by id ASC; honors limit; source_uri + parent_content_hash present from JOINs; parent_content_hash=None for root revision
+  - `TestMarkRevisionPulled` (3 tests): basic update; monotonic (smaller value does not regress); idempotent on same value
+- Run command: `PYTHONPATH=. uv run pytest tests/unit/test_sqlite_backend.py -v -k "TestLatestRevision or TestPendingRemoteRevisions or TestMarkRevisionPulled" 2>&1 | tail -30`
+- Edge case checklist:
+  - [x] happy path — latest_revision returns highest revision_number row; pending returns remote revisions; mark_revision_pulled sets pointer
+  - [x] boundaries — last_pulled_revision_id=None (treated as 0); limit=2 caps to 2 rows; root revision with no parent gives parent_content_hash=None
+  - [x] type/format — N/A (all integer/string columns, no special types)
+  - [x] state — monotonicity: smaller revision_id does not regress pointer; idempotent: double-call with same value is no-op; isolation: document_id isolation in latest_revision; dataset_id isolation in pending
+  - [x] N/A — concurrency (read-only methods; concurrency covered by B-08/B-10 lock)
+  - [x] failure paths — latest_revision for unknown document_id returns None (not raise)
+  - [x] N/A — locale/time (no locale/time dependencies)
+  - [x] production-realistic — multi-document setup; mixed self/remote authors; parent-child revision chains
+  - [x] regression hooks — separate dataset isolation test pins cross-dataset filtering contract; self_host exclusion pins the author_host <> self_host filter
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_sqlite_backend.py::TestLatestRevision::test_returns_highest_revision_number_row
+  FAILED tests/unit/test_sqlite_backend.py::TestLatestRevision::test_returns_none_for_unknown_document
+  FAILED tests/unit/test_sqlite_backend.py::TestLatestRevision::test_isolated_by_document_id
+  FAILED tests/unit/test_sqlite_backend.py::TestPendingRemoteRevisions::test_happy_path_returns_remote_revisions
+  FAILED tests/unit/test_sqlite_backend.py::TestPendingRemoteRevisions::test_filters_by_dataset_id
+  FAILED tests/unit/test_sqlite_backend.py::TestPendingRemoteRevisions::test_excludes_self_host_revisions
+  FAILED tests/unit/test_sqlite_backend.py::TestPendingRemoteRevisions::test_respects_last_pulled_revision_id
+  FAILED tests/unit/test_sqlite_backend.py::TestPendingRemoteRevisions::test_none_last_pulled_revision_id_returns_all
+  FAILED tests/unit/test_sqlite_backend.py::TestPendingRemoteRevisions::test_orders_by_id_asc
+  FAILED tests/unit/test_sqlite_backend.py::TestPendingRemoteRevisions::test_honors_limit
+  FAILED tests/unit/test_sqlite_backend.py::TestPendingRemoteRevisions::test_result_includes_source_uri_and_parent_content_hash
+  FAILED tests/unit/test_sqlite_backend.py::TestPendingRemoteRevisions::test_parent_content_hash_is_none_for_root_revision
+  FAILED tests/unit/test_sqlite_backend.py::TestMarkRevisionPulled::test_updates_last_pulled_revision_id
+  FAILED tests/unit/test_sqlite_backend.py::TestMarkRevisionPulled::test_monotonic_smaller_value_does_not_regress
+  FAILED tests/unit/test_sqlite_backend.py::TestMarkRevisionPulled::test_idempotent_on_same_value
+  15 failed, 169 deselected in 1.11s
+  ```
+  All 15 B-11 tests fail with: `AttributeError: 'SQLiteBackend' object has no attribute 'X'` (X = latest_revision / pending_remote_revisions / mark_revision_pulled).
+  169 pre-existing tests pass (no regression).
+- lint: `uv run ruff check tests/unit/test_sqlite_backend.py` — All checks passed.
+- format: `uv run ruff format --check tests/unit/test_sqlite_backend.py` — 1 file already formatted.
+- Notes:
+  - `mark_revision_pulled` must use `MAX(COALESCE(last_pulled_revision_id, 0), ?)` (SQLite scalar MAX),
+    not `GREATEST(...)` which is Postgres-only. The monotonicity test pins this behavior.
+  - `pending_remote_revisions` JOIN shape verified against postgres.py Wave-13b: `r.*`, `d.source_uri`,
+    `parent.content_hash AS parent_content_hash` with LEFT JOIN on parent_revision_id.
+  - Helper `_insert_revision_direct` bypasses `lock_source` for read-side test setup (test data
+    scaffolding only — not testing write serialization here, that's B-10).
+  - `_insert_source_row` inserts directly via `_execute`; uses `INSERT OR IGNORE` on dataset row
+    (delegates to `_insert_dataset_only`).
+- Status: red — handed off to tdd-coder
+
+## B-12 — `set_tombstone` + `clear_tombstone` on `SQLiteBackend`
+- Test files: `tests/unit/test_sqlite_backend.py` (appended: `TestSetTombstone`, `TestClearTombstone`, `TestTombstoneRoundTrip`)
+- Run command: `PYTHONPATH=. uv run pytest tests/unit/test_sqlite_backend.py -k "TestSetTombstone or TestClearTombstone or TestTombstoneRoundTrip" -v --no-header`
+- Edge case checklist:
+  - [x] happy path — `set_tombstone` writes non-NULL; `clear_tombstone` writes NULL
+  - [x] boundaries — N/A (single-row UPDATE; no numeric boundary; document_id is opaque int PK)
+  - [x] type/format — ISO-8601 datetime parse test verifies timestamp string format + UTC normalization
+  - [x] state — idempotent set (twice → still tombstoned, no error); idempotent clear (already NULL → no error); multi-cycle round-trip (set/clear/set/clear)
+  - [x] N/A — concurrency (UPDATE is atomic; no cross-row race; SQLite global write lock covers this)
+  - [x] failure paths — unknown document_id → no-op (UPDATE 0 rows is fine, must not raise)
+  - [x] locale/time — ISO-8601 UTC check; trailing Z normalized to +00:00 for `fromisoformat` compatibility
+  - [x] production-realistic — uses the `_migrated_backend` + `_insert_document_for_tombstone` helpers matching rest of suite style; direct SQL verification after each call
+  - [x] regression hooks — N/A (no prior bug reference for B-12)
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_sqlite_backend.py::TestSetTombstone::test_sets_tombstoned_at_to_non_null
+  FAILED tests/unit/test_sqlite_backend.py::TestSetTombstone::test_tombstoned_at_parses_as_iso8601_datetime
+  FAILED tests/unit/test_sqlite_backend.py::TestSetTombstone::test_idempotent_double_call_still_tombstoned
+  FAILED tests/unit/test_sqlite_backend.py::TestSetTombstone::test_unknown_document_id_is_noop
+  FAILED tests/unit/test_sqlite_backend.py::TestClearTombstone::test_clears_existing_tombstone_to_null
+  FAILED tests/unit/test_sqlite_backend.py::TestClearTombstone::test_tombstoned_at_becomes_null
+  FAILED tests/unit/test_sqlite_backend.py::TestClearTombstone::test_idempotent_on_already_clear
+  FAILED tests/unit/test_sqlite_backend.py::TestClearTombstone::test_unknown_document_id_is_noop
+  FAILED tests/unit/test_sqlite_backend.py::TestTombstoneRoundTrip::test_set_then_clear_returns_to_null
+  FAILED tests/unit/test_sqlite_backend.py::TestTombstoneRoundTrip::test_set_clear_set_works
+  ======================== 10 failed, 184 passed in 7.38s ========================
+  All failures: AttributeError: 'SQLiteBackend' object has no attribute 'set_tombstone'
+  ```
+- Status: red — handed off to tdd-coder

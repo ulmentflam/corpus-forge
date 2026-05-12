@@ -143,6 +143,23 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 | B-04 | green | 18/18 B-04 tests pass. Follow-up at c33152a fixed 3 real bugs: name sanitization (`-` → `_`), safe JSON via json.dumps, FK on embedder_id + created_at on fallback BLOB table. |
 | B-05 | green | 32/32 tests green. Implementation untouched; 9 tester-side bugs fixed by lane A solo tester-fix pass: COUNT(*) aliased as `count`, chunks inserted before embeddings (capture real id), filter by `!= prior_id` not hardcoded ranges, dataset name parametrized by id, chunk arg shape corrected. |
 | B-06 | green | 21/21 tests green. `upsert_conversation` mirrors postgres.py semantics: SELECT-or-UPSERT keyed on (dataset_id, source_uri), replace-messages on hash mismatch, per-message chunk lists. sqlite.py grew from 466 → 722 LOC. All gates clean (ruff, format, pyrefly). |
+| B-07 | green | 17/17 tests green. `write_embeddings` (DELETE+INSERT for vec0, INSERT OR REPLACE for BLOB fallback) + `chunks_missing_embedding` (NOT EXISTS subquery). sqlite.py grew by ~90 LOC. All gates clean. |
+| B-08 | green | 12/12 tests green. `lock_source` implemented with threading.Lock + BEGIN IMMEDIATE + `_NoCommitConn` proxy. All gates clean. |
+| B-09 | green | 23/23 tests green. 5 additive methods: delete_document, delete_conversation, find_document, resolve_document, resolve_self_source. All 4 gates clean. |
+
+## B-07
+- Source files: `corpus_forge/backends/sqlite.py` (additive — two new methods)
+- Gates:
+  - format: ✓ (`ruff format --check` — 92 files already formatted)
+  - lint: ✓ (`ruff check` — All checks passed)
+  - typecheck: ✓ (`pyrefly check corpus_forge` — 0 errors, 14 suppressed, 15 warnings not shown)
+  - test: ✓ (`pytest TestWriteEmbeddings TestChunksMissingEmbedding` — 17/17 passed; `pytest tests/unit -q` — 937 passed, 8 skipped, 0 failed; `pytest tests/integration -q` — 102/102 passed)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (sqlite.py additive only)
+- Surprises:
+  - vec0 virtual tables reject `INSERT OR REPLACE` with "UNIQUE constraint failed on primary key"; used DELETE-then-INSERT instead.
+  - `serialize_float32` stub types `vector: List[float]`; passing numpy array caused a pyrefly error; fixed by calling `.tolist()` to convert to Python list before passing.
+- Status: green — handed off to tdd-qa
 
 ## B-03
 - Source files: `corpus_forge/backends/sqlite.py` (new, 231 LOC)
@@ -179,4 +196,70 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 - Surprises:
   - B-05 tester committed test file with lint/format violations before B-04 coder ran gates; pre-existing, confirmed by git stash test.
   - sqlite-vec IS available in this environment (SQLITE_VEC_AVAILABLE=True), so `test_vec0_virtual_table_has_required_columns` ran (not skipped) and passed.
+- Status: green — handed off to tdd-qa
+
+## B-08
+- Source files: `corpus_forge/backends/sqlite.py` (additive — `_NoCommitConn` class, `_open_connection` helper, `lock_source` method, `__init_subclass__` helper)
+- Gates:
+  - format: ✓ (`ruff format --check` — 92 files already formatted)
+  - lint: ✓ (`ruff check` — All checks passed; ARG002 for intentionally-ignored `key` param suppressed with `# noqa: ARG002` + justification comment per project pattern)
+  - typecheck: ✓ (`pyrefly check corpus_forge` — 0 errors, 18 suppressed, 15 warnings not shown)
+  - test: ✓ (`pytest TestLockSource TestLockSourceConcurrency` — 12/12 passed; `pytest tests/unit -q` — 949 passed, 8 skipped, 0 failed; `pytest tests/integration -q` — 102/102 passed)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (`corpus_forge/backends/sqlite.py` only, additive)
+- Design decisions and surprises:
+  1. `BEGIN IMMEDIATE` alone cannot be held during the lock body — `_execute` calls from the body open new connections that try to write, which conflicts with the held write lock (deadlock on the same thread, or 5-second busy-wait in multi-thread).
+  2. Solution: route `_execute` calls inside the lock body through the lock's dedicated connection via a temporary instance-attribute shadow of `_get_connection`. `_NoCommitConn` proxy wraps the connection and suppresses `commit()` calls from `_execute`, deferring the final COMMIT or ROLLBACK to `lock_source.__exit__`.
+  3. `_open_connection` uses `timeout=0` (no SQLite internal busy handler) so our Python-level exponential back-off fully controls retry timing for lock_timeout_s.
+  4. `_open_connection` intentionally omits `PRAGMA journal_mode = WAL` — that PRAGMA modifies the DB header and requires a write lock, which would block indefinitely if an external writer holds `BEGIN IMMEDIATE` (exactly the scenario we're retrying against).
+  5. `threading.Lock` (Python-level) ensures only one thread at a time attempts `BEGIN IMMEDIATE`, preventing races where two threads both hold `_NoCommitConn` simultaneously.
+- Status: green — handed off to tdd-qa
+
+## B-09
+- Source files: `corpus_forge/backends/sqlite.py` (additive — 5 new methods: delete_document, delete_conversation, find_document, resolve_document, resolve_self_source)
+- Gates:
+  - format: ✓ (`ruff format --check` — 92 files already formatted after auto-fix)
+  - lint: ✓ (`ruff check` — All checks passed)
+  - typecheck: ✓ (`pyrefly check corpus_forge` — 0 errors, 18 suppressed)
+  - test: ✓ (B-09: 23/23 passed; `pytest tests/unit -q` — 972 passed, 8 skipped, 0 failed; `pytest tests/integration -q` — 102/102 passed)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (`corpus_forge/backends/sqlite.py` only, additive)
+- Surprises: none — straightforward DELETE/SELECT/INSERT translations from postgres.py; `resolve_self_source` keyed on (dataset_id, plugin='sync', identity='pull', host) UNIQUE as specified.
+- Status: green — handed off to tdd-qa
+
+## B-10
+- Source files: `corpus_forge/backends/sqlite.py` (additive — 1 new method: insert_revision)
+- Gates:
+  - format: ✓ (`ruff format --check` — 92 files already formatted after auto-fix)
+  - lint: ✓ (`ruff check` — All checks passed)
+  - typecheck: ✓ (`pyrefly check corpus_forge` — 0 errors, 18 suppressed)
+  - test: ✓ (B-10: 16/16 passed; `pytest tests/unit -q` — 988 passed, 8 skipped, 0 failed; `pytest tests/integration -q` — 102/102 passed)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (`corpus_forge/backends/sqlite.py` only, additive)
+- Locking design: insert_revision does NOT call lock_source internally. Tests pre-acquire lock_source externally before calling insert_revision — matching the Postgres pattern (comment: "callers are expected to already hold lock_source"). Internal acquisition would deadlock since SQLite's BEGIN IMMEDIATE is non-reentrant. The _NoCommitConn proxy routes _execute calls inside the lock body through the lock's connection, so MAX(revision_number) and INSERT run within the same BEGIN IMMEDIATE transaction, guaranteeing atomicity and monotonicity.
+- Surprises: none — clean translation from postgres.py; metadata=None serializes to '{}' via json.dumps; is_tombstone stored as int() for SQLite INTEGER column.
+- Status: green — handed off to tdd-qa
+
+## B-11
+- Source files: `corpus_forge/backends/sqlite.py` (additive — 3 new methods: latest_revision, pending_remote_revisions, mark_revision_pulled)
+- Gates:
+  - format: ✓ (`ruff format --check` — 92 files already formatted)
+  - lint: ✓ (`ruff check` — All checks passed)
+  - typecheck: ✓ (`pyrefly check corpus_forge` — 0 errors, 18 suppressed)
+  - test: ✓ (B-11: 15/15 passed; `pytest tests/unit -q` — 1003 passed, 8 skipped, 0 failed; `pytest tests/integration -q` — 102/102 passed)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (`corpus_forge/backends/sqlite.py` only, additive)
+- Design notes: JOIN syntax is identical between Postgres and SQLite for pending_remote_revisions; only placeholder style (%s -> ?) and schema prefix (corpus. removed) differ. mark_revision_pulled uses MAX(a, b) instead of GREATEST(a, b) — SQLite's MAX works as a two-arg scalar function in SET expressions.
+- Status: green — handed off to tdd-qa
+
+## B-12
+- Source files: `corpus_forge/backends/sqlite.py` (additive — 2 new methods: set_tombstone, clear_tombstone)
+- Gates:
+  - format: ✓ (`ruff format --check` — 92 files already formatted)
+  - lint: ✓ (`ruff check` — All checks passed)
+  - typecheck: ✓ (`pyrefly check corpus_forge` — 0 errors, 18 suppressed, 15 warnings not shown)
+  - test: ✓ (B-12: 10/10 passed; `pytest tests/unit -q` — 1013 passed, 8 skipped, 0 failed; `pytest tests/integration -q` — 102/102 passed)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (`corpus_forge/backends/sqlite.py` only, additive)
+- Design notes: `set_tombstone` uses `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` for ISO-8601 with millisecond precision UTC (SQLite equivalent of Postgres `NOW()`). `clear_tombstone` sets `tombstoned_at = NULL`. Both are idempotent; unknown document_id is a no-op (UPDATE on 0 rows). W2 complete: B-04..B-12 all green.
 - Status: green — handed off to tdd-qa
