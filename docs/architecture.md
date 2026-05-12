@@ -63,3 +63,28 @@ To add a new embedder:
 To add a new backend:
 1. Implement the StorageBackend protocol
 2. Update configuration to use the new backend
+
+## Backends
+
+Corpus-forge ships with two concrete storage backends behind a single `StorageBackend` protocol (`corpus_forge/backends/base.py`): `PostgresBackend` (`backends/postgres.py`) for networked deployments and `SQLiteBackend` (`backends/sqlite.py`) for single-machine use. Users pick at config time via `[backend].kind = "postgres" | "sqlite"`; `ingest.py` and `embed.py` dispatch on that value when constructing the backend.
+
+The two implementations expose the same method surface but differ in deployment model, vector storage, locking strategy, and what they support. Sync (`sync_enabled = true` on a dataset) is the most important asymmetry: it is rejected at config-construction time by `Config.validate_sync_gate` when paired with `kind = "sqlite"`.
+
+| Aspect | postgres | sqlite |
+| --- | --- | --- |
+| Deployment | Networked Postgres + `pgvector` extension | Local file (e.g. `~/Library/Application Support/corpus-forge/corpus.db`) or `:memory:` |
+| Host topology | Multi-host (cross-host sync supported) | Single-host only |
+| Sync (`sync_enabled`) | Supported | Rejected at config-load by `validate_sync_gate` (see B-14) |
+| Setup cost | Requires PG server + `pgvector` extension | Zero — `sqlite3` is in the stdlib; `sqlite-vec` is an optional extra (`pip install corpus-forge[sqlite]`) |
+| Vector store | `pgvector` column with HNSW cosine index per embedder | `sqlite-vec` `vec0` virtual table when available, BLOB fallback (no ANN search) otherwise |
+| Schema isolation | Dedicated `corpus` schema; tables qualified as `corpus.<name>` | Single namespace; `schema` arg accepted for protocol parity but ignored at query time |
+| Concurrency | `pg_try_advisory_lock` (cross-process, cross-host, per-key) | Per-instance `threading.Lock` + `BEGIN IMMEDIATE` on a dedicated connection with exponential back-off; `key` accepted for protocol parity but ignored |
+| Best for | Production deployments, team usage, sync between machines | Personal / local use, single machine, fast bootstrap, tests |
+
+### Choosing a backend
+
+- Use **sqlite** if you are running on one machine and want zero infrastructure setup.
+- Use **sqlite** for fast unit/integration runs and ephemeral throw-away corpora (`:memory:` is supported).
+- Use **postgres** if you need cross-host sync (`sync_enabled = true` on any dataset).
+- Use **postgres** if multiple processes on multiple hosts will write concurrently — its per-key advisory locks are finer-grained than SQLite's global write lock.
+- Use **postgres** when you want approximate-nearest-neighbour search at scale; the SQLite path gains ANN only when `sqlite-vec` is installed, and the BLOB fallback is write-only.
