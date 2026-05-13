@@ -713,3 +713,29 @@ before burning runner minutes.
 | CI2-7 | GREEN — requires_unix marker application | CI2-1 | tests/unit/test_daemon.py, others as surveyed | low | done | tdd-principal | Mark POSIX-only tests. |
 | CI2-8 | GREEN — pythonpath TODO comment (CI-3 handoff) | CI2-1 | pyproject.toml | low | done | tdd-principal | Comment only; don't replace yet. |
 | CI2-9 | QA — full gauntlet + 10-seed flake sweep + YAML parse | CI2-2..CI2-8 | n/a (verification only) | high | done | tdd-principal | Acceptance check. |
+
+---
+
+## Phase CI-3: Packaging hardening + cross-platform install + LICENSE (Apache-2.0)
+
+_Owner: tdd-principal (Option B fused; Agent tool unavailable)._
+_Plan reference: `/Users/evanowen/.claude/plans/crispy-yawning-crescent.md` (CI-3); user override locks license to **Apache-2.0** everywhere._
+
+### Project gates (CI-3 specific additions)
+
+- Wheel build: `python -m build --wheel --outdir dist-test .`
+- Editable install check: `uv sync` then `uv run pytest tests/unit -q -k test_dummy_import_corpus_forge`
+- `bash -n` syntax check on every `scripts/{macos,linux}/*.sh`
+
+### Tasks
+
+| id | title | depends_on | surface | risk | status | claimed_by | notes |
+|----|-------|------------|---------|------|--------|------------|-------|
+| CI3-1 | RED — pyproject metadata + wheel METADATA characterization | — | tests/unit/test_phase_ci3_pyproject.py, tests/unit/test_phase_ci3_wheel_metadata.py | high | pending | tdd-principal | Pins all classifiers, keywords, urls, license expression, version 0.1.0b1, requires-python `>=3.11,<3.14`, build-system hatchling, removal of `pythonpath = ["."]`. |
+| CI3-2 | RED — LICENSE content (Apache-2.0) + py.typed + governance/README license | CI3-1 | tests/unit/test_phase_ci3_packaging.py | med | pending | tdd-principal | Asserts canonical Apache-2.0 opening + 2026/Evan Owen ownership; `corpus_forge/py.typed` exists; README license footer; no MIT strings outside docs of phase. |
+| CI3-3 | RED — script split + Makefile dispatch | CI3-1 | tests/unit/test_phase_ci3_scripts.py | low | pending | tdd-principal | `scripts/macos/{install,stop,uninstall}.sh` exist + executable + `bash -n` parse; `scripts/linux/*.sh`; `packaging/corpus-forge.service.template` has the systemd anchors; `make -n stop` references launchctl on darwin. |
+| CI3-4 | RED — editable install dummy test | CI3-1 | tests/unit/test_dummy_editable_install.py | low | pending | tdd-principal | One liner: `import corpus_forge; assert corpus_forge`. Pinned-by-name so we can grep `-k`. |
+| CI3-5 | GREEN — pyproject rewrite + version bump + remove `pythonpath` | CI3-1, CI3-4 | pyproject.toml, corpus_forge/__init__.py | high | pending | tdd-principal | Add `[build-system]` hatchling, replace `{text="MIT"}` with `license = "Apache-2.0"`, `license-files`, classifiers, keywords, urls, version `0.1.0b1`, requires-python `>=3.11,<3.14`. |
+| CI3-6 | GREEN — LICENSE file + py.typed + README license footer | CI3-2 | LICENSE, corpus_forge/py.typed, README.md | med | pending | tdd-principal | Canonical Apache-2.0 plain text; README adds Install (Linux / macOS / Windows) collapsibles + License footer. |
+| CI3-7 | GREEN — script split (git mv) + linux scripts + service template + Makefile dispatch | CI3-3 | scripts/, packaging/corpus-forge.service.template, Makefile | med | pending | tdd-principal | `git mv` preserves blame for macOS scripts; new Linux installers; Makefile `OS := $(shell uname -s)` dispatch for `stop` + `logs`. |
+| CI3-8 | QA — full gauntlet + `python -m build --wheel` METADATA inspection + editable install | CI3-5..CI3-7 | n/a (verification only) | high | pending | tdd-principal | Acceptance check: `make ci`, coverage ≥85%, wheel inspect, pip-install from wheel, `corpus-forge --help`. |
