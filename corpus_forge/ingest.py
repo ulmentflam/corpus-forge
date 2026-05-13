@@ -50,17 +50,21 @@ def get_active_embedders(config: Config) -> list[Embedder]:
     embedders = []
     for embedder_config in config.embedders:
         if embedder_config.active:
-            embedder = registry.register(
-                name=embedder_config.name,
-                provider=embedder_config.provider,
-                model_id=embedder_config.model_id,
-                dimension=embedder_config.dimension,
-                normalized=embedder_config.normalize,
-                distance=embedder_config.distance,
-                batch_size=getattr(embedder_config, "batch_size", 32),
-                device=getattr(embedder_config, "device", "auto"),
-                api_key_env=getattr(embedder_config, "api_key_env", "OPENAI_API_KEY"),
-            )
+            kwargs = {
+                "name": embedder_config.name,
+                "provider": embedder_config.provider,
+                "model_id": embedder_config.model_id,
+                "dimension": embedder_config.dimension,
+                "normalized": embedder_config.normalize,
+                "distance": embedder_config.distance,
+                "batch_size": getattr(embedder_config, "batch_size", 32),
+                "device": getattr(embedder_config, "device", "auto"),
+            }
+            if embedder_config.provider == "openai":
+                kwargs["api_key_env"] = getattr(
+                    embedder_config, "api_key_env", "OPENAI_API_KEY"
+                )
+            embedder = registry.register(**kwargs)
             embedders.append(embedder)
     return embedders
 
