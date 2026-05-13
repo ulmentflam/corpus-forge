@@ -2,9 +2,9 @@
 
 Validates the SVG assets shipped under ``assets/``:
 
-* ``assets/banner.svg`` — light banner (1280×320-ish viewBox).
+* ``assets/banner.svg`` — light banner (1280x320-ish viewBox).
 * ``assets/banner-dark.svg`` — dark variant.
-* ``assets/logo.svg`` — square mark (256×256 or 512×512).
+* ``assets/logo.svg`` — square mark (256x256 or 512x512).
 
 Each is asserted to:
 
