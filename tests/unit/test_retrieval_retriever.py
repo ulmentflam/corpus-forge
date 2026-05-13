@@ -500,6 +500,172 @@ def test_imports_dont_pull_in_torch_or_sentence_transformers():
     assert "from sentence_transformers" not in src, "retriever.py must not import ST"
 
 
+# ── R4-05: reranker wire-up inside HybridRetriever ────────────────────────
+
+
+class _RecordingReranker:
+    """Spy reranker that records the inputs it was called with and returns
+    its output verbatim (no real model)."""
+
+    name = "spy-reranker"
+    model_id = "spy://rerank"
+
+    def __init__(self, output: list[Hit] | None = None) -> None:
+        self.output: list[Hit] = output or []
+        self.warmup_calls = 0
+        self.rerank_calls: list[dict[str, Any]] = []
+
+    def warmup(self) -> None:
+        self.warmup_calls += 1
+
+    def rerank(self, query: str, hits: list[Hit], *, top_n: int | None = None) -> list[Hit]:
+        self.rerank_calls.append({"query": query, "hits": list(hits), "top_n": top_n})
+        # If the user supplied an `output`, return it.  Else echo the input
+        # with source flipped to "reranked".
+        if self.output:
+            return list(self.output)
+        return [
+            Hit(
+                chunk_id=h.chunk_id,
+                score=h.score,
+                text=h.text,
+                document_id=h.document_id,
+                source_uri=h.source_uri,
+                title=h.title,
+                dataset_id=h.dataset_id,
+                metadata=h.metadata,
+                source="reranked",
+            )
+            for h in hits
+        ]
+
+
+class TestRerankWireUp:
+    """`HybridRetriever.search` honours `options.rerank` + `self.reranker`."""
+
+    def test_default_rerank_false_ignores_reranker(self):
+        """A configured reranker is NOT consulted when `rerank=False`."""
+        from corpus_forge.retrieval import HybridRetriever
+
+        be = _FakeBackend(
+            dense_hits=[_hit(1, 0.9), _hit(2, 0.5)],
+            lexical_hits=[_hit(1, 0.8, "lexical"), _hit(3, 0.5, "lexical")],
+        )
+        em = _FakeEmbedder()
+        spy = _RecordingReranker()
+        r = HybridRetriever(backend=be, embedder=em, embedder_id=1, reranker=spy)
+        out = r.search("q", SearchOptions(k=3, rerank=False))
+
+        # Reranker MUST NOT be called.
+        assert spy.rerank_calls == []
+        # Output is the standard fused list.
+        for h in out:
+            assert h.source == "fused"
+
+    def test_rerank_true_calls_reranker(self):
+        """`rerank=True` + configured reranker → rerank invoked with fused hits."""
+        from corpus_forge.retrieval import HybridRetriever
+
+        be = _FakeBackend(
+            dense_hits=[_hit(1, 0.9), _hit(2, 0.7), _hit(3, 0.5)],
+            lexical_hits=[_hit(1, 0.9, "lexical"), _hit(4, 0.6, "lexical")],
+        )
+        em = _FakeEmbedder()
+        spy = _RecordingReranker()
+        r = HybridRetriever(backend=be, embedder=em, embedder_id=1, reranker=spy)
+        out = r.search(
+            "q",
+            SearchOptions(k=2, rerank=True, rerank_top_n=10),
+        )
+
+        assert len(spy.rerank_calls) == 1
+        call = spy.rerank_calls[0]
+        assert call["query"] == "q"
+        # `top_n` argument passed to rerank == options.k
+        assert call["top_n"] == 2
+        # All hits passed to rerank carry source="fused" (the upstream)
+        for h in call["hits"]:
+            assert h.source == "fused"
+        # Output source flipped to "reranked"
+        assert all(h.source == "reranked" for h in out)
+
+    def test_rerank_true_without_reranker_returns_fused(self):
+        """When rerank=True but `self.reranker is None`, behave as no-op."""
+        from corpus_forge.retrieval import HybridRetriever
+
+        be = _FakeBackend(
+            dense_hits=[_hit(1, 0.9), _hit(2, 0.5)],
+            lexical_hits=[_hit(3, 0.6, "lexical")],
+        )
+        em = _FakeEmbedder()
+        r = HybridRetriever(backend=be, embedder=em, embedder_id=1, reranker=None)
+        out = r.search("q", SearchOptions(k=2, rerank=True))
+
+        # Should not crash; output is the fused list (source="fused").
+        for h in out:
+            assert h.source == "fused"
+
+    def test_rerank_top_n_caps_input_to_reranker(self):
+        """The reranker receives at most `options.rerank_top_n` hits."""
+        from corpus_forge.retrieval import HybridRetriever
+
+        # 20 distinct chunks across the two lists.
+        dense = [_hit(i, 1.0 - i * 0.01) for i in range(1, 21)]
+        lex = [_hit(i, 1.0 - i * 0.01, "lexical") for i in range(21, 41)]
+        be = _FakeBackend(dense_hits=dense, lexical_hits=lex)
+        em = _FakeEmbedder()
+        spy = _RecordingReranker()
+        r = HybridRetriever(backend=be, embedder=em, embedder_id=1, reranker=spy)
+        r.search(
+            "q",
+            SearchOptions(k=5, rerank=True, rerank_top_n=8),
+        )
+
+        assert len(spy.rerank_calls) == 1
+        passed_in = spy.rerank_calls[0]["hits"]
+        # rerank_top_n=8 → at most 8 fused hits passed to the reranker.
+        assert len(passed_in) <= 8
+
+    def test_rerank_returns_reranker_output_verbatim(self):
+        """HybridRetriever does NOT re-sort the reranker's output."""
+        from corpus_forge.retrieval import HybridRetriever
+
+        be = _FakeBackend(
+            dense_hits=[_hit(1, 0.9), _hit(2, 0.5)],
+            lexical_hits=[_hit(3, 0.6, "lexical")],
+        )
+        em = _FakeEmbedder()
+        # Reranker returns a specific order (chunk 3 first, then 1, then 2).
+        canned = [
+            _hit(3, 0.99),
+            _hit(1, 0.50),
+            _hit(2, 0.10),
+        ]
+        # Flip their `source` to "reranked" so the contract is honoured.
+        canned = [
+            Hit(
+                chunk_id=h.chunk_id,
+                score=h.score,
+                text=h.text,
+                document_id=h.document_id,
+                source_uri=h.source_uri,
+                title=h.title,
+                dataset_id=h.dataset_id,
+                metadata=h.metadata,
+                source="reranked",
+            )
+            for h in canned
+        ]
+        spy = _RecordingReranker(output=canned)
+        r = HybridRetriever(backend=be, embedder=em, embedder_id=1, reranker=spy)
+        out = r.search("q", SearchOptions(k=3, rerank=True))
+
+        # HybridRetriever must return the reranker's output verbatim
+        # (same order, same scores).
+        assert [h.chunk_id for h in out] == [3, 1, 2]
+        assert [h.score for h in out] == [0.99, 0.50, 0.10]
+
+
 # Suppress an unused-import warning on AbstractContextManager.
 _ = AbstractContextManager
 _ = pytest
