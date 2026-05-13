@@ -65,3 +65,48 @@ def test_invalid_transport_rejected() -> None:
     assert result.exit_code != 0, (
         f"`--transport http` should be rejected in v1; got:\n{result.output}"
     )
+
+
+# ── R5-04: dispatch wiring ───────────────────────────────────────────────
+
+
+def test_mcp_serve_stdio_dispatches_to_serve_stdio(monkeypatch) -> None:
+    """`corpus-forge mcp serve` (default transport) calls
+    ``corpus_forge.mcp.server.serve_stdio`` exactly once."""
+    import corpus_forge.mcp.server as server_mod
+    from corpus_forge.cli import app
+
+    calls = {"count": 0, "kwargs": None}
+
+    def _fake_serve_stdio(**kwargs):
+        calls["count"] += 1
+        calls["kwargs"] = kwargs
+
+    monkeypatch.setattr(server_mod, "serve_stdio", _fake_serve_stdio)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mcp", "serve"])
+    assert result.exit_code == 0, result.output
+    assert calls["count"] == 1, (
+        f"serve_stdio must be invoked once; got {calls['count']}"
+    )
+
+
+def test_mcp_serve_passes_default_dataset(monkeypatch) -> None:
+    """`--dataset NAME` flows into ``serve_stdio(default_dataset=NAME)``."""
+    import corpus_forge.mcp.server as server_mod
+    from corpus_forge.cli import app
+
+    captured = {}
+
+    def _fake_serve_stdio(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(server_mod, "serve_stdio", _fake_serve_stdio)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mcp", "serve", "--dataset", "vault"])
+    assert result.exit_code == 0, result.output
+    assert captured.get("default_dataset") == "vault", (
+        f"--dataset must flow into serve_stdio(default_dataset=...); got {captured!r}"
+    )
