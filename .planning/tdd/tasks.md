@@ -1849,3 +1849,77 @@ proper section, ideally in this shape:
 Clean at close-out.  Only `.claude/scheduled_tasks.lock` untracked (R5
 leftover, ignored).
 
+
+---
+
+# Phase BR — beta release, banner, governance, README, tag v0.1.0b1
+
+_Final phase of the beta-release milestone. Master plan §Phase BR._
+
+## Project gates
+- lint: `make lint`
+- format: `make format-check`
+- typecheck: `make typecheck`
+- test: `make test-unit` (coverage-gated ≥ 85)
+- smoke: `make test-smoke`
+- full ci: `make ci`
+
+## BR tasks
+| id | title | depends_on | surface | risk | status | claimed_by | notes |
+|----|-------|------------|---------|------|--------|------------|-------|
+| BR-01 | Governance files (CHANGELOG/CONTRIBUTING/CoC/SECURITY) + unit pin | — | CHANGELOG.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, SECURITY.md, tests/unit/test_governance_files.py | low | pending | — | seed CHANGELOG with [0.1.0b1] entry summarizing B/CI/R/CS/BR |
+| BR-02 | GitHub templates + dependabot + FUNDING + unit pins | — | .github/ISSUE_TEMPLATE/bug_report.yml, .github/ISSUE_TEMPLATE/feature_request.yml, .github/ISSUE_TEMPLATE/config.yml, .github/PULL_REQUEST_TEMPLATE.md, .github/dependabot.yml, .github/FUNDING.yml, tests/unit/test_github_templates.py, tests/unit/test_dependabot_config.py | low | pending | — | bug/feature parse as YAML; dependabot lists pip + github-actions weekly |
+| BR-03 | Banner + logo SVG assets (+ optional PNG) + unit pin | — | assets/banner.svg, assets/banner-dark.svg, assets/logo.svg, assets/banner.png (best-effort), tests/unit/test_banner_assets.py | low | pending | — | anvil/forge + dataflow direction; PNG via docker minidocks/librsvg or cairosvg if available |
+| BR-04 | Release workflow + cliff.toml + unit pins + actionlint | — | .github/workflows/release.yml, cliff.toml, tests/unit/test_release_workflow.py, tests/unit/test_cliff_config.py | med | pending | — | release.yml reuses ci.yml via workflow_call; softprops/action-gh-release@v2; prerelease auto on b/rc tag; actionlint docker run rhysd/actionlint:latest must be clean |
+| BR-05 | README rewrite + structure/badges unit pins | BR-01, BR-03 | README.md, tests/unit/test_readme_structure.py, tests/unit/test_readme_badges.py | med | pending | — | banner <picture>; badge row; expand MCP section pulling prereq+wireup; ~250 lines target |
+| BR-06 | Final `make ci` sweep + annotated signed tag v0.1.0b1 | BR-01, BR-02, BR-03, BR-04, BR-05 | (no source changes; verifies gates + creates tag) | low | pending | — | tdd-principal bookkeeping; tag is local-only — user pushes |
+
+## BR acceptance details
+
+### BR-01 — Governance files
+- `CHANGELOG.md` parses as keep-a-changelog; contains `## [0.1.0b1]` heading with date placeholder `2026-MM-DD` (real ISO date OK); summarises B, CI-1..CI-3, R1..R5, CS, BR.
+- `CONTRIBUTING.md` non-empty; mentions `make dev`, branch naming, commit-message style.
+- `CODE_OF_CONDUCT.md` is Contributor Covenant 2.1 (anchor string "Contributor Covenant"); contact `evan@jwo3.io`.
+- `SECURITY.md` lists supported version `0.1.x` (beta) and contact `evan@jwo3.io`.
+- Unit suite `tests/unit/test_governance_files.py` asserts existence, non-empty, anchor strings.
+
+### BR-02 — GitHub templates
+- `.github/ISSUE_TEMPLATE/bug_report.yml` and `.github/ISSUE_TEMPLATE/feature_request.yml` are valid GitHub form-syntax YAML (parse + have `name`, `description`, `body:[...]`).
+- `.github/ISSUE_TEMPLATE/config.yml` sets `blank_issues_enabled: false`.
+- `.github/PULL_REQUEST_TEMPLATE.md` non-empty markdown.
+- `.github/dependabot.yml` parses, version 2, lists `pip` AND `github-actions` ecosystems with `schedule.interval: weekly`.
+- `.github/FUNDING.yml` exists (placeholder comment fine).
+- Two unit suites pin shapes.
+
+### BR-03 — Banner / logo assets
+- `assets/banner.svg`, `assets/banner-dark.svg`, `assets/logo.svg` parse as valid XML/SVG (root tag `svg`, has `viewBox`).
+- Banner SVGs have wordmark text "corpus-forge" and tagline mentioning "forge" + "training corpus".
+- `assets/banner.png` rendered if a tool is available (rsvg-convert / cairosvg / docker minidocks/librsvg). If skipped, unit test conditionally validates only when the file exists.
+- README `<picture>` markup is BR-05's responsibility, not BR-03's.
+
+### BR-04 — Release workflow + cliff
+- `.github/workflows/release.yml` parses; `on.push.tags: ['v*']`; jobs `gate`, `build`, `publish`; `gate` uses `./.github/workflows/ci.yml` via `uses:` (workflow_call); `build` runs `uv build`, computes `sha256sum dist/* > dist/SHA256SUMS`, uploads artifact; `publish` uses `softprops/action-gh-release@v2` with `files: dist/*`, `prerelease: ${{ contains(github.ref, 'b') || contains(github.ref, 'rc') }}`, `generate_release_notes: true`; permissions `contents: write` on publish job only.
+- `cliff.toml` parses (TOML); has `[changelog]`, `[git]` sections; tag pattern accepts `v0.1.0b1`-style prereleases.
+- Two unit suites pin shapes.
+- `actionlint` docker run on release.yml is clean (verified post-coder).
+
+### BR-05 — README rewrite
+- Banner `<picture>` block with light `srcset` (`assets/banner.svg`), dark `srcset` (`assets/banner-dark.svg`), fallback `<img src="assets/banner.png">` (or SVG fallback if no PNG).
+- Badge row immediately under title: CI status, Nightly, Python 3.11/3.12/3.13, Apache-2.0 license, beta release `v0.1.0b1`, ruff, pyrefly. All use `img.shields.io`.
+- H2 sections (regex-pinned in unit test): Why corpus-forge, Quickstart, Install, What you get, Hardware acceleration, Optional extras, Architecture, Configuration, Run as a service, Agent integration, Contributing / License / Security.
+- MCP "Agent integration" section expanded (~30 lines) with Prerequisites + Wire-up snippets pulled from `docs/claude-integration.md`. The 3-bullet pointer at the bottom is removed (replaced by this expanded section).
+- README between 200 and 320 lines.
+- Two unit suites pin structure + badge URLs.
+
+### BR-06 — CI sweep + tag
+- `make ci` green (format-check + lint + typecheck + test-unit ≥85% + test-integration + test-fuzz + test-smoke). All new BR unit suites pass.
+- `actionlint` docker container clean on `release.yml`.
+- `git-cliff` (docker `orhun/git-cliff:latest`) generates a non-empty preview from existing commits.
+- `git tag -as v0.1.0b1 -m "corpus-forge 0.1.0b1 — first beta"` succeeds (signed; 1Password unlock allowed once here).
+- Tag NOT pushed.
+
+## BR DAG / waves
+- Wave 0 (parallel): BR-01, BR-02, BR-03, BR-04. Disjoint surfaces (governance MD root files / .github templates / assets dir / .github/workflows + cliff.toml + their unit pins).
+- Wave 1 (after BR-01 + BR-03 done): BR-05 README — needs the governance files referenced and the banner asset paths existing.
+- Wave 2: BR-06 final sweep + tag.
+
