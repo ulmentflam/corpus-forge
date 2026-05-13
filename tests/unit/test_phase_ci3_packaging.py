@@ -99,9 +99,7 @@ class TestReadmeLicense:
             "license is MIT",
         ]
         for token in forbidden:
-            assert token not in text, (
-                f"README contains forbidden MIT license claim: {token!r}"
-            )
+            assert token not in text, f"README contains forbidden MIT license claim: {token!r}"
 
 
 # ── governance file references (optional in CI-3) ───────────────────────────

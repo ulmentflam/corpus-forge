@@ -60,7 +60,9 @@ class TestMacOSScripts:
         bash = shutil.which("bash")
         if not bash:
             pytest.skip("bash not on PATH")
-        result = subprocess.run([bash, "-n", str(path)], capture_output=True, text=True)
+        result = subprocess.run(
+            [bash, "-n", str(path)], capture_output=True, text=True, check=False
+        )
         assert result.returncode == 0, (
             f"bash -n {path} failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         )
@@ -95,7 +97,9 @@ class TestLinuxScripts:
         bash = shutil.which("bash")
         if not bash:
             pytest.skip("bash not on PATH")
-        result = subprocess.run([bash, "-n", str(path)], capture_output=True, text=True)
+        result = subprocess.run(
+            [bash, "-n", str(path)], capture_output=True, text=True, check=False
+        )
         assert result.returncode == 0, (
             f"bash -n {path} failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         )
@@ -103,9 +107,7 @@ class TestLinuxScripts:
     def test_install_uses_systemctl_user(self) -> None:
         path = SCRIPTS / "linux" / "install.sh"
         text = path.read_text(encoding="utf-8")
-        assert "systemctl --user" in text, (
-            "Linux installer should use `systemctl --user`"
-        )
+        assert "systemctl --user" in text, "Linux installer should use `systemctl --user`"
         assert "corpus-forge.service" in text
 
     def test_install_references_service_template(self) -> None:
@@ -176,9 +178,7 @@ class TestMakefileDispatch:
     def test_makefile_has_os_var(self) -> None:
         text = MAKEFILE.read_text(encoding="utf-8")
         # Either explicit `OS := $(shell uname -s)` or inline `$(shell uname -s)`.
-        assert "uname -s" in text, (
-            "Makefile should dispatch on `uname -s` for stop/logs in CI-3"
-        )
+        assert "uname -s" in text, "Makefile should dispatch on `uname -s` for stop/logs in CI-3"
 
     def test_makefile_has_systemctl_branch(self) -> None:
         text = MAKEFILE.read_text(encoding="utf-8")
@@ -210,6 +210,7 @@ class TestMakefileDispatch:
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
         assert result.returncode == 0, (
             f"make -n stop failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
