@@ -60,15 +60,6 @@ def test_numpy_floor_at_least_1_26():
         assert (major, minor) >= (1, 26), f"[{which}] numpy floor must be >= 1.26 (got {np_pin})"
 
 
-def test_rerank_extra_not_yet_declared():
-    """R4 owns it; if it appears here, someone leaked R4 scope into R3."""
-    pp = _load_pyproject()
-    extras = pp.get("project", {}).get("optional-dependencies", {})
-    assert "rerank" not in extras, (
-        "R3 must NOT declare the [rerank] extra; that belongs to Phase R4."
-    )
-
-
 def test_mcp_extra_not_yet_declared():
     """R5 owns it; if it appears here, someone leaked R5 scope into R3."""
     pp = _load_pyproject()
