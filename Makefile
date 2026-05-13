@@ -91,6 +91,19 @@ endif
 
 ci: format-check lint typecheck test ## Full CI pipeline (run before pushing)
 
+# Replicate the GitHub Actions ``ci.yml`` gate locally — same env (FORCE_COLOR
+# triggers Rich/typer's ANSI help wrapping that broke CliRunner asserts),
+# same step order, and bypasses ``uv run`` for pytest so the iCloud-Drive
+# .pth hidden-flag fix isn't undone between steps.
+ci-local: ## CI gate locally (FORCE_COLOR=1, HYPOTHESIS_PROFILE=ci) — catches CI-only failures
+ifeq ($(OS),Darwin)
+	@find .venv -name "*.pth" -exec chflags nohidden {} + 2>/dev/null || true
+endif
+	FORCE_COLOR=1 HYPOTHESIS_PROFILE=ci CI=true UV_NO_PROGRESS=1 .venv/bin/ruff format --check corpus_forge tests
+	FORCE_COLOR=1 HYPOTHESIS_PROFILE=ci CI=true UV_NO_PROGRESS=1 .venv/bin/ruff check corpus_forge tests
+	FORCE_COLOR=1 HYPOTHESIS_PROFILE=ci CI=true UV_NO_PROGRESS=1 .venv/bin/pyrefly check corpus_forge
+	FORCE_COLOR=1 HYPOTHESIS_PROFILE=ci CI=true UV_NO_PROGRESS=1 .venv/bin/python -m pytest tests/unit -n auto --timeout=60 -q
+
 docs-serve: ## Live-preview docs locally (mkdocs)
 	uv run mkdocs serve
 
