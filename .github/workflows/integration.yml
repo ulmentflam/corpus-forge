@@ -130,7 +130,9 @@ jobs:
         # release ships ahead of the CDN. Testcontainers picks up the
         # docker.sock that Colima exposes.
         run: |
-          brew install --quiet colima docker
+          # qemu is required by --vm-type=qemu; Colima 0.10 stopped bundling
+          # it and prints "run 'brew install qemu' to install" if missing.
+          brew install --quiet colima docker qemu
           # --vm-type=qemu avoids the VZ-framework disk-converter crash
           # we saw on GitHub-hosted macos-14 runners (Colima 0.9 fatals
           # at "creating and starting" during raw-disk conversion).
