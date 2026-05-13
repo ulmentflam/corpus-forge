@@ -293,6 +293,9 @@ hf = [
 openai = [
     { name = "openai" },
 ]
+rerank = [
+    { name = "sentence-transformers" },
+]
 retrieval = [
     { name = "numpy" },
 ]
@@ -332,13 +335,14 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.7" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "sentence-transformers", specifier = ">=3.0" },
+    { name = "sentence-transformers", marker = "extra == 'rerank'", specifier = ">=3.0" },
     { name = "sqlite-vec", marker = "extra == 'sqlite'", specifier = ">=0.1" },
     { name = "tenacity", specifier = ">=8.2" },
     { name = "tiktoken", marker = "extra == 'tokens'", specifier = ">=0.7" },
     { name = "typer", specifier = ">=0.12" },
     { name = "watchdog", specifier = ">=4.0" },
 ]
-provides-extras = ["openai", "hf", "tokens", "sqlite", "retrieval", "eval"]
+provides-extras = ["openai", "hf", "tokens", "sqlite", "retrieval", "eval", "rerank"]
 
 [package.metadata.requires-dev]
 dev = [

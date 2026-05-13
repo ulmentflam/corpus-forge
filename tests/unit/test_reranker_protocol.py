@@ -3,7 +3,8 @@
 The Phase R4 plan introduces a new sub-package `corpus_forge.retrieval.rerank`
 exposing three things:
 
-- `Reranker` Protocol (`name: str`, `model_id: str`, `warmup()`, `rerank(query, hits, *, top_n=None)`).
+- `Reranker` Protocol with `name: str`, `model_id: str`, `warmup()`,
+  and `rerank(query, hits, *, top_n=None)`.
 - `CrossEncoderReranker` concrete implementation (R4-04 lands its body).
 - `OllamaReranker` concrete implementation (R4-09 lands its body; may be deferred).
 
@@ -26,12 +27,11 @@ from __future__ import annotations
 import importlib
 import inspect
 import sys
-import typing
 from typing import Protocol, get_type_hints
 
 
 def test_rerank_subpackage_importable():
-    import corpus_forge.retrieval.rerank as r  # noqa: F401
+    import corpus_forge.retrieval.rerank as r
 
     assert hasattr(r, "Reranker")
 
@@ -124,9 +124,7 @@ class TestReexports:
         all_set = set(pkg.__all__)
         # The Protocol + the bge default reranker class are mandatory.
         assert "Reranker" in all_set, f"__all__ missing Reranker: {all_set}"
-        assert "CrossEncoderReranker" in all_set, (
-            f"__all__ missing CrossEncoderReranker: {all_set}"
-        )
+        assert "CrossEncoderReranker" in all_set, f"__all__ missing CrossEncoderReranker: {all_set}"
 
 
 # ── lazy-import discipline ─────────────────────────────────────────────────
@@ -172,8 +170,7 @@ class TestNoGreedyTorchOrSentenceTransformerImport:
                 if name.startswith("sentence_transformers.cross_encoder")
             ]
             assert offenders == [], (
-                f"importing corpus_forge.retrieval.rerank greedily loaded "
-                f"CrossEncoder: {offenders}"
+                f"importing corpus_forge.retrieval.rerank greedily loaded CrossEncoder: {offenders}"
             )
         finally:
             # Restore snapshot so other tests aren't perturbed.
