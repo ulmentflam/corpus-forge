@@ -1,422 +1,320 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="assets/banner.svg">
+  <img alt="corpus-forge — forge a HuggingFace-format training corpus" src="assets/banner.svg">
+</picture>
+
 # corpus-forge
 
-HF-format corpus + multi-embedder ingestion daemon for personal text and chat data.
+> **Forge a HuggingFace-format training corpus from your notes and chat history.**
 
-## What it is
+[![CI](https://github.com/ulmentflam/corpus-forge/actions/workflows/ci.yml/badge.svg)](https://github.com/ulmentflam/corpus-forge/actions/workflows/ci.yml)
+[![nightly](https://github.com/ulmentflam/corpus-forge/actions/workflows/nightly.yml/badge.svg?label=nightly)](https://github.com/ulmentflam/corpus-forge/actions/workflows/nightly.yml)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/)
+[![License](https://img.shields.io/github/license/ulmentflam/corpus-forge)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/ulmentflam/corpus-forge?include_prereleases&label=beta)](https://github.com/ulmentflam/corpus-forge/releases)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Type-checked](https://img.shields.io/badge/type--checked-pyrefly-2A4A6B)](https://github.com/facebook/pyrefly)
 
-corpus-forge ingests text and chat data from personal sources (Obsidian vaults, Claude Code sessions, OpenCode storage) into an SQL store designed for HuggingFace Datasets compatibility. It maintains multiple vector embeddings per chunk using pluggable embedding models, enabling personal-knowledge → fine-tuning pipelines without re-ingesting source files when new embedding models become available.
+## Why corpus-forge
 
-## Status & support
+- **Training data, not search.** The primary deliverable is a HuggingFace-Datasets-format export of your text + chat sources, deduplicated by content-hash, ready to feed a fine-tuning run.
+- **Multi-embedder by design.** Register as many embedders as you want — local sentence-transformers, OpenAI, anything served via an OpenAI-compatible endpoint (Ollama, vLLM). Backfill new embedders without re-chunking.
+- **Hybrid retrieval + MCP exposure are the secondary use case.** Once the corpus exists, expose it to Claude (or any MCP client) for grounded research. The retrieval-eval harness doubles as a corpus-quality signal.
 
-**Supported sources:**
-- ✅ Obsidian/Vault markdown (`markdown_vault`)
-- ✅ Claude Code sessions (`claude_code`)
-- ✅ OpenCode storage (`opencode`)
+## Quickstart
 
-**Supported embedders:**
-- ✅ Sentence Transformers (local, e.g., Qwen3-Embedding-8B)
-- ✅ OpenAI API (text-embedding-3-large, etc.)
+```bash
+pip install corpus-forge[sqlite,hf]
 
-**Supported backends:**
-- ✅ PostgreSQL + pgvector (multi-host, sync-capable)
-- ✅ SQLite + sqlite-vec (single-host, zero-setup; sync disabled)
+# 1. Drop in a config (edit paths + embedder choices).
+mkdir -p ~/.config/corpus-forge
+cp $(python -c "import corpus_forge, pathlib; print(pathlib.Path(corpus_forge.__file__).parent.parent / 'config.example.toml')") \
+   ~/.config/corpus-forge/config.toml
+$EDITOR ~/.config/corpus-forge/config.toml
 
-**Current limitations:**
-- SQLite backend is single-host only — cross-host sync requires PostgreSQL
-- No HF Hub push authentication in CI (cost/security)
-- Live OpenAI embedder not contract-tested in CI (cost)
+# 2. Initialize the database (SQLite or PostgreSQL).
+corpus-forge migrate
+
+# 3. Run a one-shot ingestion pass.
+corpus-forge ingest --once
+
+# 4. Export to HuggingFace Datasets format.
+corpus-forge export hf --dataset my-vault
+```
 
 ## Install
 
-corpus-forge ships as a wheel on PyPI (Apache-2.0 licensed). Pick the
-section for your OS below — each one installs the same package, then
-offers an optional service-registration script.
-
 <details>
-<summary><strong>Linux</strong> (systemd user unit)</summary>
+<summary><strong>Linux</strong></summary>
 
 ```bash
-# 1. Install the package
-pip install 'corpus-forge[sqlite,hf]'   # or: uv add 'corpus-forge[sqlite,hf]'
+# 1. Install the package + the extras you need.
+pip install 'corpus-forge[sqlite,hf]'
+#   add [openai] for OpenAI embedders, [mcp] for the Claude MCP server,
+#       [rerank] for the cross-encoder reranker, [eval] for the
+#       retrieval-evaluation harness.
 
-# 2. (optional) Register a systemd user unit for the daemon
-git clone https://github.com/ulmentflam/corpus-forge ~/corpus-forge
-bash ~/corpus-forge/scripts/linux/install.sh
-# → writes ~/.config/systemd/user/corpus-forge.service
-# → enables + starts it via `systemctl --user`
+# 2. (Optional) Register a systemd user unit for the daemon.
+bash scripts/linux/install.sh
+# Writes ~/.config/systemd/user/corpus-forge.service and starts it
+# via `systemctl --user enable --now corpus-forge.service`.
 
-# 3. Configure
-cp ~/corpus-forge/config.example.toml ~/.config/corpus-forge/config.toml
-cp ~/corpus-forge/secrets.env.example ~/.config/corpus-forge/secrets.env
-# Edit both with your paths / keys
-
-# 4. Apply schema + smoke-test ingestion
+# 3. Configure + smoke-test.
+cp config.example.toml  ~/.config/corpus-forge/config.toml
+cp secrets.env.example ~/.config/corpus-forge/secrets.env
 corpus-forge migrate
 corpus-forge ingest --once
 ```
 
-To stop / uninstall: `bash ~/corpus-forge/scripts/linux/stop.sh` /
-`bash ~/corpus-forge/scripts/linux/uninstall.sh`.
 </details>
 
 <details>
-<summary><strong>macOS</strong> (launchd agent)</summary>
+<summary><strong>macOS</strong></summary>
 
 ```bash
-# 1. Install the package
-pip install 'corpus-forge[sqlite,hf]'   # or: uv add 'corpus-forge[sqlite,hf]'
+# 1. Install (same as Linux).
+pip install 'corpus-forge[sqlite,hf]'
 
-# 2. (optional) Register a launchd agent for the daemon
-git clone https://github.com/ulmentflam/corpus-forge ~/corpus-forge
-bash ~/corpus-forge/scripts/macos/install.sh
-# → renders ~/Library/LaunchAgents/com.${USER}.corpus-forge.plist
-# → `launchctl load …` is printed; start with `launchctl kickstart -k …`
+# 2. (Optional) Register a launchd agent for the daemon.
+bash scripts/macos/install.sh
+# Renders ~/Library/LaunchAgents/com.${USER}.corpus-forge.plist and
+# prints the `launchctl load` / `launchctl kickstart` commands.
 
-# 3. Configure
-cp ~/corpus-forge/config.example.toml ~/.config/corpus-forge/config.toml
-cp ~/corpus-forge/secrets.env.example ~/.config/corpus-forge/secrets.env
-# Edit both with your paths / keys
-
-# 4. Apply schema + smoke-test ingestion
+# 3. Configure + smoke-test.
+cp config.example.toml  ~/.config/corpus-forge/config.toml
+cp secrets.env.example ~/.config/corpus-forge/secrets.env
 corpus-forge migrate
 corpus-forge ingest --once
 ```
 
-To stop / uninstall: `bash ~/corpus-forge/scripts/macos/stop.sh` /
-`bash ~/corpus-forge/scripts/macos/uninstall.sh`.
+Apple Silicon: `device = "mps"` in the embedder config uses the GPU.
+
 </details>
 
 <details>
-<summary><strong>Windows</strong> (NSSM or Task Scheduler — manual)</summary>
+<summary><strong>Windows</strong></summary>
 
-corpus-forge runs on Windows but does not ship an installer script.
-After `pip install 'corpus-forge[sqlite,hf]'`, wrap the daemon yourself.
-The easiest path is [NSSM](https://nssm.cc/) (the Non-Sucking Service
-Manager):
+`pip install corpus-forge[sqlite,hf]` works under Python 3.11/3.12/3.13 on Windows. We don't ship a Windows service-installer script for beta — wrap `corpus-forge daemon` with [NSSM](https://nssm.cc/) or Task Scheduler:
 
-```bat
-:: in an elevated PowerShell / cmd
-nssm install corpus-forge ^
-    "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" ^
-    -m corpus_forge daemon
-nssm start  corpus-forge
+```powershell
+# Example with NSSM
+nssm install corpus-forge "C:\Path\To\Python\python.exe" -m corpus_forge daemon
+nssm set corpus-forge AppDirectory "%USERPROFILE%\.config\corpus-forge"
+nssm start corpus-forge
 ```
 
-Or schedule `python -m corpus_forge daemon` to run at login via Task
-Scheduler. Config files live under
-`%APPDATA%\corpus-forge\config.toml` and `\secrets.env`.
+PostgreSQL integration tests require Docker Desktop; SQLite-only setups work natively.
+
 </details>
 
 ### Source install (developer mode)
 
 ```bash
-git clone --recurse-submodules https://github.com/ulmentflam/corpus-forge ~/corpus-forge
-cd ~/corpus-forge
-uv sync --all-extras --group dev
-uv run pre-commit install
-make migrate
-make ingest --once
-make daemon          # foreground, or use the installer scripts above
+git clone https://github.com/ulmentflam/corpus-forge
+cd corpus-forge
+make dev    # uv sync --all-extras --group dev + pre-commit install
+make ci     # full local gate (format / lint / typecheck / tests)
 ```
 
-## Quickstart
+## What you get — HF export
 
-Five commands to get running:
+The headline payoff. Two views map directly to HuggingFace columns:
 
 ```bash
-# 1. Copy and edit configuration
-cp config.example.toml ~/.config/corpus-forge/config.toml
-cp secrets.env.example ~/.config/corpus-forge/secrets.env
-# Edit ~/.config/corpus-forge/config.toml with your paths
-# Edit ~/.config/corpus-forge/secrets.env with passwords/keys
+# Text export — one row per chunk, suitable for instruction-tuning prep.
+corpus-forge export hf --dataset my-vault --view corpus_text_export
 
-# 2. Apply database schema
-make migrate
-
-# 3. Run one-shot ingestion pass
-make ingest --once
-
-# 4. Verify with SQL
-psql "$DATABASE_URL" -c "SELECT name, kind FROM corpus.datasets;"
-psql "$DATABASE_URL" -c "SELECT COUNT(*) FROM corpus.chunks;"
-
-# 5. Start daemon (background service)
-launchctl load ~/Library/LaunchAgents/com.${USER}.corpus-forge.plist
-launchctl kickstart -k "gui/$(id -u)/com.${USER}.corpus-forge"
+# Chat export — one row per conversation, ShareGPT-shaped messages list.
+corpus-forge export hf --dataset claude-code --view corpus_chat_export
 ```
+
+Or programmatically:
+
+```python
+from corpus_forge.exports.huggingface import export_to_hf_dataset, push_to_hub
+
+ds = export_to_hf_dataset("corpus_text_export")
+push_to_hub(ds, "username/my-personal-corpus")
+```
+
+| View | Columns |
+|---|---|
+| `corpus_text_export` | `id`, `text`, `source`, `title`, `heading`, `role`, `metadata`, `labels` |
+| `corpus_chat_export` | `id`, `source`, `title`, `messages` (ShareGPT format), `metadata` |
+
+## Hardware acceleration
+
+| Platform | Backend | Embedder device |
+|---|---|---|
+| Linux + CUDA | `postgres` (pgvector) or `sqlite` (sqlite-vec) | `device = "cuda"` |
+| macOS Apple Silicon | `postgres` or `sqlite` | `device = "mps"` |
+| Linux/Windows CPU | either | `device = "cpu"` |
+| Anywhere | sqlite-only, no GPU | `device = "cpu"` |
+
+Set `device = "auto"` to let sentence-transformers pick.
+
+## Optional extras
+
+```bash
+pip install 'corpus-forge[sqlite,openai,hf,tokens,retrieval,rerank,mcp,eval]'
+```
+
+| Extra | What it enables |
+|---|---|
+| `[sqlite]` | `sqlite-vec` virtual table for ANN search on SQLite. |
+| `[openai]` | OpenAI embedders (also any OpenAI-compatible endpoint — Ollama, vLLM). |
+| `[hf]` | `datasets` library for HF export. |
+| `[tokens]` | `tiktoken` for token-aware chunking. |
+| `[retrieval]` | NumPy-backed retrieval-evaluation primitives. |
+| `[rerank]` | `sentence-transformers` cross-encoder rerankers (BGE default). |
+| `[mcp]` | Model Context Protocol stdio server for Claude / Agent SDK clients. |
+| `[eval]` | Bundled gold-set evaluation harness (NDCG / MRR / Recall). |
 
 ## Architecture
 
 ```
 Sources → Chunkers → Orchestrator → Backend → per-embedder tables
-      ↑              ↑              ↑              ↑
-Sources:    Chunkers:    Orchestrator:  Backend:
-- markdown  - markdown   - never branches  - Protocol impl
-- claude    - conversation  on plugin       - Postgres/SQLite
-- opencode                 identity        - Advisory locks
-                            dedup         - Per-embedder tables
-                            HF export
+   ↑          ↑           ↑            ↑
+markdown   markdown   identity     Postgres/SQLite
+claude     conversation  dedup     advisory locks
+opencode               HF export  per-embedder tables
 ```
 
-**Three Protocols** define the entire extension surface:
-- `Source`: Ingest data (`sources/base.py`)
-- `Embedder`: Create vectors (`embedders/base.py`)  
-- `StorageBackend`: Persist data (`backends/base.py`)
+**Three protocols** define the entire extension surface:
 
-**DRY by construction**: Common machinery in base classes from day one:
-- `WatchedSource`: File watching, debounce, identity, hash short-circuit
-- `Chunker base`: Size-bounding + overlap loop
-- Embedder/Backend bases: Shared functionality
+| Protocol | Where | What it does |
+|---|---|---|
+| `Source` | `sources/base.py` | Discover + parse raw data into `RawDocument` / `RawConversation`. |
+| `Embedder` | `embedders/base.py` | Map texts → vectors. Symmetric `encode` + asymmetric `encode_query`. |
+| `StorageBackend` | `backends/base.py` | Persist chunks + vectors. Search dense + lexical. Cross-host sync. |
+
+Common machinery lives in base classes: `WatchedSource` (file watching + debounce + identity + hash short-circuit), `Chunker` (size-bounding + overlap with forward-progress invariant), `BaseEmbedder` / `BaseBackend`.
 
 ## Configuration reference
 
-See `config.example.toml` and `secrets.env.example` for full reference. Key sections:
+See `config.example.toml` for the full reference. Key sections:
 
-### [backend]
-- `kind`: `"postgres"` | `"sqlite"`
-- `dsn`: PostgreSQL connection string with `${VAR}` interpolation when `kind = "postgres"`; doubles as the SQLite file path (or `":memory:"`) when `kind = "sqlite"` — the field name is repurposed
-- `schema`: Database schema (default: `"corpus"`); ignored by the SQLite backend (kept for protocol parity)
+- `[backend]` — `kind` is `"postgres"` or `"sqlite"`; `dsn` is the Postgres connection string OR the SQLite file path. `schema = "corpus"` for Postgres; ignored on SQLite.
+- `[daemon]` — `debounce_seconds`, `log_level`, `log_format`, `sync_poll_interval_s`, `trash_dir`, `conflict_dir`.
+- `[[datasets]]` — repeated. `name`, `kind` (`text` | `chat`), `description`, `sync_enabled` (Postgres only — SQLite rejects `sync_enabled = true` at config-load).
+- `[[datasets.sources]]` — repeated. `plugin` (`markdown_vault` | `claude_code` | `opencode`), source-specific paths, `chunker`, `chunker_config`.
+- `[[embedders]]` — repeated. `name`, `provider` (`sentence_transformers` | `openai`), `model_id`, `dimension`, `normalize`, `distance`, `active`, `batch_size`, `device`, `api_key_env` (OpenAI only).
+- `[retrieval]` — `fusion` (`rrf` | `alpha`), `alpha`, `default_k`, `rerank_top_n`, `rerank_enabled`, `reranker.{kind, model_id, device, ...}`.
 
-#### Local-only with SQLite
+## Run as a service
 
-SQLite is the zero-setup option for single-machine use — no Postgres server, no `pgvector` extension, no daemons. The `dsn` field is repurposed as the path to the database file. Cross-host sync (`sync_enabled = true`) is rejected at config-load with the SQLite backend; for that you need PostgreSQL.
+| OS | Script | Service manager |
+|---|---|---|
+| Linux | `scripts/linux/install.sh` | systemd user unit |
+| macOS | `scripts/macos/install.sh` | launchd agent |
+| Windows | (manual) | NSSM / Task Scheduler |
 
-Install the optional `sqlite-vec` extra for `vec0`-backed nearest-neighbour search (without it the backend falls back to write-only BLOB storage):
-
-```bash
-pip install 'corpus-forge[sqlite]'   # or: uv sync --extra sqlite
-```
-
-Minimal `config.toml`:
-
-```toml
-[backend]
-kind = "sqlite"
-dsn  = "~/Library/Application Support/corpus-forge/corpus.db"
-
-[[datasets]]
-name = "obsidian-vault"
-kind = "text"
-  [[datasets.sources]]
-  plugin     = "markdown_vault"
-  vault_root = "~/Documents/vault"
-  chunker    = "markdown"
-
-[[embedders]]
-name      = "qwen3_8b"
-provider  = "sentence_transformers"
-model_id  = "Qwen/Qwen3-Embedding-8B"
-dimension = 4096
-```
-
-### [daemon]
-- `debounce_seconds`: File change debounce (default: 2.0)
-- `log_level`: DEBUG|INFO|WARNING|ERROR|CRITICAL
-- `log_format`: text|json
-
-### [[datasets]]
-Repeat for each dataset:
-- `name`: Dataset identifier
-- `kind`: "text"|"chat"
-- `description`: Optional description
-- `[[datasets.sources]]`: Repeat for each source
-  - `plugin`: "markdown_vault"|"claude_code"|"opencode"
-  - Source-specific paths (vault_root, projects_root, etc.)
-  - `chunker`: "markdown"|"conversation"
-  - `chunker_config`: Chunker-specific settings
-
-### [[embedders]]
-Repeat for each embedder:
-- `name`: Embedder identifier
-- `provider`: "sentence_transformers"|"openai"
-- `model_id`: Model identifier (HF hub or OpenAI)
-- `dimension`: Vector dimension (must match model)
-- `normalize`: L2 normalize vectors (default: true)
-- `distance`: "cosine"|"l2"|"ip" (default: cosine)
-- `active`: Whether to use this embedder
-- `batch_size`: Inference batch size
-- `device`: "auto"|"mps"|"cuda"|"cpu" (for local embedders)
-- `api_key_env`: Env var for API keys (OpenAI only)
-
-## Adding a Source / Embedder / Backend
-
-### Adding a Source
-1. Implement the `Source` protocol (or extend `WatchedSource` for file sources)
-2. Override `discover()` and `parse()` methods
-3. Add configuration example to docs
-4. Add unit tests in `tests/unit/test_source_*.py`
-
-### Adding an Embedder
-1. Implement the `Embedder` protocol
-2. Add to `embedders/` directory
-3. Export in `embedders/registry.py`
-4. Add configuration example
-5. Add contract tests in `tests/integration/test_embedder_contract.py`
-
-### Adding a Backend
-1. Implement the `StorageBackend` protocol
-2. Add to `backends/` directory
-3. Update config validation
-4. Add integration tests in `tests/integration/test_*_backend.py`
-
-## HF export
-
-Export to HuggingFace Datasets format:
-
-```bash
-# Text export (chunks)
-uv run corpus-forge export hf --dataset obsidian-vault --view corpus_text_export
-
-# Chat export (conversations)  
-uv run corpus-forge export hf --dataset claude-code --view corpus_chat_export
-```
-
-Or programmatically:
-```python
-from corpus_forge.exports.huggingface import export_to_hf_dataset, push_to_hub
-
-dataset = export_to_hf_dataset("corpus_text_export")
-push_to_hub(dataset, "username/my-personal-corpus")
-```
-
-The views map directly to HF columns:
-- `corpus_text_export`: id, text, source, title, heading, role, metadata, labels
-- `corpus_chat_export`: id, source, title, messages (ShareGPT format), metadata
+Inspect the rendered unit / plist under `packaging/` for reference. `make stop` and `make logs` dispatch on `uname -s`.
 
 ## Backfill workflow
 
-To add a new embedding model later:
+To add an embedder to an existing corpus:
 
-1. **Add to config.toml**:
-   ```toml
-   [[embedders]]
-   name      = "new-embedder"
-   provider  = "sentence_transformers"
-   model_id  = "new/model"
-   dimension = 1024
-   active    = true
-   ```
-
-2. **Create the table**:
-   ```bash
-   make migrate  # Creates table via register_embedder()
-   ```
-
-3. **Backfill existing chunks**:
-   ```bash
-   make embed E=new-embedder  # Processes chunks missing this embedder
-   # Or limit to dataset: make embed E=new-embedder d=obsidian-vault
-   ```
-
-4. **Verify**:
-   ```bash
-   psql "$DATABASE_URL" -c "SELECT COUNT(*) FROM corpus.embeddings_new_embedder;"
-   ```
-
-**Key property**: Only embedding computation is repeated. Source files are never re-read; `chunks.text` is the durable source of truth.
-
-## Operations
-
-### Service management
-```bash
-# Start/stop daemon
-launchctl kickstart -k "gui/$(id -u)/com.${USER}.corpus-forge"
-launchctl kill SIGTERM gui/$(id -u)/com.${USER}.corpus-forge
-
-# View logs
-tail -f ~/Library/Logs/corpus-forge.err.log
-tail -f ~/Library/Logs/corpus-forge.out.log
-
-# Manual control (dev)
-make daemon     # foreground
-make stop       # stop launchd service
+```toml
+# 1. Add to config.toml — keep existing embedders active.
+[[embedders]]
+name      = "new-embedder"
+provider  = "sentence_transformers"
+model_id  = "new/model"
+dimension = 1024
+active    = true
 ```
 
-### Common tasks
 ```bash
-# One-shot ingestion pass
-make ingest --once
+# 2. Backfill just the new embedder against existing chunks.
+corpus-forge embed --embedder new-embedder
 
-# Backfill specific embedder
-make embed E=qwen3_8b
-
-# Backfill all active embedders
-make backfill
-
-# Apply schema migrations
-make migrate
-
-# Run tests
-make test          # all categories
-make test-unit     # fast unit tests
-make test-integration  # requires Docker
-make test-fuzz     # property-based tests
-make test-smoke    # end-to-end
+# Or all active embedders in one pass:
+corpus-forge embed
 ```
 
-### Database maintenance
+Chunks already have content-hashes; the backfill encodes only what's missing.
+
+## Agent integration (MCP)
+
+corpus-forge ships a stdio Model Context Protocol server that exposes three tools:
+
+| Tool | Use |
+|---|---|
+| `search` | Hybrid (dense + lexical) search with optional rerank. Returns `{hits: [...]}` with `chunk_id`, `score`, `text`, `source_uri`, `title`, `dataset_id`. |
+| `get_chunk` | Fetch a chunk by id. |
+| `list_datasets` | Enumerate datasets with `chunk_count` / `document_count`. |
+
+### Wire-up
+
 ```bash
-# Check embedder tables
-psql "$DATABASE_URL" -c "\d corpus.embeddings_*"
-
-# Check ingestion stats
-psql "$DATABASE_URL" -c "
-  SELECT d.name as dataset, COUNT(*) as chunks
-  FROM corpus.chunks c
-  JOIN corpus.documents d ON d.id = c.document_id
-  GROUP BY d.name
-"
-
-# Check embedding coverage
-psql "$DATABASE_URL" -c "
-  SELECT e.name as embedder, COUNT(*) as embeddings
-  FROM corpus.embeddings_qwen3_8b e
-  JOIN corpus.embedders emb ON emb.id = e.embedder_id
-  WHERE emb.name = 'qwen3_8b'
-  GROUP BY e.name
-"
+pip install 'corpus-forge[mcp]'
+corpus-forge mcp serve   # stdio transport (only transport in beta)
 ```
+
+Drop-in MCP config snippets live under `examples/mcp-config/`:
+
+- `claude-code.mcp.json` — for Claude Code (~/.config/claude-code/mcp.json or `.mcp.json` per-project).
+- `claude-desktop.json` — for Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS).
+
+```json
+{
+  "mcpServers": {
+    "corpus-forge": {
+      "command": "corpus-forge",
+      "args": ["mcp", "serve"],
+      "env": { "CORPUS_FORGE_CONFIG": "~/.config/corpus-forge/config.toml" }
+    }
+  }
+}
+```
+
+### First-class Claude assets
+
+- **Project-scoped skill** — `.claude/skills/corpus-forge-search/SKILL.md` — instructs Claude Code on when to invoke the MCP tools and how to cite results.
+- **Agent SDK subagent** — `.claude/agents/corpus-forge-researcher.md` — research-style delegate scoped to the three MCP tools.
+- **Full walkthrough** — [`docs/claude-integration.md`](docs/claude-integration.md).
+
+Rerank (`rerank=true`) triggers a one-time ~600 MB `BAAI/bge-reranker-v2-m3` download. Opt-in only for top-of-list precision needs.
+
+## Local search
+
+The same retrieval surface is available as a CLI:
+
+```bash
+corpus-forge search "how does the SQLite lock work" --k 5
+corpus-forge search "phase B retrieval" --dataset planning --rerank --json
+```
+
+## Retrieval evaluation
+
+The retrieval-eval harness doubles as a corpus-quality signal. Run NDCG@10 / MRR@10 / Recall@20 on a bundled gold set:
+
+```bash
+corpus-forge eval retrieval --dataset forge_self --k 10,20
+corpus-forge eval corpus-quality --dataset /path/to/held-out-qa.jsonl
+```
+
+A drop in `recall@20` on your own held-out QA pairs is an early-warning signal that your chunking / embedder config regressed before you export the corpus for training.
 
 ## Development
 
 ```bash
-# Setup development environment
-make dev  # installs deps + pre-commit
-
-# Code quality
-make format     # auto-format with ruff
-make lint       # ruff check + fix
-make typecheck  # pyrefly strict type checking
-
-# Testing
-make test-unit  # fast unit tests (coverage-gated ≥85%)
-make test       # all test categories
-make ci         # full CI pipeline (format-check lint typecheck test)
-
-# Writing fuzz tests
-# See tests/fuzz/ for examples using hypothesis
-# Property tests should check invariants, not specific values
-
-# Pre-commit hooks
-# Runs on commit: ruff format/check, pyrefly, unit tests
-# Pre-push: unit tests only
+make dev           # install dev deps + pre-commit hooks
+make ci            # format-check + lint + typecheck + unit + fuzz + smoke
+make test-unit     # parallel unit tests, coverage-gated ≥ 85%
+make test-integration  # Docker-backed pgvector
+make test-fuzz     # Hypothesis property tests
+make test-smoke    # end-to-end happy paths
 ```
 
-### Conventions
-- **Line length**: 100 characters (ruff)
-- **Quotes**: double quotes (ruff)
-- **Type checking**: pyrefly strict mode on `corpus_forge/`
-- **Docstrings**: Required for all public functions and classes
-- **Error handling**: Log and continue where possible, fail fast on config/setup
-- **Security**: Never log secrets, use secrets.env (mode 600) for passwords/keys
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for branching + commit conventions + the PR gate.
 
-## Agent integration (MCP)
+## License + governance
 
-- Drop-in Claude Code skill: see `examples/mcp-config/` and `.claude/skills/corpus-forge-search/`.
-- Agent SDK subagent: `.claude/agents/corpus-forge-researcher.md`.
-- Full walkthrough: `docs/claude-integration.md`.
-
-## License
-
-corpus-forge is licensed under the [Apache License, Version 2.0](LICENSE).
-Copyright 2026 Evan Owen / corpus-forge contributors.
+- License: [**Apache 2.0**](LICENSE)
+- Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- Code of Conduct: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) (Contributor Covenant 2.1)
+- Security: [`SECURITY.md`](SECURITY.md) — do **not** open public issues for vulnerabilities; email `evan@qwerky.ai`.
+- Changelog: [`CHANGELOG.md`](CHANGELOG.md)
