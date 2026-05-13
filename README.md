@@ -28,27 +28,95 @@ corpus-forge ingests text and chat data from personal sources (Obsidian vaults, 
 
 ## Install
 
+corpus-forge ships as a wheel on PyPI (Apache-2.0 licensed). Pick the
+section for your OS below — each one installs the same package, then
+offers an optional service-registration script.
+
+<details>
+<summary><strong>Linux</strong> (systemd user unit)</summary>
+
 ```bash
-# 1. Install dependencies
+# 1. Install the package
+pip install 'corpus-forge[sqlite,hf]'   # or: uv add 'corpus-forge[sqlite,hf]'
+
+# 2. (optional) Register a systemd user unit for the daemon
+git clone https://github.com/ulmentflam/corpus-forge ~/corpus-forge
+bash ~/corpus-forge/scripts/linux/install.sh
+# → writes ~/.config/systemd/user/corpus-forge.service
+# → enables + starts it via `systemctl --user`
+
+# 3. Configure
+cp ~/corpus-forge/config.example.toml ~/.config/corpus-forge/config.toml
+cp ~/corpus-forge/secrets.env.example ~/.config/corpus-forge/secrets.env
+# Edit both with your paths / keys
+
+# 4. Apply schema + smoke-test ingestion
+corpus-forge migrate
+corpus-forge ingest --once
+```
+
+To stop / uninstall: `bash ~/corpus-forge/scripts/linux/stop.sh` /
+`bash ~/corpus-forge/scripts/linux/uninstall.sh`.
+</details>
+
+<details>
+<summary><strong>macOS</strong> (launchd agent)</summary>
+
+```bash
+# 1. Install the package
+pip install 'corpus-forge[sqlite,hf]'   # or: uv add 'corpus-forge[sqlite,hf]'
+
+# 2. (optional) Register a launchd agent for the daemon
+git clone https://github.com/ulmentflam/corpus-forge ~/corpus-forge
+bash ~/corpus-forge/scripts/macos/install.sh
+# → renders ~/Library/LaunchAgents/com.${USER}.corpus-forge.plist
+# → `launchctl load …` is printed; start with `launchctl kickstart -k …`
+
+# 3. Configure
+cp ~/corpus-forge/config.example.toml ~/.config/corpus-forge/config.toml
+cp ~/corpus-forge/secrets.env.example ~/.config/corpus-forge/secrets.env
+# Edit both with your paths / keys
+
+# 4. Apply schema + smoke-test ingestion
+corpus-forge migrate
+corpus-forge ingest --once
+```
+
+To stop / uninstall: `bash ~/corpus-forge/scripts/macos/stop.sh` /
+`bash ~/corpus-forge/scripts/macos/uninstall.sh`.
+</details>
+
+<details>
+<summary><strong>Windows</strong> (NSSM or Task Scheduler — manual)</summary>
+
+corpus-forge runs on Windows but does not ship an installer script.
+After `pip install 'corpus-forge[sqlite,hf]'`, wrap the daemon yourself.
+The easiest path is [NSSM](https://nssm.cc/) (the Non-Sucking Service
+Manager):
+
+```bat
+:: in an elevated PowerShell / cmd
+nssm install corpus-forge ^
+    "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" ^
+    -m corpus_forge daemon
+nssm start  corpus-forge
+```
+
+Or schedule `python -m corpus_forge daemon` to run at login via Task
+Scheduler. Config files live under
+`%APPDATA%\corpus-forge\config.toml` and `\secrets.env`.
+</details>
+
+### Source install (developer mode)
+
+```bash
 git clone --recurse-submodules https://github.com/ulmentflam/corpus-forge ~/corpus-forge
 cd ~/corpus-forge
 uv sync --all-extras --group dev
 uv run pre-commit install
-
-# 2. Configure
-cp config.example.toml ~/.config/corpus-forge/config.toml
-cp secrets.env.example ~/.config/corpus-forge/secrets.env
-# Edit both files with your settings
-
-# 3. Initialize database
 make migrate
-
-# 4. Test ingestion
 make ingest --once
-
-# 5. Start daemon
-make daemon  # foreground, or
-launchctl load ~/Library/LaunchAgents/com.${USER}.corpus-forge.plist
+make daemon          # foreground, or use the installer scripts above
 ```
 
 ## Quickstart
@@ -341,3 +409,7 @@ make ci         # full CI pipeline (format-check lint typecheck test)
 - **Docstrings**: Required for all public functions and classes
 - **Error handling**: Log and continue where possible, fail fast on config/setup
 - **Security**: Never log secrets, use secrets.env (mode 600) for passwords/keys
+## License
+
+corpus-forge is licensed under the [Apache License, Version 2.0](LICENSE).
+Copyright 2026 Evan Owen / corpus-forge contributors.
