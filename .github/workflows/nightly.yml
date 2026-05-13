@@ -132,7 +132,9 @@ jobs:
         # See integration.yml comment: brew + Colima is the stable
         # path for macos-arm64 (crazy-max action 404s on docker CDN).
         run: |
-          brew install --quiet colima docker
+          # qemu is required by --vm-type=qemu; Colima 0.10 stopped bundling
+          # it and prints "run 'brew install qemu' to install" if missing.
+          brew install --quiet colima docker qemu
           # --vm-type=qemu avoids VZ-framework crash on macos-14 runners.
           colima start --cpu 3 --memory 5 --disk 14 --vm-type=qemu
           docker info
