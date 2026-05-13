@@ -510,3 +510,131 @@ class TestChunkIdDriftFallback:
         assert m.ndcg[10] == 0.0
         assert m.recall[10] == 0.0
         assert m.mrr[10] == 0.0
+
+
+# ── R4-07: real rerank path through evaluate_retriever ────────────────────
+
+
+class TestRerankPath:
+    """R4 wires `evaluate_retriever(..., rerank=True)` to the reranker.
+
+    When `rerank=True`, the runner asks the retriever to search with
+    `SearchOptions(rerank=True, ...)`.  The retriever already knows how
+    to dispatch to its configured reranker (R4-05).  This pin checks
+    the wire-up at the runner layer.
+    """
+
+    def test_rerank_kwarg_propagates_to_search_options(self, tmp_path: Path):
+        """Runner with `rerank=True` calls retriever.search with
+        SearchOptions whose .rerank is True."""
+        from corpus_forge.eval.runner import evaluate_retriever
+        from corpus_forge.retrieval.types import RetrievalMetrics
+
+        backend, eid, chunk_ids, chunk_texts = _seed_corpus(tmp_path)
+        gold = _write_gold(tmp_path, chunk_ids, chunk_texts)
+
+        # Build a SPY retriever that records SearchOptions per call.
+        class _SpyRetriever:
+            def __init__(self):
+                self.backend = backend  # for drift fallback resolver
+                self.calls = []
+
+            def search(self, query, options):
+                self.calls.append({"query": query, "options": options})
+                # Return empty hits — we're testing call shape, not output.
+                return []
+
+        spy = _SpyRetriever()
+        m = evaluate_retriever(spy, gold, k_values=[10], rerank=True)
+        assert isinstance(m, RetrievalMetrics)
+        # The runner must have called search at least once.
+        assert len(spy.calls) >= 1
+        # Every call's options must carry rerank=True.
+        for call in spy.calls:
+            assert call["options"].rerank is True, (
+                f"expected rerank=True on options; got {call['options']}"
+            )
+
+    def test_rerank_false_default(self, tmp_path: Path):
+        """The default rerank=False matches the R3 behaviour."""
+        from corpus_forge.eval.runner import evaluate_retriever
+
+        backend, eid, chunk_ids, chunk_texts = _seed_corpus(tmp_path)
+        gold = _write_gold(tmp_path, chunk_ids, chunk_texts)
+
+        class _SpyRetriever:
+            def __init__(self):
+                self.backend = backend
+                self.calls = []
+
+            def search(self, query, options):
+                self.calls.append(options)
+                return []
+
+        spy = _SpyRetriever()
+        evaluate_retriever(spy, gold, k_values=[10])
+        for opts in spy.calls:
+            assert opts.rerank is False
+
+    def test_rerank_baseline_within_tolerance(self, tmp_path: Path):
+        """A no-op reranker (returns input verbatim) must keep NDCG@10
+        within a generous tolerance of the no-rerank baseline.
+
+        The forge_self gold set is biased toward the retriever it was
+        built with — tight rerank-improves pins are brittle.  We use a
+        loose 0.03-point tolerance: any rerank that catastrophically
+        damages NDCG@10 trips this; benign perturbations don't.
+        """
+        from corpus_forge.eval.runner import evaluate_retriever
+        from corpus_forge.retrieval import HybridRetriever
+
+        backend, eid, chunk_ids, chunk_texts = _seed_corpus(tmp_path)
+        gold = _write_gold(tmp_path, chunk_ids, chunk_texts)
+
+        # Baseline (no rerank).
+        retriever = HybridRetriever(backend=backend, embedder=_FakeEmbedder(), embedder_id=eid)
+        baseline = evaluate_retriever(retriever, gold, k_values=[10])
+
+        # Same retriever + a no-op reranker (returns input verbatim).
+        class _NoOpReranker:
+            name = "noop"
+            model_id = "noop://"
+
+            def warmup(self):
+                pass
+
+            def rerank(self, query, hits, *, top_n=None):
+                # Returns input verbatim (preserves order) but flips source.
+                from corpus_forge.retrieval.types import Hit as H
+
+                take = hits[:top_n] if top_n is not None else list(hits)
+                return [
+                    H(
+                        chunk_id=h.chunk_id,
+                        score=h.score,
+                        text=h.text,
+                        document_id=h.document_id,
+                        source_uri=h.source_uri,
+                        title=h.title,
+                        dataset_id=h.dataset_id,
+                        metadata=h.metadata,
+                        source="reranked",
+                    )
+                    for h in take
+                ]
+
+        rerank_retriever = HybridRetriever(
+            backend=backend,
+            embedder=_FakeEmbedder(),
+            embedder_id=eid,
+            reranker=_NoOpReranker(),
+        )
+        with_rerank = evaluate_retriever(rerank_retriever, gold, k_values=[10], rerank=True)
+
+        # Tolerance: 0.03 absolute (the loose pin from the master plan).
+        tolerance = 0.03
+        assert with_rerank.ndcg[10] >= baseline.ndcg[10] - tolerance, (
+            f"rerank dropped NDCG@10 beyond tolerance: "
+            f"baseline={baseline.ndcg[10]:.4f}, with_rerank={with_rerank.ndcg[10]:.4f}, "
+            f"diff={baseline.ndcg[10] - with_rerank.ndcg[10]:.4f} > {tolerance}"
+        )
