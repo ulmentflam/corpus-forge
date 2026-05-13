@@ -14,11 +14,14 @@ through the ``StorageBackend`` protocol — the R1 lift discipline holds.
 
 from corpus_forge.retrieval.fusion import alpha_blend, reciprocal_rank_fusion
 from corpus_forge.retrieval.normalize import min_max
+from corpus_forge.retrieval.retriever import HybridRetriever, Retriever
 from corpus_forge.retrieval.types import Hit, RetrievalMetrics, SearchOptions
 
 __all__ = [
     "Hit",
+    "HybridRetriever",
     "RetrievalMetrics",
+    "Retriever",
     "SearchOptions",
     "alpha_blend",
     "min_max",
