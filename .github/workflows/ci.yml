@@ -27,7 +27,33 @@ env:
   # Make pip / uv quieter on success; full output on failure is still visible.
   UV_NO_PROGRESS: "1"
 
+# Workflows that invoke `make <target>` must use a POSIX shell on every
+# matrix cell — Windows runners default to PowerShell otherwise, which
+# breaks `make` chains and unset $HOME-style escapes.
+defaults:
+  run:
+    shell: bash
+
 jobs:
+  # ── Job 0: actionlint — gate the matrix on shell-syntax / workflow-shape ─
+  # Runs first and the matrix depends on it. If actionlint flags shellcheck
+  # warnings or invalid `uses:` references, we stop before burning matrix
+  # minutes.  Uses raven-actions/actionlint (no extra binary install needed).
+  actionlint:
+    name: Lint workflow YAML
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: actionlint
+        uses: raven-actions/actionlint@v2
+        with:
+          # Fail the job on any error; pin shellcheck to its bundled version
+          # so we don't drift across reruns.
+          fail-on-error: true
+
   # ── Job 1: static-analysis gauntlet ─────────────────────────────────────
   # Runs once on the lowest supported Python; the matrix axis is only
   # needed for the test job (the analysers are version-agnostic).
@@ -35,6 +61,7 @@ jobs:
     name: Lint + format + typecheck
     runs-on: ubuntu-22.04
     timeout-minutes: 10
+    needs: [actionlint]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -53,18 +80,40 @@ jobs:
       - name: pyrefly check
         run: make typecheck
 
-  # ── Job 2: unit + smoke + fuzz across the Python matrix ─────────────────
-  # CI-1 stays single-OS (ubuntu-22.04); CI-2 expands to a 3 OS × 3 Python
-  # matrix and adds a separate integration job (Postgres via services).
+  # ── Job 2: unit + smoke + fuzz across the 3-OS × 3-Python matrix ─────────
+  # CI-2: expanded from single-OS to ubuntu-22.04 + macos-14 + windows-2022
+  # × python 3.11/3.12/3.13. Integration tests are NOT run here — see
+  # integration.yml (Linux + macOS only, drops 3.13 until upstream wheels).
   test:
-    name: Tests (py${{ matrix.python-version }})
+    name: Tests (${{ matrix.os }} / py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 25
+    needs: [actionlint]
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04]
+        os: [ubuntu-22.04, macos-14, windows-2022]
         python-version: ["3.11", "3.12", "3.13"]
+        # 3.13 wheels for sentence-transformers / torch are still landing
+        # on macOS-arm64 and Windows.  Allow those cells to fail without
+        # blocking the merge until upstream stabilizes (revisit weekly).
+        # TODO: drop continue-on-error once sentence-transformers ships
+        # py3.13 wheels for all three runner architectures.
+        include:
+          - os: macos-14
+            python-version: "3.13"
+            allow-failure: true
+          - os: windows-2022
+            python-version: "3.13"
+            allow-failure: true
+    continue-on-error: ${{ matrix.allow-failure == true }}
+    env:
+      # Windows has no Docker daemon on GitHub-hosted runners; the conftest
+      # hook reads this and applies a skip marker to every integration test
+      # at collection time.  Linux/macOS leave it unset → integration tests
+      # still skip in *this* workflow because we don't `make test-integration`
+      # here, but they DO run in integration.yml where Docker is provisioned.
+      CI_NO_DOCKER: ${{ matrix.os == 'windows-2022' && '1' || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -73,6 +122,23 @@ jobs:
         uses: ./.github/actions/setup-uv
         with:
           python-version: ${{ matrix.python-version }}
+
+      - name: Restore uv cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('uv.lock', 'pyproject.toml') }}
+          restore-keys: |
+            uv-${{ runner.os }}-py${{ matrix.python-version }}-
+            uv-${{ runner.os }}-
+
+      - name: Restore Hugging Face cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          restore-keys: |
+            hf-${{ runner.os }}-
 
       - name: Unit tests (parallel, timeout-gated, coverage-gated)
         run: make test-unit

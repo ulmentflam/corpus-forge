@@ -102,12 +102,33 @@ class TestCIMatrixExpansion:
         )
 
     def test_windows_uses_bash_shell(self, ci_yaml: dict) -> None:
-        """Run steps must use bash shell (matrix-wide or windows-specific)."""
-        test_job_text = yaml.safe_dump(ci_yaml["jobs"]["test"])
-        # Either a defaults.run.shell or per-step shell: bash; either way the
-        # token must appear.
-        assert "shell: bash" in test_job_text or "shell: 'bash'" in test_job_text, (
-            "Windows step needs shell: bash to keep `make` invocations portable"
+        """Run steps must use bash shell (matrix-wide or windows-specific).
+
+        Acceptable shapes:
+        - top-level ``defaults.run.shell: bash`` (matrix-wide)
+        - per-job ``defaults.run.shell: bash`` on the ``test`` job
+        - per-step ``shell: bash`` on every ``run:`` step
+        """
+        # Top-level defaults applies to all jobs; that's the cleanest shape.
+        top_defaults = ci_yaml.get("defaults", {}) or {}
+        top_run = top_defaults.get("run", {}) or {}
+        if top_run.get("shell") == "bash":
+            return
+
+        # Per-job defaults on test job is also fine.
+        test_job = ci_yaml["jobs"]["test"]
+        job_defaults = (test_job.get("defaults") or {}).get("run") or {}
+        if job_defaults.get("shell") == "bash":
+            return
+
+        # Otherwise every run step must declare shell: bash.
+        steps = test_job.get("steps", []) or []
+        run_steps = [s for s in steps if isinstance(s, dict) and "run" in s]
+        assert run_steps, "test job must have at least one run step"
+        per_step_bash = all(s.get("shell") == "bash" for s in run_steps)
+        assert per_step_bash, (
+            "Windows matrix cell needs shell: bash — either via defaults.run.shell or per-step. "
+            f"Steps without it: {[s for s in run_steps if s.get('shell') != 'bash']}"
         )
 
 
@@ -130,40 +151,51 @@ class TestIntegrationWorkflow:
         )
 
     def test_two_os_matrix(self, integration_yaml: dict) -> None:
-        """Integration job runs on Linux + macOS (no Windows)."""
+        """Integration runs cover Linux + macOS (no Windows).
+
+        The OS axis may live in a single matrix or be split across two jobs
+        (e.g. ``integration-linux`` + ``integration-macos``).  Either shape
+        is valid; we union all OS values found across all jobs.
+        """
         jobs = integration_yaml.get("jobs", {})
-        # Find the job that has a matrix; tolerate single- or multi-job files.
-        matrix = None
+        os_union: set[str] = set()
         for j in jobs.values():
             strategy = (j or {}).get("strategy") or {}
-            m = strategy.get("matrix")
-            if m:
-                matrix = m
-                break
-        assert matrix is not None, "integration.yml must have a strategy.matrix"
-        os_axis = matrix.get("os")
-        assert isinstance(os_axis, list), f"matrix.os must be a list; got {os_axis!r}"
-        assert "ubuntu-22.04" in os_axis, "integration.yml needs ubuntu-22.04"
-        assert "macos-14" in os_axis, "integration.yml needs macos-14"
-        assert "windows-2022" not in os_axis, (
+            matrix = strategy.get("matrix") or {}
+            os_axis = matrix.get("os")
+            if isinstance(os_axis, list):
+                os_union.update(os_axis)
+            elif isinstance(os_axis, str):
+                os_union.add(os_axis)
+            # Also accept a runs-on hard-coded value when the job has no matrix.
+            runs_on = (j or {}).get("runs-on")
+            if isinstance(runs_on, str) and not os_axis:
+                os_union.add(runs_on)
+
+        assert os_union, "integration.yml must expose at least one OS in some matrix or runs-on"
+        assert "ubuntu-22.04" in os_union, f"integration.yml needs ubuntu-22.04; got {os_union}"
+        assert "macos-14" in os_union, f"integration.yml needs macos-14; got {os_union}"
+        assert "windows-2022" not in os_union, (
             "integration.yml must NOT include Windows (Docker unsupported on Win runners)"
         )
 
     def test_python_matrix_drops_313_for_now(self, integration_yaml: dict) -> None:
-        """3.13 dropped from integration matrix until sentence-transformers wheels stabilize."""
-        jobs = integration_yaml.get("jobs", {})
-        matrix = None
-        for j in jobs.values():
+        """3.13 dropped from integration matrix until sentence-transformers wheels stabilize.
+
+        Union the python-version axis across all jobs in the workflow so a
+        Linux-only vs macOS-only split still satisfies the contract.
+        """
+        py_union: set[str] = set()
+        for j in integration_yaml.get("jobs", {}).values():
             strategy = (j or {}).get("strategy") or {}
-            m = strategy.get("matrix")
-            if m:
-                matrix = m
-                break
-        assert matrix is not None
-        py_axis = matrix.get("python-version")
-        assert isinstance(py_axis, list)
+            py = (strategy.get("matrix") or {}).get("python-version")
+            if isinstance(py, list):
+                py_union.update(str(v) for v in py)
+            elif py is not None:
+                py_union.add(str(py))
+        assert py_union, "integration.yml must declare a python-version matrix"
         for required in ("3.11", "3.12"):
-            assert required in py_axis, f"missing python {required} in: {py_axis}"
+            assert required in py_union, f"missing python {required}; got {py_union}"
 
     def test_linux_postgres_service_declared(self, integration_yaml: dict) -> None:
         """A services: block with pgvector image must be declared somewhere in the job."""
