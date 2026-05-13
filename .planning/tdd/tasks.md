@@ -813,15 +813,15 @@ _Source plan: `/Users/evanowen/.claude/plans/crispy-yawning-crescent.md` § Phas
 
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
-| R1-01 | RED — `retrieval/types.py` + protocol-surface signature pins (unit) | — | `tests/unit/test_retrieval_types.py`, `tests/unit/test_protocol_retrieval_surface.py` | low | pending | tdd-principal | — |
-| R1-02 | RED — migration 004 parser + FTS5 trigger semantics (unit) | — | `tests/unit/test_migration_004_postgres.py`, `tests/unit/test_migration_004_sqlite.py`, `tests/unit/test_sqlite_fts_triggers.py` | low | pending | tdd-principal | — |
-| R1-03 | RED — dual-backend integration: search_dense + search_lexical + get_chunk + list_datasets + backfill | — | `tests/integration/test_backend_dual.py` (additions), `tests/integration/test_migrate_004_sqlite.py`, `tests/integration/test_migrate_004_postgres.py` | med | pending | tdd-principal | — |
-| R1-04 | GREEN — `004_fts.sql` (postgres + sqlite) + `migrate.py` backfill wiring | R1-02 | `corpus_forge/schema/004_fts.sql`, `corpus_forge/schema/sqlite/004_fts.sql`, `corpus_forge/schema/migrate.py` | low | pending | tdd-principal | — |
-| R1-05 | GREEN — `corpus_forge/retrieval/{__init__.py, types.py}` | R1-01 | `corpus_forge/retrieval/__init__.py`, `corpus_forge/retrieval/types.py` | low | pending | tdd-principal | — |
-| R1-06 | GREEN — protocol surface in `backends/base.py` | R1-01, R1-05 | `corpus_forge/backends/base.py` | low | pending | tdd-principal | — |
-| R1-07 | GREEN — sqlite backend impls + inline `migrate()` 004 application | R1-04, R1-06 | `corpus_forge/backends/sqlite.py` | med | pending | tdd-principal | search_dense lifted from `scripts/query_repo_sqlite.py`. |
-| R1-08 | GREEN — postgres backend impls (parity) | R1-04, R1-06 | `corpus_forge/backends/postgres.py` | med | pending | tdd-principal | inline `migrate()` already runs numbered files via `apply_migrations`. |
-| R1-09 | QA — `make ci` + integration + idempotency + dogfood `scripts/query_repo_sqlite.py` | R1-04..R1-08 | n/a | high | pending | tdd-principal | — |
+| R1-01 | RED — `retrieval/types.py` + protocol-surface signature pins (unit) | — | `tests/unit/test_retrieval_types.py`, `tests/unit/test_protocol_retrieval_surface.py` | low | done | tdd-principal | — |
+| R1-02 | RED — migration 004 parser + FTS5 trigger semantics (unit) | — | `tests/unit/test_migration_004_postgres.py`, `tests/unit/test_migration_004_sqlite.py`, `tests/unit/test_sqlite_fts_triggers.py` | low | done | tdd-principal | — |
+| R1-03 | RED — dual-backend integration: search_dense + search_lexical + get_chunk + list_datasets + backfill | — | `tests/integration/test_backend_dual.py` (additions), `tests/integration/test_migrate_004_sqlite.py`, `tests/integration/test_migrate_004_postgres.py` | med | done | tdd-principal | — |
+| R1-04 | GREEN — `004_fts.sql` (postgres + sqlite) + `migrate.py` backfill wiring | R1-02 | `corpus_forge/schema/004_fts.sql`, `corpus_forge/schema/sqlite/004_fts.sql`, `corpus_forge/schema/migrate.py` | low | done | tdd-principal | — |
+| R1-05 | GREEN — `corpus_forge/retrieval/{__init__.py, types.py}` | R1-01 | `corpus_forge/retrieval/__init__.py`, `corpus_forge/retrieval/types.py` | low | done | tdd-principal | — |
+| R1-06 | GREEN — protocol surface in `backends/base.py` | R1-01, R1-05 | `corpus_forge/backends/base.py` | low | done | tdd-principal | — |
+| R1-07 | GREEN — sqlite backend impls + inline `migrate()` 004 application | R1-04, R1-06 | `corpus_forge/backends/sqlite.py` | med | done | tdd-principal | search_dense lifted from `scripts/query_repo_sqlite.py`. |
+| R1-08 | GREEN — postgres backend impls (parity) | R1-04, R1-06 | `corpus_forge/backends/postgres.py` | med | done | tdd-principal | inline `migrate()` already runs numbered files via `apply_migrations`. |
+| R1-09 | QA — `make ci` + integration + idempotency + dogfood `scripts/query_repo_sqlite.py` | R1-04..R1-08 | n/a | high | done | tdd-principal | All gates green; idempotency verified; dogfood script + backend.search_lexical("phase", k=3) both produce sensible hits. |
 
 ### Waves
 
@@ -875,4 +875,64 @@ _Source plan: `/Users/evanowen/.claude/plans/crispy-yawning-crescent.md` § Phas
 - `scripts/query_repo_sqlite.py` still runs end-to-end against `/tmp/corpus-forge-test.db` (sample query produces results).
 - `backend.search_lexical("how does lock_source work", k=5)` returns plausible hits on the seeded corpus on both backends.
 - All commits prefixed `[tdd-principal] phase-r1: <slice>`; SSH-signed; tree clean at end (only `.claude/` untracked).
+
+### Phase R1 — close-out
+
+**Dispatch mode**: Option B (fused). Agent subagent tool not present in toolset; tdd-principal drove RED → GREEN → QA in-process.
+
+**Commits (all SSH-signed, in order)**:
+| commit | slice |
+|--------|-------|
+| `a0e6175` | seed task board (R1-01..R1-09) |
+| `1d88453` | RED — retrieval types + protocol surface + 004_fts migrations + dual-backend integration |
+| `27a331f` | GREEN — 004_fts migrations + retrieval types module + sqlite backfill_lexical_index |
+| `4e538a3` | GREEN — StorageBackend protocol gains retrieval surface |
+| `7986e38` | GREEN — backend impls of search_dense / search_lexical / get_chunk / list_datasets |
+| `ebd9e1f` | GREEN polish — BM25 sign + external-content FTS5 rebuild + table-count pin |
+| _next_   | this close-out |
+
+**Surface landed**:
+- 5 protocol methods on `StorageBackend` — `search_dense`, `search_lexical`, `get_chunk`, `list_datasets`, `backfill_lexical_index`.
+- `corpus_forge/retrieval/{__init__.py, types.py}` — `Hit`, `SearchOptions`, `RetrievalMetrics`.
+- Migrations: `corpus_forge/schema/004_fts.sql` (Postgres GENERATED tsvector + GIN), `corpus_forge/schema/sqlite/004_fts.sql` (FTS5 + ai/ad/au triggers).
+- `corpus_forge/schema/migrate.py` — handles SQLite trigger bodies via the new `SQLiteBackend._executescript`; invokes `backfill_lexical_index()` once after applying `004_fts` on the SQLite dialect.
+
+**Tasks closed**:
+| id | status |
+|----|--------|
+| R1-01..R1-03 | done (RED suite landed at `1d88453`) |
+| R1-04, R1-05 | done (`27a331f`) |
+| R1-06 | done (`4e538a3`) |
+| R1-07, R1-08 | done (`7986e38`) |
+| R1-09 | done (this slice; gates all green; idempotency + dogfood verified) |
+
+**Gates** (Wave 3 QA):
+- `ruff format --check corpus_forge tests` — 124 files already formatted.
+- `ruff check corpus_forge tests` — All checks passed.
+- `pyrefly check corpus_forge` — 0 errors (15 suppressed).
+- `pytest tests/unit -n auto --cov-fail-under=85` — 1403 passed / 3 skipped / 1 xfailed; **coverage 87.60%**.
+- `pytest tests/integration` — 280/281 first run; the lone fail (`test_sync_icloud_dupe.py::TestICloudDupeSameHashDeleted`) is a pre-existing flake on the iCloud-Drive watcher; re-run = 5/5 green. **No R1 regressions.**
+- `corpus-forge migrate` twice on a fresh `tmp_path/idem.db` — no errors; tables identical (17 rows including the 5 FTS5 family); confirms `IF NOT EXISTS` discipline.
+- `scripts/query_repo_sqlite.py "how does lock_source work" --k 3` — runs end-to-end against `/tmp/corpus-forge-test.db`; returns the expected ranked output (lock_source-related hits from open-questions.md / sqlite_backend.md). Script left un-refactored (still uses its own ad-hoc SQL; refactoring to call `backend.search_dense(...)` deferred to a follow-up if desired — current code keeps doing what it has always done).
+- `backend.search_lexical("phase", k=3)` on the seeded corpus → 3 hits at score 0.82–0.83. `backend.search_dense(eid, qvec, k=3)` → 3 hits at score 0.06–0.07 (cosine-distance-derived; consistent with the prototype query).
+
+**Surprises / notes for Phase R2**:
+- **SQLite FTS5 `bm25()` returns *non-positive* values** where 0 = perfect match.  The first GREEN pass used `1/(1+bm25)` which produced scores > 1 (and is what the plan suggested verbatim); the polish commit replaced it with `relevance = max(-bm25, bm25); score = relevance/(1+relevance)` so scores stay in `[0, 1)` and remain higher-is-better. **R2 should normalise both backends' scores again before fusion** (RRF or alpha) — Postgres's `ts_rank_cd` is clipped to `[0,1]` already.
+- **External-content FTS5 backfill**: `INSERT INTO chunks_fts(rowid, text) SELECT … FROM chunks` (the plan's literal SQL) silently produces *delete markers*, not index entries.  The correct backfill is `INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')`.  This bit me on the dogfood db — the corpus already had 421 chunks pre-mirrored by the broken pattern; after switching to `'rebuild'`, `chunks_fts MATCH 'phase'` returns 30 hits as expected.  Phase R2's HybridRetriever does not need to know about this — `backfill_lexical_index()` hides the detail — but if any future migration ships its own backfill it must use `'rebuild'`.
+- **Triggers vs bulk INSERT**: the `chunks_ai`/`chunks_au` triggers continue to use the per-row pattern (`INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text)`), which **does** work inside triggers for external-content tables.  The silent no-op only applies to bulk INSERTs from outside trigger context.  This asymmetry is documented in the SQLite source but not the FTS5 manual; flag it in the R2 design doc if relevant.
+- **Migrate-time trigger bodies**: the legacy `";".split(...)` migration applier mangles `BEGIN ... END;` blocks.  Added `SQLiteBackend._executescript(sql)` which calls `sqlite3.Connection.executescript()` directly.  `apply_migrations` routes SQLite migrations containing `CREATE TRIGGER` through this helper; everything else still uses the per-statement path so per-statement IF-NOT-EXISTS rewriting (ADD COLUMN) is preserved.
+- **`chunks` has no direct `dataset_id`** column. Dataset attribution is via `documents.dataset_id` OR `conversations.dataset_id`. All R1 retrieval queries `COALESCE(d.dataset_id, cv.dataset_id)` to resolve this. R2's HybridRetriever should pass `dataset_id` straight through to the backend; do NOT add a `chunks.dataset_id` shortcut column.
+- **iCloud `.pth` hidden flag** still affects local dev — running `pytest` directly without `make _unhide-pth` will fail with `ModuleNotFoundError: No module named 'corpus_forge'`. Documented in CI-3 close-out; nothing new here.
+- **`backend._execute` leak ban**: every retrieval SQL stays inside the backend module.  The `corpus_forge/retrieval/` module imports types only; consumers go through the protocol.  Verified by inspection of new code.
+
+**Working tree**: clean modulo `.claude/` (user-private, untracked).
+
+**Acceptance status**:
+1. ☑ `make ci`-style gauntlet (format-check, lint, pyrefly, unit + coverage) all green; coverage 87.60% (gate 85%).
+2. ☑ `make test-integration` 280/281 first attempt; the 1 fail is pre-existing iCloud flake; 5/5 on rerun.
+3. ☑ Migrations idempotent; verified by running `backend.migrate()` twice on a fresh SQLite db + by the `test_migrate_004_postgres::TestIdempotency::test_migrate_twice_no_error` integration test.
+4. ☑ `scripts/query_repo_sqlite.py` runs end-to-end against `/tmp/corpus-forge-test.db`; output matches prior dogfooding (left un-refactored — same SQL it always used).
+5. ☑ `backend.search_lexical(...)` returns plausible hits on both backends (sqlite verified locally; postgres verified in integration).
+6. ☑ All 6 R1 commits + this close-out commit follow the `[tdd-principal] phase-r1: <slice>` prefix, SSH-signed by 1Password.
+7. ☑ Tree clean at end.
 
