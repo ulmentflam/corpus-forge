@@ -98,6 +98,14 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["corpus_forge"]
 
+# Ensure non-.py package data ships with the wheel:
+#   - corpus_forge/schema/*.sql       (migration files)
+#   - corpus_forge/eval/datasets/*    (bundled gold sets + provenance docs)
+#   - corpus_forge/py.typed
+[tool.hatch.build.targets.wheel.force-include]
+"corpus_forge/eval/datasets/forge_self.jsonl"     = "corpus_forge/eval/datasets/forge_self.jsonl"
+"corpus_forge/eval/datasets/forge_self.corpus.md" = "corpus_forge/eval/datasets/forge_self.corpus.md"
+
 [tool.hatch.build.targets.sdist]
 include = [
   "corpus_forge",

@@ -1645,3 +1645,8 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
 - Wrote `tests/unit/test_cli_eval.py` (11 tests).
 - Coverage: command-group help shows both `retrieval` + `corpus-quality`; per-command help advertises every option; CSV `--k` parsing; JSON dump writes a parseable payload; `--rerank` emits a friendly "lands in R4" notice (stderr or stdout); table reported on stdout; unknown bundled dataset names error nonzero; corpus-quality requires `--dataset`; helper smoke against a minimal stub-config to prove backend + embedder wiring.
 - 11/11 green after coder pass.
+
+### R3-06 (bundled gold set) — RED → GREEN
+
+- Wrote `tests/unit/test_eval_bundled_dataset.py` (7 tests): existence of JSONL + provenance.md, parse via `load_gold`, ≥20 queries, every row carries content_hashes, unique query_ids, non-empty relevant_chunk_ids, parallel length invariant.
+- 7/7 green after curation.
