@@ -1,0 +1,20 @@
+[Unit]
+Description=corpus-forge ingestion daemon
+Documentation=https://github.com/ulmentflam/corpus-forge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/corpus-forge daemon
+Restart=on-failure
+RestartSec=5
+Environment=HOME=%h
+# Honour XDG_CONFIG_HOME if the user has it set; otherwise default lookup
+# uses ~/.config/corpus-forge/.
+# corpus-forge logs to stderr by default — journald captures that.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
