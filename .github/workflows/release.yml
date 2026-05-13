@@ -1,0 +1,90 @@
+name: release
+
+# Tag-triggered release pipeline. Beta / RC tags are auto-marked as
+# `prerelease` via the `contains(github.ref, 'b' | 'rc')` expression in
+# the publish job. See CONTRIBUTING.md §Releasing for the maintainer
+# workflow.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Re-run the PR gate against the exact tag SHA. If matrix CI fails,
+  # the release is aborted before any artifact is produced.
+  gate:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: gate
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up uv + Python
+        uses: ./.github/actions/setup-uv
+
+      - name: Build wheel + sdist
+        run: uv build --out-dir dist
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.ref_name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ github.ref_name }}
+          path: dist/
+
+      - name: Render changelog snippet
+        id: changelog
+        uses: orhun/git-cliff-action@v3
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: CHANGELOG_RELEASE.md
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          prerelease: ${{ contains(github.ref, 'b') || contains(github.ref, 'rc') }}
+          generate_release_notes: true
+          body_path: CHANGELOG_RELEASE.md
+          fail_on_unmatched_files: true
+          token: ${{ secrets.GITHUB_TOKEN }}
