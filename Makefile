@@ -25,14 +25,14 @@ typecheck: ## pyrefly strict
 
 test: test-unit test-integration test-fuzz test-smoke ## All four test categories
 
-test-unit: ## Fast, no Docker, coverage-gated
-	uv run pytest tests/unit -v --cov=corpus_forge --cov-report=term-missing --cov-fail-under=85
+test-unit: ## Fast, parallel, no Docker, coverage-gated
+	uv run pytest tests/unit -v -n auto --timeout=60 --cov=corpus_forge --cov-report=term-missing --cov-fail-under=85
 
 test-integration: ## Requires Docker (testcontainers pgvector)
 	uv run pytest tests/integration -v
 
-test-fuzz: ## Hypothesis-driven property tests
-	uv run pytest tests/fuzz -v --hypothesis-show-statistics
+test-fuzz: ## Hypothesis-driven property tests (HYPOTHESIS_PROFILE=dev|ci|nightly)
+	HYPOTHESIS_PROFILE=$${HYPOTHESIS_PROFILE:-dev} uv run pytest tests/fuzz -v --hypothesis-show-statistics
 
 test-smoke: ## End-to-end happy paths against fake embedder
 	uv run pytest tests/smoke -v
