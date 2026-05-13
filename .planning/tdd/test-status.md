@@ -1633,3 +1633,9 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
 - Test corpus: on-disk SQLite under `tmp_path` (in-memory SQLite + sqlite_vec extension is fiddly across loader paths; file-based is functionally identical for the unit-test scope), 10 hand-engineered chunks each with unique animal-keyword anchors, 10 hand-curated queries each whose lexical + dense top-1 IS the gold-relevant chunk.
 - Pinned floor `_PINNED_NDCG_AT_10_FLOOR = 0.80` — tight enough to catch regression (e.g. the R2 `encode_query` swap silently degrading), loose enough to survive a fusion-constant tweak.
 - Status: **red** — `corpus_forge.eval.runner` does not yet exist.
+
+### R3-05 (drift fallback) — RED → GREEN
+
+- Extended `tests/unit/test_eval_runner.py` with `TestChunkIdDriftFallback` (3 tests).
+- Coverage: garbage chunk_ids + real content_hashes recover via the fallback (NDCG=1.0); valid chunk_id + bogus hash is tolerated (hash advisory only); both missing → zero contribution (no silent skip).
+- 14/14 total runner tests green after coder pass.

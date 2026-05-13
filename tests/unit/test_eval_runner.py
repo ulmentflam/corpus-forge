@@ -388,3 +388,125 @@ class TestEdgeCases:
         retriever = HybridRetriever(backend=backend, embedder=_FakeEmbedder(), embedder_id=eid)
         with pytest.raises(ValueError):
             evaluate_retriever(retriever, gold, k_values=[])
+
+
+# ── R3-05: chunk-id drift fallback via content_hash ───────────────────────
+
+
+class TestChunkIdDriftFallback:
+    """When a gold entry's chunk_id no longer resolves but its content_hash
+    does, the runner falls back to the content-hash lookup so the metric
+    survives a re-chunking pass that rotated ids."""
+
+    def test_content_hash_fallback_keeps_score(self, tmp_path: Path):
+        """Stale chunk_id + valid content_hash resolves transparently.
+
+        Build a gold set against a seeded corpus, then write the JSONL with
+        deliberately bogus chunk_ids alongside the genuine content_hashes.
+        The runner must use the hashes to recover and produce the same
+        metric it would have under the original ids.
+        """
+        from corpus_forge.eval.runner import evaluate_retriever
+        from corpus_forge.retrieval import HybridRetriever
+
+        backend, eid, _chunk_ids, chunk_texts = _seed_corpus(tmp_path)
+        retriever = HybridRetriever(backend=backend, embedder=_FakeEmbedder(), embedder_id=eid)
+
+        # Look up the real content_hashes for the first 3 chunks via the
+        # backend (whatever shape it has — content_hash is documented).
+        rows = backend._execute(
+            "SELECT id, content_hash, text FROM chunks ORDER BY id LIMIT 3",
+            (),
+        )
+        # Sanity: rows correspond to our first 3 seeded chunks.
+        assert len(rows) == 3
+        real_hashes = [r["content_hash"] for r in rows]
+
+        # Write a 3-query gold set where the chunk_ids are GARBAGE but the
+        # content_hashes are real and parallel to the queries.
+        p = tmp_path / "gold-drift.jsonl"
+        with p.open("w", encoding="utf-8") as f:
+            for i, (qid, q, _rel_idx) in enumerate(
+                [
+                    ("q1", chunk_texts[0], [0]),
+                    ("q2", chunk_texts[1], [1]),
+                    ("q3", chunk_texts[2], [2]),
+                ]
+            ):
+                f.write(
+                    json.dumps(
+                        {
+                            "query_id": qid,
+                            "query": q,
+                            "relevant_chunk_ids": [999_999_000 + i],  # garbage id
+                            "content_hashes": [real_hashes[i]],
+                        }
+                    )
+                    + "\n"
+                )
+
+        m = evaluate_retriever(retriever, p, k_values=[10])
+        # All 3 queries should still resolve their relevant chunk via the
+        # content_hash fallback, giving NDCG@10 = 1.0.
+        assert m.ndcg[10] == 1.0, f"drift fallback failed; NDCG@10 = {m.ndcg[10]}"
+        assert m.recall[10] == 1.0
+        assert m.mrr[10] == 1.0
+
+    def test_no_fallback_when_chunk_id_resolves(self, tmp_path: Path):
+        """When chunk_ids resolve directly, content_hashes are advisory only.
+
+        Provide a gold entry with a VALID chunk_id but a BOGUS content_hash.
+        Since the chunk_id already resolves, the runner must not "improve"
+        on it via the hash.  Metric should equal the no-hash variant.
+        """
+        from corpus_forge.eval.runner import evaluate_retriever
+        from corpus_forge.retrieval import HybridRetriever
+
+        backend, eid, chunk_ids, chunk_texts = _seed_corpus(tmp_path)
+        retriever = HybridRetriever(backend=backend, embedder=_FakeEmbedder(), embedder_id=eid)
+
+        # Gold with VALID chunk_ids + INVALID hashes (length-1 lists).
+        p = tmp_path / "gold-noop.jsonl"
+        with p.open("w", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "query_id": "q1",
+                        "query": chunk_texts[0],
+                        "relevant_chunk_ids": [chunk_ids[0]],
+                        "content_hashes": ["deadbeef" * 8],  # bogus, valid length
+                    }
+                )
+                + "\n"
+            )
+        m = evaluate_retriever(retriever, p, k_values=[10])
+        # Direct chunk_id hit → NDCG@10 must be 1.0 (the bogus hash is
+        # irrelevant when the id resolves directly).
+        assert m.ndcg[10] == 1.0
+
+    def test_neither_id_nor_hash_resolves_yields_zero(self, tmp_path: Path):
+        """If both the chunk_id and the content_hash are missing, the gold
+        entry contributes 0 to the metric — silent skip is unacceptable."""
+        from corpus_forge.eval.runner import evaluate_retriever
+        from corpus_forge.retrieval import HybridRetriever
+
+        backend, eid, _chunk_ids, _chunk_texts = _seed_corpus(tmp_path)
+        retriever = HybridRetriever(backend=backend, embedder=_FakeEmbedder(), embedder_id=eid)
+
+        p = tmp_path / "gold-orphan.jsonl"
+        p.write_text(
+            json.dumps(
+                {
+                    "query_id": "qX",
+                    "query": "completely unrelated query",
+                    "relevant_chunk_ids": [999_999_999],
+                    "content_hashes": ["beefcafe" * 8],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        m = evaluate_retriever(retriever, p, k_values=[10])
+        assert m.ndcg[10] == 0.0
+        assert m.recall[10] == 0.0
+        assert m.mrr[10] == 0.0

@@ -329,3 +329,13 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 - Pyrefly side-fix: `corpus_forge/eval/metrics.py` `GradedMap = Mapping[Any, int]` alias replaces the invariant `Mapping[int | str, int]`, restoring assignability for `dict[int, int]` callers (matches the loader output).
 - Full unit suite: 1561 passed; coverage 90.81%.
 - Gates: ruff (auto-fixed 3× C420), format, pyrefly all clean.
+
+### R3-05 (content_hash drift fallback) — GREEN
+
+- Runner gains `_resolve_relevant(q, backend)` returning the effective relevant set (and a possibly-remapped graded dict).
+- Resolution rules (advisory-hash semantics): direct chunk_id resolves → keep it (bogus hash ignored); id misses → fall back to `_lookup_chunk_id_by_content_hash(backend, hash)` via dialect-aware `_execute` SQL (postgres `WHERE content_hash = %s LIMIT 1`, sqlite `WHERE content_hash = ? LIMIT 1`).  Neither resolves → drop with a WARNING log so the drift surfaces in test/CI output rather than silently zeroing the metric.
+- Runner pulls `backend = getattr(retriever, "backend", None)` so non-HybridRetriever implementations (e.g. test fakes) still work — fallback is best-effort.
+- Graded dict is remapped (`gold_id → resolved_id`) when the chunk_id changes, preserving NDCG semantics across drift.
+- Docstring expanded to document the drift contract (top of `runner.py`).
+- All 14 runner tests green; full unit suite 1564 passed; coverage 90.75%.
+- Gates clean.
