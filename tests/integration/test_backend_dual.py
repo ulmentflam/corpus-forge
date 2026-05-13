@@ -839,3 +839,229 @@ class TestBackfillLexicalIndex:
         assert second == 0, (
             f"Second backfill call must be 0 (idempotent); first={first}, second={second}"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestHybridSearch (R2) — HybridRetriever against real seeded corpus on both
+# backends. Pins that the R2 retriever fuses dense + lexical hits, emits
+# source="fused", and resolves dataset filters end-to-end.
+# ---------------------------------------------------------------------------
+
+
+def _norm_vec_from_text(text: str, dim: int = _FAKE_EMBEDDER_DIM) -> np.ndarray:
+    """Deterministic unit-norm float32 vector keyed by the text content.
+
+    Mirrors `_FakeEmbedder._encode_one` but is a free function so the
+    HybridRetriever's `encode_query` path lands on the same vector that
+    the seeded chunk's embedding occupies.
+    """
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    vec = np.frombuffer(digest[:dim], dtype=np.uint8).astype(np.float32)
+    vec = (vec + 1.0) / 256.0
+    norm = np.linalg.norm(vec)
+    return vec / norm
+
+
+class TestHybridSearch:
+    """Pin the R2 HybridRetriever contract on both backends."""
+
+    def test_hybrid_search_returns_fused_hits(self, storage_backend: StorageBackend) -> None:
+        """Hybrid search returns ranked fused Hits over a real seeded corpus.
+
+        Seed three chunks; embed each with its own deterministic vector;
+        construct a HybridRetriever whose embedder encodes the query to match
+        the first chunk's vector; verify:
+        - The returned list has length <= k.
+        - All hits have source="fused".
+        - The top-1 hit's text contains the query word.
+        """
+        from corpus_forge.retrieval import HybridRetriever
+        from corpus_forge.retrieval.types import SearchOptions
+
+        ds_id = _insert_dataset(storage_backend, "dual-hybrid-fused")
+        embedder = _FakeEmbedder()
+        eid = storage_backend.register_embedder(embedder)
+
+        chunk_texts = [
+            "the quick brown fox jumps over the lazy dog",
+            "the alpaca grazes on the sweet grass",
+            "elephants never forget their old friends",
+        ]
+        _seed_doc_with_chunks(
+            storage_backend,
+            ds_id,
+            "dual://hybrid-fused.md",
+            "HybridFused",
+            chunk_texts,
+        )
+
+        # Embed each chunk with a vector keyed by its text.
+        missing = list(storage_backend.chunks_missing_embedding(eid))
+        assert len(missing) == 3
+        # Order missing by chunk id so we can pin which chunk gets which vector.
+        missing.sort(key=lambda t: t[0])
+        chunk_ids = [cid for cid, _ in missing]
+        chunk_vecs = [_norm_vec_from_text(t) for t in chunk_texts]
+        storage_backend.write_embeddings(eid, list(zip(chunk_ids, chunk_vecs, strict=True)))
+
+        # The HybridRetriever asks the embedder to encode the query.  Wire
+        # the embedder so encode_query returns the vector of the first chunk
+        # — and the lexical match also lands on it ("brown fox").
+        target_vec = chunk_vecs[0]
+        target_chunk_id = chunk_ids[0]
+
+        class _QueryEmbedder(_FakeEmbedder):
+            def encode_query(
+                self,
+                texts: Sequence[str],
+                *,
+                batch_size: int = 32,
+            ) -> np.ndarray:
+                # Always return target_vec replicated, regardless of the query
+                # text — keeps the test agnostic to the model.
+                return np.stack([target_vec for _ in texts])
+
+        retriever = HybridRetriever(
+            backend=storage_backend,
+            embedder=_QueryEmbedder(),
+            embedder_id=eid,
+        )
+
+        out = retriever.search("brown fox", SearchOptions(k=3, fusion="rrf"))
+        assert isinstance(out, list)
+        assert len(out) >= 1
+        for h in out:
+            assert h.source == "fused", f"Expected source=fused, got {h.source!r}"
+
+        # The top-1 hit must be the "brown fox" chunk — it wins both lists.
+        assert out[0].chunk_id == target_chunk_id
+
+    def test_hybrid_search_alpha_fusion_blends_scores(
+        self, storage_backend: StorageBackend
+    ) -> None:
+        """Alpha fusion respects the alpha knob: high alpha → dense winner."""
+        from corpus_forge.retrieval import HybridRetriever
+        from corpus_forge.retrieval.types import SearchOptions
+
+        ds_id = _insert_dataset(storage_backend, "dual-hybrid-alpha")
+        embedder = _FakeEmbedder()
+        eid = storage_backend.register_embedder(embedder)
+
+        chunk_texts = [
+            "first chunk has unique keyword aardvark",
+            "second chunk has unique keyword baobab",
+            "third chunk has unique keyword cicada",
+        ]
+        _seed_doc_with_chunks(
+            storage_backend,
+            ds_id,
+            "dual://hybrid-alpha.md",
+            "HybridAlpha",
+            chunk_texts,
+        )
+
+        missing = list(storage_backend.chunks_missing_embedding(eid))
+        missing.sort(key=lambda t: t[0])
+        chunk_ids = [cid for cid, _ in missing]
+        chunk_vecs = [_norm_vec_from_text(t) for t in chunk_texts]
+        storage_backend.write_embeddings(eid, list(zip(chunk_ids, chunk_vecs, strict=True)))
+
+        # We want the dense vector to favour chunk 0 but the lexical query to
+        # favour chunk 1 ("baobab").
+        dense_target_vec = chunk_vecs[0]
+        dense_target_id = chunk_ids[0]
+        lexical_target_id = chunk_ids[1]
+
+        class _DenseTargetEmbedder(_FakeEmbedder):
+            def encode_query(
+                self,
+                texts: Sequence[str],
+                *,
+                batch_size: int = 32,
+            ) -> np.ndarray:
+                return np.stack([dense_target_vec for _ in texts])
+
+        retriever = HybridRetriever(
+            backend=storage_backend,
+            embedder=_DenseTargetEmbedder(),
+            embedder_id=eid,
+        )
+
+        # alpha=1.0 → dense only → chunk 0 wins
+        out_dense = retriever.search(
+            "baobab", SearchOptions(k=1, fusion="alpha", alpha=1.0)
+        )
+        assert len(out_dense) == 1
+        assert out_dense[0].chunk_id == dense_target_id
+
+        # alpha=0.0 → lexical only → "baobab" chunk (chunk 1) wins
+        out_lex = retriever.search(
+            "baobab", SearchOptions(k=1, fusion="alpha", alpha=0.0)
+        )
+        assert len(out_lex) == 1
+        assert out_lex[0].chunk_id == lexical_target_id
+
+    def test_hybrid_search_dataset_filter(self, storage_backend: StorageBackend) -> None:
+        """HybridRetriever resolves dataset name → id and filters both lists."""
+        from corpus_forge.retrieval import HybridRetriever
+        from corpus_forge.retrieval.types import SearchOptions
+
+        ds_a = _insert_dataset(storage_backend, "dual-hybrid-ds-a")
+        ds_b = _insert_dataset(storage_backend, "dual-hybrid-ds-b")
+        # Register the names via get_or_create_dataset semantics — the
+        # backend's find_dataset_id_by_name uses datasets.name as the lookup
+        # key, so the names we inserted above are addressable.
+        # (No-op; just exercising the lookup.)
+
+        embedder = _FakeEmbedder()
+        eid = storage_backend.register_embedder(embedder)
+
+        _seed_doc_with_chunks(
+            storage_backend,
+            ds_a,
+            "dual://h-a.md",
+            "A",
+            ["alpha keyword alpha"],
+        )
+        _seed_doc_with_chunks(
+            storage_backend,
+            ds_b,
+            "dual://h-b.md",
+            "B",
+            ["beta keyword beta"],
+        )
+
+        missing = list(storage_backend.chunks_missing_embedding(eid))
+        vec = _norm_vec_from_seed(7)
+        storage_backend.write_embeddings(eid, [(cid, vec) for cid, _ in missing])
+
+        class _StaticEmbedder(_FakeEmbedder):
+            def encode_query(
+                self,
+                texts: Sequence[str],
+                *,
+                batch_size: int = 32,
+            ) -> np.ndarray:
+                return np.stack([vec for _ in texts])
+
+        retriever = HybridRetriever(
+            backend=storage_backend,
+            embedder=_StaticEmbedder(),
+            embedder_id=eid,
+        )
+
+        out_a = retriever.search(
+            "keyword", SearchOptions(k=5, dataset="dual-hybrid-ds-a")
+        )
+        out_b = retriever.search(
+            "keyword", SearchOptions(k=5, dataset="dual-hybrid-ds-b")
+        )
+
+        for h in out_a:
+            assert h.dataset_id == ds_a, (
+                f"dataset filter leaked: expected {ds_a}, got {h.dataset_id}"
+            )
+        for h in out_b:
+            assert h.dataset_id == ds_b, (
+                f"dataset filter leaked: expected {ds_b}, got {h.dataset_id}"
+            )
