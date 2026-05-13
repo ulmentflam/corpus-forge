@@ -626,5 +626,115 @@ def mcp_serve(
         raise typer.BadParameter(f"transport {chosen.value!r} not implemented")
 
 
+# ── top-level `search` command (Phase R5) ────────────────────────────────
+
+
+def _hit_to_jsonable(hit) -> dict:
+    """Serialize a ``Hit`` (frozen dataclass) to a JSON-safe dict."""
+    return {
+        "chunk_id": int(getattr(hit, "chunk_id")),
+        "score": float(getattr(hit, "score")),
+        "text": getattr(hit, "text"),
+        "document_id": getattr(hit, "document_id", None),
+        "source_uri": getattr(hit, "source_uri", None),
+        "title": getattr(hit, "title", None),
+        "dataset_id": int(getattr(hit, "dataset_id")),
+        "metadata": dict(getattr(hit, "metadata", {}) or {}),
+        "source": getattr(hit, "source", "fused"),
+    }
+
+
+@app.command("search")
+def search(
+    query: str = typer.Argument(..., help="Natural-language search query."),
+    k: int = typer.Option(10, "--k", help="Number of hits to return."),
+    dataset: str = typer.Option(
+        None, "--dataset", "-d", help="Optional dataset name filter."
+    ),
+    fusion: str = typer.Option(
+        None, "--fusion", help="Fusion strategy override: rrf|alpha."
+    ),
+    alpha: float = typer.Option(
+        None, "--alpha", help="Alpha-fusion weight (0.0..1.0); only used when fusion=alpha."
+    ),
+    rerank: bool = typer.Option(
+        False,
+        "--rerank/--no-rerank",
+        help="Apply the configured cross-encoder reranker after fusion (opt-in; default off).",
+    ),
+    json_out: Path = typer.Option(
+        None,
+        "--json",
+        help="Write {'query': ..., 'hits': [...]} JSON to this path.",
+    ),
+) -> None:
+    """Search the corpus over the configured backend.
+
+    Runs a hybrid (dense + lexical) search via the same retriever stack
+    that powers ``corpus-forge eval`` and the MCP server (Phase R5).
+    Default-off reranker — pass ``--rerank`` to opt in.
+    """
+    import json as _json  # noqa: PLC0415
+
+    from corpus_forge.retrieval.types import SearchOptions  # noqa: PLC0415
+
+    # Build the reranker FIRST (lazy; default-off) so we can pass it to
+    # the retriever builder.  Mirrors `eval`'s wiring exactly.
+    reranker = None
+    rerank_top_n = 50  # matches SearchOptions / RerankerConfig default
+    if rerank:
+        try:
+            reranker, rerank_top_n = _build_reranker_for_eval(fusion=fusion, alpha=alpha)
+        except FileNotFoundError:
+            typer.echo(
+                "No configuration found; run 'corpus-forge migrate' to initialise.",
+                err=True,
+            )
+            raise typer.Exit(code=2) from None
+
+    retriever = _build_retriever_for_eval(fusion=fusion, alpha=alpha, reranker=reranker)
+
+    options = SearchOptions(
+        k=k,
+        dataset=dataset,
+        fusion=fusion if fusion is not None else "rrf",
+        alpha=alpha if alpha is not None else 0.5,
+        rerank=rerank,
+        rerank_top_n=rerank_top_n,
+    )
+
+    hits = retriever.search(query, options)
+
+    if json_out is not None:
+        payload = {
+            "query": query,
+            "hits": [_hit_to_jsonable(h) for h in hits],
+        }
+        json_out.write_text(_json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        typer.echo(f"Wrote {len(hits)} hits → {json_out}", err=True)
+        return
+
+    if not hits:
+        typer.echo(f"No hits for {query!r}.")
+        return
+
+    for rank, hit in enumerate(hits, start=1):
+        title = getattr(hit, "title", None) or ""
+        source_uri = getattr(hit, "source_uri", None) or ""
+        chunk_id = getattr(hit, "chunk_id")
+        score = getattr(hit, "score")
+        text = getattr(hit, "text", "") or ""
+        # Truncate body to keep the terminal output tidy.
+        body = text if len(text) <= 240 else text[:237] + "..."
+        header_bits = [f"#{rank}", f"chunk={chunk_id}", f"score={score:.4f}"]
+        if title:
+            header_bits.append(f"title={title!r}")
+        if source_uri:
+            header_bits.append(source_uri)
+        typer.echo("  ".join(header_bits))
+        typer.echo(f"    {body}")
+        typer.echo("")
+
+
 if __name__ == "__main__":
     app()
