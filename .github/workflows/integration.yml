@@ -11,8 +11,8 @@ name: Integration
 # service-managed image already pre-pulled keeps the per-test container
 # spin-up snappy.
 #
-# macOS runners install Docker via docker/setup-docker-action so
-# testcontainers can spin up postgres-pgvector on-demand.
+# macOS runners install Docker via Colima (crazy-max/ghaction-setup-docker)
+# so testcontainers can spin up postgres-pgvector on-demand.
 #
 # 3.13 is intentionally dropped from this workflow's matrix until
 # sentence-transformers + torch ship stable wheels on python 3.13 for
@@ -122,10 +122,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Docker (Colima-backed) on macOS runner
-        # GitHub-hosted macos-14 has no Docker pre-installed.
-        # setup-docker-action installs Colima + docker CLI; testcontainers
-        # picks up the resulting docker.sock automatically.
-        uses: docker/setup-docker-action@v3
+        # GitHub-hosted macos-14 has no Docker pre-installed. The
+        # crazy-max action installs Colima + docker CLI and starts the
+        # VM; testcontainers picks up the resulting docker.sock
+        # automatically.
+        uses: crazy-max/ghaction-setup-docker@v3
 
       - name: Pre-pull pgvector image
         # Pre-pull so the first testcontainers spin-up doesn't add cold-pull
