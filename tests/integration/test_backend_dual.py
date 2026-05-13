@@ -593,3 +593,249 @@ class TestRevisions:
         )
         assert len(pending) == 1
         assert pending[0]["id"] == r2["id"]
+
+
+# ---------------------------------------------------------------------------
+# TestRetrievalSurface (R1) — dense/lexical search, chunk lookup, dataset list,
+# lexical backfill. Pins the StorageBackend retrieval contract on both backends.
+# ---------------------------------------------------------------------------
+
+
+def _norm_vec_from_seed(seed: int, dim: int = _FAKE_EMBEDDER_DIM) -> np.ndarray:
+    """Deterministic unit-norm float32 vector for a given seed (cosine-friendly)."""
+    rng = np.random.default_rng(seed)
+    v = rng.random(dim).astype(np.float32)
+    n = float(np.linalg.norm(v))
+    return v / n
+
+
+def _seed_doc_with_chunks(
+    backend: StorageBackend,
+    dataset_id: int,
+    source_uri: str,
+    title: str,
+    chunk_texts: list[str],
+    content_hash: str | None = None,
+) -> int:
+    """Upsert a document with the given chunk texts. Returns doc_id."""
+    text = "\n\n".join(chunk_texts)
+    raw = RawDocument(
+        source_uri=source_uri,
+        content_hash=content_hash or hashlib.sha256(text.encode()).hexdigest(),
+        text=text,
+        title=title,
+        modified_at=0.0,
+        metadata={},
+        labels=[],
+    )
+    chunks = [(None, ct) for ct in chunk_texts]
+    return backend.upsert_document(dataset_id, raw, chunks)
+
+
+class TestSearchDense:
+    """search_dense returns top-k Hits ordered by similarity (higher score = closer)."""
+
+    def test_search_dense_returns_topk(self, storage_backend: StorageBackend) -> None:
+        ds_id = _insert_dataset(storage_backend, "dual-sd-topk")
+        embedder = _fake_embedder(name="dual-sd-topk-e", dim=_FAKE_EMBEDDER_DIM)
+        eid = storage_backend.register_embedder(embedder)
+
+        _seed_doc_with_chunks(
+            storage_backend,
+            ds_id,
+            "dual://sd-topk.md",
+            "SD Topk",
+            ["alpha alpha alpha", "beta beta beta", "gamma gamma gamma"],
+        )
+
+        # Embed each chunk with a known vector keyed by chunk_id.
+        missing = list(storage_backend.chunks_missing_embedding(eid))
+        assert len(missing) == 3
+        # Write three distinct vectors; chunk[0]'s vector is exactly the query
+        target_chunk_id = missing[0][0]
+        target_vec = _norm_vec_from_seed(1)
+        pairs = [
+            (missing[0][0], target_vec),
+            (missing[1][0], _norm_vec_from_seed(2)),
+            (missing[2][0], _norm_vec_from_seed(3)),
+        ]
+        storage_backend.write_embeddings(eid, pairs)
+
+        hits = storage_backend.search_dense(eid, target_vec, k=3)
+        assert isinstance(hits, list)
+        assert len(hits) == 3
+        # The top hit must be the chunk whose vector equals the query
+        assert hits[0].chunk_id == target_chunk_id
+        # All hits have source="dense"
+        for h in hits:
+            assert h.source == "dense", f"Expected source=dense, got {h.source!r}"
+        # Scores are monotonically non-increasing (top first)
+        scores = [h.score for h in hits]
+        assert scores == sorted(scores, reverse=True), f"Hits not ordered by score: {scores}"
+        # The exact-match hit has the highest score
+        assert hits[0].score >= hits[1].score
+
+    def test_search_dense_filters_by_dataset(self, storage_backend: StorageBackend) -> None:
+        ds_a = _insert_dataset(storage_backend, "dual-sd-a")
+        ds_b = _insert_dataset(storage_backend, "dual-sd-b")
+        embedder = _fake_embedder(name="dual-sd-filter-e", dim=_FAKE_EMBEDDER_DIM)
+        eid = storage_backend.register_embedder(embedder)
+
+        _seed_doc_with_chunks(
+            storage_backend, ds_a, "dual://sd-a.md", "A", ["a-chunk-1", "a-chunk-2"]
+        )
+        _seed_doc_with_chunks(storage_backend, ds_b, "dual://sd-b.md", "B", ["b-chunk-1"])
+
+        missing = list(storage_backend.chunks_missing_embedding(eid))
+        vec = _norm_vec_from_seed(42)
+        storage_backend.write_embeddings(eid, [(cid, vec) for cid, _ in missing])
+
+        hits = storage_backend.search_dense(eid, vec, k=10, dataset_id=ds_a)
+        chunk_dataset_ids = {h.dataset_id for h in hits}
+        assert chunk_dataset_ids == {ds_a}, (
+            f"Dataset filter failed: expected only dataset_id={ds_a}, got {chunk_dataset_ids}"
+        )
+
+
+class TestSearchLexical:
+    """search_lexical returns FTS hits with source='lexical'."""
+
+    def test_search_lexical_matches_phrase(self, storage_backend: StorageBackend) -> None:
+        ds_id = _insert_dataset(storage_backend, "dual-sl-phrase")
+        _seed_doc_with_chunks(
+            storage_backend,
+            ds_id,
+            "dual://sl-phrase.md",
+            "SL Phrase",
+            [
+                "the quick brown fox jumps over the lazy dog",
+                "an alpaca grazes on the grass",
+                "elephants never forget their friends",
+            ],
+        )
+
+        hits = storage_backend.search_lexical("brown fox", k=10)
+        assert isinstance(hits, list)
+        assert len(hits) >= 1, "Expected at least one lexical hit for 'brown fox'"
+        for h in hits:
+            assert h.source == "lexical"
+        # The top hit must be the quick-brown-fox chunk
+        top = hits[0]
+        assert "brown" in top.text.lower() and "fox" in top.text.lower()
+        # Scores in [0, 1] for both dialects (sqlite uses 1/(1+bm25); postgres
+        # uses ts_rank_cd which is already small-but-positive). Just assert non-neg.
+        for h in hits:
+            assert h.score >= 0.0
+
+    def test_search_lexical_excludes_other_datasets(self, storage_backend: StorageBackend) -> None:
+        ds_a = _insert_dataset(storage_backend, "dual-sl-a")
+        ds_b = _insert_dataset(storage_backend, "dual-sl-b")
+        _seed_doc_with_chunks(storage_backend, ds_a, "dual://sl-a.md", "A", ["alpha keyword alpha"])
+        _seed_doc_with_chunks(storage_backend, ds_b, "dual://sl-b.md", "B", ["beta keyword beta"])
+
+        hits_a = storage_backend.search_lexical("keyword", k=10, dataset_id=ds_a)
+        assert len(hits_a) == 1
+        assert hits_a[0].dataset_id == ds_a
+        assert "alpha" in hits_a[0].text
+
+        hits_b = storage_backend.search_lexical("keyword", k=10, dataset_id=ds_b)
+        assert len(hits_b) == 1
+        assert hits_b[0].dataset_id == ds_b
+
+    def test_search_lexical_respects_k(self, storage_backend: StorageBackend) -> None:
+        ds_id = _insert_dataset(storage_backend, "dual-sl-k")
+        _seed_doc_with_chunks(
+            storage_backend,
+            ds_id,
+            "dual://sl-k.md",
+            "K",
+            [f"keyword text number {i}" for i in range(5)],
+        )
+        hits = storage_backend.search_lexical("keyword", k=2)
+        assert len(hits) <= 2, f"Expected <=2 hits with k=2, got {len(hits)}"
+
+
+class TestGetChunk:
+    def test_get_chunk_returns_joined_document_metadata(
+        self, storage_backend: StorageBackend
+    ) -> None:
+        ds_id = _insert_dataset(storage_backend, "dual-gc-joined")
+        _seed_doc_with_chunks(
+            storage_backend,
+            ds_id,
+            "dual://gc.md",
+            "GC Title",
+            ["chunk text content"],
+        )
+        # Find the chunk id via search_lexical or list
+        hits = storage_backend.search_lexical("chunk", k=5, dataset_id=ds_id)
+        assert len(hits) >= 1
+        cid = hits[0].chunk_id
+
+        row = storage_backend.get_chunk(cid)
+        assert row is not None
+        assert row["id"] == cid
+        assert "chunk" in row["text"]
+        assert row["source_uri"] == "dual://gc.md"
+        assert row["title"] == "GC Title"
+
+    def test_get_chunk_returns_none_for_missing(self, storage_backend: StorageBackend) -> None:
+        result = storage_backend.get_chunk(999_999_999)
+        assert result is None
+
+
+class TestListDatasets:
+    def test_list_datasets_counts(self, storage_backend: StorageBackend) -> None:
+        ds_a = _insert_dataset(storage_backend, "dual-ld-a")
+        ds_b = _insert_dataset(storage_backend, "dual-ld-b")
+        _seed_doc_with_chunks(storage_backend, ds_a, "dual://ld-a.md", "A", ["c1", "c2", "c3"])
+        _seed_doc_with_chunks(storage_backend, ds_b, "dual://ld-b.md", "B", ["c1", "c2"])
+
+        rows = storage_backend.list_datasets()
+        names = {r["name"] for r in rows}
+        assert {"dual-ld-a", "dual-ld-b"}.issubset(names)
+        by_name = {r["name"]: r for r in rows}
+        assert by_name["dual-ld-a"]["chunk_count"] == 3
+        assert by_name["dual-ld-b"]["chunk_count"] == 2
+        assert by_name["dual-ld-a"]["document_count"] == 1
+        assert by_name["dual-ld-b"]["document_count"] == 1
+        # kind echoed back
+        assert by_name["dual-ld-a"]["kind"] == "text"
+
+    def test_list_datasets_empty(self, storage_backend: StorageBackend) -> None:
+        """Empty (or freshly migrated) db: no datasets — must not error."""
+        rows = storage_backend.list_datasets()
+        assert isinstance(rows, list)
+
+
+class TestBackfillLexicalIndex:
+    """backfill_lexical_index is idempotent.
+
+    On SQLite: returns the rowcount of rows inserted into chunks_fts (≥ N on
+    first call, 0 thereafter).
+    On Postgres: returns 0 always (GENERATED column auto-populates).
+    """
+
+    def test_backfill_returns_int(self, storage_backend: StorageBackend) -> None:
+        result = storage_backend.backfill_lexical_index()
+        assert isinstance(result, int)
+        assert result >= 0
+
+    def test_backfill_idempotent(self, storage_backend: StorageBackend) -> None:
+        ds_id = _insert_dataset(storage_backend, "dual-bf-idem")
+        _seed_doc_with_chunks(
+            storage_backend,
+            ds_id,
+            "dual://bf.md",
+            "BF",
+            ["alpha", "beta", "gamma"],
+        )
+        # First call: may or may not backfill (depends on whether triggers
+        # already mirrored on insert). Postgres returns 0. SQLite returns 0
+        # because the ai trigger already populated chunks_fts at INSERT time.
+        first = storage_backend.backfill_lexical_index()
+        second = storage_backend.backfill_lexical_index()
+        # Second call must be 0 — backfill is "rows not already in chunks_fts"
+        assert second == 0, (
+            f"Second backfill call must be 0 (idempotent); first={first}, second={second}"
+        )
