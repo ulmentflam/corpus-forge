@@ -1597,3 +1597,31 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   ======================== 34 passed, 1 warning in 17.55s ========================
   ```
 - Status: green — characterization tests pin shared StorageBackend contract. tdd-tester completed B-16.
+
+---
+
+## Phase R3 — eval harness
+
+### R3-01 (pyproject extras) — RED
+
+- Wrote `tests/unit/test_pyproject_eval_extras.py` (7 tests).
+- Asserts `[retrieval]` + `[eval]` extras exist with `numpy>=1.26` floor.
+- Negative asserts (R3 scope guard): `[rerank]` and `[mcp]` MUST NOT be declared yet.
+- Status: **red** — `test_retrieval_extra_present`, `test_eval_extra_present`, `test_numpy_floor_at_least_1_26` fail (extras missing). The two scope-guard tests and `test_numpy_importable_in_dev_env` already pass — kept for ongoing protection.
+
+### R3-02 (metrics) — RED
+
+- Wrote `tests/unit/test_eval_metrics.py` (29 tests).
+- Coverage: NDCG binary + graded with hand-computed known answers (DCG = 1/log2(rank+1)·gain, IDCG via sorted gains), MRR (rank 1 / rank 5 / no-hit / outside-k), Recall (full / partial / k-truncation), edge cases (empty ranking, empty relevant, k>len, k=0), input-shape tolerance (list vs set, str-keyed graded, duplicates in ranking).
+- Status: **red** — `corpus_forge.eval.metrics` does not yet exist.
+
+### R3-03 (dataset loader) — RED
+
+- Wrote `tests/unit/test_eval_dataset.py` (21 tests).
+- Coverage: `GoldQuery` shape (required + optional + frozen); `load_gold` happy paths (minimal row, multi-row, str→int graded normalisation, mixed binary+graded, content_hashes, blank/comment-line skipping); error paths (each required field missing, empty `relevant_chunk_ids`, type mismatches, bad JSON with line number, content_hashes length mismatch, FileNotFoundError, non-int chunk_id).
+- Status: **red** — `corpus_forge.eval.dataset` does not yet exist.
+
+### Wave 0 RED summary
+
+- Combined: **54 RED + 3 GREEN (scope-guard tests)** in `tests/unit/test_eval_metrics.py`, `tests/unit/test_eval_dataset.py`, `tests/unit/test_pyproject_eval_extras.py`.
+- Handed off to tdd-coder.
