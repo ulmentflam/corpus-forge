@@ -548,3 +548,17 @@ session; principal absorbed tester+coder roles. Four atomic commits with
   CI-2 needs to actually mark Windows-unfriendly tests (subprocess
   signal handling, advisory locks, etc.) with it when the windows-2022
   matrix cell goes live.
+
+## Phase CI-2 — task table (CI matrix + integration + nightly + flake fix)
+
+| id | title | depends_on | surface | risk | status | claimed_by | notes |
+|----|-------|------------|---------|------|--------|------------|-------|
+| CI2-1 | Reproducer + RED tests for flake, CI_NO_DOCKER, YAML shape | — | tests/unit/test_phase_ci2_yaml.py, tests/unit/test_ci_no_docker.py, tests/unit/test_chunk_reuse_isolation.py | med | done | tdd-principal | RED slice — pins the contracts before code changes. |
+| CI2-2 | GREEN — per-test schema reset in pg_dsn fixture | CI2-1 | tests/conftest.py | high | done | tdd-principal | TRUNCATE/DROP-and-recreate corpus.* per test; isolate the embedding-reuse cross-talk. |
+| CI2-3 | GREEN — extend pytest_collection_modifyitems for CI_NO_DOCKER | CI2-1 | tests/conftest.py | low | done | tdd-principal | Skip integration tests when CI_NO_DOCKER is set. |
+| CI2-4 | GREEN — ci.yml matrix expansion + actionlint job + caches | CI2-1 | .github/workflows/ci.yml | med | done | tdd-principal | 3 OS × 3 Python; integration skip on Windows via CI_NO_DOCKER. |
+| CI2-5 | GREEN — integration.yml (Linux services + macOS docker) | CI2-1 | .github/workflows/integration.yml | med | done | tdd-principal | NEW file. |
+| CI2-6 | GREEN — nightly.yml (cron + nightly hypothesis profile) | CI2-1 | .github/workflows/nightly.yml | low | done | tdd-principal | NEW file. |
+| CI2-7 | GREEN — requires_unix marker application | CI2-1 | tests/unit/test_daemon.py, others as surveyed | low | done | tdd-principal | Mark POSIX-only tests. |
+| CI2-8 | GREEN — pythonpath TODO comment (CI-3 handoff) | CI2-1 | pyproject.toml | low | done | tdd-principal | Comment only; don't replace yet. |
+| CI2-9 | QA — full gauntlet + 10-seed flake sweep + YAML parse | CI2-2..CI2-8 | n/a (verification only) | high | done | tdd-principal | Acceptance check. |
