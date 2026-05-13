@@ -1923,3 +1923,50 @@ _Final phase of the beta-release milestone. Master plan §Phase BR._
 - Wave 1 (after BR-01 + BR-03 done): BR-05 README — needs the governance files referenced and the banner asset paths existing.
 - Wave 2: BR-06 final sweep + tag.
 
+## BR close-out (2026-05-13)
+
+**Phase BR complete. Tag `v0.1.0b1` cut locally (not pushed).**
+
+Phase BR was driven by the parent (main session) after a tdd-principal subagent hit a content-filter error mid-flight. Wave 0 RED suites + the BR seed had landed via the principal; the parent finished the GREEN slices + README rewrite + tag.
+
+Slice commit hashes:
+- `7e28608` seed task board (BR-01..BR-06, 3 waves)
+- `bb5329e` claim BR-01..BR-04 for tdd-tester
+- `2c60dad` RED W0 (47 tests across BR-01..BR-04)
+- `13ea733` GREEN BR-01 — governance files (CHANGELOG / CONTRIBUTING / CoC / SECURITY)
+- `eff8cd6` GREEN BR-02 — GitHub templates + dependabot
+- `5c82c6f` GREEN BR-04 — release.yml + cliff.toml
+- `214a197` GREEN BR-03 — anvil/forge banner SVGs (light + dark) + square logo
+- `ef7125b` GREEN BR-05 — README full rewrite (422→320 lines)
+- (this commit) close-out summary
+
+Tag `v0.1.0b1`: SHA `9f1c9a0fc3944ad106ccaf88f994170ff099eb2a` annotated + SSH-signed (will move forward to include this close-out commit before push).
+
+**Gate output**:
+- format-check: 124 files already formatted
+- lint: All checks passed
+- typecheck: 0 errors (15 suppressed)
+- unit (deterministic with `-p no:randomly`): 1812 pass, 1 xfail, 2 skip; coverage ≥85%
+- unit (randomized): 3 flakes in `test_reranker_ollama.py::TestScoringAndOrdering` — known R5 carry-over (order-dep on shared mock state). Passes 21/21 with `-p no:randomly` and 6/6 on the class in isolation. Not blocking the beta tag; triage post-beta.
+
+**Filed for post-beta**:
+- R5 reranker_ollama order-dep flake — real test isolation bug.
+- `assets/banner.png` PNG fallback — SVG-only is fine per BR-03 policy; render via `rsvg-convert` in CI later if needed.
+- Banner dark-theme `<picture>` swap is well-formed but unverified locally.
+
+**Milestone summary** (10 phases, CI-1 → BR):
+- ~120 atomic commits across the milestone
+- 1812 unit / 290+ integration / 14 smoke / 15 fuzz tests; coverage ≥85%
+- Apache 2.0 license, hatchling build-system, `0.1.0b1` wheel buildable
+- 3 OS × 3 Python CI matrix + nightly hypothesis profile + actionlint
+- Hybrid retrieval (FTS5 + tsvector + vec0 / pgvector) on both backends
+- Cross-encoder reranker (BAAI/bge-reranker-v2-m3 default, lazy-loaded)
+- MCP stdio server (`search` / `get_chunk` / `list_datasets`)
+- Claude Code skill + Agent SDK subagent + MCP config drop-ins
+- Anvil/forge banner + complete governance docs + tag-triggered release workflow
+
+**User actions remaining**:
+1. Push `main` and the tag: `git push origin main && git push origin v0.1.0b1`.
+2. Verify the release workflow runs against the tag and creates a prerelease GitHub Release with wheel + sdist + SHA256SUMS attached.
+3. Post-beta: triage the 3-test reranker_ollama isolation flake.
+
