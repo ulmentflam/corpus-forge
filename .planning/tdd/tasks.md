@@ -1217,3 +1217,194 @@ fd05e7e [tdd-coder]   GREEN — metrics, dataset loader, pyproject extras (R3-01
 e7d0f97 [tdd-tester]  RED suite for Wave 0 (R3-01/02/03)
 cd10976 [tdd-principal] seed R3 task board (8 tasks across 5 waves)
 ```
+
+---
+
+## Phase R4 — Cross-encoder reranker
+
+_Owner: tdd-principal.  Plan ref: `/Users/evanowen/.claude/plans/crispy-yawning-crescent.md` § "Phase R4".  R3 closed at `afa99db`._
+
+**Decision locked** (verbatim from user): default reranker model is **`BAAI/bge-reranker-v2-m3`** (multilingual, ~600 MB, lifts retrieval-eval most).  `cross-encoder/ms-marco-MiniLM-L-12-v2` is the lighter English-only alternate.
+
+**Carry-overs from R3 (load-bearing, repeat-asserted to every R4 worker)**:
+
+1. **`--rerank` flag is a no-op friendly notice in `corpus_forge/cli.py` and `corpus_forge/eval/runner.py`** — R4-07 swaps the notice for a real `HybridRetriever(..., reranker=...)` wire-up.  Remove `_emit_rerank_notice` after wiring.
+2. **`_lookup_chunk_id_by_content_hash` is a protocol-lift candidate** flagged by R3-05.  **Out of R4 scope** — do not touch.
+3. **The auto-curated `forge_self` gold set is biased toward the retriever it was built with.**  Real-corpus NDCG@10 = 0.717 baseline.  Any rerank-vs-baseline assertion uses generous tolerance (`>= baseline - 0.03` or `>= baseline * 0.95`).  No tight rerank-improves pin.
+4. **`sentence-transformers` is already a hard dep**.  The `[rerank]` extra is reserved for a future split — make it pin `sentence-transformers>=3.0` for documentation.  Since ST is already a hard dep, the "without `[rerank]`" install path is currently unreachable; note in close-out.
+
+**Hard rules** (re-asserted for every R4 worker):
+
+- **NEVER download `BAAI/bge-reranker-v2-m3` in CI.**  Every test patches `sentence_transformers.CrossEncoder` or stubs the reranker.  Local-dev real-bge runs are fine but never gate CI.
+- **Lazy load is non-negotiable**: `from corpus_forge.retrieval.rerank import CrossEncoderReranker; CrossEncoderReranker()` must NOT trigger a model download or import `sentence_transformers.CrossEncoder` greedily.  Pin this with a dedicated test.
+- **`opts.rerank=False` by default** — even when a reranker is configured on `HybridRetriever`, the default search path stays no-rerank.
+- **No reach-around to `backend._execute`** — protocol discipline holds.  Reranker doesn't touch the backend.
+- **`HybridRetriever` semantics when `opts.rerank=True` and `reranker` is set**: fuse to top-N (N = `opts.rerank_top_n`, default 50), call `reranker.rerank(query, top_n_hits, top_n=opts.k)`, return that.  Output hits carry `source="reranked"`.
+- **No README touches** — Phase BR owns the rewrite.
+- Atomic commits prefixed `[role] phase-r4: <slice>`; HEREDOC body; Co-Authored-By trailer; signed (do NOT pass `--no-gpg-sign`).
+
+### R4 tasks
+
+| id | title | depends_on | surface | risk | status | claimed_by | notes |
+|----|-------|------------|---------|------|--------|------------|-------|
+| R4-01 | `Reranker` Protocol + package init | — | `corpus_forge/retrieval/rerank/__init__.py`, `corpus_forge/retrieval/rerank/base.py`, `tests/unit/test_reranker_protocol.py` | low | pending | — | — |
+| R4-02 | `RerankerConfig` in `Config.retrieval` | — | `corpus_forge/config.py`, `tests/unit/test_config_retrieval.py` | low | pending | — | — |
+| R4-03 | `[rerank]` optional-deps entry in pyproject | — | `pyproject.toml`, `tests/unit/test_pyproject_rerank.py` | low | pending | — | new test file; do NOT collide with `test_pyproject_eval_extras.py` scope-guards |
+| R4-04 | `CrossEncoderReranker` (lazy-loaded, stub-friendly) | R4-01 | `corpus_forge/retrieval/rerank/cross_encoder.py`, `tests/unit/test_reranker_cross_encoder.py`, `tests/unit/test_reranker_lazy_load.py` | med | pending | — | default `model_id="BAAI/bge-reranker-v2-m3"`; tie-break by fused score then chunk_id |
+| R4-05 | `HybridRetriever` wires reranker when `opts.rerank=True` | R4-01 | `corpus_forge/retrieval/retriever.py`, `tests/unit/test_retrieval_retriever.py` | med | pending | — | default behaviour unchanged (`opts.rerank=False`) |
+| R4-06 | Dual-backend integration test: stub reranker over `HybridRetriever` | R4-04, R4-05 | `tests/integration/test_backend_dual.py` (extension) | low | pending | — | stub reranker reverses order + tags `source="reranked"`; never load real ST model |
+| R4-07 | Eval runner real rerank wire-up + remove R3 notice | R4-02, R4-04, R4-05 | `corpus_forge/eval/runner.py`, `corpus_forge/cli.py`, `tests/unit/test_eval_runner.py`, `tests/unit/test_cli_eval.py` | med | pending | — | patch CrossEncoderReranker in tests; tolerance pin `>= baseline - 0.03`; remove `_emit_rerank_notice` |
+| R4-08 | Smoke test: `--rerank` invocation with stubbed reranker | R4-07 | `tests/smoke/test_eval_smoke.py` | low | pending | — | patch `corpus_forge.retrieval.rerank.cross_encoder.CrossEncoderReranker._get_model` |
+| R4-09 | `OllamaReranker` (score-via-completion) — OPTIONAL | R4-01 | `corpus_forge/retrieval/rerank/ollama.py`, `tests/unit/test_reranker_ollama.py`, `corpus_forge/retrieval/rerank/__init__.py` (export) | low | pending | — | mirrors `scripts/qwen3_via_ollama.py` pattern; no default `model_id`; if skipped, document in close-out |
+
+### Acceptance details
+
+#### R4-01 — `Reranker` Protocol + package init
+
+- New module `corpus_forge/retrieval/rerank/`:
+  - `__init__.py` exports `Reranker`, `CrossEncoderReranker`, `OllamaReranker` (the latter two via lazy import-style attributes — see R4-04 / R4-09 for whether `OllamaReranker` lands).
+  - `base.py` defines:
+    ```python
+    class Reranker(Protocol):
+        name: str
+        model_id: str
+        def warmup(self) -> None: ...
+        def rerank(self, query: str, hits: list[Hit], *, top_n: int | None = None) -> list[Hit]: ...
+    ```
+- Importing the package MUST NOT import `sentence_transformers.CrossEncoder` greedily.
+- Tests pin: Protocol shape (attrs + method signatures), lazy export availability.
+
+#### R4-02 — `RerankerConfig`
+
+- New Pydantic model in `corpus_forge/config.py`:
+  ```python
+  class RerankerConfig(BaseModel):
+      kind: Literal["cross_encoder", "ollama"] = "cross_encoder"
+      model_id: str = "BAAI/bge-reranker-v2-m3"
+      device: str = "auto"
+      batch_size: int = Field(default=32, gt=0)
+      max_length: int = Field(default=512, gt=0)
+  ```
+- `RetrievalConfig` gains `reranker: RerankerConfig = Field(default_factory=RerankerConfig)`.
+- Tests pin: defaults, validation bounds, `kind` Literal.
+
+#### R4-03 — `[rerank]` extra in pyproject
+
+- `pyproject.toml` `[project.optional-dependencies]`: `rerank = ["sentence-transformers>=3.0"]`.
+- Keep `mcp` extra explicitly OUT (R5 scope-guard).
+- Tests pin: presence of `[rerank]` extra and the ST floor.
+
+#### R4-04 — `CrossEncoderReranker`
+
+- Class constructor:
+  ```python
+  class CrossEncoderReranker:
+      def __init__(
+          self,
+          model_id: str = "BAAI/bge-reranker-v2-m3",
+          *,
+          device: str = "auto",
+          batch_size: int = 32,
+          max_length: int = 512,
+          name: str = "bge-reranker-v2-m3",
+      ): ...
+  ```
+- `_get_model()` lazy-loads `sentence_transformers.CrossEncoder` on first call (mirror `SentenceTransformersEmbedder._load_model`).
+- `warmup()` calls `_get_model()` and runs a tiny `predict([("warmup", "warmup")])`.
+- `rerank(query, hits, *, top_n=None) -> list[Hit]`:
+  - Empty `hits` → returns `[]` (do not call `_get_model`).
+  - When `top_n` is None → reranks all hits; else takes the `top_n` highest-fused-score input hits first, reranks just those, returns them top-`top_n`.
+  - Pair each input hit's `text` with `query`; call `model.predict(pairs, batch_size=...)`.
+  - Output hits replace `score` with the cross-encoder score, set `source="reranked"`.
+  - **Tie-break**: descending by new score, ties broken by the original fused score (descending), then chunk_id ascending — stable across runs.
+- ImportError path: if `sentence_transformers.CrossEncoder` cannot be imported, `_get_model` raises `ImportError` with a clear install hint (`pip install corpus-forge[rerank]`).
+- Tests (`test_reranker_cross_encoder.py` + `test_reranker_lazy_load.py`):
+  - Construction does NOT import `sentence_transformers.CrossEncoder`.  Verify by patching with a `MagicMock` and asserting it's called exactly 0 times after `__init__`, 1 time on first `rerank()` or `warmup()`, 1 time across multiple subsequent calls (memoised).
+  - Stubbed `CrossEncoder.predict` returns known scores; output order matches scored order.
+  - `top_n` clipping: 50 hits in, `top_n=5` → 5 hits out, all rescored.
+  - `top_n=None` reranks all hits.
+  - Empty input → `[]`.
+  - Tie-break: equal scores fall back to fused score then chunk_id.
+  - Every output `Hit.source == "reranked"`.
+
+#### R4-05 — `HybridRetriever` wires reranker
+
+- `HybridRetriever.search(query, options)`:
+  - When `options.rerank=False` (default): existing R2 path unchanged.  Reranker never consulted even if `self.reranker is not None`.
+  - When `options.rerank=True` AND `self.reranker is not None`:
+    1. Fuse + materialise top-N where N = `options.rerank_top_n` (NOT `options.k`).
+    2. Call `self.reranker.rerank(query, top_n_hits, top_n=options.k)`.
+    3. Return the reranker's output.
+  - When `options.rerank=True` AND `self.reranker is None`: behave as if rerank were False (no-op).  Do not crash.  Optionally `_log.debug(...)` a hint.
+- Tests added to `test_retrieval_retriever.py`:
+  - `rerank=False` ignores a configured reranker.
+  - `rerank=True` + configured reranker → reranker.rerank called with the top-N fused hits and `top_n=options.k`.
+  - `rerank=True` + no reranker → returns fused hits unchanged.
+  - When `rerank_top_n > len(fused)`, reranker receives all fused hits.
+  - Reranker output is returned verbatim (no further reordering by HybridRetriever).
+
+#### R4-06 — Dual-backend integration test
+
+- `tests/integration/test_backend_dual.py` extension: `TestHybridSearchRerank`.
+- Stub reranker (in-test class):
+  ```python
+  class _StubReranker:
+      name = "stub"
+      model_id = "stub://reverse"
+      def warmup(self): pass
+      def rerank(self, query, hits, *, top_n=None):
+          take = hits[: top_n] if top_n else hits
+          return [Hit(..., score=float(i), source="reranked") for i, h in enumerate(reversed(take))]
+  ```
+- Single test: `test_hybrid_search_with_rerank` — seed 5 chunks, build `HybridRetriever(..., reranker=_StubReranker())`, call `search("...", SearchOptions(rerank=True, k=3, rerank_top_n=5))`.  Assert:
+  - All output hits have `source="reranked"`.
+  - Length ≤ `k`.
+  - Order matches the stub's reversal pattern.
+- Runs against BOTH backends via existing `storage_backend` parametrize fixture.  No real model download.
+
+#### R4-07 — Eval runner real rerank wire-up
+
+- `corpus_forge/eval/runner.py`: extend `evaluate_retriever(retriever, gold_path, k_values, *, max_queries=None, rerank=False)`.  When `rerank=True`, the runner calls `retriever.search(q.query, SearchOptions(k=top_k, rerank=True, rerank_top_n=<from config or default 50>))`.  Default behaviour unchanged.
+- Alternatively: caller (CLI) constructs the retriever WITH the reranker and passes `SearchOptions(rerank=True, ...)` directly.  Worker picks the simpler path; document in code-status.
+- `corpus_forge/cli.py`:
+  - Add `_build_reranker_from_config(config) -> Reranker | None` — instantiates `CrossEncoderReranker(model_id=..., device=..., batch_size=..., max_length=...)` from `config.retrieval.reranker`.
+  - When `--rerank` is passed: build the reranker, pass it to `_build_retriever_for_eval`, pass `rerank=True` down the call chain.
+  - **Remove `_emit_rerank_notice` and its single call site.**  Update CLI help text to drop the "Phase R4 — currently a no-op" phrasing.
+- Tests:
+  - Extend `tests/unit/test_eval_runner.py` with `test_rerank_path_invokes_reranker`: patch `CrossEncoderReranker` to a stub spy; call `evaluate_retriever(..., rerank=True)`; assert the spy was called with each query.
+  - Add `test_rerank_baseline_within_tolerance`: against the toy gold set, `metrics.ndcg[10]` with rerank `>= baseline - 0.03` (NOT a strict improvement pin).
+  - Extend `tests/unit/test_cli_eval.py`:
+    - `--rerank` no longer emits the "lands in R4" notice (verify substring absent).
+    - `--rerank` triggers reranker construction (mock `_build_reranker_from_config` / `CrossEncoderReranker`).
+    - `--no-rerank` (default) does not construct a reranker.
+
+#### R4-08 — Smoke test extension
+
+- `tests/smoke/test_eval_smoke.py` gains `test_eval_retrieval_smoke_with_rerank`:
+  - Same skip-on-missing-seed gate as the existing test.
+  - Patch `corpus_forge.retrieval.rerank.cross_encoder.CrossEncoderReranker._get_model` to return a stub whose `.predict(pairs, ...)` returns deterministic scores (e.g. `np.arange(len(pairs))`).
+  - Invoke CLI with `--rerank` flag; assert exit 0, table on stdout, JSON dump parseable with all metric blocks in [0, 1].
+  - Marker `pytestmark = pytest.mark.smoke` (already set on the module).
+
+#### R4-09 — `OllamaReranker` (OPTIONAL)
+
+- `corpus_forge/retrieval/rerank/ollama.py`:
+  - Class `OllamaReranker` mirrors `_OllamaEmbedder` from `scripts/qwen3_via_ollama.py`: wraps `OpenAI` client pointed at Ollama's `/v1` base URL.
+  - **No default `model_id`** — caller must specify.  Docstring warns the chosen Ollama model must be a chat/completion model capable of scoring `(query, document)` pairs on a 0–10 scale.
+  - `rerank(query, hits, *, top_n=None)`:
+    - For each hit (or top_n by fused score): prompt the chat model with a structured scoring template (`"On a scale of 0-10, how relevant is the following passage to the query?\nQuery: …\nPassage: …\nReturn ONLY a number."`).
+    - Parse the score (`float(re.search(r"(\d+(\.\d+)?)", text).group(1))`); clip to [0, 10]; on parse failure score 0.
+    - Sort descending; emit `source="reranked"`.
+  - Tests: patched `OpenAI.chat.completions.create` returns deterministic strings; assert scoring prompt template; verify parse fallback on garbage response.
+- If skipped: document in close-out + remove `OllamaReranker` from `rerank/__init__.py` export; close R4-09 with verdict `out-of-scope` (NOT `done`).
+
+### DAG (R4 waves)
+
+- **Wave 0** (3 parallel, no deps): R4-01, R4-02, R4-03 — disjoint surface.
+- **Wave 1** (3 parallel, all depend on R4-01 only — R4-09 also): R4-04, R4-05, R4-09 — disjoint files (`rerank/cross_encoder.py` vs `retrieval/retriever.py` vs `rerank/ollama.py`).  R4-09 may be deferred to Wave 2 or skipped.
+- **Wave 2** (2 parallel, surfaces disjoint): R4-06 (integration), R4-07 (eval runner + CLI).
+- **Wave 3** (1): R4-08 (smoke), serial after R4-07.
+
+### R4 commit prefix
+
+`[<role>] phase-r4: <slice>` — e.g. `[tdd-tester] phase-r4: R4-04 red suite for CrossEncoderReranker`.
