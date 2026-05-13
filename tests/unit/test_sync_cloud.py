@@ -202,8 +202,14 @@ class TestDetectCloudProviderTypeHandling:
         p.mkdir(parents=True)
         assert detect_cloud_provider(p) == "icloud"
 
+    @pytest.mark.requires_unix
     def test_symlink_resolved(self, tmp_path):
-        """Symlinked path: detection should work on the resolved target."""
+        """Symlinked path: detection should work on the resolved target.
+
+        Marked ``requires_unix``: creating a symlink on Windows requires
+        either admin privileges or developer-mode, neither of which are
+        guaranteed on the GitHub-hosted ``windows-2022`` runner.
+        """
         real_dir = tmp_path / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "real"
         real_dir.mkdir(parents=True)
         link_dir = tmp_path / "link_to_icloud"

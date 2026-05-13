@@ -84,28 +84,46 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Skip integration tests when Docker is unavailable or CI_NO_DOCKER is set.
+    """Apply runner-conditional skip markers at collection time.
 
-    CI-2: ``CI_NO_DOCKER`` is the explicit kill-switch used on Windows runners
-    where ``_docker_available()`` may still spuriously return True (a CLI
-    without a daemon).  Either signal triggers the skip; reason string carries
-    the active reason so failure mode is clear in the run summary.
+    Two independent conditions, applied in one pass:
+
+    1. **Integration / Docker**: any item under ``tests.integration`` (or
+       carrying the ``integration`` keyword) is skipped when Docker/test-
+       containers are unavailable OR when ``CI_NO_DOCKER`` is set.  The
+       latter is the explicit kill-switch used on Windows runners where
+       ``_docker_available()`` may still spuriously return True (a CLI
+       without a daemon).
+
+    2. **POSIX-only tests**: items carrying ``@pytest.mark.requires_unix``
+       are skipped on Windows (``sys.platform == 'win32'``).  Use this for
+       tests that rely on POSIX semantics not available on Windows runners
+       (real symlinks without dev-mode, ``os.fork``, advisory locks via
+       ``fcntl``, etc.).
     """
+    import sys as _sys
+
+    # ── Skip 1: integration / docker gate ──────────────────────────────────
     docker_missing = not _docker_available() or not _testcontainers_available()
     ci_no_docker = _ci_no_docker()
-    if not (docker_missing or ci_no_docker):
-        return
+    if docker_missing or ci_no_docker:
+        reason = (
+            "CI_NO_DOCKER set — integration tests skipped on Docker-less runner"
+            if ci_no_docker
+            else "Docker or testcontainers not available"
+        )
+        skip_docker = pytest.mark.skip(reason=reason)
+        for item in items:
+            module_name = getattr(item.module, "__name__", "")
+            if "integration" in item.keywords or module_name.startswith("tests.integration"):
+                item.add_marker(skip_docker)
 
-    if ci_no_docker:
-        reason = "CI_NO_DOCKER set — integration tests skipped on Docker-less runner"
-    else:
-        reason = "Docker or testcontainers not available"
-    skip = pytest.mark.skip(reason=reason)
-
-    for item in items:
-        module_name = getattr(item.module, "__name__", "")
-        if "integration" in item.keywords or module_name.startswith("tests.integration"):
-            item.add_marker(skip)
+    # ── Skip 2: requires_unix gate (skip on Windows only) ──────────────────
+    if _sys.platform == "win32":
+        skip_win = pytest.mark.skip(reason="requires_unix: POSIX-only test skipped on Windows")
+        for item in items:
+            if "requires_unix" in item.keywords:
+                item.add_marker(skip_win)
 
 
 @pytest.fixture
@@ -209,7 +227,7 @@ def pg_dsn(postgres_container) -> str:  # type: ignore[return]
     # Local import so the fixture is importable even when psycopg isn't
     # available (e.g. on Windows CI matrix cells where CI_NO_DOCKER=1 already
     # skips the integration suite before this fixture is requested).
-    import psycopg  # noqa: PLC0415
+    import psycopg
 
     with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
         cur.execute("DROP SCHEMA IF EXISTS corpus CASCADE")

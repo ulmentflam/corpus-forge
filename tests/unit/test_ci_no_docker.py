@@ -54,7 +54,7 @@ class TestCINoDockerEnvVar:
         assert conftest._ci_no_docker() is True
 
 
-class TestCollectionHookSkipsIntegration(object):
+class TestCollectionHookSkipsIntegration:
     """The pytest_collection_modifyitems hook must mark integration items as skip.
 
     We do not actually run a sub-pytest; we exercise the hook directly with a
@@ -73,7 +73,7 @@ class TestCollectionHookSkipsIntegration(object):
                 self.keywords: set[str] = set()
                 self._markers: list[pytest.MarkDecorator] = []
 
-            def add_marker(self, marker) -> None:  # noqa: ANN001
+            def add_marker(self, marker) -> None:
                 self._markers.append(marker)
 
         items: list = [FakeItem("tests.integration.test_chunk_reuse_e2e")]
@@ -101,7 +101,7 @@ class TestCollectionHookSkipsIntegration(object):
                 self.keywords: set[str] = set()
                 self._markers: list = []
 
-            def add_marker(self, marker) -> None:  # noqa: ANN001
+            def add_marker(self, marker) -> None:
                 self._markers.append(marker)
 
         items: list = [FakeItem("tests.unit.test_phase_ci2_yaml")]
@@ -109,8 +109,7 @@ class TestCollectionHookSkipsIntegration(object):
 
         conftest.pytest_collection_modifyitems(config, items)  # type: ignore[arg-type]
         assert not items[0]._markers, (
-            "CI_NO_DOCKER must NOT skip unit tests; "
-            f"got markers: {items[0]._markers!r}"
+            f"CI_NO_DOCKER must NOT skip unit tests; got markers: {items[0]._markers!r}"
         )
 
 
