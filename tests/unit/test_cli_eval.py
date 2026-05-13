@@ -160,9 +160,7 @@ class TestEvalRetrievalCommand:
             ks = call_kwargs.args[2] if len(call_kwargs.args) > 2 else []
         assert set(ks) == {5, 10}
 
-    def test_rerank_flag_does_not_emit_r3_friendly_notice(
-        self, runner: CliRunner, tmp_path: Path
-    ):
+    def test_rerank_flag_does_not_emit_r3_friendly_notice(self, runner: CliRunner, tmp_path: Path):
         """R4 swap: --rerank no longer emits the R3 'lands in R4' notice.
 
         The previous test pinned the R3 placeholder.  R4 wires a real
@@ -174,15 +172,11 @@ class TestEvalRetrievalCommand:
         gold = _write_minimal_gold(tmp_path)
         fake_metrics = RetrievalMetrics(ndcg={10: 1.0}, mrr={10: 1.0}, recall={10: 1.0})
 
-        # Patch the reranker constructor so no real model is loaded.
         with (
             patch("corpus_forge.cli._build_retriever_for_eval", return_value=object()),
             patch("corpus_forge.eval.runner.evaluate_retriever", return_value=fake_metrics),
-            patch(
-                "corpus_forge.retrieval.rerank.cross_encoder.CrossEncoderReranker"
-            ) as mock_ce,
+            patch("corpus_forge.cli._build_reranker_for_eval", return_value=(object(), 50)),
         ):
-            mock_ce.return_value = object()
             result = runner.invoke(
                 app,
                 ["eval", "retrieval", "--dataset", str(gold), "--k", "10", "--rerank"],
@@ -193,12 +187,10 @@ class TestEvalRetrievalCommand:
         assert "lands in r4" not in combined, (
             "R3 friendly notice should be removed; --rerank now wires a real reranker."
         )
-        assert "currently a no-op" not in combined, (
-            "R3 placeholder phrasing should be removed."
-        )
+        assert "currently a no-op" not in combined, "R3 placeholder phrasing should be removed."
 
     def test_rerank_flag_constructs_reranker(self, runner: CliRunner, tmp_path: Path):
-        """--rerank triggers CrossEncoderReranker construction (patched)."""
+        """--rerank triggers reranker construction via _build_reranker_for_eval."""
         from corpus_forge.retrieval.types import RetrievalMetrics
 
         gold = _write_minimal_gold(tmp_path)
@@ -208,7 +200,7 @@ class TestEvalRetrievalCommand:
             patch("corpus_forge.cli._build_retriever_for_eval", return_value=object()),
             patch("corpus_forge.eval.runner.evaluate_retriever", return_value=fake_metrics),
             patch(
-                "corpus_forge.cli._build_reranker_from_config", return_value=object()
+                "corpus_forge.cli._build_reranker_for_eval", return_value=(object(), 50)
             ) as mock_build_rr,
         ):
             result = runner.invoke(
@@ -218,7 +210,7 @@ class TestEvalRetrievalCommand:
 
         assert result.exit_code == 0, result.output
         assert mock_build_rr.called, (
-            "--rerank must call _build_reranker_from_config to construct the reranker."
+            "--rerank must call _build_reranker_for_eval to construct the reranker."
         )
 
     def test_no_rerank_does_not_construct_reranker(self, runner: CliRunner, tmp_path: Path):
@@ -232,7 +224,7 @@ class TestEvalRetrievalCommand:
             patch("corpus_forge.cli._build_retriever_for_eval", return_value=object()),
             patch("corpus_forge.eval.runner.evaluate_retriever", return_value=fake_metrics),
             patch(
-                "corpus_forge.cli._build_reranker_from_config", return_value=object()
+                "corpus_forge.cli._build_reranker_for_eval", return_value=(object(), 50)
             ) as mock_build_rr,
         ):
             result = runner.invoke(

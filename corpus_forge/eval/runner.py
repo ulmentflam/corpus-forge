@@ -60,6 +60,8 @@ def evaluate_retriever(
     k_values: Sequence[int],
     *,
     max_queries: int | None = None,
+    rerank: bool = False,
+    rerank_top_n: int = 50,
 ) -> RetrievalMetrics:
     """Evaluate ``retriever`` against the gold set at ``gold_path``.
 
@@ -69,6 +71,13 @@ def evaluate_retriever(
         k_values: list of cutoffs (e.g. ``[5, 10, 20]``).
         max_queries: if set, evaluate at most this many queries (useful
             for smoke-test cycles on huge gold sets).
+        rerank: when True (R4), every per-query search call sets
+            ``SearchOptions.rerank=True`` so the retriever invokes its
+            configured reranker.  When False (the R3 default), the
+            existing no-rerank behaviour is preserved.
+        rerank_top_n: forwarded to ``SearchOptions.rerank_top_n``;
+            controls how many fused hits feed into the reranker.  Only
+            consulted when ``rerank=True``.
 
     Returns:
         ``RetrievalMetrics`` whose ``ndcg`` / ``mrr`` / ``recall`` dicts
@@ -88,7 +97,14 @@ def evaluate_retriever(
         queries = queries[:max_queries]
 
     backend = getattr(retriever, "backend", None)
-    return _evaluate_queries(retriever, queries, k_values, backend=backend)
+    return _evaluate_queries(
+        retriever,
+        queries,
+        k_values,
+        backend=backend,
+        rerank=rerank,
+        rerank_top_n=rerank_top_n,
+    )
 
 
 def _evaluate_queries(
@@ -97,6 +113,8 @@ def _evaluate_queries(
     k_values: Sequence[int],
     *,
     backend=None,
+    rerank: bool = False,
+    rerank_top_n: int = 50,
 ) -> RetrievalMetrics:
     """Core averaging loop, factored out so the CLI can compose around it."""
     top_k = max(k_values)
@@ -104,8 +122,14 @@ def _evaluate_queries(
     sums_mrr: dict[int, float] = dict.fromkeys(k_values, 0.0)
     sums_recall: dict[int, float] = dict.fromkeys(k_values, 0.0)
 
+    # Build SearchOptions once per evaluation (rerank flags don't change
+    # across queries).  Use top_k as the per-query cutoff so the runner
+    # can score across every requested k cutoff from a single retrieval
+    # pass; truncation happens inside the metric functions.
+    opts = SearchOptions(k=top_k, rerank=rerank, rerank_top_n=rerank_top_n)
+
     for q in queries:
-        hits = retriever.search(q.query, SearchOptions(k=top_k))
+        hits = retriever.search(q.query, opts)
         ranked_ids = _resolve_ranking(hits)
         relevant, resolved_graded = _resolve_relevant(q, backend)
 

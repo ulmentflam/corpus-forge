@@ -530,7 +530,7 @@ class TestRerankPath:
         from corpus_forge.eval.runner import evaluate_retriever
         from corpus_forge.retrieval.types import RetrievalMetrics
 
-        backend, eid, chunk_ids, chunk_texts = _seed_corpus(tmp_path)
+        backend, _eid, chunk_ids, chunk_texts = _seed_corpus(tmp_path)
         gold = _write_gold(tmp_path, chunk_ids, chunk_texts)
 
         # Build a SPY retriever that records SearchOptions per call.
@@ -559,7 +559,7 @@ class TestRerankPath:
         """The default rerank=False matches the R3 behaviour."""
         from corpus_forge.eval.runner import evaluate_retriever
 
-        backend, eid, chunk_ids, chunk_texts = _seed_corpus(tmp_path)
+        backend, _eid, chunk_ids, chunk_texts = _seed_corpus(tmp_path)
         gold = _write_gold(tmp_path, chunk_ids, chunk_texts)
 
         class _SpyRetriever:

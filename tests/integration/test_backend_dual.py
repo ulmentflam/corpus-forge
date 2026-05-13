@@ -1200,9 +1200,7 @@ class TestHybridSearchRerank:
             f"expected reversed-top-3={expected_ids}; got={[h.chunk_id for h in out]}"
         )
 
-    def test_hybrid_search_rerank_false_skips_stub(
-        self, storage_backend: StorageBackend
-    ) -> None:
+    def test_hybrid_search_rerank_false_skips_stub(self, storage_backend: StorageBackend) -> None:
         """Default `rerank=False` MUST NOT call the configured reranker."""
         from corpus_forge.retrieval import HybridRetriever
         from corpus_forge.retrieval.types import SearchOptions

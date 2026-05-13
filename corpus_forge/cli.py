@@ -276,9 +276,10 @@ def history(
 # recall@20 catches a chunking/embedding regression BEFORE the corpus
 # gets exported.  Retrieval correctness validation is the secondary use.
 #
-# R3 owns the [eval] extra in pyproject.  R4 will wire `--rerank` to a
-# real cross-encoder; R3 emits a friendly notice when `--rerank` is
-# explicitly requested.
+# R3 owns the [eval] extra in pyproject.  R4 wires `--rerank` to a
+# real cross-encoder (configured via `Config.retrieval.reranker`); the
+# default is `--no-rerank` so callers never accidentally trigger a
+# 600 MB BAAI/bge-reranker-v2-m3 download.
 
 
 eval_app = typer.Typer(
@@ -329,7 +330,11 @@ def _parse_csv_ints(raw: str) -> list[int]:
 
 
 def _build_retriever_for_eval(
-    config=None, *, fusion: str | None = None, alpha: float | None = None
+    config=None,
+    *,
+    fusion: str | None = None,
+    alpha: float | None = None,
+    reranker=None,
 ):
     """Wire a HybridRetriever to a backend + first-active embedder.
 
@@ -337,6 +342,11 @@ def _build_retriever_for_eval(
     :func:`_load_eval_config`, which applies the ``fusion`` / ``alpha``
     overrides.  Callers (and tests) may pass a pre-built config object to
     skip the on-disk lookup.
+
+    ``reranker`` (R4): pre-built ``Reranker`` instance.  When non-None,
+    threaded into ``HybridRetriever(..., reranker=reranker)``.  The
+    rerank toggle stays on the per-call ``SearchOptions`` — wiring the
+    reranker here just makes it available for the toggle to dispatch to.
 
     Reads ``config.backend.kind`` to instantiate the correct backend, then
     picks the first ``embedder.active`` entry (or first entry if none flag
@@ -381,16 +391,57 @@ def _build_retriever_for_eval(
         distance=getattr(active, "distance", "cosine"),
     )
     eid = backend.register_embedder(embedder)
-    return HybridRetriever(backend=backend, embedder=embedder, embedder_id=eid)
+    return HybridRetriever(backend=backend, embedder=embedder, embedder_id=eid, reranker=reranker)
 
 
-def _emit_rerank_notice(rerank: bool) -> None:
-    if rerank:
-        typer.echo(
-            "Note: --rerank is a no-op in this release — the cross-encoder "
-            "reranker lands in Phase R4. Running without rerank.",
-            err=True,
+def _build_reranker_from_config(config):
+    """Instantiate a reranker from ``Config.retrieval.reranker`` (R4).
+
+    Resolves the configured ``kind`` to a concrete class:
+
+    - ``"cross_encoder"`` → :class:`CrossEncoderReranker` (default;
+      uses ``BAAI/bge-reranker-v2-m3`` unless overridden).
+    - ``"ollama"`` → :class:`OllamaReranker` (score-via-completion;
+      requires a chat model ``model_id``).
+
+    The constructor is LAZY — the heavy model load happens on the first
+    ``warmup`` / ``rerank`` call, not here.  This keeps `--no-rerank`
+    (the default) free of any model-download side-effects.
+    """
+    rr_cfg = config.retrieval.reranker
+    if rr_cfg.kind == "cross_encoder":
+        from corpus_forge.retrieval.rerank import CrossEncoderReranker
+
+        return CrossEncoderReranker(
+            model_id=rr_cfg.model_id,
+            device=rr_cfg.device,
+            batch_size=rr_cfg.batch_size,
+            max_length=rr_cfg.max_length,
         )
+    if rr_cfg.kind == "ollama":
+        from corpus_forge.retrieval.rerank import OllamaReranker
+
+        return OllamaReranker(model_id=rr_cfg.model_id)
+    raise typer.BadParameter(f"unknown reranker kind: {rr_cfg.kind!r}")
+
+
+def _build_reranker_for_eval(
+    *,
+    fusion: str | None = None,
+    alpha: float | None = None,
+) -> tuple[object, int]:
+    """Load the eval config and build a reranker from it (R4).
+
+    Returns ``(reranker, rerank_top_n)`` so callers don't have to
+    re-load Config.  Raises ``FileNotFoundError`` from ``Config.load()``
+    when no config is present; the caller is responsible for converting
+    that to a typer exit.
+
+    Tests patch this function whole when they want to assert "--rerank
+    triggers reranker construction" without also stubbing Config.load.
+    """
+    config = _load_eval_config(fusion=fusion, alpha=alpha)
+    return _build_reranker_from_config(config), config.retrieval.rerank_top_n
 
 
 def _do_eval(
@@ -404,8 +455,6 @@ def _do_eval(
 ) -> None:
     """Shared body for `eval retrieval` and `eval corpus-quality`."""
     from corpus_forge.eval.runner import dump_json, evaluate_retriever, report
-
-    _emit_rerank_notice(rerank)
 
     try:
         gold_path = _resolve_dataset(dataset)
@@ -421,11 +470,33 @@ def _do_eval(
     if unknown:
         raise typer.BadParameter(f"unknown metric(s): {sorted(unknown)}")
 
-    # Build the retriever; Config.load is inside this builder so tests that
-    # stub `_build_retriever_for_eval` don't need to also stub `Config.load()`.
-    retriever = _build_retriever_for_eval(fusion=fusion, alpha=alpha)
+    # Build the reranker FIRST (if requested) so we can pass it to the
+    # retriever builder.  When --no-rerank is the default, we skip this
+    # entirely — no surprise 600MB model downloads.
+    reranker = None
+    rerank_top_n = 50  # SearchOptions / RerankerConfig default
+    if rerank:
+        try:
+            reranker, rerank_top_n = _build_reranker_for_eval(fusion=fusion, alpha=alpha)
+        except FileNotFoundError:
+            typer.echo(
+                "No configuration found; run 'corpus-forge migrate' to initialise.",
+                err=True,
+            )
+            raise typer.Exit(code=2) from None
 
-    metrics = evaluate_retriever(retriever, gold_path, k_values=k_values)
+    # Build the retriever; Config.load is inside this builder so tests
+    # that stub `_build_retriever_for_eval` don't need to also stub
+    # `Config.load()`.
+    retriever = _build_retriever_for_eval(fusion=fusion, alpha=alpha, reranker=reranker)
+
+    metrics = evaluate_retriever(
+        retriever,
+        gold_path,
+        k_values=k_values,
+        rerank=rerank,
+        rerank_top_n=rerank_top_n,
+    )
     typer.echo(report(metrics))
     if json_out is not None:
         dump_json(metrics, json_out)
@@ -458,7 +529,9 @@ def eval_retrieval(
     fusion: str = typer.Option(None, help="Override fusion strategy: rrf|alpha"),
     alpha: float = typer.Option(None, help="Override alpha when fusion=alpha (0.0..1.0)"),
     rerank: bool = typer.Option(
-        False, "--rerank/--no-rerank", help="Apply reranker (Phase R4 — currently a no-op)"
+        False,
+        "--rerank/--no-rerank",
+        help="Apply the configured cross-encoder reranker after fusion (opt-in).",
     ),
     json_out: Path = typer.Option(None, "--json", help="Write metrics as JSON to this path"),
 ):
@@ -482,7 +555,9 @@ def eval_corpus_quality(
     fusion: str = typer.Option(None, help="Override fusion strategy: rrf|alpha"),
     alpha: float = typer.Option(None, help="Override alpha when fusion=alpha (0.0..1.0)"),
     rerank: bool = typer.Option(
-        False, "--rerank/--no-rerank", help="Apply reranker (Phase R4 — currently a no-op)"
+        False,
+        "--rerank/--no-rerank",
+        help="Apply the configured cross-encoder reranker after fusion (opt-in).",
     ),
     json_out: Path = typer.Option(None, "--json", help="Write metrics as JSON to this path"),
 ):
