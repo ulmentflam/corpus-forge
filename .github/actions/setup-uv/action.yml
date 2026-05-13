@@ -10,18 +10,13 @@ inputs:
     description: Python version to provision via uv.
     required: false
     default: "3.13"
-  uv-version:
-    description: Pin a specific uv version (empty = latest stable).
-    required: false
-    default: ""
 
 runs:
   using: composite
   steps:
     - name: Install uv
-      uses: astral-sh/setup-uv@v3
+      uses: astral-sh/setup-uv@v5
       with:
-        version: ${{ inputs.uv-version }}
         # Enable uv's built-in cache layer (covers ~/.cache/uv).
         enable-cache: true
         cache-dependency-glob: |

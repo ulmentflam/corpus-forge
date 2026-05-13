@@ -207,9 +207,18 @@ class TestIntegrationWorkflow:
         assert "pg_isready" in text, "Postgres service must have a healthcheck using pg_isready"
 
     def test_macos_docker_setup(self, integration_yaml: dict) -> None:
-        """macOS runner needs docker/setup-docker-action so testcontainers works."""
+        """macOS runner needs a docker-setup action so testcontainers works.
+
+        Originally pinned to ``docker/setup-docker-action@v3`` but that
+        action does not exist; replaced with ``crazy-max/ghaction-setup-docker``
+        which installs Colima + the docker CLI. Pin keeps the contract
+        loose: any action that contains 'docker' and runs as part of the
+        macOS job is acceptable.
+        """
         text = yaml.safe_dump(integration_yaml)
-        assert "setup-docker-action" in text, "macOS runner needs docker/setup-docker-action@v3"
+        assert "ghaction-setup-docker" in text or "setup-docker-action" in text, (
+            "macOS runner needs a docker-setup action (Colima-backed) for testcontainers"
+        )
 
 
 # ── nightly.yml — cron + nightly hypothesis profile ────────────────────────
