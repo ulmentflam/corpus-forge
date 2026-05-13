@@ -106,19 +106,42 @@ class EmbedderConfig(BaseModel):
     api_key_env: str = Field(default="OPENAI_API_KEY")
 
 
+class RerankerConfig(BaseModel):
+    """Phase R4 — reranker shape under ``RetrievalConfig.reranker``.
+
+    Defaults match the master-plan-locked decision: cross-encoder kind,
+    ``BAAI/bge-reranker-v2-m3`` (multilingual, ~600 MB).  Override
+    ``model_id`` to ``cross-encoder/ms-marco-MiniLM-L-12-v2`` for the
+    lighter English-only alternate, or set ``kind="ollama"`` + a chat
+    model tag for the score-via-completion fallback.
+
+    The reranker is constructed only when the user enables it (CLI
+    ``--rerank`` or ``Config.retrieval.rerank_enabled = True``).  Default
+    is to ship the config but NOT instantiate the reranker, so the
+    600 MB model download never happens by accident.
+    """
+
+    kind: Literal["cross_encoder", "ollama"] = "cross_encoder"
+    model_id: str = "BAAI/bge-reranker-v2-m3"
+    device: str = "auto"
+    batch_size: int = Field(default=32, gt=0)
+    max_length: int = Field(default=512, gt=0)
+
+
 class RetrievalConfig(BaseModel):
-    """Phase R2 — hybrid retrieval knobs.
+    """Phase R2 + R4 — hybrid retrieval knobs.
 
     Defaults match the master plan verbatim:
 
     - ``alpha = 0.5`` (50/50 blend when ``fusion="alpha"``).
     - ``fusion = "rrf"`` (rank-based reciprocal-rank fusion; default).
     - ``default_k = 10`` (top-k returned to callers when unset).
-    - ``rerank_top_n = 50`` (R4 reranker cap; ignored in R2).
-    - ``rerank_enabled = False`` (R4 toggle; ignored in R2).
-
-    R4 will add a ``reranker`` field describing the reranker shape
-    (``{"kind": "cross_encoder", "model_id": ...}``).
+    - ``rerank_top_n = 50`` (R4 reranker cap; how many fused hits go to
+      the reranker BEFORE truncation to k).
+    - ``rerank_enabled = False`` (the rerank path is opt-in; default
+      behaviour does not call the reranker even if it's configured).
+    - ``reranker`` (R4): nested config of the cross-encoder / Ollama
+      reranker, used only when rerank is enabled.
     """
 
     alpha: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -126,6 +149,7 @@ class RetrievalConfig(BaseModel):
     default_k: int = Field(default=10, gt=0)
     rerank_top_n: int = Field(default=50, gt=0)
     rerank_enabled: bool = False
+    reranker: RerankerConfig = Field(default_factory=RerankerConfig)
 
 
 class Config(BaseModel):

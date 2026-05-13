@@ -58,7 +58,15 @@ class TestRetrievalConfigDefaults:
     def test_field_set(self):
         rc = self._cls()
         fields = set(rc.model_fields.keys())
-        assert fields == {"alpha", "fusion", "default_k", "rerank_top_n", "rerank_enabled"}
+        # R4 adds `reranker` (RerankerConfig nested) — the R2 fields stay.
+        assert fields == {
+            "alpha",
+            "fusion",
+            "default_k",
+            "rerank_top_n",
+            "rerank_enabled",
+            "reranker",
+        }
 
     def test_fusion_literal_values(self):
         rc = self._cls()
@@ -263,9 +271,7 @@ class TestRetrievalConfigEmbedsReranker:
     def test_retrieval_config_reranker_overridable(self):
         from corpus_forge.config import RetrievalConfig
 
-        rc = RetrievalConfig(
-            reranker={"kind": "cross_encoder", "model_id": "X/Y", "batch_size": 8}
-        )
+        rc = RetrievalConfig(reranker={"kind": "cross_encoder", "model_id": "X/Y", "batch_size": 8})
         assert rc.reranker.kind == "cross_encoder"
         assert rc.reranker.model_id == "X/Y"
         assert rc.reranker.batch_size == 8

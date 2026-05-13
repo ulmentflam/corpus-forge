@@ -60,9 +60,15 @@ sqlite     = ["sqlite-vec>=0.1"]
 # `numpy` is already pulled in transitively by sentence-transformers, but
 # pinning it here makes the dependency explicit for downstream consumers
 # who install with `pip install corpus-forge[retrieval]` / `[eval]`.
-# R4 will add `rerank` (sentence-transformers split); R5 will add `mcp`.
+# R4 lands `rerank` (sentence-transformers split anchor); R5 will add `mcp`.
 retrieval  = ["numpy>=1.26"]
 eval       = ["numpy>=1.26"]
+# R4: cross-encoder reranker.  sentence-transformers is already a HARD
+# dep of `corpus-forge` (see `[project] dependencies`), so this extra is
+# currently documentational + a future-split anchor.  When the core dep
+# moves out of `dependencies`, this extra becomes the install gate for
+# the cross-encoder path.
+rerank     = ["sentence-transformers>=3.0"]
 
 [project.scripts]
 corpus-forge = "corpus_forge.cli:app"
