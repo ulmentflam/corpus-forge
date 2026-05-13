@@ -122,11 +122,17 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Docker (Colima-backed) on macOS runner
-        # GitHub-hosted macos-14 has no Docker pre-installed. The
-        # crazy-max action installs Colima + docker CLI and starts the
-        # VM; testcontainers picks up the resulting docker.sock
-        # automatically.
-        uses: crazy-max/ghaction-setup-docker@v3
+        # GitHub-hosted macos-14 has no Docker pre-installed. We install
+        # Colima + docker CLI directly via brew rather than
+        # crazy-max/ghaction-setup-docker@v3, because that action pulls
+        # the latest Docker static binary from download.docker.com and
+        # frequently 404s on macos-arm64 when a new docker version
+        # release ships ahead of the CDN. Testcontainers picks up the
+        # docker.sock that Colima exposes.
+        run: |
+          brew install --quiet colima docker
+          colima start --cpu 2 --memory 4
+          docker info
 
       - name: Pre-pull pgvector image
         # Pre-pull so the first testcontainers spin-up doesn't add cold-pull

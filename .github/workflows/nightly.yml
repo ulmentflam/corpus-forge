@@ -129,7 +129,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Docker (Colima-backed)
-        uses: crazy-max/ghaction-setup-docker@v3
+        # See integration.yml comment: brew + Colima is the stable
+        # path for macos-arm64 (crazy-max action 404s on docker CDN).
+        run: |
+          brew install --quiet colima docker
+          colima start --cpu 2 --memory 4
+          docker info
 
       - name: Pre-pull pgvector image
         run: docker pull pgvector/pgvector:pg16
