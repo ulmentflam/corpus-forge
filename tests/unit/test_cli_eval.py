@@ -160,9 +160,45 @@ class TestEvalRetrievalCommand:
             ks = call_kwargs.args[2] if len(call_kwargs.args) > 2 else []
         assert set(ks) == {5, 10}
 
-    def test_rerank_flag_emits_friendly_notice(self, runner: CliRunner, tmp_path: Path):
-        """--rerank prints a friendly 'lands in R4' message but does NOT
-        actually invoke a reranker (R4 owns that)."""
+    def test_rerank_flag_does_not_emit_r3_friendly_notice(
+        self, runner: CliRunner, tmp_path: Path
+    ):
+        """R4 swap: --rerank no longer emits the R3 'lands in R4' notice.
+
+        The previous test pinned the R3 placeholder.  R4 wires a real
+        reranker, so the notice MUST be gone.  We assert NO mention of
+        'lands in R4' / 'currently a no-op' in any output stream.
+        """
+        from corpus_forge.retrieval.types import RetrievalMetrics
+
+        gold = _write_minimal_gold(tmp_path)
+        fake_metrics = RetrievalMetrics(ndcg={10: 1.0}, mrr={10: 1.0}, recall={10: 1.0})
+
+        # Patch the reranker constructor so no real model is loaded.
+        with (
+            patch("corpus_forge.cli._build_retriever_for_eval", return_value=object()),
+            patch("corpus_forge.eval.runner.evaluate_retriever", return_value=fake_metrics),
+            patch(
+                "corpus_forge.retrieval.rerank.cross_encoder.CrossEncoderReranker"
+            ) as mock_ce,
+        ):
+            mock_ce.return_value = object()
+            result = runner.invoke(
+                app,
+                ["eval", "retrieval", "--dataset", str(gold), "--k", "10", "--rerank"],
+            )
+
+        assert result.exit_code == 0, result.output
+        combined = (result.output or "").lower() + (result.stderr or "").lower()
+        assert "lands in r4" not in combined, (
+            "R3 friendly notice should be removed; --rerank now wires a real reranker."
+        )
+        assert "currently a no-op" not in combined, (
+            "R3 placeholder phrasing should be removed."
+        )
+
+    def test_rerank_flag_constructs_reranker(self, runner: CliRunner, tmp_path: Path):
+        """--rerank triggers CrossEncoderReranker construction (patched)."""
         from corpus_forge.retrieval.types import RetrievalMetrics
 
         gold = _write_minimal_gold(tmp_path)
@@ -171,6 +207,9 @@ class TestEvalRetrievalCommand:
         with (
             patch("corpus_forge.cli._build_retriever_for_eval", return_value=object()),
             patch("corpus_forge.eval.runner.evaluate_retriever", return_value=fake_metrics),
+            patch(
+                "corpus_forge.cli._build_reranker_from_config", return_value=object()
+            ) as mock_build_rr,
         ):
             result = runner.invoke(
                 app,
@@ -178,10 +217,32 @@ class TestEvalRetrievalCommand:
             )
 
         assert result.exit_code == 0, result.output
-        # Mention R4 or rerank availability in stdout or stderr.
-        combined = (result.output or "").lower() + (result.stderr or "").lower()
-        assert "r4" in combined or "rerank" in combined, (
-            "expected a friendly notice about rerank deferral to R4"
+        assert mock_build_rr.called, (
+            "--rerank must call _build_reranker_from_config to construct the reranker."
+        )
+
+    def test_no_rerank_does_not_construct_reranker(self, runner: CliRunner, tmp_path: Path):
+        """--no-rerank (default) must NOT construct a reranker."""
+        from corpus_forge.retrieval.types import RetrievalMetrics
+
+        gold = _write_minimal_gold(tmp_path)
+        fake_metrics = RetrievalMetrics(ndcg={10: 1.0}, mrr={10: 1.0}, recall={10: 1.0})
+
+        with (
+            patch("corpus_forge.cli._build_retriever_for_eval", return_value=object()),
+            patch("corpus_forge.eval.runner.evaluate_retriever", return_value=fake_metrics),
+            patch(
+                "corpus_forge.cli._build_reranker_from_config", return_value=object()
+            ) as mock_build_rr,
+        ):
+            result = runner.invoke(
+                app,
+                ["eval", "retrieval", "--dataset", str(gold), "--k", "10"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert not mock_build_rr.called, (
+            "default --no-rerank must NOT construct a reranker (avoids surprise 600MB downloads)."
         )
 
     def test_table_printed_to_stdout(self, runner: CliRunner, tmp_path: Path):
