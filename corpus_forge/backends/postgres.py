@@ -961,3 +961,193 @@ class PostgresBackend(StorageBackend):
             (dataset_id, plugin, identity, host),
         )
         return int(result[0]["id"])
+
+    # ── Retrieval surface (Phase R1) ─────────────────────────────────────────
+
+    def search_dense(
+        self,
+        embedder_id: int,
+        query_vector: "np.ndarray",
+        *,
+        k: int,
+        dataset_id: int | None = None,
+    ) -> "list":
+        """pgvector cosine search via ``<=>`` against the per-embedder table.
+
+        Returns ``Hit`` objects ordered by descending similarity
+        (``score = 1.0 - cosine_distance``).  ``LEFT JOIN`` documents +
+        conversations so message-only chunks are still attributable to a
+        dataset.
+        """
+        from corpus_forge.retrieval.types import Hit  # noqa: PLC0415
+
+        # Look up the per-embedder table (e.g. corpus.embeddings_qwen3_8b).
+        rows = self._execute(
+            "SELECT table_name FROM corpus.embedders WHERE id = %s", (embedder_id,)
+        )
+        if not rows:
+            return []
+        table_name = rows[0]["table_name"]
+
+        # pgvector expects the literal vector(...) cast for psycopg's
+        # parameter binding.  Serialise to "[v1,v2,...]" form.
+        vec_str = "[" + ",".join(repr(float(x)) for x in np.asarray(query_vector).ravel()) + "]"
+
+        params: list = [vec_str]
+        ds_filter = ""
+        if dataset_id is not None:
+            ds_filter = " AND COALESCE(d.dataset_id, cv.dataset_id) = %s"
+            params.append(dataset_id)
+        params.append(k)
+
+        # NB: f-string interpolation of table_name is safe — register_embedder
+        # synthesises it from a sanitised embedder name.
+        result = self._execute(
+            f"""
+            SELECT c.id, c.text, c.document_id, c.conversation_id, c.metadata,
+                   COALESCE(d.dataset_id, cv.dataset_id) AS dataset_id,
+                   d.source_uri, d.title,
+                   (e.embedding <=> %s::vector) AS distance
+            FROM corpus.{table_name} e
+            JOIN corpus.chunks c ON c.id = e.chunk_id
+            LEFT JOIN corpus.documents d ON d.id = c.document_id
+            LEFT JOIN corpus.conversations cv ON cv.id = c.conversation_id
+            WHERE TRUE{ds_filter}
+            ORDER BY e.embedding <=> %s::vector
+            LIMIT %s
+            """,
+            (vec_str, *params[1:-1], vec_str, params[-1]),
+        )
+
+        hits: list = []
+        for r in result:
+            dist = float(r["distance"])
+            hits.append(
+                Hit(
+                    chunk_id=int(r["id"]),
+                    score=1.0 - dist,
+                    text=r["text"],
+                    document_id=(int(r["document_id"]) if r["document_id"] is not None else None),
+                    source_uri=r["source_uri"],
+                    title=r["title"],
+                    dataset_id=int(r["dataset_id"]) if r["dataset_id"] is not None else 0,
+                    metadata=r["metadata"] if isinstance(r["metadata"], dict) else {},
+                    source="dense",
+                )
+            )
+        return hits
+
+    def search_lexical(
+        self,
+        query: str,
+        *,
+        k: int,
+        dataset_id: int | None = None,
+    ) -> "list":
+        """``text_tsv @@ websearch_to_tsquery('english', %s)`` ranked by ts_rank_cd.
+
+        ``ts_rank_cd`` is already higher-is-better, so we use it directly as
+        ``Hit.score`` (clipping into [0, 1] — typical ts_rank_cd values for
+        short documents stay well inside that range but the contract says
+        normalised scores so we cap).
+        """
+        from corpus_forge.retrieval.types import Hit  # noqa: PLC0415
+
+        params: list = [query, query]  # one for the rank, one for the WHERE
+        ds_filter = ""
+        if dataset_id is not None:
+            ds_filter = " AND COALESCE(d.dataset_id, cv.dataset_id) = %s"
+            params.append(dataset_id)
+        params.append(k)
+
+        rows = self._execute(
+            f"""
+            SELECT c.id, c.text, c.document_id, c.conversation_id, c.metadata,
+                   COALESCE(d.dataset_id, cv.dataset_id) AS dataset_id,
+                   d.source_uri, d.title,
+                   ts_rank_cd(c.text_tsv, websearch_to_tsquery('english', %s)) AS rank
+            FROM corpus.chunks c
+            LEFT JOIN corpus.documents d ON d.id = c.document_id
+            LEFT JOIN corpus.conversations cv ON cv.id = c.conversation_id
+            WHERE c.text_tsv @@ websearch_to_tsquery('english', %s){ds_filter}
+            ORDER BY rank DESC
+            LIMIT %s
+            """,
+            tuple(params),
+        )
+
+        hits: list = []
+        for r in rows:
+            rank = float(r["rank"]) if r["rank"] is not None else 0.0
+            # ts_rank_cd is unbounded above; clip the long tail at 1.0 to
+            # satisfy the protocol's "normalised [0,1]" guidance.
+            score = min(max(rank, 0.0), 1.0)
+            hits.append(
+                Hit(
+                    chunk_id=int(r["id"]),
+                    score=score,
+                    text=r["text"],
+                    document_id=(int(r["document_id"]) if r["document_id"] is not None else None),
+                    source_uri=r["source_uri"],
+                    title=r["title"],
+                    dataset_id=int(r["dataset_id"]) if r["dataset_id"] is not None else 0,
+                    metadata=r["metadata"] if isinstance(r["metadata"], dict) else {},
+                    source="lexical",
+                )
+            )
+        return hits
+
+    def get_chunk(self, chunk_id: int) -> "dict | None":
+        """Return chunk row joined to documents + conversations (LEFT JOIN)."""
+        rows = self._execute(
+            """
+            SELECT c.id, c.document_id, c.conversation_id, c.message_id,
+                   c.chunk_index, c.text, c.heading, c.role, c.token_count,
+                   c.metadata, c.content_hash,
+                   COALESCE(d.dataset_id, cv.dataset_id) AS dataset_id,
+                   d.source_uri, d.title
+            FROM corpus.chunks c
+            LEFT JOIN corpus.documents d ON d.id = c.document_id
+            LEFT JOIN corpus.conversations cv ON cv.id = c.conversation_id
+            WHERE c.id = %s
+            """,
+            (chunk_id,),
+        )
+        return rows[0] if rows else None
+
+    def list_datasets(self) -> "list[dict]":
+        """Return all datasets with document + chunk counts (text + chat)."""
+        rows = self._execute(
+            """
+            SELECT d.name, d.kind, d.description,
+                   COALESCE(doc_counts.n, 0) AS document_count,
+                   COALESCE(doc_counts.c, 0) + COALESCE(conv_counts.c, 0) AS chunk_count
+            FROM corpus.datasets d
+            LEFT JOIN (
+                SELECT doc.dataset_id AS dataset_id,
+                       COUNT(DISTINCT doc.id) AS n,
+                       COUNT(c.id) AS c
+                FROM corpus.documents doc
+                LEFT JOIN corpus.chunks c ON c.document_id = doc.id
+                GROUP BY doc.dataset_id
+            ) doc_counts ON doc_counts.dataset_id = d.id
+            LEFT JOIN (
+                SELECT cv.dataset_id AS dataset_id,
+                       COUNT(c.id) AS c
+                FROM corpus.conversations cv
+                LEFT JOIN corpus.chunks c ON c.conversation_id = cv.id
+                GROUP BY cv.dataset_id
+            ) conv_counts ON conv_counts.dataset_id = d.id
+            ORDER BY d.name
+            """,
+        )
+        return rows
+
+    def backfill_lexical_index(self) -> int:
+        """No-op for Postgres.
+
+        The 004 migration adds ``text_tsv`` as a ``GENERATED ALWAYS AS …
+        STORED`` column, which is auto-populated for all existing rows on
+        ``ADD COLUMN``.  Returns ``0`` to satisfy the protocol contract.
+        """
+        return 0

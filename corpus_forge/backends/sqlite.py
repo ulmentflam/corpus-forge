@@ -1335,3 +1335,244 @@ class SQLiteBackend:
             (dataset_id, plugin, identity, host),
         )
         return int(result[0]["id"])
+
+    # ── Retrieval surface (Phase R1) ─────────────────────────────────────────
+
+    def search_dense(
+        self,
+        embedder_id: int,
+        query_vector: "np.ndarray",
+        *,
+        k: int,
+        dataset_id: int | None = None,
+    ) -> "list":
+        """Return the top-*k* nearest chunks for *query_vector* (cosine).
+
+        Lifts the SQL from ``scripts/query_repo_sqlite.py`` and wraps the
+        result in ``Hit`` objects.  Uses the per-embedder vec0 virtual table's
+        ``MATCH ... AND k = ?`` operator.
+
+        - Unknown ``embedder_id`` → empty list.
+        - ``Hit.score = 1 - distance`` (sqlite-vec returns cosine distance for
+          normalised vectors; higher score = better, matching the protocol
+          contract).
+        - ``LEFT JOIN documents`` because message-only conversation chunks
+          have ``document_id IS NULL``; the join still yields the row with
+          ``source_uri`` / ``title`` as ``None``.
+        - Dataset filter is applied as a SARGable predicate after the vec0
+          MATCH because the filter cannot be pushed inside the virtual table.
+        """
+        # Local import — Hit lives in retrieval.types; pulled in lazily to keep
+        # the backend module import-light.
+        from corpus_forge.retrieval.types import Hit  # noqa: PLC0415
+
+        embedder_rows = self._execute(
+            "SELECT table_name FROM embedders WHERE id = ?",
+            (embedder_id,),
+        )
+        if not embedder_rows:
+            return []
+        table_name = embedder_rows[0]["table_name"]
+
+        if not SQLITE_VEC_AVAILABLE:
+            # Without sqlite-vec we have only a fallback BLOB store with no
+            # ANN search.  Surface an empty result rather than scanning every
+            # row in Python.
+            return []
+
+        import numpy as np  # noqa: PLC0415
+        from sqlite_vec import serialize_float32  # noqa: PLC0415
+
+        vec = np.asarray(query_vector, dtype=np.float32)
+        blob = serialize_float32(vec.tolist())
+
+        # Step 1: vec0 MATCH gives us chunk_id + distance.
+        # f-string interpolation of table_name is safe — the value is
+        # synthesised in register_embedder() from a sanitised embedder name.
+        # NB: vec0 requires the literal "k = ?" predicate in the WHERE clause.
+        match_rows = self._execute(
+            f"SELECT chunk_id, distance FROM {table_name}"
+            " WHERE embedding MATCH ? AND k = ? ORDER BY distance",
+            (blob, k),
+        )
+        if not match_rows:
+            return []
+
+        chunk_ids = [int(r["chunk_id"]) for r in match_rows]
+        distance_by_id = {int(r["chunk_id"]): float(r["distance"]) for r in match_rows}
+
+        # Step 2: pull chunk + document metadata.  LEFT JOIN documents +
+        # conversations so we can resolve the chunk's dataset_id even for
+        # message chunks (where document_id IS NULL).  Filter by dataset_id
+        # if the caller requested it.
+        placeholders = ",".join("?" * len(chunk_ids))
+        params: tuple = (*chunk_ids,)
+        ds_filter = ""
+        if dataset_id is not None:
+            ds_filter = " AND COALESCE(d.dataset_id, cv.dataset_id) = ?"
+            params = (*params, dataset_id)
+        rows = self._execute(
+            f"""
+            SELECT c.id, c.text, c.document_id, c.conversation_id, c.metadata,
+                   COALESCE(d.dataset_id, cv.dataset_id) AS dataset_id,
+                   d.source_uri, d.title
+            FROM chunks c
+            LEFT JOIN documents d ON d.id = c.document_id
+            LEFT JOIN conversations cv ON cv.id = c.conversation_id
+            WHERE c.id IN ({placeholders}){ds_filter}
+            """,
+            params,
+        )
+
+        by_id = {int(r["id"]): r for r in rows}
+
+        # Preserve the vec0 ordering and zip in the joined metadata.
+        hits: list = []
+        for cid in chunk_ids:
+            r = by_id.get(cid)
+            if r is None:
+                continue
+            md_raw = r.get("metadata")
+            try:
+                metadata = json.loads(md_raw) if isinstance(md_raw, str) else (md_raw or {})
+            except (TypeError, ValueError):
+                metadata = {}
+            score = 1.0 - distance_by_id[cid]
+            hits.append(
+                Hit(
+                    chunk_id=cid,
+                    score=float(score),
+                    text=r["text"],
+                    document_id=(int(r["document_id"]) if r["document_id"] is not None else None),
+                    source_uri=r["source_uri"],
+                    title=r["title"],
+                    dataset_id=int(r["dataset_id"]) if r["dataset_id"] is not None else 0,
+                    metadata=metadata if isinstance(metadata, dict) else {},
+                    source="dense",
+                )
+            )
+        return hits
+
+    def search_lexical(
+        self,
+        query: str,
+        *,
+        k: int,
+        dataset_id: int | None = None,
+    ) -> "list":
+        """BM25-ranked lexical search over the ``chunks_fts`` FTS5 virtual table.
+
+        - FTS5's ``bm25()`` returns *lower* values for *better* matches; we
+          normalise to higher-is-better via ``score = 1 / (1 + bm25)``.
+        - ``LEFT JOIN documents`` to surface ``source_uri`` / ``title`` for
+          document chunks; message chunks have ``document_id IS NULL`` and
+          carry both as ``None``.
+        - Dataset filter is a SARGable predicate on ``chunks.dataset_id``.
+        """
+        from corpus_forge.retrieval.types import Hit  # noqa: PLC0415
+
+        params: tuple = (query,)
+        ds_filter = ""
+        if dataset_id is not None:
+            ds_filter = " AND COALESCE(d.dataset_id, cv.dataset_id) = ?"
+            params = (*params, dataset_id)
+        params = (*params, k)
+
+        rows = self._execute(
+            f"""
+            SELECT c.id, c.text, c.document_id, c.conversation_id, c.metadata,
+                   COALESCE(d.dataset_id, cv.dataset_id) AS dataset_id,
+                   d.source_uri, d.title,
+                   bm25(chunks_fts) AS bm25_score
+            FROM chunks_fts
+            JOIN chunks c ON c.id = chunks_fts.rowid
+            LEFT JOIN documents d ON d.id = c.document_id
+            LEFT JOIN conversations cv ON cv.id = c.conversation_id
+            WHERE chunks_fts MATCH ?{ds_filter}
+            ORDER BY bm25_score
+            LIMIT ?
+            """,
+            params,
+        )
+
+        hits: list = []
+        for r in rows:
+            bm25 = float(r["bm25_score"]) if r["bm25_score"] is not None else 0.0
+            score = 1.0 / (1.0 + bm25)
+            md_raw = r.get("metadata")
+            try:
+                metadata = json.loads(md_raw) if isinstance(md_raw, str) else (md_raw or {})
+            except (TypeError, ValueError):
+                metadata = {}
+            hits.append(
+                Hit(
+                    chunk_id=int(r["id"]),
+                    score=float(score),
+                    text=r["text"],
+                    document_id=(int(r["document_id"]) if r["document_id"] is not None else None),
+                    source_uri=r["source_uri"],
+                    title=r["title"],
+                    dataset_id=int(r["dataset_id"]) if r["dataset_id"] is not None else 0,
+                    metadata=metadata if isinstance(metadata, dict) else {},
+                    source="lexical",
+                )
+            )
+        return hits
+
+    def get_chunk(self, chunk_id: int) -> "dict | None":
+        """Return chunk row joined to its document (for source_uri / title).
+
+        LEFT JOIN documents because message chunks have ``document_id IS NULL``;
+        the joined ``source_uri`` / ``title`` are then None on the returned dict.
+        """
+        rows = self._execute(
+            """
+            SELECT c.id, c.document_id, c.conversation_id, c.message_id,
+                   c.chunk_index, c.text, c.heading, c.role, c.token_count,
+                   c.metadata, c.content_hash,
+                   COALESCE(d.dataset_id, cv.dataset_id) AS dataset_id,
+                   d.source_uri, d.title
+            FROM chunks c
+            LEFT JOIN documents d ON d.id = c.document_id
+            LEFT JOIN conversations cv ON cv.id = c.conversation_id
+            WHERE c.id = ?
+            """,
+            (chunk_id,),
+        )
+        return rows[0] if rows else None
+
+    def list_datasets(self) -> "list[dict]":
+        """Return all datasets with their document + chunk counts.
+
+        Counts are computed via ``LEFT JOIN`` so freshly-created datasets
+        (no documents / chunks yet) appear with zero counts rather than being
+        omitted.  Chunks have no direct ``dataset_id``; they cascade via
+        ``documents`` (or ``conversations`` for chat chunks), so we join
+        chunks through ``documents`` to attribute them to the right dataset.
+        Ordered by ``name`` for stable consumer output.
+        """
+        rows = self._execute(
+            """
+            SELECT d.name, d.kind, d.description,
+                   COALESCE(doc_counts.n, 0) AS document_count,
+                   COALESCE(doc_counts.c, 0) + COALESCE(conv_counts.c, 0) AS chunk_count
+            FROM datasets d
+            LEFT JOIN (
+                SELECT doc.dataset_id AS dataset_id,
+                       COUNT(DISTINCT doc.id) AS n,
+                       COUNT(c.id) AS c
+                FROM documents doc
+                LEFT JOIN chunks c ON c.document_id = doc.id
+                GROUP BY doc.dataset_id
+            ) doc_counts ON doc_counts.dataset_id = d.id
+            LEFT JOIN (
+                SELECT cv.dataset_id AS dataset_id,
+                       COUNT(c.id) AS c
+                FROM conversations cv
+                LEFT JOIN chunks c ON c.conversation_id = cv.id
+                GROUP BY cv.dataset_id
+            ) conv_counts ON conv_counts.dataset_id = d.id
+            ORDER BY d.name
+            """,
+        )
+        return rows

@@ -95,7 +95,7 @@ class TestFtsColumnAndIndex:
             row = cur.fetchone()
             assert row is not None, "chunks_tsv_idx GIN index missing"
             _name, defn = row
-            assert "USING gin" in defn.lower(), f"Index is not GIN: {defn}"
+            assert "using gin" in defn.lower(), f"Index is not GIN: {defn}"
             assert "text_tsv" in defn, f"Index does not target text_tsv: {defn}"
 
 
