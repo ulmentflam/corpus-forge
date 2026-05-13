@@ -1057,3 +1057,190 @@ class TestHybridSearch:
             assert h.dataset_id == ds_b, (
                 f"dataset filter leaked: expected {ds_b}, got {h.dataset_id}"
             )
+
+
+# ---------------------------------------------------------------------------
+# TestHybridSearchRerank (R4) — HybridRetriever w/ a stub reranker against
+# both backends.  Stubs the reranker so the real bge-reranker-v2-m3
+# (~600 MB) is NEVER downloaded in CI.
+# ---------------------------------------------------------------------------
+
+
+class _StubReranker:
+    """Reverses the input order + flips `source` to "reranked".
+
+    Pins the rerank-wire-up integration without loading a real model.
+    Used by `test_hybrid_search_with_rerank` on both backends.
+    """
+
+    name = "stub-reverse"
+    model_id = "stub://reverse"
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def warmup(self) -> None:
+        pass
+
+    def rerank(self, query, hits, *, top_n=None):
+        from corpus_forge.retrieval.types import Hit
+
+        self.calls.append({"query": query, "n_hits": len(hits), "top_n": top_n})
+        take = hits[:top_n] if top_n is not None else list(hits)
+        out: list[Hit] = []
+        # New score: descending so the head-of-reversed wins.
+        for i, h in enumerate(reversed(take)):
+            out.append(
+                Hit(
+                    chunk_id=h.chunk_id,
+                    score=float(len(take) - i),
+                    text=h.text,
+                    document_id=h.document_id,
+                    source_uri=h.source_uri,
+                    title=h.title,
+                    dataset_id=h.dataset_id,
+                    metadata=h.metadata,
+                    source="reranked",
+                )
+            )
+        return out
+
+
+class TestHybridSearchRerank:
+    """Pin the R4 rerank wire-up on both backends (stubbed reranker only).
+
+    Hard rule: this class MUST NOT load the real `BAAI/bge-reranker-v2-m3`
+    archive.  All rerank semantics are validated via `_StubReranker`.
+    """
+
+    def test_hybrid_search_with_rerank(self, storage_backend: StorageBackend) -> None:
+        from corpus_forge.retrieval import HybridRetriever
+        from corpus_forge.retrieval.types import SearchOptions
+
+        ds_id = _insert_dataset(storage_backend, "dual-rerank")
+        embedder = _FakeEmbedder()
+        eid = storage_backend.register_embedder(embedder)
+
+        chunk_texts = [
+            "alpha keyword alpha — first",
+            "beta keyword beta — second",
+            "gamma keyword gamma — third",
+            "delta keyword delta — fourth",
+            "epsilon keyword epsilon — fifth",
+        ]
+        _seed_doc_with_chunks(
+            storage_backend,
+            ds_id,
+            "dual://rerank.md",
+            "Rerank",
+            chunk_texts,
+        )
+
+        # Embed each chunk with its own deterministic vector.
+        missing = list(storage_backend.chunks_missing_embedding(eid))
+        missing.sort(key=lambda t: t[0])
+        chunk_ids = [cid for cid, _ in missing]
+        chunk_vecs = [_norm_vec_from_text(t) for t in chunk_texts]
+        storage_backend.write_embeddings(eid, list(zip(chunk_ids, chunk_vecs, strict=True)))
+
+        # The HybridRetriever's encode_query lands on chunk[0]'s vector so
+        # the dense path ranks chunk[0] top.  The lexical query also wins
+        # chunk[0] ("keyword" hits all chunks but chunk[0] is short).
+        target_vec = chunk_vecs[0]
+
+        class _QueryEmbedder(_FakeEmbedder):
+            def encode_query(
+                self,
+                texts: Sequence[str],
+                *,
+                batch_size: int = 32,
+            ) -> np.ndarray:
+                return np.stack([target_vec for _ in texts])
+
+        stub = _StubReranker()
+        retriever = HybridRetriever(
+            backend=storage_backend,
+            embedder=_QueryEmbedder(),
+            embedder_id=eid,
+            reranker=stub,
+        )
+
+        # First, capture the FUSED top-5 by calling with rerank=False so we
+        # can compare against the reranked output.
+        fused_out = retriever.search(
+            "keyword",
+            SearchOptions(k=5, rerank=False),
+        )
+        fused_ids = [h.chunk_id for h in fused_out]
+        # rerank=True → stub reverses; output is the LAST fused hit first.
+        out = retriever.search(
+            "keyword",
+            SearchOptions(k=3, rerank=True, rerank_top_n=5),
+        )
+
+        # 1. All output hits are reranked.
+        assert all(h.source == "reranked" for h in out), (
+            f"expected source='reranked' for all hits; got {[h.source for h in out]}"
+        )
+
+        # 2. Length is bounded by k.
+        assert len(out) <= 3
+
+        # 3. Stub got called once with the fused top-N and top_n=k.
+        assert len(stub.calls) == 1
+        assert stub.calls[0]["top_n"] == 3
+
+        # 4. The output order matches the reversed top-3 fused order:
+        #    HybridRetriever passes top-5 fused hits to the reranker with
+        #    `top_n=k=3`; the stub takes `hits[:3]` then reverses, so the
+        #    expected output is reversed(fused_ids[:3]).
+        expected_ids = list(reversed(fused_ids[:3]))
+        assert [h.chunk_id for h in out] == expected_ids, (
+            f"reranker reversal not honoured.  fused_ids={fused_ids}; "
+            f"expected reversed-top-3={expected_ids}; got={[h.chunk_id for h in out]}"
+        )
+
+    def test_hybrid_search_rerank_false_skips_stub(
+        self, storage_backend: StorageBackend
+    ) -> None:
+        """Default `rerank=False` MUST NOT call the configured reranker."""
+        from corpus_forge.retrieval import HybridRetriever
+        from corpus_forge.retrieval.types import SearchOptions
+
+        ds_id = _insert_dataset(storage_backend, "dual-rerank-off")
+        embedder = _FakeEmbedder()
+        eid = storage_backend.register_embedder(embedder)
+
+        _seed_doc_with_chunks(
+            storage_backend,
+            ds_id,
+            "dual://rerank-off.md",
+            "RerankOff",
+            ["one keyword", "two keyword", "three keyword"],
+        )
+        missing = list(storage_backend.chunks_missing_embedding(eid))
+        vec = _norm_vec_from_seed(9)
+        storage_backend.write_embeddings(eid, [(cid, vec) for cid, _ in missing])
+
+        class _QueryAwareEmbedder(_FakeEmbedder):
+            def encode_query(
+                self,
+                texts: Sequence[str],
+                *,
+                batch_size: int = 32,
+            ) -> np.ndarray:
+                return np.stack([vec for _ in texts])
+
+        stub = _StubReranker()
+        retriever = HybridRetriever(
+            backend=storage_backend,
+            embedder=_QueryAwareEmbedder(),
+            embedder_id=eid,
+            reranker=stub,
+        )
+
+        # Default SearchOptions has rerank=False.
+        retriever.search("keyword", SearchOptions(k=2))
+        assert stub.calls == [], (
+            f"reranker MUST NOT be called when rerank=False; got {len(stub.calls)} calls"
+        )
