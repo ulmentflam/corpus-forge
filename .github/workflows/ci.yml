@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+  workflow_dispatch:
+
+# Cancel any in-flight CI run for the same ref when a new commit lands.
+# Saves matrix minutes and stops stale lint runs from masking real signal.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Default to least-privilege; release.yml (later phase) re-grants
+# `contents: write` for tag uploads.
+permissions:
+  contents: read
+
+env:
+  # Force CI hypothesis profile across both jobs. Local devs keep `dev`
+  # by default (see tests/fuzz/profiles.py for the resolution rule).
+  HYPOTHESIS_PROFILE: ci
+  # Color output even when tee'd through GitHub's log renderer.
+  FORCE_COLOR: "1"
+  # Make pip / uv quieter on success; full output on failure is still visible.
+  UV_NO_PROGRESS: "1"
+
+jobs:
+  # ── Job 1: static-analysis gauntlet ─────────────────────────────────────
+  # Runs once on the lowest supported Python; the matrix axis is only
+  # needed for the test job (the analysers are version-agnostic).
+  quality:
+    name: Lint + format + typecheck
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv + Python
+        uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.11"
+
+      - name: ruff format --check
+        run: make format-check
+
+      - name: ruff check
+        run: make lint
+
+      - name: pyrefly check
+        run: make typecheck
+
+  # ── Job 2: unit + smoke + fuzz across the Python matrix ─────────────────
+  # CI-1 stays single-OS (ubuntu-22.04); CI-2 expands to a 3 OS × 3 Python
+  # matrix and adds a separate integration job (Postgres via services).
+  test:
+    name: Tests (py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04]
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv + Python
+        uses: ./.github/actions/setup-uv
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Unit tests (parallel, timeout-gated, coverage-gated)
+        run: make test-unit
+
+      - name: Fuzz tests (hypothesis profile=ci)
+        run: make test-fuzz
+
+      - name: Smoke tests
+        run: make test-smoke
