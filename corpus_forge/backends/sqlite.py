@@ -1474,10 +1474,27 @@ class SQLiteBackend:
           document chunks; message chunks have ``document_id IS NULL`` and
           carry both as ``None``.
         - Dataset filter is a SARGable predicate on ``chunks.dataset_id``.
+        - **Query sanitisation**: FTS5's MATCH parser is opinionated about
+          punctuation (``?`` / quotes) and bare tokens that collide with
+          column names (``host``, ``k`` etc.).  We tokenise to alnum runs
+          and OR-join them so natural-language queries dispatch cleanly
+          regardless of casing or punctuation.  Discovered when the R3
+          eval CLI ran the bundled ``forge_self`` gold set and crashed
+          on the FIRST question with a trailing ``?``.
         """
+        import re  # noqa: PLC0415 — local import keeps the cold-start lean
+
         from corpus_forge.retrieval.types import Hit  # noqa: PLC0415
 
-        params: tuple = (query,)
+        # Sanitise: alnum runs of >= min_token_chars chars, OR-joined.
+        # Empty after tokenisation → no results (saves an FTS5 round-trip).
+        min_token_chars = 2
+        tokens = [t for t in re.findall(r"\w+", query) if len(t) >= min_token_chars]
+        if not tokens:
+            return []
+        match_expr = " OR ".join(tokens)
+
+        params: tuple = (match_expr,)
         ds_filter = ""
         if dataset_id is not None:
             ds_filter = " AND COALESCE(d.dataset_id, cv.dataset_id) = ?"

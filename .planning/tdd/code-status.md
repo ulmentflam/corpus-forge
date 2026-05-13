@@ -357,3 +357,11 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 - Curation: tokenised each prompt to alnum runs and `OR`-joined them to dodge FTS5 column-name collisions (`host`, `k`, etc. parse as column refs in bare MATCH).  Top-3 RRF results captured per query along with their content_hashes.
 - pyproject `[tool.hatch.build.targets.wheel.force-include]` adds both files so they ship in the wheel (verified by inspecting the built wheel under `/tmp/r3-wheel/`).
 - 7 new tests in `test_eval_bundled_dataset.py` all pass.  Full unit 1582 passed; coverage clean.
+
+### Side-fix uncovered by R3-08: SQLite FTS5 query sanitisation
+
+The smoke test surfaced a real bug in `SQLiteBackend.search_lexical`: the bundled gold set's first question (with a trailing `?`) crashed FTS5's MATCH parser. Bare punctuation OR bare tokens that collide with column names (`host`, `k`, etc.) all break the FTS5 search-syntax parse.
+
+Fix landed in `corpus_forge/backends/sqlite.py:search_lexical`: tokenise the query to alnum runs (>=2 chars), OR-join with the FTS5 OR operator. Empty after tokenisation → return `[]` (short-circuits the FTS5 round-trip). PostgresBackend is unaffected because `websearch_to_tsquery` already handles natural-language queries.
+
+This was uncovered because R3-08 is the FIRST test that exercises the full eval-CLI → HybridRetriever → SQLite FTS5 path with real natural-language gold queries. R1/R2 integration tests used hand-crafted alnum-only query strings.
