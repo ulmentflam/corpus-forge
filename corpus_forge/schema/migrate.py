@@ -1,6 +1,7 @@
 """Schema migration utility for corpus-forge."""
 
 import os
+import sys
 from pathlib import Path
 from typing import Literal
 
@@ -43,7 +44,10 @@ def apply_migrations(
     applied: set[str] = set()
 
     for migration_file in migration_files:
-        print(f"Applying migration: {migration_file.name}")
+        # stderr, not stdout: this function runs inside `corpus-forge mcp serve`
+        # where stdout is the JSON-RPC channel and a stray "Applying migration:"
+        # line breaks the framing for strict MCP clients (Claude Code).
+        print(f"Applying migration: {migration_file.name}", file=sys.stderr)
         sql_content = migration_file.read_text()
 
         # SQLite + CREATE TRIGGER:  trigger bodies contain "BEGIN ... END;"
@@ -71,7 +75,7 @@ def apply_migrations(
 
     # --- backfill passes (Postgres-only) ---
     if dialect == "postgres" and "002_chunk_content_hash" in applied:
-        print("Running 002 backfill: content_hash for NULL rows")
+        print("Running 002 backfill: content_hash for NULL rows", file=sys.stderr)
         backend._execute("""
             UPDATE corpus.chunks
             SET content_hash = encode(sha256(text::bytea), 'hex')
@@ -85,7 +89,10 @@ def apply_migrations(
     if dialect == "sqlite" and "004_fts" in applied:
         backfilled = backend.backfill_lexical_index()  # type: ignore[attr-defined]
         if backfilled:
-            print(f"Running 004 backfill: mirrored {backfilled} chunks into chunks_fts")
+            print(
+                f"Running 004 backfill: mirrored {backfilled} chunks into chunks_fts",
+                file=sys.stderr,
+            )
 
 
 def main() -> None:
@@ -99,7 +106,7 @@ def main() -> None:
     schema_dir = Path(__file__).parent
 
     apply_migrations(backend, schema_dir)
-    print("Migrations applied successfully!")
+    print("Migrations applied successfully!", file=sys.stderr)
 
 
 if __name__ == "__main__":
