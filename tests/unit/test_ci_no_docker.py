@@ -67,7 +67,9 @@ class TestCollectionHookSkipsIntegration(object):
 
         class FakeItem:
             def __init__(self, module_name: str) -> None:
-                self.module = type("M", (), {"__name__": module_name})
+                fake_mod = type("FakeMod", (), {})
+                fake_mod.__name__ = module_name
+                self.module = fake_mod
                 self.keywords: set[str] = set()
                 self._markers: list[pytest.MarkDecorator] = []
 
@@ -93,7 +95,9 @@ class TestCollectionHookSkipsIntegration(object):
 
         class FakeItem:
             def __init__(self, module_name: str) -> None:
-                self.module = type("M", (), {"__name__": module_name})
+                fake_mod = type("FakeMod", (), {})
+                fake_mod.__name__ = module_name
+                self.module = fake_mod
                 self.keywords: set[str] = set()
                 self._markers: list = []
 
