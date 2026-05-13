@@ -1639,3 +1639,9 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
 - Extended `tests/unit/test_eval_runner.py` with `TestChunkIdDriftFallback` (3 tests).
 - Coverage: garbage chunk_ids + real content_hashes recover via the fallback (NDCG=1.0); valid chunk_id + bogus hash is tolerated (hash advisory only); both missing → zero contribution (no silent skip).
 - 14/14 total runner tests green after coder pass.
+
+### R3-07 (`eval` CLI subcommand group) — RED → GREEN
+
+- Wrote `tests/unit/test_cli_eval.py` (11 tests).
+- Coverage: command-group help shows both `retrieval` + `corpus-quality`; per-command help advertises every option; CSV `--k` parsing; JSON dump writes a parseable payload; `--rerank` emits a friendly "lands in R4" notice (stderr or stdout); table reported on stdout; unknown bundled dataset names error nonzero; corpus-quality requires `--dataset`; helper smoke against a minimal stub-config to prove backend + embedder wiring.
+- 11/11 green after coder pass.

@@ -268,5 +268,234 @@ def history(
         raise typer.Exit() from None
 
 
+# ── eval subcommand group ────────────────────────────────────────────────
+#
+# The retrieval-eval harness is DUAL-USE.  Its primary value is as a
+# corpus-quality signal during training-data prep — `eval corpus-quality`
+# runs the same machinery over a user-provided held-out QA set so a low
+# recall@20 catches a chunking/embedding regression BEFORE the corpus
+# gets exported.  Retrieval correctness validation is the secondary use.
+#
+# R3 owns the [eval] extra in pyproject.  R4 will wire `--rerank` to a
+# real cross-encoder; R3 emits a friendly notice when `--rerank` is
+# explicitly requested.
+
+
+eval_app = typer.Typer(
+    name="eval",
+    help=(
+        "Retrieval evaluation + corpus-quality checks. "
+        "Primary use: validate chunking/embedding quality on user-curated "
+        "held-out QA pairs BEFORE exporting your training corpus. "
+        "Secondary use: pin retrieval NDCG/MRR/Recall against a gold set."
+    ),
+    add_completion=False,
+)
+app.add_typer(eval_app, name="eval")
+
+
+_BUNDLED_DATASETS = {
+    "forge_self": "corpus_forge/eval/datasets/forge_self.jsonl",
+}
+
+
+def _resolve_dataset(dataset: str) -> Path:
+    """Resolve a dataset name (bundled) or a filesystem path."""
+    if dataset in _BUNDLED_DATASETS:
+        bundled = Path(__file__).resolve().parent / "eval" / "datasets" / f"{dataset}.jsonl"
+        if not bundled.exists():
+            raise FileNotFoundError(
+                f"bundled gold set {dataset!r} not found at {bundled}; "
+                "did the install ship the datasets folder?"
+            )
+        return bundled
+    p = Path(dataset).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(
+            f"gold set not found: {p} (and no bundled dataset named {dataset!r})"
+        )
+    return p
+
+
+def _parse_csv_ints(raw: str) -> list[int]:
+    """Parse '10,20,30' → [10, 20, 30]; reject empty / non-int entries."""
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if not parts:
+        raise typer.BadParameter(f"empty list: {raw!r}")
+    try:
+        return [int(p) for p in parts]
+    except ValueError as exc:
+        raise typer.BadParameter(f"non-int value in {raw!r}: {exc}") from exc
+
+
+def _build_retriever_for_eval(
+    config=None, *, fusion: str | None = None, alpha: float | None = None
+):
+    """Wire a HybridRetriever to a backend + first-active embedder.
+
+    When ``config`` is None (the CLI path), the config is loaded via
+    :func:`_load_eval_config`, which applies the ``fusion`` / ``alpha``
+    overrides.  Callers (and tests) may pass a pre-built config object to
+    skip the on-disk lookup.
+
+    Reads ``config.backend.kind`` to instantiate the correct backend, then
+    picks the first ``embedder.active`` entry (or first entry if none flag
+    themselves active).  The retriever is constructed via
+    ``HybridRetriever`` — same surface the MCP/search CLI (R5) will use.
+    """
+    from corpus_forge.embedders.registry import EmbedderRegistry
+    from corpus_forge.retrieval import HybridRetriever
+
+    if config is None:
+        config = _load_eval_config(fusion=fusion, alpha=alpha)
+
+    if config.backend.kind == "sqlite":
+        from corpus_forge.backends.sqlite import SQLiteBackend
+
+        backend = SQLiteBackend(path=config.backend.dsn, schema=config.backend.schema)
+    else:
+        from corpus_forge.backends.postgres import PostgresBackend
+
+        backend = PostgresBackend(dsn=config.backend.dsn, schema=config.backend.schema)
+
+    # Make sure the schema is up to date (idempotent).
+    backend.migrate()
+
+    embedders = list(config.embedders or [])
+    if not embedders:
+        raise typer.BadParameter(
+            "no embedders configured; add at least one [[embedders]] entry to config.toml"
+        )
+    active = next((e for e in embedders if getattr(e, "active", True)), embedders[0])
+
+    # Build the embedder via a local registry instance so we don't poison
+    # the global one (multiple eval calls in the same process would otherwise
+    # accumulate instances).
+    reg = EmbedderRegistry()
+    embedder = reg.register(
+        name=active.name,
+        provider=active.provider,
+        model_id=active.model_id,
+        dimension=active.dimension,
+        normalized=getattr(active, "normalize", True),
+        distance=getattr(active, "distance", "cosine"),
+    )
+    eid = backend.register_embedder(embedder)
+    return HybridRetriever(backend=backend, embedder=embedder, embedder_id=eid)
+
+
+def _emit_rerank_notice(rerank: bool) -> None:
+    if rerank:
+        typer.echo(
+            "Note: --rerank is a no-op in this release — the cross-encoder "
+            "reranker lands in Phase R4. Running without rerank.",
+            err=True,
+        )
+
+
+def _do_eval(
+    dataset: str,
+    k: str,
+    metric: str,
+    fusion: str | None,
+    alpha: float | None,
+    rerank: bool,
+    json_out: Path | None,
+) -> None:
+    """Shared body for `eval retrieval` and `eval corpus-quality`."""
+    from corpus_forge.eval.runner import dump_json, evaluate_retriever, report
+
+    _emit_rerank_notice(rerank)
+
+    try:
+        gold_path = _resolve_dataset(dataset)
+    except FileNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+
+    k_values = _parse_csv_ints(k)
+    metrics_wanted = {m.strip().lower() for m in metric.split(",") if m.strip()}
+    if not metrics_wanted:
+        raise typer.BadParameter("--metric must list at least one of ndcg, mrr, recall")
+    unknown = metrics_wanted - {"ndcg", "mrr", "recall"}
+    if unknown:
+        raise typer.BadParameter(f"unknown metric(s): {sorted(unknown)}")
+
+    # Build the retriever; Config.load is inside this builder so tests that
+    # stub `_build_retriever_for_eval` don't need to also stub `Config.load()`.
+    retriever = _build_retriever_for_eval(fusion=fusion, alpha=alpha)
+
+    metrics = evaluate_retriever(retriever, gold_path, k_values=k_values)
+    typer.echo(report(metrics))
+    if json_out is not None:
+        dump_json(metrics, json_out)
+        typer.echo(f"Wrote metrics → {json_out}", err=True)
+
+
+def _load_eval_config(fusion: str | None = None, alpha: float | None = None):
+    """Load Config and apply CLI overrides; raise typer.Exit on missing config."""
+    from corpus_forge.config import Config
+
+    try:
+        config = Config.load()
+    except FileNotFoundError:
+        typer.echo("No configuration found; run 'corpus-forge migrate' to initialise.", err=True)
+        raise typer.Exit(code=2) from None
+    if fusion is not None:
+        config.retrieval.fusion = fusion  # type: ignore[assignment]
+    if alpha is not None:
+        config.retrieval.alpha = alpha
+    return config
+
+
+@eval_app.command("retrieval")
+def eval_retrieval(
+    dataset: str = typer.Option(
+        "forge_self", help="Bundled gold-set name (e.g. forge_self) or path to a .jsonl file"
+    ),
+    k: str = typer.Option("10,20", help="Comma-separated k cutoffs (e.g. 10,20)"),
+    metric: str = typer.Option("ndcg,mrr,recall", help="Comma-separated metric subset"),
+    fusion: str = typer.Option(None, help="Override fusion strategy: rrf|alpha"),
+    alpha: float = typer.Option(None, help="Override alpha when fusion=alpha (0.0..1.0)"),
+    rerank: bool = typer.Option(
+        False, "--rerank/--no-rerank", help="Apply reranker (Phase R4 — currently a no-op)"
+    ),
+    json_out: Path = typer.Option(None, "--json", help="Write metrics as JSON to this path"),
+):
+    """Evaluate retrieval quality against a gold-labelled dataset.
+
+    Validates that the current backend + embedder + retriever stack
+    reaches its pinned NDCG@10 baseline against a curated gold set.
+    The bundled `forge_self` set ships with corpus-forge and pins
+    retrieval correctness across phases.
+    """
+    _do_eval(dataset, k, metric, fusion, alpha, rerank, json_out)
+
+
+@eval_app.command("corpus-quality")
+def eval_corpus_quality(
+    dataset: str = typer.Option(
+        ..., help="Path to a .jsonl of held-out QA pairs covering YOUR training corpus"
+    ),
+    k: str = typer.Option("10,20", help="Comma-separated k cutoffs"),
+    metric: str = typer.Option("ndcg,mrr,recall", help="Comma-separated metric subset"),
+    fusion: str = typer.Option(None, help="Override fusion strategy: rrf|alpha"),
+    alpha: float = typer.Option(None, help="Override alpha when fusion=alpha (0.0..1.0)"),
+    rerank: bool = typer.Option(
+        False, "--rerank/--no-rerank", help="Apply reranker (Phase R4 — currently a no-op)"
+    ),
+    json_out: Path = typer.Option(None, "--json", help="Write metrics as JSON to this path"),
+):
+    """Validate corpus chunking + embedding quality for training-data prep.
+
+    The harness is the same as ``eval retrieval``; the framing is
+    different.  Run this AFTER ingesting + embedding and BEFORE exporting
+    your training corpus.  Low recall@20 is the canonical chunking-
+    regression signal: your model will starve on under-recalled context.
+    Catch it here, not at training time.
+    """
+    _do_eval(dataset, k, metric, fusion, alpha, rerank, json_out)
+
+
 if __name__ == "__main__":
     app()

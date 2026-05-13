@@ -339,3 +339,13 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 - Docstring expanded to document the drift contract (top of `runner.py`).
 - All 14 runner tests green; full unit suite 1564 passed; coverage 90.75%.
 - Gates clean.
+
+### R3-07 (`eval` CLI subcommand group) — GREEN
+
+- `corpus_forge/cli.py` gains an `eval_app` typer subcommand group with two commands: `retrieval` (default `--dataset forge_self`) and `corpus-quality` (required `--dataset PATH`).
+- Shared body `_do_eval(...)` parses CSV `--k`, validates `--metric ∈ {ndcg, mrr, recall}`, resolves the dataset name (bundled or path), builds the retriever lazily, calls `evaluate_retriever`, prints `report(...)` table, and writes JSON if `--json` is given.
+- `_build_retriever_for_eval(config=None, *, fusion, alpha)` accepts a pre-built config (test path) OR loads one from `Config.load()` (CLI path).  Uses `EmbedderRegistry().register(...)` (local instance — does not poison the global registry).
+- `--rerank` emits a `typer.echo(..., err=True)` friendly notice and no-ops — R4 will wire the real reranker.
+- Bundled dataset registry `_BUNDLED_DATASETS = {"forge_self": ...}`; `_resolve_dataset` distinguishes name vs path.
+- pyproject `[tool.ruff.lint.per-file-ignores]` for `cli.py` extended with `B008` (typer.Option defaults are idiomatic; ruff's B008 rule was firing on the new Path-typed `--json` option only because the existing patterns use plain types).
+- Full unit suite: 1575 passed; coverage 90.75%.  Gates clean (ruff/format/pyrefly).

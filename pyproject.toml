@@ -124,7 +124,8 @@ ignore = ["PLR0911", "PLR0912", "PLR0913"]
 
 [tool.ruff.lint.per-file-ignores]
 # cli.py uses intentional lazy imports inside command functions for startup speed
-"corpus_forge/cli.py" = ["PLC0415"]
+# and idiomatic typer.Option(...) defaults that ruff flags as B008.
+"corpus_forge/cli.py" = ["PLC0415", "B008"]
 # Tests use magic values, lambda args, broad raises, composite assertions freely
 "tests/**/*.py" = [
     "PLR2004",  # magic-value-comparison
