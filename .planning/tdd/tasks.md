@@ -1970,3 +1970,252 @@ Tag `v0.1.0b1`: SHA `9f1c9a0fc3944ad106ccaf88f994170ff099eb2a` annotated + SSH-s
 2. Verify the release workflow runs against the tag and creates a prerelease GitHub Release with wheel + sdist + SHA256SUMS attached.
 3. Post-beta: triage the 3-test reranker_ollama isolation flake.
 
+---
+
+# Phase D — Alembic migration framework
+
+_Source plan: `/Users/evanowen/.claude/plans/let-s-begin-a-new-jiggly-salamander.md` § Phase D._
+_Working tree at start: clean as of `66ab179` (stderr discipline in `migrate.py`).  Only `.mcp.json` untracked (user's local; DO NOT touch)._
+
+## Goal
+
+Replace the hand-rolled `corpus_forge/schema/migrate.py` numbered-SQL applier with **Alembic**.  Port every existing `00x` migration to an Alembic revision.  Both Postgres (`corpus` schema) and SQLite (no schema) dialects must produce **byte-equal** schemas to the legacy migrator (modulo sequence start positions / sqlite_sequence rows).  Public `apply_migrations(backend, schema_dir, dialect=…)` signature stays stable so existing callers (`PostgresBackend.migrate`, `SQLiteBackend.migrate`, `corpus-forge migrate`) keep working.
+
+## Project gates (Phase D)
+
+Same as the master board:
+- lint: `make lint`
+- format: `make format-check`
+- typecheck: `make typecheck`
+- test-unit: `make test-unit` (coverage-gated ≥ 85% on `corpus_forge/`)
+- test-integration: `make test-integration` (Docker / testcontainers)
+- test-fuzz: `make test-fuzz`
+- test-smoke: `make test-smoke`
+- full ci: `make ci`
+
+`make ci` must remain green at every commit.
+
+## Authoritative inputs
+
+- Alembic config root: `alembic.ini` at repo root; `script_location = corpus_forge/alembic`.
+- Env module: `corpus_forge/alembic/env.py` — dialect-aware:
+  - Postgres: normal mode; `target_metadata = None` (we use imperative ops); `version_table_schema = "corpus"` so `alembic_version` lives inside the corpus schema.
+  - SQLite: `render_as_batch = True`; no schema prefix; `version_table_schema = None`.
+  - URL: read from `${DATABASE_URL}` env var if set, otherwise from `alembic.ini` `sqlalchemy.url`, otherwise resolved by the `apply_migrations(backend, …)` caller (passes the backend's DSN through `config.set_main_option("sqlalchemy.url", …)`).
+  - Output: NO `print()` to stdout from `env.py`; Alembic's default logging is on `logging.getLogger("alembic")` which goes to stderr — verify and lock down.
+- Revisions live in `corpus_forge/alembic/versions/`:
+  - `0001_core` — porting `schema/001_core.sql` (PG) + `schema/sqlite/001_core.sql` (SQLite).  `down_revision = None`.
+  - `0002_chunk_content_hash` — porting `schema/002_chunk_content_hash.sql` + sqlite twin.  Includes the **Postgres-only** content_hash backfill (`UPDATE corpus.chunks SET content_hash = encode(sha256(text::bytea), 'hex') WHERE content_hash IS NULL`) as an inline data-migration step inside `upgrade()`.  `down_revision = "0001_core"`.
+  - `0003_views` — porting `schema/002_views.sql` (the **renumbered collision**: legacy 002_views.sql + 002_chunk_content_hash.sql shared 002).  Postgres-only (SQLite has no equivalent file).  Gate body on `op.get_bind().dialect.name == "postgresql"`.  `down_revision = "0002_chunk_content_hash"`.
+  - `0004_sync` — porting `schema/003_sync.sql` + sqlite twin.  Both dialects.  `down_revision = "0003_views"`.
+  - `0005_fts` — porting `schema/004_fts.sql` (PG: tsvector generated column + GIN) + sqlite twin (chunks_fts virtual table + 3 triggers).  Includes the **SQLite-only** `backend.backfill_lexical_index()` call as a post-DDL step (invoked via raw connection: `INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')`).  `down_revision = "0004_sync"`.
+- `corpus_forge/schema/migrate.py::apply_migrations(backend, schema_dir, dialect="postgres") -> None` — **public signature unchanged**.  Body becomes: build an Alembic `Config` pointing at `corpus_forge/alembic/`, set `sqlalchemy.url` from the backend's DSN (or open a SQLite URL string for the SQLite backend's `_get_connection().path`), set a `cf_dialect` option, then `alembic.command.upgrade(config, "head")`.  No prints to stdout.  Logging stays stderr-bound.
+- CLI:
+  - `corpus-forge migrate` — unchanged behavior (default `upgrade head`).
+  - `corpus-forge migrate revision -m "..."` — thin wrapper around `alembic.command.revision(config, message=..., autogenerate=False)`.
+  - `corpus-forge migrate history` — thin wrapper around `alembic.command.history(config)`.
+  - Stdout-clean (these can print to stdout, since they are CLI commands not MCP).
+- Raw `schema/*.sql` and `schema/sqlite/*.sql` files: **deleted** only after parity tests pass (D-10).  Migration-pinning test files (`tests/unit/test_migration_*.py`, `test_sqlite_migration_loader.py`, `tests/integration/test_migrate_*.py`) are retired or rewritten in D-10 since they assert against the legacy file layout and `apply_migrations` per-file semantics.
+
+## Phase D tasks
+
+| id | title | depends_on | surface | risk | status | claimed_by | notes |
+|----|-------|------------|---------|------|--------|------------|-------|
+| D-01 | Alembic dep + scaffold + revision-chain unit pin | — | `pyproject.toml`, `alembic.ini`, `corpus_forge/alembic/__init__.py`, `corpus_forge/alembic/env.py`, `corpus_forge/alembic/script.py.mako`, `corpus_forge/alembic/versions/.gitkeep`, `tests/unit/test_alembic_revision_chain.py` | low | pending | — | Wave 0 |
+| D-02 | Revision 0001_core (PG + SQLite) | D-01 | `corpus_forge/alembic/versions/0001_core.py`, `tests/integration/test_alembic_parity_postgres.py`, `tests/integration/test_alembic_parity_sqlite.py` | med | pending | — | Wave 1; parity assertions can scope to "head=0001" for this slice and lift later |
+| D-03 | Revision 0002_chunk_content_hash + backfill | D-02 | `corpus_forge/alembic/versions/0002_chunk_content_hash.py`, `tests/integration/test_alembic_backfill_content_hash.py` | med | pending | — | Wave 1; data-migration step inside upgrade() |
+| D-04 | Revision 0003_views (Postgres-only) | D-03 | `corpus_forge/alembic/versions/0003_views.py` | low | pending | — | Wave 2; dialect-gated body |
+| D-05 | Revision 0004_sync (PG + SQLite) | D-03 | `corpus_forge/alembic/versions/0004_sync.py` | low | pending | — | Wave 2; in parallel with D-04 (disjoint files) |
+| D-06 | Revision 0005_fts (PG + SQLite + sqlite backfill) | D-05 | `corpus_forge/alembic/versions/0005_fts.py` | med | pending | — | Wave 2; depends on D-05 for the up-chain `down_revision`; backfill via `INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')` |
+| D-07 | Rewire `apply_migrations` body to Alembic | D-06 | `corpus_forge/schema/migrate.py` | high | pending | — | Wave 3; KEEP public signature stable; route all output to stderr |
+| D-08 | CLI subcommands `migrate revision` + `migrate history` | D-07 | `corpus_forge/cli.py`, `tests/unit/test_cli_migrate.py` | low | pending | — | Wave 3; can parallelize with D-09 if D-07 lands first |
+| D-09 | Smoke: `corpus-forge mcp serve` boots clean against Alembic'd DB | D-07 | `tests/smoke/test_mcp_serve_boots_with_alembic.py` | med | pending | — | Wave 3; stdout MUST stay JSON-RPC-clean (no migration noise leaks past stderr) |
+| D-10 | Delete raw `schema/*.sql` + retire legacy migration tests | D-09 (parity proven across full wave) | `corpus_forge/schema/001_core.sql`, `corpus_forge/schema/002_chunk_content_hash.sql`, `corpus_forge/schema/002_views.sql`, `corpus_forge/schema/003_sync.sql`, `corpus_forge/schema/004_fts.sql`, `corpus_forge/schema/sqlite/001_core.sql`, `corpus_forge/schema/sqlite/002_chunk_content_hash.sql`, `corpus_forge/schema/sqlite/003_sync.sql`, `corpus_forge/schema/sqlite/004_fts.sql`, `tests/unit/test_migration_002.py`, `tests/unit/test_migration_003.py`, `tests/unit/test_migration_004_postgres.py`, `tests/unit/test_migration_004_sqlite.py`, `tests/unit/test_migration_sqlite_001.py`, `tests/unit/test_migration_sqlite_002.py`, `tests/unit/test_migration_sqlite_003.py`, `tests/unit/test_sqlite_migration_loader.py`, `tests/integration/test_migrate_002.py`, `tests/integration/test_migrate_003.py`, `tests/integration/test_migrate_004_postgres.py`, `tests/integration/test_migrate_004_sqlite.py`, `tests/integration/test_migrate_sqlite.py` | high | pending | — | Wave 4; HARD gate — only proceed if D-02..D-06 parity tests + D-09 smoke are GREEN.  Rewrite the small slice of non-Phase-D tests that import `apply_migrations` (the call-site stays — only the file-path-pinning assertions go) |
+| D-11 | tdd-qa clean-room re-run + close-out summary | D-10 | `.planning/tdd/tasks.md` | low | pending | — | Wave 5; principal bookkeeping |
+
+## Acceptance details
+
+### D-01 — Alembic dep + scaffold + revision-chain unit pin
+
+- `pyproject.toml` `[project] dependencies` gains `"alembic>=1.13"` (core, not extra — Alembic + SQLAlchemy together add ~2 MB).
+- `alembic.ini` at repo root with `script_location = corpus_forge/alembic`, `sqlalchemy.url = driver://user:pass@host/dbname` placeholder (overridden at runtime), `file_template = %%(year)d%%(month).2d%%(day).2d_%%(rev)s_%%(slug)s` is OK or a simpler `%%(rev)s_%%(slug)s`; `[alembic:exclude]`/logger blocks copy from the standard Alembic generic template but with all loggers routed to `stderr` (no `args=(sys.stdout,)` anywhere).
+- `corpus_forge/alembic/__init__.py` — empty (marker only).
+- `corpus_forge/alembic/env.py`:
+  - Reads `sqlalchemy.url` from the `Config` object passed in.
+  - Branches on dialect name: SQLite → `context.configure(connection=…, render_as_batch=True, version_table="alembic_version")`; Postgres → `context.configure(connection=…, version_table="alembic_version", version_table_schema="corpus")`.
+  - Implements both `run_migrations_offline()` and `run_migrations_online()` (offline path uses the configured URL string).
+  - Imports `op` lazily inside the upgrade/downgrade funcs (defined in each revision module).
+  - NO `print()` calls.  Any operator-facing message goes via `logging.getLogger("alembic.runtime.migration")` (Alembic's default channel, stderr).
+- `corpus_forge/alembic/script.py.mako` — vanilla Alembic template, slightly tweaked: docstring header carries `# noqa: D` and the standard `# revision identifiers, used by Alembic.\nrevision: str = "${up_revision}"\ndown_revision: Union[str, None] = ${repr(down_revision)}` etc.
+- `corpus_forge/alembic/versions/.gitkeep` — empty (so the empty dir is committed; revisions land on D-02 onward).
+- Unit suite `tests/unit/test_alembic_revision_chain.py` (the plan's `test_alembic_revision_chain.py`):
+  - Discovers all `corpus_forge/alembic/versions/*.py` files (ignoring `__init__.py` / `.gitkeep`).  At D-01 RED time **zero** revisions exist → tests are skipped or marked xfail with reason "no revisions yet"; flips to assertions once D-02+ land.
+  - When revisions exist:
+    - Each revision module exposes `revision: str` and `down_revision: str | None`.
+    - The set of `revision` values has no duplicates.
+    - The chain has exactly one root (`down_revision is None`) and one head (no other revision references it).
+    - Head's `revision` value equals the lexicographically-highest filename prefix (e.g. `0005`).
+    - `alembic.command.heads(config)` returns exactly one head (no branches).
+    - No orphans: every non-root `down_revision` value is some revision's `revision`.
+- RED for D-01: `tests/unit/test_alembic_revision_chain.py` must import cleanly **but** verify the scaffold pieces (alembic.ini parses, `corpus_forge.alembic.env` imports without error, `corpus_forge/alembic/versions/` exists) — these should be red before D-01's coder slice and green after.
+
+### D-02 — Revision 0001_core
+
+- File: `corpus_forge/alembic/versions/0001_core.py`.  `revision = "0001_core"`, `down_revision = None`.
+- `upgrade()` reproduces every DDL statement in `schema/001_core.sql` (PG) / `schema/sqlite/001_core.sql` (SQLite).  Use a dialect switch (`bind = op.get_bind(); dialect = bind.dialect.name`) and either `op.execute(...)` for raw DDL OR `op.create_table(...)` / `op.create_index(...)` Alembic ops (preferred where they map cleanly; raw `op.execute` is fine for the `CREATE EXTENSION vector;` and `CREATE SCHEMA corpus;` PG preamble).
+- Postgres path: must include `CREATE EXTENSION IF NOT EXISTS vector;` + `CREATE SCHEMA IF NOT EXISTS corpus;` + all tables.
+- SQLite path: omit the schema/extension preamble; use unqualified table names; `INTEGER PRIMARY KEY` (no AUTOINCREMENT) for surrogate PKs to match the legacy migrator's rewriter behavior (the legacy `SQLiteBackend._execute` strips AUTOINCREMENT — so the legacy in-DB schema has no `sqlite_sequence` table).
+- `downgrade()` — `pass` is acceptable for this milestone (Phase D is forward-only).  Optionally `op.drop_table(...)` in reverse for cleanliness.
+- Integration tests:
+  - `tests/integration/test_alembic_parity_postgres.py`:
+    - Two testcontainers Postgres instances (or two `corpus` schemas in the same container).
+    - Apply legacy `apply_migrations(backend, schema_dir, dialect="postgres")` to one; run `alembic.command.upgrade(config, "0001_core")` against the other.
+    - Dump schema via `pg_dump --schema-only --no-owner --no-privileges` (or via `information_schema.columns`/`pg_indexes`/`pg_constraint` queries).
+    - Normalize: strip `ALTER SEQUENCE ... RESTART WITH N;` lines and `CREATE EXTENSION ... ` ordering noise; strip the `alembic_version` table from the Alembic side.
+    - Assert byte-equal after normalization.  This test starts RED (no `0001_core.py` revision yet), goes GREEN when D-02 coder lands.  Parameterize on `head` so the test grows naturally as more revisions land (`head="0001_core"`, `head="0002_chunk_content_hash"`, …, `head="head"`).
+  - `tests/integration/test_alembic_parity_sqlite.py`: same shape but two temp `.db` files, both backed by `SQLiteBackend`.  Apply legacy / Alembic.  Dump via `sqlite_master` (CREATE statements + index list, sorted).  Normalize: strip `sqlite_sequence` rows (Alembic's `version_table` may create one); strip Alembic's `alembic_version` table.
+- Both parity tests must be **driven by a `head` parameter** so the test pin grows monotonically with each revision (`head="0001_core"` first, then `"0002_chunk_content_hash"`, etc.).  At D-02 only `head=0001_core` is exercised.
+
+### D-03 — Revision 0002_chunk_content_hash + backfill
+
+- File: `corpus_forge/alembic/versions/0002_chunk_content_hash.py`.  `revision = "0002_chunk_content_hash"`, `down_revision = "0001_core"`.
+- `upgrade()`:
+  - DDL: `ADD COLUMN content_hash TEXT` to `corpus.chunks` (PG) / `chunks` (SQLite); `CREATE INDEX chunks_content_hash_idx`.  Use `op.batch_alter_table("chunks", schema=…)` for SQLite-safe ALTER.
+  - Postgres-only data migration step (gate on `bind.dialect.name == "postgresql"`):  `op.execute("UPDATE corpus.chunks SET content_hash = encode(sha256(text::bytea), 'hex') WHERE content_hash IS NULL")`.
+- Test `tests/integration/test_alembic_backfill_content_hash.py`:
+  - Bring up testcontainers Postgres.
+  - Run Alembic upgrade to `0001_core` only.
+  - Insert a handful of chunks via raw SQL with `content_hash` left NULL (column doesn't exist yet — insert without that column; will be backfilled by 0002).  Use realistic `text` values.
+  - Run Alembic upgrade to `0002_chunk_content_hash`.
+  - Assert every chunk's `content_hash` equals `hashlib.sha256(text.encode()).hexdigest()`.
+- Parity tests in D-02 lift `head` to `0002_chunk_content_hash`.
+
+### D-04 — Revision 0003_views
+
+- File: `corpus_forge/alembic/versions/0003_views.py`.  `revision = "0003_views"`, `down_revision = "0002_chunk_content_hash"`.
+- `upgrade()`: dialect-gated body — `if bind.dialect.name != "postgresql": return`.  Then `op.execute(...)` the two `CREATE OR REPLACE VIEW corpus.corpus_text_export` + `corpus.corpus_chat_export` blocks verbatim from `schema/002_views.sql`.
+- Parity tests lift `head` to `0003_views`.
+
+### D-05 — Revision 0004_sync
+
+- File: `corpus_forge/alembic/versions/0004_sync.py`.  `revision = "0004_sync"`, `down_revision = "0003_views"`.
+- `upgrade()`: dialect-aware.  Both dialects get `document_revisions` (DDL identical modulo SQLite type mappings — `BIGSERIAL`→`INTEGER PRIMARY KEY`, `BIGINT`→`INTEGER`, `TIMESTAMPTZ`→`TEXT`, `BOOLEAN`→`INTEGER`, `JSONB`→`TEXT`, `NOW()`→`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`).  Both add `documents.tombstoned_at` and `sources.last_pulled_revision_id` + `sources.sync_enabled`.  Use `op.batch_alter_table` for SQLite-safe ADD COLUMN.
+- Parity tests lift `head` to `0004_sync`.
+
+### D-06 — Revision 0005_fts
+
+- File: `corpus_forge/alembic/versions/0005_fts.py`.  `revision = "0005_fts"`, `down_revision = "0004_sync"`.
+- `upgrade()`:
+  - Postgres branch: `ALTER TABLE corpus.chunks ADD COLUMN text_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED;` + `CREATE INDEX chunks_tsv_idx ON corpus.chunks USING GIN (text_tsv);`.  Generated column auto-populates; no explicit backfill.
+  - SQLite branch: create `chunks_fts` virtual table + the three triggers (chunks_ai, chunks_ad, chunks_au).  Then run the rebuild backfill: `INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild');` — this is the bit the R1 close-out flagged as critical (the naive `INSERT INTO chunks_fts(rowid, text) SELECT...` pattern silently creates delete markers).
+- Parity tests lift `head` to `0005_fts` (= `head`).
+
+### D-07 — Rewire `apply_migrations` body
+
+- `corpus_forge/schema/migrate.py::apply_migrations(backend, schema_dir, dialect="postgres") -> None`:
+  - Signature unchanged.
+  - Body builds an Alembic `Config` from `corpus_forge/alembic/alembic.ini` (or the repo-root `alembic.ini` — resolve via `Path(__file__).parents[2] / "alembic.ini"` then fall back to a config built in code if missing in the installed wheel).
+  - Sets `sqlalchemy.url` from the backend:
+    - PostgresBackend: `backend.dsn` (already libpq-style).
+    - SQLiteBackend: `f"sqlite:///{backend._db_path}"` (or whatever attribute exposes the on-disk path; verify in `corpus_forge/backends/sqlite.py`).
+  - Calls `alembic.command.upgrade(config, "head")`.
+  - All Alembic logger output stays on stderr (Alembic's default).  No `print()` to stdout from this function.
+  - `get_migration_files(schema_dir, dialect=...)` helper: keep it temporarily for D-10 cleanup compatibility, or delete it now and remove the one test that imports it (`test_sqlite_migration_loader.py` — slated for retirement in D-10 anyway).  Preference: **keep the helper as a thin shim** returning an empty list (matching current SQLite behavior when files don't exist) so D-07 ships green and D-10 retires both the helper and its tests in one slice.
+  - The Postgres-only `_executescript` SQLite-trigger workaround in the old body is gone — Alembic handles trigger bodies natively via `op.execute(...)` (which goes through SQLAlchemy's `exec_driver_sql`, no semicolon-splitting).
+  - `apply_migrations`'s callers in `PostgresBackend.migrate` (line 217) and `SQLiteBackend.migrate` (line 438) keep working unchanged.
+- No NEW tests for D-07 (parity tests from D-02..D-06 + smoke from D-09 cover the rewire end-to-end).  This is intentional — the only contract is "produces a schema indistinguishable from legacy", which the parity tests already pin.
+
+### D-08 — CLI subcommands
+
+- `corpus_forge/cli.py`:
+  - Keep `corpus-forge migrate` as-is (default upgrade head).
+  - Add subcommands either via a Typer sub-app `migrate_app = typer.Typer(name="migrate")` mounted with `@app.command()` as default OR via flat commands named `migrate-revision` / `migrate-history`.  **Pick the sub-app shape** for grouping, matching the existing `sync` sub-app pattern at line ~58.  The default `migrate` invocation (no subcommand) must still upgrade-to-head.
+  - `migrate revision -m "msg"` → builds the same `Config` as `apply_migrations`, calls `alembic.command.revision(config, message=msg, autogenerate=False)`.
+  - `migrate history` → `alembic.command.history(config, verbose=False)`.
+- Unit test `tests/unit/test_cli_migrate.py`:
+  - `CliRunner.invoke(app, ["migrate", "--help"])` shows `revision` + `history` subcommands.
+  - `CliRunner.invoke(app, ["migrate", "history"])` exits 0 (with `alembic.command.history` patched to a no-op).
+  - `CliRunner.invoke(app, ["migrate", "revision", "-m", "test"])` exits 0 (with `alembic.command.revision` patched to a no-op).
+
+### D-09 — Smoke: `corpus-forge mcp serve` boots clean against Alembic'd DB
+
+- `tests/smoke/test_mcp_serve_boots_with_alembic.py`:
+  - Mark `pytestmark = pytest.mark.smoke`; `pytest.importorskip("mcp")`.
+  - Build a fresh SQLite DB via `corpus-forge migrate` (subprocess) — this exercises the full Alembic path.
+  - Subprocess-launch `corpus-forge mcp serve` via `StdioServerParameters`, point it at the just-migrated DB.
+  - Drive `ClientSession.initialize()` + `list_tools()`.
+  - Assert that stdout from the server is **JSON-RPC-clean** (no "Applying migration" / "INFO" / "Running upgrade" leakage).  The MCP client library will fail-loud if stdout has non-JSON bytes; that's the implicit assertion.  Optionally: capture the server's stderr separately and assert that Alembic messages DO appear there (positive confirmation that the routing is right).
+  - Assert `tools/list` includes the three known tools (`search`, `get_chunk`, `list_datasets`).
+
+### D-10 — Cleanup: delete raw SQL + retire legacy migration tests
+
+- **Pre-flight gate**: D-09 smoke must be green AND D-02..D-06 parity tests must be green at `head` for both dialects.  Do NOT proceed if any parity-test row is yellow.  If a hard mismatch surfaces (Alembic and legacy not byte-equal), STOP and surface to user — do not weaken the parity test.
+- Delete the 9 raw SQL files:
+  - `corpus_forge/schema/001_core.sql`
+  - `corpus_forge/schema/002_chunk_content_hash.sql`
+  - `corpus_forge/schema/002_views.sql`
+  - `corpus_forge/schema/003_sync.sql`
+  - `corpus_forge/schema/004_fts.sql`
+  - `corpus_forge/schema/sqlite/001_core.sql`
+  - `corpus_forge/schema/sqlite/002_chunk_content_hash.sql`
+  - `corpus_forge/schema/sqlite/003_sync.sql`
+  - `corpus_forge/schema/sqlite/004_fts.sql`
+- Delete the 12 legacy migration-pinning test files:
+  - `tests/unit/test_migration_002.py`
+  - `tests/unit/test_migration_003.py`
+  - `tests/unit/test_migration_004_postgres.py`
+  - `tests/unit/test_migration_004_sqlite.py`
+  - `tests/unit/test_migration_sqlite_001.py`
+  - `tests/unit/test_migration_sqlite_002.py`
+  - `tests/unit/test_migration_sqlite_003.py`
+  - `tests/unit/test_sqlite_migration_loader.py`
+  - `tests/integration/test_migrate_002.py`
+  - `tests/integration/test_migrate_003.py`
+  - `tests/integration/test_migrate_004_postgres.py`
+  - `tests/integration/test_migrate_004_sqlite.py`
+  - `tests/integration/test_migrate_sqlite.py`
+- Optionally delete `corpus_forge/schema/migrate.py::get_migration_files` (now unused).  Keep the shim if any in-repo caller remains — `grep` first.
+- Audit `tests/integration/test_sync_tombstone.py` (one of the 8 files that grep'd for schema paths) — if it imports `apply_migrations` only as the callable, it stays; if it pins file paths, rewrite that slice.
+- `corpus_forge/schema/per_embedder.sql.tmpl` STAYS — it's a runtime template used by `register_embedder`, NOT an Alembic-shaped migration.
+- After cleanup, full `make ci` must stay green.
+
+### D-11 — tdd-qa clean-room re-run + close-out
+
+- tdd-qa runs `make ci` from a clean checkout (`git stash` any unrelated edits first; sanity-check `git status` clean).
+- Capture: unit-test count + coverage %, integration count, fuzz count, smoke count.  Bullet which counts changed vs. the BR baseline (1812u/297i/15f/14s, coverage ≥85%).
+- Author a `## Phase D — close-out summary` block at the end of this file, mirroring the Phase CS template:
+  - Status one-liner (all D-01..D-10 done, commit range).
+  - Slices & commits table (Wave / Task / Role / Commit / Result).
+  - Files added (new Alembic surface) + files deleted (legacy SQL + retired tests) + files modified (`pyproject.toml`, `cli.py`, `migrate.py`).
+  - Gates run with exact counts.
+  - Coverage delta vs. BR baseline.
+  - Parity-proof line ("Alembic and legacy migrators produce byte-equal schemas on Postgres + SQLite").
+  - Stderr-discipline confirmation ("no migration noise on stdout when invoked through `corpus-forge mcp serve`").
+  - Rot-detector behaviors confirmed (parity tests would RED on any future schema drift between dialects).
+  - Hand-offs for Phase E (E adds `corpus.sync_status` view as an Alembic revision — the pattern is now ` op.execute("CREATE OR REPLACE VIEW …")` in a new `0006_*.py` file).
+
+## Phase D — DAG / waves
+
+- **Wave 0** (1 task): D-01.  Scaffold + revision-chain unit pin.
+- **Wave 1** (2 tasks, parallel): D-02, D-03.  Different revision files; D-03 depends on D-02 only because `down_revision = "0001_core"` requires the chain to exist.  Coder for D-03 dispatches after D-02 RED+GREEN lands.  **In practice we serialize Wave 1 because D-03's parity test extends the same file as D-02's**: dispatch D-02 first, then D-03.
+- **Wave 2** (3 tasks, parallel: D-04 ∥ D-05 ∥ D-06): D-04, D-05, D-06.  Disjoint revision files.  D-06 must `down_revision = "0004_sync"`, so the chain order matters but the *files* are independent — tester+coder for each can run in parallel since file surfaces are disjoint.  Note: D-06 RED tester references D-05's revision id; rebase trivially.  Acceptable to serialize if the principal prefers strict chain ordering.
+- **Wave 3** (3 tasks): D-07, then D-08 ∥ D-09 (parallel after D-07 lands — D-08 touches `cli.py`, D-09 touches a new test file; disjoint).
+- **Wave 4** (1 task, HARD GATE): D-10.  Cleanup.  Only after D-02..D-06 parity GREEN + D-09 smoke GREEN.
+- **Wave 5** (1 task): D-11.  QA + close-out.
+
+## Phase D commit prefix
+
+`[<role>] phase-d/<task-id>: <slice>` — HEREDOC, SSH-signed via 1Password, `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`.
+
+## Phase D hand-shake protocol
+
+1. Principal seeds (this commit).
+2. Principal claims Wave 0 task → dispatches tdd-tester with the D-01 acceptance slice + the file list above.
+3. tdd-tester commits the RED suite (`[tdd-tester] phase-d/D-01: RED — alembic scaffold + revision-chain pin`) and updates `test-status.md`.
+4. Principal verifies RED, dispatches tdd-coder.
+5. tdd-coder commits GREEN, updates `code-status.md`.
+6. tdd-qa runs the gate (`make ci`) and signs off via `qa-status.md`.
+7. Principal flips the row to `done` in this file and advances to the next wave.
+
+Repeat through Wave 5.
+
