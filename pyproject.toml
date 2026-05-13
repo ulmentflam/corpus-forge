@@ -60,7 +60,8 @@ sqlite     = ["sqlite-vec>=0.1"]
 # `numpy` is already pulled in transitively by sentence-transformers, but
 # pinning it here makes the dependency explicit for downstream consumers
 # who install with `pip install corpus-forge[retrieval]` / `[eval]`.
-# R4 lands `rerank` (sentence-transformers split anchor); R5 will add `mcp`.
+# R4 lands `rerank` (sentence-transformers split anchor); R5 lands `mcp`
+# (in-process MCP server scaffold for the `corpus-forge mcp serve` CLI).
 retrieval  = ["numpy>=1.26"]
 eval       = ["numpy>=1.26"]
 # R4: cross-encoder reranker.  sentence-transformers is already a HARD
@@ -69,6 +70,10 @@ eval       = ["numpy>=1.26"]
 # moves out of `dependencies`, this extra becomes the install gate for
 # the cross-encoder path.
 rerank     = ["sentence-transformers>=3.0"]
+# R5: Model Context Protocol server.  Pin `>=1.0,<2.0` to bracket the v1
+# Server API surface; a v2 release would change the registration shape
+# and silently break the in-process stdio adapter.
+mcp        = ["mcp>=1.0,<2.0"]
 
 [project.scripts]
 corpus-forge = "corpus_forge.cli:app"
