@@ -73,7 +73,9 @@ jobs:
 
       - name: Render changelog snippet
         id: changelog
-        uses: orhun/git-cliff-action@v3
+        # v3's Docker image is on Debian buster which moved to archive.debian.org;
+        # apt-get update inside the action's image 404s now.  v4 ships a newer base.
+        uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
           args: --latest --strip header
