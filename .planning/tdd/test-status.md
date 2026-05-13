@@ -1625,3 +1625,11 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
 
 - Combined: **54 RED + 3 GREEN (scope-guard tests)** in `tests/unit/test_eval_metrics.py`, `tests/unit/test_eval_dataset.py`, `tests/unit/test_pyproject_eval_extras.py`.
 - Handed off to tdd-coder.
+
+### R3-04 (runner + pinned baseline) — RED
+
+- Wrote `tests/unit/test_eval_runner.py` (11 tests).
+- Coverage: shape (`RetrievalMetrics` returned, k keys present, values in [0,1], `max_queries` honoured), `report` table format (mentions ndcg/mrr/recall + k), `dump_json` JSON file is parseable with the metric/k structure, **PINNED NDCG@10 floor at 0.80** against the toy seeded corpus, **break-the-retriever sanity test** (constant-vector encode_query + alpha=1.0 must score below the floor), edge cases (empty gold set, empty k_values).
+- Test corpus: on-disk SQLite under `tmp_path` (in-memory SQLite + sqlite_vec extension is fiddly across loader paths; file-based is functionally identical for the unit-test scope), 10 hand-engineered chunks each with unique animal-keyword anchors, 10 hand-curated queries each whose lexical + dense top-1 IS the gold-relevant chunk.
+- Pinned floor `_PINNED_NDCG_AT_10_FLOOR = 0.80` — tight enough to catch regression (e.g. the R2 `encode_query` swap silently degrading), loose enough to survive a fusion-constant tweak.
+- Status: **red** — `corpus_forge.eval.runner` does not yet exist.
