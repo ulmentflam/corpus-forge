@@ -2021,7 +2021,7 @@ Same as the master board:
 
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
-| D-01 | Alembic dep + scaffold + revision-chain unit pin | — | `pyproject.toml`, `alembic.ini`, `corpus_forge/alembic/__init__.py`, `corpus_forge/alembic/env.py`, `corpus_forge/alembic/script.py.mako`, `corpus_forge/alembic/versions/.gitkeep`, `tests/unit/test_alembic_revision_chain.py` | low | claimed | tdd-tester | Wave 0; RED suite for scaffold + revision-chain pin |
+| D-01 | Alembic dep + scaffold + revision-chain unit pin | — | `pyproject.toml`, `alembic.ini`, `corpus_forge/alembic/__init__.py`, `corpus_forge/alembic/env.py`, `corpus_forge/alembic/script.py.mako`, `corpus_forge/alembic/versions/.gitkeep`, `tests/unit/test_alembic_revision_chain.py` | low | blocked | — | Wave 0; **BLOCKED** — principal cannot dispatch tdd-tester (no Agent tool available in this environment); seed + claim landed; user/next-session resume here |
 | D-02 | Revision 0001_core (PG + SQLite) | D-01 | `corpus_forge/alembic/versions/0001_core.py`, `tests/integration/test_alembic_parity_postgres.py`, `tests/integration/test_alembic_parity_sqlite.py` | med | pending | — | Wave 1; parity assertions can scope to "head=0001" for this slice and lift later |
 | D-03 | Revision 0002_chunk_content_hash + backfill | D-02 | `corpus_forge/alembic/versions/0002_chunk_content_hash.py`, `tests/integration/test_alembic_backfill_content_hash.py` | med | pending | — | Wave 1; data-migration step inside upgrade() |
 | D-04 | Revision 0003_views (Postgres-only) | D-03 | `corpus_forge/alembic/versions/0003_views.py` | low | pending | — | Wave 2; dialect-gated body |
@@ -2218,4 +2218,29 @@ Same as the master board:
 7. Principal flips the row to `done` in this file and advances to the next wave.
 
 Repeat through Wave 5.
+
+## Phase D — status at hand-off (2026-05-13)
+
+**State**: seeded + Wave 0 claimed; **execution paused** at step 2 of the hand-shake protocol.
+
+**Reason**: this principal session was instantiated in an environment that did not expose the `Agent(subagent_type=...)` tool (only Read / Write / Edit / Bash were available).  The principal contract is "you **never** write production code or tests yourself" — so the only honest move is to land the plan + claim and stop.  Two commits exist on `main`:
+
+- `38bc5e9` — `[tdd-principal] phase-d: seed task board (D-01..D-11, 5 waves)`
+- `72ea7ee` — `[tdd-principal] phase-d/W0: claim D-01 for tdd-tester`
+
+(plus this hand-off note as a third commit.)
+
+**Resume instructions** for the next principal session (which presumably will have Agent/Task dispatch available):
+
+1. Read this section + the D-01 acceptance details + the file list under `## Phase D tasks`.
+2. Flip the D-01 row's `status` back to `claimed` and `claimed_by` to `tdd-tester`.
+3. Dispatch tdd-tester with:
+   - The D-01 acceptance bullets above (verbatim).
+   - The exact file list from the surface column.
+   - The Phase D commit prefix convention (`[<role>] phase-d/<task-id>: <slice>`).
+   - Pointer to `corpus_forge/schema/migrate.py` for the legacy behavior the parity tests will eventually pin against.
+   - Pointer to `.planning/tdd/test-status.md` for status reporting.
+4. Proceed through the waves per the DAG.
+
+No production code, no tests, no `corpus_forge/alembic/` directory, no `alembic.ini`, no Alembic dependency has been added in this session.  Tree is clean apart from the seed+claim+hand-off commits on `main`; `.mcp.json` untracked as before.
 
