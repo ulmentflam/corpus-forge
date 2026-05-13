@@ -39,8 +39,16 @@ the loader-side ergonomic choice.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from typing import Any
 
 import numpy as np
+
+# Graded relevance map: chunk_id → grade.  Keys may be str (JSON-decoded)
+# OR int (programmatic).  We type as ``Mapping[Any, int]`` to side-step
+# Python's invariant generics on Mapping key types — the value normaliser
+# handles the coercion safely.
+GradedMap = Mapping[Any, int]
+
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
@@ -52,7 +60,7 @@ def _normalise_relevant(relevant_ids: Iterable[int] | set[int]) -> set[int]:
     return {int(x) for x in relevant_ids}
 
 
-def _normalise_graded(graded: Mapping[int | str, int] | None) -> dict[int, int]:
+def _normalise_graded(graded: GradedMap | None) -> dict[int, int]:
     """Coerce ``graded`` keys to ``int``; return ``{}`` for ``None``."""
     if graded is None:
         return {}
@@ -72,7 +80,7 @@ def ndcg_at_k(
     relevant_ids: Iterable[int] | set[int],
     k: int,
     *,
-    graded: Mapping[int | str, int] | None = None,
+    graded: GradedMap | None = None,
 ) -> float:
     """Normalised Discounted Cumulative Gain at rank ``k``."""
     if k <= 0 or not ranked_ids:

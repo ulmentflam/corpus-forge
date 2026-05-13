@@ -23,13 +23,17 @@ R3 adds ``evaluate_retriever`` and ``report`` once R3-04 lands.  The
 
 from corpus_forge.eval.dataset import GoldQuery, load_gold
 from corpus_forge.eval.metrics import mrr_at_k, ndcg_at_k, recall_at_k
+from corpus_forge.eval.runner import dump_json, evaluate_retriever, report
 from corpus_forge.retrieval.types import RetrievalMetrics
 
 __all__ = [
     "GoldQuery",
     "RetrievalMetrics",
+    "dump_json",
+    "evaluate_retriever",
     "load_gold",
     "mrr_at_k",
     "ndcg_at_k",
     "recall_at_k",
+    "report",
 ]
