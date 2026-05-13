@@ -80,10 +80,14 @@ jobs:
       - name: pyrefly check
         run: make typecheck
 
-  # ── Job 2: unit + smoke + fuzz across the 3-OS × 3-Python matrix ─────────
-  # CI-2: expanded from single-OS to ubuntu-22.04 + macos-14 + windows-2022
-  # × python 3.11/3.12/3.13. Integration tests are NOT run here — see
-  # integration.yml (Linux + macOS only, drops 3.13 until upstream wheels).
+  # ── Job 2: unit + smoke + fuzz across the 2-OS × 3-Python matrix ─────────
+  # CI-2: Linux + macOS, python 3.11/3.12/3.13. Windows was dropped from
+  # the matrix for the v0.1.0b1 beta — the runner surface (path separators,
+  # cp1252 default encoding, ``os.uname`` not existing, iCloud detection
+  # being macOS-only) is real but architectural to fix and shouldn't gate
+  # the beta.  Integration tests are NOT run here — see integration.yml
+  # (Linux + macOS, drops 3.13 until upstream wheels).
+  # TODO(post-beta): add windows-2022 back once portability is tracked.
   test:
     name: Tests (${{ matrix.os }} / py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
@@ -92,42 +96,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-14, windows-2022]
+        os: [ubuntu-22.04, macos-14]
         python-version: ["3.11", "3.12", "3.13"]
-        # ALL Windows cells are soft-fail for the v0.1.0b1 beta.  Windows
-        # has a real surface of issues we surfaced for the first time
-        # this milestone — path-separator assertions, cp1252-vs-UTF-8
-        # default encoding, ``os.uname`` not existing, iCloud detection
-        # being macOS-only — that are architectural to fix and don't
-        # belong in a beta-gating commit.  Beta ships honest "Linux +
-        # macOS first-class, Windows post-beta" support; the cells
-        # still run for visibility, they just don't fail the gate.
-        # TODO(post-beta): un-soften Windows once portability issues
-        # are tracked + fixed (see issues #TBD).
-        #
         # macOS-arm64 + py3.13 stays soft-fail until sentence-transformers
         # / torch wheels stabilize; revisit weekly.
         include:
           - os: macos-14
             python-version: "3.13"
             allow-failure: true
-          - os: windows-2022
-            python-version: "3.11"
-            allow-failure: true
-          - os: windows-2022
-            python-version: "3.12"
-            allow-failure: true
-          - os: windows-2022
-            python-version: "3.13"
-            allow-failure: true
     continue-on-error: ${{ matrix.allow-failure == true }}
-    env:
-      # Windows has no Docker daemon on GitHub-hosted runners; the conftest
-      # hook reads this and applies a skip marker to every integration test
-      # at collection time.  Linux/macOS leave it unset → integration tests
-      # still skip in *this* workflow because we don't `make test-integration`
-      # here, but they DO run in integration.yml where Docker is provisioned.
-      CI_NO_DOCKER: ${{ matrix.os == 'windows-2022' && '1' || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

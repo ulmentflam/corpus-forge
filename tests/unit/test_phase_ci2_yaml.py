@@ -59,14 +59,18 @@ def nightly_yaml() -> dict:
 
 
 class TestCIMatrixExpansion:
-    """CI-2 expands the test matrix to 3 OS x 3 Python with fail-fast off."""
+    """CI-2 expanded the test matrix to multiple OSes with fail-fast off.
 
-    def test_test_job_matrix_three_os(self, ci_yaml: dict) -> None:
+    Windows was dropped from the v0.1.0b1 beta matrix (see ci.yml comment);
+    these tests now pin the "Linux + macOS, 3 Python versions" shape.
+    """
+
+    def test_test_job_matrix_required_oses(self, ci_yaml: dict) -> None:
         test_job = ci_yaml["jobs"]["test"]
         matrix = test_job["strategy"]["matrix"]
         os_axis = matrix["os"]
         assert isinstance(os_axis, list), f"matrix.os must be a list; got {os_axis!r}"
-        for required in ("ubuntu-22.04", "macos-14", "windows-2022"):
+        for required in ("ubuntu-22.04", "macos-14"):
             assert required in os_axis, f"missing {required} in matrix.os: {os_axis}"
 
     def test_test_job_matrix_three_python(self, ci_yaml: dict) -> None:
@@ -88,43 +92,6 @@ class TestCIMatrixExpansion:
         runs_on = job.get("runs-on")
         assert runs_on and "ubuntu" in str(runs_on), (
             f"actionlint must run on ubuntu; got {runs_on!r}"
-        )
-
-    def test_ci_no_docker_env_on_windows(self, ci_yaml: dict) -> None:
-        """The Windows matrix cells need CI_NO_DOCKER=1 so integration tests skip."""
-        test_job_text = yaml.safe_dump(ci_yaml["jobs"]["test"])
-        assert "CI_NO_DOCKER" in test_job_text, (
-            "Expected CI_NO_DOCKER env (per-step or job-level) to skip integration on Windows"
-        )
-
-    def test_windows_uses_bash_shell(self, ci_yaml: dict) -> None:
-        """Run steps must use bash shell (matrix-wide or windows-specific).
-
-        Acceptable shapes:
-        - top-level ``defaults.run.shell: bash`` (matrix-wide)
-        - per-job ``defaults.run.shell: bash`` on the ``test`` job
-        - per-step ``shell: bash`` on every ``run:`` step
-        """
-        # Top-level defaults applies to all jobs; that's the cleanest shape.
-        top_defaults = ci_yaml.get("defaults", {}) or {}
-        top_run = top_defaults.get("run", {}) or {}
-        if top_run.get("shell") == "bash":
-            return
-
-        # Per-job defaults on test job is also fine.
-        test_job = ci_yaml["jobs"]["test"]
-        job_defaults = (test_job.get("defaults") or {}).get("run") or {}
-        if job_defaults.get("shell") == "bash":
-            return
-
-        # Otherwise every run step must declare shell: bash.
-        steps = test_job.get("steps", []) or []
-        run_steps = [s for s in steps if isinstance(s, dict) and "run" in s]
-        assert run_steps, "test job must have at least one run step"
-        per_step_bash = all(s.get("shell") == "bash" for s in run_steps)
-        assert per_step_bash, (
-            "Windows matrix cell needs shell: bash — either via defaults.run.shell or per-step. "
-            f"Steps without it: {[s for s in run_steps if s.get('shell') != 'bash']}"
         )
 
 
@@ -251,8 +218,12 @@ class TestNightlyWorkflow:
         )
 
     def test_full_os_matrix(self, nightly_yaml: dict) -> None:
-        """Nightly runs the full 3-OS matrix to catch platform regressions overnight."""
+        """Nightly runs across all OSes we support to catch platform regressions overnight.
+
+        Windows was dropped from v0.1.0b1's primary matrix; nightly mirrors
+        the same Linux + macOS shape until post-beta Windows work lands.
+        """
         jobs = nightly_yaml.get("jobs", {})
         text = yaml.safe_dump(jobs)
-        for os_name in ("ubuntu-22.04", "macos-14", "windows-2022"):
+        for os_name in ("ubuntu-22.04", "macos-14"):
             assert os_name in text, f"nightly.yml must include {os_name} in some job's matrix"

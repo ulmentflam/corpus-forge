@@ -28,7 +28,9 @@ defaults:
     shell: bash
 
 jobs:
-  # ── Job 1: unit + fuzz across the full 3-OS × 3-Python matrix ────────────
+  # ── Job 1: unit + fuzz across the 2-OS × 3-Python matrix ─────────────────
+  # Windows was dropped from the v0.1.0b1 beta matrix (see ci.yml); nightly
+  # mirrors the same Linux + macOS shape.  TODO(post-beta): re-add windows.
   unit-and-fuzz:
     name: Unit+Fuzz (${{ matrix.os }} / py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
@@ -36,18 +38,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-14, windows-2022]
+        os: [ubuntu-22.04, macos-14]
         python-version: ["3.11", "3.12", "3.13"]
         include:
           - os: macos-14
             python-version: "3.13"
             allow-failure: true
-          - os: windows-2022
-            python-version: "3.13"
-            allow-failure: true
     continue-on-error: ${{ matrix.allow-failure == true }}
     env:
-      CI_NO_DOCKER: ${{ matrix.os == 'windows-2022' && '1' || '' }}
       HYPOTHESIS_PROFILE: nightly
     steps:
       - name: Checkout
