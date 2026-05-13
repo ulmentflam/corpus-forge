@@ -40,9 +40,9 @@ def test_cliff_has_git_section(cliff: dict) -> None:
     assert "git" in cliff, "cliff.toml must declare a [git] section"
     g = cliff["git"]
     # conventional-commits or commit_parsers must be present.
-    assert (
-        "conventional_commits" in g or "commit_parsers" in g
-    ), "[git] must declare conventional_commits or commit_parsers"
+    assert "conventional_commits" in g or "commit_parsers" in g, (
+        "[git] must declare conventional_commits or commit_parsers"
+    )
 
 
 def test_cliff_tag_pattern_accepts_prerelease(cliff: dict) -> None:
@@ -58,9 +58,7 @@ def test_cliff_commit_parsers_cover_common_types(cliff: dict) -> None:
     """Commit parsers should at minimum recognise feat/fix or the [role] prefix."""
     g = cliff["git"]
     parsers = g.get("commit_parsers", [])
-    assert isinstance(parsers, list) and parsers, (
-        "[git].commit_parsers must be a non-empty list"
-    )
+    assert isinstance(parsers, list) and parsers, "[git].commit_parsers must be a non-empty list"
     # Either conventional-commits style or the in-repo [role] prefix must
     # appear in at least one parser pattern.
     blob = " ".join(str(p) for p in parsers).lower()
@@ -74,6 +72,4 @@ def test_cliff_commit_parsers_cover_common_types(cliff: dict) -> None:
             "tdd-principal",
             "tdd-",
         )
-    ), (
-        "[git].commit_parsers should match feat/fix/[tdd-*] commit prefixes"
-    )
+    ), "[git].commit_parsers should match feat/fix/[tdd-*] commit prefixes"

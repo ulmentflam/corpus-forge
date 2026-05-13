@@ -71,18 +71,14 @@ def feature_request() -> dict:
 
 def test_feature_request_is_github_form(feature_request: dict) -> None:
     for key in ("name", "description", "body"):
-        assert key in feature_request, (
-            f"feature_request.yml missing required key: {key}"
-        )
+        assert key in feature_request, f"feature_request.yml missing required key: {key}"
     assert isinstance(feature_request["body"], list)
     assert len(feature_request["body"]) >= 2
 
 
 def test_feature_request_has_enhancement_label(feature_request: dict) -> None:
     labels = feature_request.get("labels", [])
-    assert isinstance(labels, list) and labels, (
-        "feature_request must declare non-empty labels list"
-    )
+    assert isinstance(labels, list) and labels, "feature_request must declare non-empty labels list"
     joined = " ".join(str(label).lower() for label in labels)
     assert "enhancement" in joined or "feature" in joined, (
         "feature_request should include an 'enhancement' or 'feature' label"

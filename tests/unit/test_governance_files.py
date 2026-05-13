@@ -81,9 +81,7 @@ def test_changelog_summarises_beta_milestone(changelog_text: str) -> None:
         "Claude",
     )
     for anchor in expected_anchors:
-        assert anchor in changelog_text, (
-            f"CHANGELOG 0.1.0b1 summary should mention '{anchor}'"
-        )
+        assert anchor in changelog_text, f"CHANGELOG 0.1.0b1 summary should mention '{anchor}'"
 
 
 # ── CONTRIBUTING.md ───────────────────────────────────────────────────────
@@ -164,13 +162,11 @@ def test_security_has_supported_versions_table(security_text: str) -> None:
     """A '| Version |' table column is the keep-a-security convention."""
     lowered = security_text.lower()
     assert "supported" in lowered, "SECURITY must declare a Supported Versions section"
-    assert "0.1" in security_text, (
-        "SECURITY must list the 0.1.x line as the supported beta version"
-    )
+    assert "0.1" in security_text, "SECURITY must list the 0.1.x line as the supported beta version"
 
 
 def test_security_describes_reporting_flow(security_text: str) -> None:
     lowered = security_text.lower()
-    assert any(
-        kw in lowered for kw in ("report", "disclose", "vulnerability")
-    ), "SECURITY must describe how to report a vulnerability"
+    assert any(kw in lowered for kw in ("report", "disclose", "vulnerability")), (
+        "SECURITY must describe how to report a vulnerability"
+    )
