@@ -113,12 +113,11 @@ class TestIntegrationWorkflow:
             f"integration.yml must have a useful trigger; on={list(on)}"
         )
 
-    def test_two_os_matrix(self, integration_yaml: dict) -> None:
-        """Integration runs cover Linux + macOS (no Windows).
+    def test_linux_only_for_beta(self, integration_yaml: dict) -> None:
+        """Integration runs on Linux only for v0.1.0b1.
 
-        The OS axis may live in a single matrix or be split across two jobs
-        (e.g. ``integration-linux`` + ``integration-macos``).  Either shape
-        is valid; we union all OS values found across all jobs.
+        macOS Integration was dropped (Lima 2.1.1 boot bug on macos-14
+        runners) and Windows was never supported (no Docker daemon).
         """
         jobs = integration_yaml.get("jobs", {})
         os_union: set[str] = set()
@@ -130,14 +129,12 @@ class TestIntegrationWorkflow:
                 os_union.update(os_axis)
             elif isinstance(os_axis, str):
                 os_union.add(os_axis)
-            # Also accept a runs-on hard-coded value when the job has no matrix.
             runs_on = (j or {}).get("runs-on")
             if isinstance(runs_on, str) and not os_axis:
                 os_union.add(runs_on)
 
-        assert os_union, "integration.yml must expose at least one OS in some matrix or runs-on"
+        assert os_union, "integration.yml must expose at least one OS"
         assert "ubuntu-22.04" in os_union, f"integration.yml needs ubuntu-22.04; got {os_union}"
-        assert "macos-14" in os_union, f"integration.yml needs macos-14; got {os_union}"
         assert "windows-2022" not in os_union, (
             "integration.yml must NOT include Windows (Docker unsupported on Win runners)"
         )
@@ -173,20 +170,9 @@ class TestIntegrationWorkflow:
         text = yaml.safe_dump(integration_yaml)
         assert "pg_isready" in text, "Postgres service must have a healthcheck using pg_isready"
 
-    def test_macos_docker_setup(self, integration_yaml: dict) -> None:
-        """macOS runner needs a docker-setup step so testcontainers works.
-
-        History: pinned first to ``docker/setup-docker-action@v3`` (does
-        not exist), then to ``crazy-max/ghaction-setup-docker@v3``
-        (404s on docker CDN for new arm64 binaries). Now installs
-        Colima + docker CLI via brew directly. Contract: some step in
-        the macOS path must invoke ``colima`` (or fall back to a known
-        docker-setup action).
-        """
-        text = yaml.safe_dump(integration_yaml)
-        assert (
-            "colima" in text or "ghaction-setup-docker" in text or "setup-docker-action" in text
-        ), "macOS runner needs Colima or a docker-setup action for testcontainers"
+    # NOTE: ``test_macos_docker_setup`` was removed when the macOS
+    # Integration job was dropped for v0.1.0b1 (Lima 2.1.1 boot bug on
+    # macos-14 runners).  Re-add the pin when macOS comes back.
 
 
 # ── nightly.yml — cron + nightly hypothesis profile ────────────────────────

@@ -108,74 +108,15 @@ jobs:
       - name: Integration tests (testcontainers Postgres)
         run: make test-integration
 
-  integration-macos:
-    name: Integration (macos-14 / py${{ matrix.python-version }})
-    runs-on: macos-14
-    timeout-minutes: 35
-    # TODO(post-beta): un-soften this gate once GitHub-hosted macos-14
-    # runners can boot Colima reliably.  We currently see Lima 2.1.1
-    # crash at "creating and starting" on BOTH VM drivers:
-    #   * vz:   immediate exit during raw→raw datadisk "conversion"
-    #            (looks like a lima additionalDisks bug)
-    #   * qemu: hostagent panic in qemu_driver.go:382 on macos-arm64
-    # Linux integration (testcontainers Postgres) is the canonical
-    # cross-OS evidence path for this milestone; macOS Docker on CI
-    # has never been load-bearing.  Tracked: see TODO above.
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-14]
-        python-version: ["3.11", "3.12"]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Docker (Colima-backed) on macOS runner
-        # GitHub-hosted macos-14 has no Docker pre-installed. We install
-        # Colima + docker CLI directly via brew rather than
-        # crazy-max/ghaction-setup-docker@v3, because that action pulls
-        # the latest Docker static binary from download.docker.com and
-        # frequently 404s on macos-arm64 when a new docker version
-        # release ships ahead of the CDN. Testcontainers picks up the
-        # docker.sock that Colima exposes.
-        run: |
-          brew install --quiet colima docker
-          # macos-14 runner is arm64 + macOS 14, so VZ + virtiofs is the
-          # supported Lima path. We previously routed via --vm-type=qemu
-          # to dodge a Colima 0.9 raw-disk-converter crash, but on the
-          # current runner Lima 2.1.1 panics inside qemu_driver.go on
-          # boot, and Colima 0.10.1 fixed the VZ disk-converter issue.
-          colima start --cpu 3 --memory 5 --disk 14 \
-            --vm-type=vz --mount-type=virtiofs
-          docker info
-
-      - name: Pre-pull pgvector image
-        # Pre-pull so the first testcontainers spin-up doesn't add cold-pull
-        # latency to a test's clock budget.
-        run: docker pull pgvector/pgvector:pg16
-
-      - name: Setup uv + Python
-        uses: ./.github/actions/setup-uv
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Restore uv cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/uv
-          key: uv-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('uv.lock', 'pyproject.toml') }}
-          restore-keys: |
-            uv-${{ runner.os }}-py${{ matrix.python-version }}-
-            uv-${{ runner.os }}-
-
-      - name: Restore Hugging Face cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/huggingface
-          key: hf-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'uv.lock') }}
-          restore-keys: |
-            hf-${{ runner.os }}-
-
-      - name: Integration tests (testcontainers Postgres)
-        run: make test-integration
+  # macOS integration was dropped from the v0.1.0b1 matrix.  GitHub-hosted
+  # macos-14 runners ship Lima 2.1.1, which fatals at "creating and
+  # starting" during a raw→raw datadisk "conversion" (a Lima
+  # additionalDisks bug we can't fix from here) on the VZ driver, and
+  # panics inside qemu_driver.go:382 on the QEMU driver.  We tried three
+  # Colima/VM-type combinations this milestone before accepting that the
+  # bug is upstream.  Linux integration (testcontainers Postgres on
+  # ubuntu-22.04) is the canonical cross-OS evidence path; macOS
+  # integration on CI has never been load-bearing — local macOS dev
+  # works fine via Docker Desktop.
+  # TODO(post-beta): re-add a macOS integration cell once Lima ships a
+  # fixed additionalDisks path (track lima-vm/lima releases ≥ 2.2.x).
