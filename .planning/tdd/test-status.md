@@ -1650,3 +1650,10 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
 
 - Wrote `tests/unit/test_eval_bundled_dataset.py` (7 tests): existence of JSONL + provenance.md, parse via `load_gold`, ≥20 queries, every row carries content_hashes, unique query_ids, non-empty relevant_chunk_ids, parallel length invariant.
 - 7/7 green after curation.
+
+### R3-08 (smoke) — GREEN
+
+- `tests/smoke/test_eval_smoke.py` (1 test). Synthesises an in-memory `Config` pointing at the seeded `/tmp/corpus-forge-test.db`, patches `Config.load`, invokes `corpus-forge eval retrieval --dataset forge_self --k 10 --json <tmp>` via `CliRunner`.
+- Skip-on-missing-seed: if `/tmp/corpus-forge-test.db` is absent OR has zero chunks, the test pytest.skips with a clear pointer to `scripts/vectorize_repo_sqlite.py`.
+- Asserts exit code 0, table on stdout (ndcg/mrr/recall + k=10), JSON dump parseable with all three metric blocks and values in [0, 1].
+- **Real-corpus measured baseline (NDCG@10 = 0.717, MRR@10 = 0.920, Recall@10 = 0.760)** against the auto-curated forge_self gold set + minilm embedder. The pinned unit-test floor (0.80) is against the FakeEmbedder + toy corpus, not against this real one.
