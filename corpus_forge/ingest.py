@@ -61,9 +61,7 @@ def get_active_embedders(config: Config) -> list[Embedder]:
                 "device": getattr(embedder_config, "device", "auto"),
             }
             if embedder_config.provider == "openai":
-                kwargs["api_key_env"] = getattr(
-                    embedder_config, "api_key_env", "OPENAI_API_KEY"
-                )
+                kwargs["api_key_env"] = getattr(embedder_config, "api_key_env", "OPENAI_API_KEY")
             embedder = registry.register(**kwargs)
             embedders.append(embedder)
     return embedders

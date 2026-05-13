@@ -65,9 +65,7 @@ class TestProfileSemantics:
         the three-profile fan-out has no signal."""
         dev = self._max_examples("dev")
         nightly = self._max_examples("nightly")
-        assert nightly > dev, (
-            f"nightly ({nightly}) must be strictly richer than dev ({dev})"
-        )
+        assert nightly > dev, f"nightly ({nightly}) must be strictly richer than dev ({dev})"
 
 
 class TestConftestActivation:

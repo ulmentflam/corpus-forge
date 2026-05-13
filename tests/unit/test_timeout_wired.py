@@ -38,10 +38,7 @@ def test_pytest_timeout_kills_deadlocked_test(pytester: pytest.Pytester) -> None
             "    threading.Event().wait()\n"
         )
     )
-    pytester.makeini(
-        "[pytest]\n"
-        "addopts = --timeout=2 --timeout-method=signal --strict-markers\n"
-    )
+    pytester.makeini("[pytest]\naddopts = --timeout=2 --timeout-method=signal --strict-markers\n")
     # 30s outer cap on the subprocess so a misconfig still fails the
     # principal test instead of hanging the suite indefinitely.
     result = pytester.runpytest_subprocess("-p", "no:cacheprovider", timeout=30)
@@ -57,21 +54,12 @@ def test_pytest_timeout_thread_method_kills_process(pytester: pytest.Pytester) -
     didn't hang and exited non-zero in well under the 30s wall clock cap.
     """
     pytester.makepyfile(
-        test_hang=(
-            "import threading\n"
-            "\n"
-            "def test_deadlock():\n"
-            "    threading.Event().wait()\n"
-        )
+        test_hang=("import threading\n\ndef test_deadlock():\n    threading.Event().wait()\n")
     )
-    pytester.makeini(
-        "[pytest]\n"
-        "addopts = --timeout=2 --timeout-method=thread --strict-markers\n"
-    )
+    pytester.makeini("[pytest]\naddopts = --timeout=2 --timeout-method=thread --strict-markers\n")
     result = pytester.runpytest_subprocess("-p", "no:cacheprovider", timeout=30)
     assert result.ret != 0, (
-        f"Expected non-zero exit when --timeout-method=thread fires; "
-        f"got ret={result.ret}"
+        f"Expected non-zero exit when --timeout-method=thread fires; got ret={result.ret}"
     )
 
 

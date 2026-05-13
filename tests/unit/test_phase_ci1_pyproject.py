@@ -95,9 +95,7 @@ class TestPytestIniOptionsCI1:
 
     def test_addopts_includes_timeout(self, pytest_opts: dict) -> None:
         addopts = pytest_opts.get("addopts", "")
-        assert "--timeout=60" in addopts, (
-            f"Expected '--timeout=60' in addopts; got: {addopts!r}"
-        )
+        assert "--timeout=60" in addopts, f"Expected '--timeout=60' in addopts; got: {addopts!r}"
 
     def test_addopts_includes_timeout_method(self, pytest_opts: dict) -> None:
         addopts = pytest_opts.get("addopts", "")

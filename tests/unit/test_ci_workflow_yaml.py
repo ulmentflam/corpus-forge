@@ -128,8 +128,7 @@ class TestCIWorkflow:
         assert invocations, "Expected at least one `make <target>` in CI workflow"
         missing = [t for t in invocations if t not in make_targets]
         assert not missing, (
-            f"CI references nonexistent Make targets: {missing}; "
-            f"available: {sorted(make_targets)}"
+            f"CI references nonexistent Make targets: {missing}; available: {sorted(make_targets)}"
         )
 
 
@@ -155,7 +154,5 @@ class TestSetupUvAction:
         """At least one step must call `uv sync` so dev deps are installed."""
         runs = setup_uv_yaml.get("runs", {})
         steps = runs.get("steps", [])
-        rendered = "\n".join(
-            str(s.get("run", "")) for s in steps if isinstance(s, dict)
-        )
+        rendered = "\n".join(str(s.get("run", "")) for s in steps if isinstance(s, dict))
         assert "uv sync" in rendered, f"setup-uv must run `uv sync`; got steps: {steps}"
