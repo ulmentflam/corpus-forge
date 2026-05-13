@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 320" width="1280" height="320" role="img" aria-label="corpus-forge — forge a HuggingFace-format training corpus">
+  <title>corpus-forge</title>
+  <desc>Stylized anvil with token / chunk glyphs flowing in from the left and a polished HuggingFace dataset bar emerging on the right. Wordmark and tagline below.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fafaf7"/>
+      <stop offset="1" stop-color="#f1ebe1"/>
+    </linearGradient>
+    <linearGradient id="ember" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff8a3d"/>
+      <stop offset="0.55" stop-color="#ef5a1f"/>
+      <stop offset="1" stop-color="#b83205"/>
+    </linearGradient>
+    <linearGradient id="anvil" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a2f3a"/>
+      <stop offset="1" stop-color="#0e1117"/>
+    </linearGradient>
+    <linearGradient id="hf" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffd166"/>
+      <stop offset="1" stop-color="#f4a261"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- background -->
+  <rect width="1280" height="320" fill="url(#bg)"/>
+
+  <!-- decorative grid -->
+  <g stroke="#d8d2c2" stroke-width="0.6" opacity="0.5">
+    <path d="M0 80 H1280 M0 160 H1280 M0 240 H1280"/>
+    <path d="M160 0 V320 M320 0 V320 M480 0 V320 M640 0 V320 M800 0 V320 M960 0 V320 M1120 0 V320"/>
+  </g>
+
+  <!-- ── left: source glyphs flowing into the forge ─────────────────── -->
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" fill="#3a3a3a">
+    <g transform="translate(40 70)">
+      <rect x="0" y="0" rx="6" ry="6" width="170" height="34" fill="#ffffff" stroke="#bdb6a5"/>
+      <text x="85" y="22" text-anchor="middle">{token}</text>
+    </g>
+    <g transform="translate(40 130)">
+      <rect x="0" y="0" rx="6" ry="6" width="170" height="34" fill="#ffffff" stroke="#bdb6a5"/>
+      <text x="85" y="22" text-anchor="middle">[chunk]</text>
+    </g>
+    <g transform="translate(40 190)">
+      <rect x="0" y="0" rx="6" ry="6" width="170" height="34" fill="#ffffff" stroke="#bdb6a5"/>
+      <text x="85" y="22" text-anchor="middle">.md</text>
+    </g>
+    <g transform="translate(40 250)" font-size="13" fill="#7a7263">
+      <text x="0" y="0">notes · chats · code</text>
+    </g>
+  </g>
+
+  <!-- flow arrows -->
+  <g stroke="#7a7263" stroke-width="2" fill="none" opacity="0.9">
+    <path d="M215 87 C260 87, 320 130, 410 145" marker-end="url(#arrow)"/>
+    <path d="M215 147 C290 147, 360 150, 420 150"/>
+    <path d="M215 207 C260 207, 320 175, 410 160" marker-end="url(#arrow)"/>
+  </g>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#7a7263"/>
+    </marker>
+  </defs>
+
+  <!-- ── center: anvil + glowing ember sparks ────────────────────────── -->
+  <g transform="translate(440 70)">
+    <!-- ember halo -->
+    <ellipse cx="160" cy="120" rx="170" ry="50" fill="url(#ember)" opacity="0.18" filter="url(#glow)"/>
+    <!-- anvil body -->
+    <path d="M40 110 L280 110 L260 60 L100 60 Q70 60 60 80 Z" fill="url(#anvil)"/>
+    <!-- waist -->
+    <path d="M120 110 L120 160 Q120 175 110 180 L210 180 Q200 175 200 160 L200 110 Z" fill="#1a1d24"/>
+    <!-- base -->
+    <rect x="80" y="180" width="160" height="22" rx="4" fill="#0e1117"/>
+    <!-- horn -->
+    <path d="M280 90 Q330 80 320 110 L260 110 Z" fill="#161a22"/>
+    <!-- sparks -->
+    <g fill="url(#ember)" opacity="0.95">
+      <circle cx="170" cy="20" r="3"/>
+      <circle cx="200" cy="40" r="2"/>
+      <circle cx="140" cy="32" r="2"/>
+      <circle cx="220" cy="14" r="2.4"/>
+      <circle cx="110" cy="48" r="1.6"/>
+    </g>
+  </g>
+
+  <!-- flow into output -->
+  <g stroke="#c97a1f" stroke-width="2.4" fill="none">
+    <path d="M770 145 C830 145, 870 150, 920 150" marker-end="url(#arrow-fire)"/>
+  </g>
+  <defs>
+    <marker id="arrow-fire" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#c97a1f"/>
+    </marker>
+  </defs>
+
+  <!-- ── right: polished HF dataset bar ──────────────────────────────── -->
+  <g transform="translate(940 110)">
+    <rect x="0" y="0" rx="14" ry="14" width="270" height="80" fill="url(#hf)" stroke="#a86326" stroke-width="1.5"/>
+    <text x="135" y="36" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="20" font-weight="700" fill="#3a2410">HF dataset</text>
+    <text x="135" y="60" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#5a3a1c">parquet · jsonl · arrow</text>
+  </g>
+
+  <!-- ── wordmark + tagline ──────────────────────────────────────────── -->
+  <g transform="translate(40 270)">
+    <text x="0" y="0" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="34" font-weight="800" fill="#1a1d24" letter-spacing="-0.5">corpus-forge</text>
+    <text x="0" y="28" font-family="ui-sans-serif, system-ui, sans-serif" font-size="14" fill="#5a544a">forge a HuggingFace-format training corpus from notes and chat history</text>
+  </g>
+</svg>
