@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 
 mcp = pytest.importorskip("mcp")
-from mcp import ClientSession  # noqa: E402,I001
+from mcp import ClientSession  # noqa: E402
 from mcp.client.stdio import StdioServerParameters, stdio_client  # noqa: E402
 
 pytestmark = pytest.mark.smoke
@@ -69,7 +69,9 @@ def _read_embedder_row() -> tuple[str, str, str, int]:
     return row[0], row[1], row[2], int(row[3])
 
 
-def _write_config_toml(path: Path, embedder_name: str, provider: str, model_id: str, dim: int) -> None:
+def _write_config_toml(
+    path: Path, embedder_name: str, provider: str, model_id: str, dim: int
+) -> None:
     """Write a minimal config.toml pointing at the seed SQLite corpus."""
     toml = f"""
 datasets = []
@@ -100,19 +102,19 @@ device = "cpu"
 async def _drive_mcp_session(server_params: StdioServerParameters) -> dict:
     """Connect to the server, list tools, call search; return captured state."""
     captured: dict = {}
-    async with stdio_client(server_params) as (read_stream, write_stream):
-        async with ClientSession(read_stream, write_stream) as session:
-            await session.initialize()
-            tools_response = await session.list_tools()
-            captured["tools"] = [t.name for t in tools_response.tools]
-            search_response = await session.call_tool(
-                "search", {"query": "lock_source", "k": 5}
-            )
-            captured["search_isError"] = bool(getattr(search_response, "isError", False))
-            captured["search_content"] = [
-                {"type": c.type, "text": getattr(c, "text", None)} for c in search_response.content
-            ]
-            captured["search_structured"] = getattr(search_response, "structuredContent", None)
+    async with (
+        stdio_client(server_params) as (read_stream, write_stream),
+        ClientSession(read_stream, write_stream) as session,
+    ):
+        await session.initialize()
+        tools_response = await session.list_tools()
+        captured["tools"] = [t.name for t in tools_response.tools]
+        search_response = await session.call_tool("search", {"query": "lock_source", "k": 5})
+        captured["search_isError"] = bool(getattr(search_response, "isError", False))
+        captured["search_content"] = [
+            {"type": c.type, "text": getattr(c, "text", None)} for c in search_response.content
+        ]
+        captured["search_structured"] = getattr(search_response, "structuredContent", None)
     return captured
 
 
