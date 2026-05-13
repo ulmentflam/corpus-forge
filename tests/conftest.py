@@ -1,12 +1,25 @@
 """Shared test fixtures and configuration."""
 
 import importlib
+import os
 import tempfile
 from pathlib import Path
 
 import pytest
+from hypothesis import settings as hypothesis_settings
 
 from corpus_forge.sources.base import RawConversation, RawDocument, RawMessage
+from tests.fuzz.profiles import register_hypothesis_profiles
+
+# ── Hypothesis profile resolution (CI-1) ─────────────────────────────────────
+# Register dev/ci/nightly profiles once at conftest import. The active
+# profile is selected via the ``HYPOTHESIS_PROFILE`` env var; ``dev`` is the
+# default for local runs. CI sets ``HYPOTHESIS_PROFILE=ci`` explicitly in
+# the workflow rather than relying on the ``CI`` boolean — see
+# ``tests/fuzz/profiles.py`` for the rationale.
+register_hypothesis_profiles()
+_ACTIVE_HYPOTHESIS_PROFILE = os.environ.get("HYPOTHESIS_PROFILE", "dev")
+hypothesis_settings.load_profile(_ACTIVE_HYPOTHESIS_PROFILE)
 
 
 def _docker_available() -> bool:

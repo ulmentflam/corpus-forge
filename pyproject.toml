@@ -29,6 +29,10 @@ corpus-forge = "corpus_forge.cli:app"
 dev = [
   "pytest>=8.2",
   "pytest-cov>=5.0",
+  "pytest-timeout>=2.3",                     # CI-1: per-test timeout (kills deadlocks)
+  "pytest-randomly>=3.15",                   # CI-1: randomize order; surface order-dependence
+  "pytest-xdist>=3.6",                       # CI-1: -n auto parallelism for unit suite
+  "pytest-rerunfailures>=14.0",              # CI-1: targeted reruns for known-flaky network tests
   "hypothesis>=6.100",                       # fuzz / property-based tests
   "testcontainers[postgres]>=4.7",
   "ruff>=0.5",                               # lint + format
@@ -36,6 +40,7 @@ dev = [
   "pre-commit>=3.7",
   "mkdocs-material>=9.5",                    # docs site (built on demand)
   "mkdocstrings[python]>=0.25",              # API docs from docstrings
+  "build>=1.2",                              # CI-1: sdist/wheel builder for release artifacts
 ]
 
 # ── tool config (also see Tooling & development workflow above) ──
@@ -72,11 +77,14 @@ python_version   = "3.11"
 
 [tool.pytest.ini_options]
 testpaths     = ["tests"]
-addopts       = "-ra --strict-markers --strict-config"
+addopts       = "-ra --strict-markers --strict-config --timeout=60 --timeout-method=thread"
+xfail_strict  = true
 markers = [
   "integration: requires Docker / live Postgres",
   "smoke: end-to-end happy path",
   "fuzz: hypothesis-driven property tests",
+  "requires_unix: marks tests that only run on POSIX platforms (Linux / macOS)",
+  "requires_docker: marks tests that require a working Docker daemon",
 ]
 
 [tool.coverage.run]
@@ -84,5 +92,5 @@ source = ["corpus_forge"]
 omit   = ["corpus_forge/cli.py", "corpus_forge/__main__.py"]
 
 [tool.coverage.report]
-    fail_under   = 75
+fail_under   = 85
 show_missing = true
