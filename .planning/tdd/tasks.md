@@ -936,3 +936,35 @@ _Source plan: `/Users/evanowen/.claude/plans/crispy-yawning-crescent.md` § Phas
 6. ☑ All 6 R1 commits + this close-out commit follow the `[tdd-principal] phase-r1: <slice>` prefix, SSH-signed by 1Password.
 7. ☑ Tree clean at end.
 
+
+---
+
+## Phase R2 — Hybrid retriever + asymmetric `encode_query`
+
+_Source plan: `/Users/evanowen/.claude/plans/crispy-yawning-crescent.md`._
+
+**Dispatch mode**: Option B — atomic per-slice commits by tdd-principal (worker-tool unavailable; mirrors R1 close pattern).
+**Carry-overs from R1 honored**:
+- Backend score scales differ (sqlite `score = relevance/(1+relevance)` ∈ [0,1); postgres `ts_rank_cd` clipped to [0,1]) → R2 normalises **per-list** before alpha fusion; RRF stays rank-only.
+- `Hit.source` already includes `"fused"` / `"reranked"` — no widening.
+- `chunks` has no direct `dataset_id` — pass dataset filter through to backend calls.
+- No `[retrieval]` extra (R3 territory); numpy is transitive.
+
+### Tasks
+
+| id | title | depends_on | surface | risk | status | claimed_by | notes |
+|----|-------|------------|---------|------|--------|------------|-------|
+| R2-01 | RED — fusion / normalize / retriever / encode_query / config unit pins + dual-integration hybrid test | — | `tests/unit/test_retrieval_fusion.py`, `tests/unit/test_retrieval_normalize.py`, `tests/unit/test_retrieval_retriever.py`, `tests/unit/test_embedder_encode_query.py`, `tests/unit/test_config_retrieval.py`, `tests/integration/test_backend_dual.py` | med | pending | tdd-principal | — |
+| R2-02 | GREEN — `RetrievalConfig` model + attach to `Config` | R2-01 | `corpus_forge/config.py` | low | pending | tdd-principal | — |
+| R2-03 | GREEN — `Embedder.encode_query` protocol + `BaseEmbedder` default + Qwen3 override on `SentenceTransformersEmbedder` | R2-01 | `corpus_forge/embedders/base.py`, `corpus_forge/embedders/sentence_transformers.py` | low | pending | tdd-principal | — |
+| R2-04 | GREEN — `retrieval/normalize.py` (min-max) + `retrieval/fusion.py` (RRF + alpha_blend) | R2-01 | `corpus_forge/retrieval/normalize.py`, `corpus_forge/retrieval/fusion.py`, `corpus_forge/retrieval/__init__.py` | low | pending | tdd-principal | — |
+| R2-05 | GREEN — `retrieval/retriever.py` (`Retriever` protocol + `HybridRetriever`) | R2-03, R2-04 | `corpus_forge/retrieval/retriever.py`, `corpus_forge/retrieval/__init__.py` | med | pending | tdd-principal | reranker param exists but unused (R4 plumbing) |
+| R2-06 | GREEN — dual-backend integration: `test_hybrid_search_returns_fused_hits[*]` passes on real seeded corpus | R2-05 | `tests/integration/test_backend_dual.py` | low | pending | tdd-principal | wave 1 already added the test class in R2-01; this slice ensures it goes green |
+| R2-Z | Close-out summary + acceptance check | R2-02..R2-06 | `.planning/tdd/tasks.md` | low | pending | tdd-principal | — |
+
+### DAG
+- Wave 0: R2-01 (RED ratchet)
+- Wave 1: R2-02, R2-03, R2-04 (independent; disjoint surfaces)
+- Wave 2: R2-05 (HybridRetriever uses everything above)
+- Wave 3: R2-06 (integration goes green; no new code, just sanity-check)
+- Wave 4: R2-Z (close-out)
