@@ -5,12 +5,12 @@ set -euo pipefail
 
 echo "Installing corpus-forge..."
 
-# Change to repo root
-cd "$(dirname "$0")/.."
+# Change to repo root (scripts/macos/install.sh → repo root is two levels up).
+cd "$(dirname "$0")/../.."
 
 # Reverse-DNS prefix for the launchd label.
 # Override by exporting REVERSE_DNS before running this script.
-# Example: REVERSE_DNS=org.example ./scripts/install.sh
+# Example: REVERSE_DNS=org.example ./scripts/macos/install.sh
 REVERSE_DNS="${REVERSE_DNS:-com.${USER}}"
 LABEL="${REVERSE_DNS}.corpus-forge"
 

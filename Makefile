@@ -1,15 +1,34 @@
 .PHONY: help install dev lint format typecheck test test-unit test-integration test-fuzz test-smoke \
         migrate ingest embed backfill daemon stop logs ci docs docs-serve clean
 
+# Cross-platform dispatch: `make stop` / `make logs` need to talk to launchd
+# on macOS and to systemd-user on Linux. Detect OS once at the top.
+OS := $(shell uname -s)
+
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?##"};{printf "  %-18s %s\n",$$1,$$2}'
 
 install: ## Install runtime dependencies (uv sync)
 	uv sync
+	@$(MAKE) --no-print-directory _unhide-pth
 
 dev: ## Install dev dependencies + pre-commit hook
 	uv sync --all-extras --group dev
 	uv run pre-commit install
+	@$(MAKE) --no-print-directory _unhide-pth
+
+# Darwin-only workaround: when the repo lives in iCloud Drive (~/Library/Mobile
+# Documents/...), every freshly written file inherits the parent UF_HIDDEN flag,
+# which makes site.py silently skip every .pth file — breaking our editable
+# install (and therefore `import corpus_forge` from tests). Strip the flag
+# after each sync so the .pth gets honoured. No-op on non-darwin systems.
+.PHONY: _unhide-pth
+_unhide-pth:
+ifeq ($(OS),Darwin)
+	@if [ -d .venv/lib ]; then \
+	  find .venv/lib -name "*.pth" -exec chflags nohidden {} + 2>/dev/null || true; \
+	fi
+endif
 
 lint: ## ruff check
 	uv run ruff check corpus_forge tests
@@ -52,11 +71,23 @@ backfill: ## Backfill all active embedders
 daemon: ## Run daemon in foreground (dev)
 	uv run corpus-forge daemon
 
-stop: ## Stop launchd-managed daemon
-	./scripts/stop.sh
+stop: ## Stop the corpus-forge daemon (macOS launchd / Linux systemd-user)
+ifeq ($(OS),Darwin)
+	./scripts/macos/stop.sh
+else ifeq ($(OS),Linux)
+	systemctl --user stop corpus-forge.service || true
+else
+	@echo "make stop: unsupported OS '$(OS)' — run 'corpus-forge daemon' supervisor manually."
+endif
 
-logs: ## Tail launchd error log
+logs: ## Tail the corpus-forge daemon logs (macOS launchd / Linux journald)
+ifeq ($(OS),Darwin)
 	tail -f ~/Library/Logs/corpus-forge.err.log
+else ifeq ($(OS),Linux)
+	journalctl --user -u corpus-forge.service -f
+else
+	@echo "make logs: unsupported OS '$(OS)' — check your supervisor's log destination."
+endif
 
 ci: format-check lint typecheck test ## Full CI pipeline (run before pushing)
 
