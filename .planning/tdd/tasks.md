@@ -441,3 +441,110 @@ Triggered when Docker Desktop came online. Surface: the four "blocked" E2E test 
 - "1 pre-existing test assertion bug in `test_revisions.py`" — verified 22/22 green; no casing bug present.
 - Wave 6 (P0-08) and Wave 12 (P1-30..P1-32) flipped from `blocked` to ✅ DONE.
 - "6 integration tests blocked" claim updated: 102 integration tests passing.
+
+## Phase CI-1 Summary — CI foundation + stability harness
+
+Plan: `/Users/evanowen/.claude/plans/crispy-yawning-crescent.md` (first phase
+of beta-release milestone).
+
+### Dispatch mode
+
+**Option B (fused principal+coder)** — Agent tool not available in this
+session; principal absorbed tester+coder roles. Four atomic commits with
+`[tdd-principal] phase-ci-1:` prefix.
+
+### Slices landed
+
+| slice | commit | gist |
+|-------|--------|------|
+| 1 | `25c54d9` | RED tests for stability harness wiring (5 new unit test files, 30 cases) |
+| 2 | `7ef5d5c` | GREEN impl: tests/fuzz/profiles.py + pyproject.toml + Makefile + tests/conftest.py |
+| 3 | `f33dcc9` | YAML workflows: .github/workflows/ci.yml + .github/actions/setup-uv/action.yml |
+| 4 | `5bfd03b` | Hygiene: pythonpath in pytest ini + ruff format/lint cleanup (incl. pre-existing ingest.py drift) |
+
+### New unit tests
+
+- `tests/unit/test_phase_ci1_pyproject.py` — 15 cases (dev deps, addopts, xfail_strict, markers, coverage gate)
+- `tests/unit/test_hypothesis_profiles.py` — 11 cases (registration, semantics, conftest activation)
+- `tests/unit/test_markers_and_xfail.py` — 3 cases (marker registration + xfail_strict pytester verification)
+- `tests/unit/test_timeout_wired.py` — 3 cases (signal-method failure parsing, thread-method exit-code, plugin importability)
+- `tests/unit/test_ci_workflow_yaml.py` — 12 cases (CI YAML + composite action structural validation, Make-target dereferencing)
+
+**44 new unit tests added** all green after slice 2/3.
+
+### Gate output (final)
+
+| gate | result |
+|------|--------|
+| `make format-check` | `106 files already formatted` |
+| `make lint` | `All checks passed!` |
+| `make typecheck` | `0 errors (14 suppressed, 15 warnings not shown)` |
+| `make test-unit` | `1168 passed, 1 xfailed`, **91.94% coverage** (gate 85%), 28.24s with `-n auto` |
+| `make test-fuzz` (default dev profile) | `15 passed in 0.33s` |
+| `HYPOTHESIS_PROFILE=ci make test-fuzz` | `15 passed`, profile shows `deadline=800ms` |
+| `make test-smoke` | `10 passed in 3.59s` |
+| YAML parse (`yaml.safe_load`) | both files parse cleanly |
+| `actionlint` | **unavailable on local machine** (not in nix or homebrew or uvx registry) — defer to CI-2 |
+
+### What CI-1 surfaced (non-blocking for close-out)
+
+- **`test_chunk_reuse_e2e` (postgres) order-dependence**: pytest-randomly's
+  random seeding intermittently exposes a per-seed failure in
+  `tests/integration/test_backend_dual.py::TestChunkReuseE2E::test_chunk_reuse_e2e[postgres]`
+  when run as part of the full `make test-integration` suite. In isolation
+  the test passes; with the seed shown in `make ci` (auto-randomized) the
+  test fails. The test passes again with `--randomly-seed=3642869480`.
+  Likely root cause: shared session-scoped postgres container state isn't
+  fully reset between the standalone `test_chunk_reuse_e2e.py` module and
+  the parametrized `test_backend_dual.py::TestChunkReuseE2E` suite when
+  ordered back-to-back. This is a Phase B integration test that CI-1
+  intentionally did not touch; the order-dep is the *signal* pytest-randomly
+  was added to surface. Triage owner: B-tail / CI-2 (the latter introduces a
+  dedicated `integration.yml` workflow that will run integration in its own
+  job).
+- **Pre-existing ingest.py format drift**: corpus_forge/ingest.py was
+  committed with a long-line wrap that ruff format -check would reject;
+  hidden until CI-1 wired the gate. Folded into slice 4.
+
+### Acceptance status
+
+1. ☑ `make ci`-style six-gate gauntlet (format-check + lint + typecheck + test-unit + test-fuzz + test-smoke) green locally.
+2. ☑ Coverage 91.94% on unit suite (≥ 85% required).
+3. ☑ pyproject.toml verified via `tomllib.load(...)` — `fail_under == 85`, all five new dev deps declared, addopts carry `--timeout=60 --timeout-method=thread`, `xfail_strict == True`, markers table declares `requires_unix` + `requires_docker`.
+4. ☑ `tests/fuzz/profiles.py` exists; `HYPOTHESIS_PROFILE=ci uv run pytest tests/fuzz -v --hypothesis-show-statistics` confirms `ci` profile active.
+5. ☑ Workflow YAMLs parse via `yaml.safe_load`; `actionlint` skipped (unavailable locally).
+6. ☑ Working tree clean (only `.claude/` untracked, user-private).
+7. ☑ All four commits carry SSH signatures (1Password). `[tdd-principal] phase-ci-1:` prefix on every commit.
+
+### Files changed
+
+| file | role |
+|------|------|
+| `.github/workflows/ci.yml` | NEW — PR gate, single-OS × 3-Python matrix, two jobs (quality + test), workflow_call-able |
+| `.github/actions/setup-uv/action.yml` | NEW — composite action: install uv, cache uv + Hugging Face, sync dev deps |
+| `tests/fuzz/profiles.py` | NEW — dev/ci/nightly hypothesis profiles |
+| `tests/conftest.py` | register_hypothesis_profiles() at module import; activate via HYPOTHESIS_PROFILE env |
+| `pyproject.toml` | new dev deps, pytest addopts + xfail_strict + markers, coverage 85, pythonpath = ["."] |
+| `Makefile` | test-unit gains `-n auto --timeout=60`; test-fuzz reads HYPOTHESIS_PROFILE |
+| `corpus_forge/ingest.py` | pre-existing ruff-format drift reconciled |
+| `tests/unit/test_phase_ci1_pyproject.py` | NEW — pyproject pin verification |
+| `tests/unit/test_hypothesis_profiles.py` | NEW — profile registration + env semantics |
+| `tests/unit/test_markers_and_xfail.py` | NEW — marker registration + xfail_strict pin |
+| `tests/unit/test_timeout_wired.py` | NEW — pytest-timeout signal + thread method verification |
+| `tests/unit/test_ci_workflow_yaml.py` | NEW — workflow YAML structural validation |
+
+### Handoff to CI-2
+
+- The 3-OS matrix (`ubuntu-22.04`, `macos-14`, `windows-2022`) is the
+  next axis to expand. CI-2 will also add a separate `integration.yml`
+  (Postgres via services on Linux, docker setup on macOS) — that's the
+  natural home for the `test_chunk_reuse_e2e[postgres]` order-dep
+  triage.
+- `actionlint` should be wired into either the `quality` job or a
+  separate pre-commit hook in CI-2. The Nix flake at
+  `~/dotfiles/nixos-config` could grow an `actionlint` package; the
+  CI runner has it preinstalled.
+- `requires_unix` is declared but no real test consumes it yet —
+  CI-2 needs to actually mark Windows-unfriendly tests (subprocess
+  signal handling, advisory locks, etc.) with it when the windows-2022
+  matrix cell goes live.
