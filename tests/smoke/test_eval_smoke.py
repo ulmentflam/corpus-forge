@@ -153,3 +153,108 @@ def test_eval_retrieval_smoke(tmp_path: Path):
         for k, v in data[bucket].items():
             assert isinstance(v, int | float), f"{bucket}[{k}] not numeric: {v!r}"
             assert 0.0 <= float(v) <= 1.0, f"{bucket}[{k}] out of range: {v}"
+
+
+# ── R4-08: --rerank smoke ─────────────────────────────────────────────────
+
+
+def test_eval_retrieval_smoke_with_rerank(tmp_path: Path):
+    """End-to-end `corpus-forge eval retrieval --rerank` with a stubbed
+    cross-encoder model.
+
+    The real BAAI/bge-reranker-v2-m3 (~600 MB) is NEVER downloaded; we
+    patch `CrossEncoderReranker._get_model` to return a stub whose
+    `.predict(pairs, ...)` returns deterministic per-pair scores.
+
+    Skips when the seed corpus at /tmp/corpus-forge-test.db is absent
+    (same gate as `test_eval_retrieval_smoke`).
+    """
+    ok, reason = _seed_corpus_available()
+    if not ok:
+        pytest.skip(reason)
+
+    name, model_id, dim = _read_embedder_row()
+
+    config = Config.model_construct(
+        backend=BackendConfig(kind="sqlite", dsn=str(_SEED_DB), schema="corpus"),
+        daemon=DaemonConfig(),
+        datasets=[],
+        embedders=[
+            EmbedderConfig(
+                name=name,
+                provider="sentence_transformers",
+                model_id=model_id,
+                dimension=dim,
+                normalize=True,
+                distance="cosine",
+                active=True,
+                batch_size=32,
+                device="cpu",
+            )
+        ],
+    )
+
+    runner = CliRunner()
+    out_json = tmp_path / "metrics-rerank.json"
+
+    class _StubCrossEncoder:
+        def __init__(self, model_id: str, *, max_length: int = 512, device: str = "cpu"):
+            self.model_id = model_id
+            self.max_length = max_length
+            self.device = device
+
+        def predict(self, pairs, *, batch_size: int | None = None):
+            # Deterministic per-pair score: rank by index — head is best.
+            n = len(pairs)
+            return [float(n - i) for i in range(n)]
+
+    def _fake_get_model(self):
+        if self._model is None:
+            self._model = _StubCrossEncoder(
+                self.model_id, max_length=self.max_length, device=self.device
+            )
+        return self._model
+
+    with (
+        patch("corpus_forge.config.Config.load", return_value=config),
+        patch(
+            "corpus_forge.retrieval.rerank.cross_encoder.CrossEncoderReranker._get_model",
+            _fake_get_model,
+        ),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "eval",
+                "retrieval",
+                "--dataset",
+                "forge_self",
+                "--k",
+                "10",
+                "--rerank",
+                "--json",
+                str(out_json),
+            ],
+        )
+
+    combined = result.output or ""
+    assert result.exit_code == 0, f"eval --rerank CLI failed:\n{combined}"
+
+    lowered = combined.lower()
+    assert "ndcg" in lowered
+    assert "mrr" in lowered
+    assert "recall" in lowered
+    assert "10" in combined
+
+    # JSON dump parseable + all three metric blocks present.
+    assert out_json.exists(), f"--json target not written: {out_json}"
+    data = json.loads(out_json.read_text(encoding="utf-8"))
+    for bucket in ("ndcg", "mrr", "recall"):
+        assert bucket in data
+        for _k, v in data[bucket].items():
+            assert isinstance(v, int | float), f"{bucket} not numeric: {v!r}"
+            assert 0.0 <= float(v) <= 1.0, f"{bucket} out of range: {v}"
+
+    # R3 friendly notice MUST NOT appear (proves R4 swap landed).
+    assert "lands in r4" not in combined.lower()
+    assert "currently a no-op" not in combined.lower()
