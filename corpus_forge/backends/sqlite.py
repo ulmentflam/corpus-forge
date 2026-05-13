@@ -460,23 +460,29 @@ class SQLiteBackend:
         existed when the migration ran need a one-shot backfill — the FTS5
         virtual table is empty after ``CREATE VIRTUAL TABLE``.
 
+        Because ``chunks_fts`` is declared as an **external-content** table
+        (``content='chunks', content_rowid='id'``), the canonical backfill is
+        the FTS5 ``'rebuild'`` command, which re-tokenises every row.  We only
+        run it when there is at least one chunk not yet mirrored, so a
+        second call returns ``0`` and is truly idempotent.
+
         Returns:
-            The number of rows actually inserted into ``chunks_fts``.  On
-            re-call the count is 0 (idempotent — the ``NOT IN`` filter skips
-            rows already mirrored).
+            The number of rows that were absent from ``chunks_fts`` before
+            this call.  ``0`` on subsequent calls.
         """
-        # Idempotent INSERT: only rows whose id is not yet a chunks_fts.rowid.
-        # We need rowcount, so call sqlite3 directly (the _execute helper
-        # discards cursor.rowcount).
         with self._get_connection() as conn:
-            cur = conn.execute(
-                "INSERT INTO chunks_fts(rowid, text) "
-                "SELECT id, text FROM chunks "
-                "WHERE id NOT IN (SELECT rowid FROM chunks_fts)"
-            )
-            inserted = int(cur.rowcount or 0)
-            conn.commit()
-        return inserted
+            row = conn.execute(
+                "SELECT COUNT(*) FROM chunks WHERE id NOT IN (SELECT rowid FROM chunks_fts)"
+            ).fetchone()
+            missing = int(row[0]) if row is not None else 0
+            if missing > 0:
+                # External-content FTS5: the 'rebuild' command re-indexes
+                # every row referenced by the content_rowid.  Cheaper
+                # alternatives (per-row INSERT) silently no-op on external
+                # content, so 'rebuild' is the only reliable path.
+                conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')")
+                conn.commit()
+        return missing
 
     def register_embedder(self, embedder) -> int:  # pyrefly: ignore[missing-param-type]
         """Register an embedder and ensure its per-embedder vector table exists.
@@ -1497,8 +1503,13 @@ class SQLiteBackend:
 
         hits: list = []
         for r in rows:
+            # SQLite FTS5 bm25() returns a *non-positive* real value where
+            # values closer to 0 indicate stronger relevance.  Negate to get
+            # a non-negative relevance score, then squash to [0, 1] via
+            # x/(1+x), which is monotonic and bounded.
             bm25 = float(r["bm25_score"]) if r["bm25_score"] is not None else 0.0
-            score = 1.0 / (1.0 + bm25)
+            relevance = -bm25 if bm25 < 0 else bm25
+            score = relevance / (1.0 + relevance)
             md_raw = r.get("metadata")
             try:
                 metadata = json.loads(md_raw) if isinstance(md_raw, str) else (md_raw or {})
