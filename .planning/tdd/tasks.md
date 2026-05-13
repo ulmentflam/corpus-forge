@@ -1577,3 +1577,155 @@ c8730dc [tdd-tester]    RED suite for Wave 1 (R5-02 — mcp extra + module scaff
 - **No push performed.**  Branch `main` sits 53 commits ahead of `origin/main`; push deferred to the user per protocol.
 - **`.claude/` left untracked** — Phase CS owns it.
 
+---
+
+## Phase CS — Claude integration assets (active)
+
+Source plan: `/Users/evanowen/.claude/plans/crispy-yawning-crescent.md` §Phase CS.
+R5 closed at `4b48f09`.  Phase CS is pure docs/markdown/JSON — **no production code changes in `corpus_forge/`**.
+
+### Project gates (Phase CS)
+
+Same as the master board (top of file):
+- lint, format, typecheck, test-unit (cov ≥ 85), test-smoke.
+- `make ci` must remain green at every commit.
+
+### Authoritative inputs (carried over from R5)
+
+- Tool names (snake_case, case-sensitive): `search`, `get_chunk`, `list_datasets`.
+- MCP server name in config: `corpus-forge` → Claude Code tool prefix `mcp__corpus-forge__<tool>`.
+- `search` input schema (7 knobs): `query` (req), `k`, `dataset`, `fusion` (rrf|alpha), `alpha`, `rerank` (bool, default false), `rerank_top_n`.
+- `search` response: `{"hits": [HitDict, ...]}` — wrapped.
+- `get_chunk(chunk_id: int)` → chunk dict on hit; `CallToolResult(isError=True, text="chunk_id={n} not found")` on miss.
+- `list_datasets()` → `{"datasets": [{name, kind, description, document_count, chunk_count}, ...]}` — wrapped.
+- Rerank default OFF; first opt-in pulls a 600 MB `BAAI/bge-reranker-v2-m3` download (R4 discipline).
+- MCP transport v1: stdio only.  CLI launch: `corpus-forge mcp serve`.
+- Env var: `CORPUS_FORGE_CONFIG` selects the user TOML.
+
+### Phase CS tasks
+
+| id | title | depends_on | surface | risk | status | claimed_by | notes |
+|----|-------|------------|---------|------|--------|------------|-------|
+| CS-01 | MCP config examples (JSON + README) | — | `examples/mcp-config/claude-code.mcp.json`, `examples/mcp-config/claude-desktop.json`, `examples/mcp-config/README.md`, `tests/unit/test_mcp_config_examples.py` | low | pending | — | Wave 0 |
+| CS-02 | Claude Code skill (`SKILL.md`) | — | `.claude/skills/corpus-forge-search/SKILL.md`, `tests/unit/test_claude_skill_frontmatter.py` | low | pending | — | Wave 0 |
+| CS-03 | Agent SDK subagent | — | `.claude/agents/corpus-forge-researcher.md`, `tests/unit/test_claude_agent_frontmatter.py` | low | pending | — | Wave 0 |
+| CS-04 | Walkthrough doc | — | `docs/claude-integration.md`, `tests/unit/test_claude_integration_doc.py` | low | pending | — | Wave 0 |
+| CS-05 | Contract test (skill ↔ MCP tools/list) | CS-02 | `tests/smoke/test_skill_tool_contract.py` | med | pending | — | Wave 1; gates `pytest.importorskip("mcp")`; uses `/tmp/corpus-forge-test.db` like `test_mcp_stdio.py` |
+| CS-06 | README pointer (3 bullets) | CS-01, CS-02, CS-03, CS-04 | `README.md` | low | pending | — | Wave 2; **only add** the 3 bullets; do NOT rewrite — Phase BR owns the rewrite |
+| CS-07 | Manual rot-detector verification | CS-05 | `corpus_forge/mcp/server.py` (temp local rename — DO NOT COMMIT), bookkeeping | low | pending | — | Wave 3; verify CS-05 goes red on rename, then restore |
+| CS-08 | Phase CS close-out summary | CS-01..CS-07 | `.planning/tdd/tasks.md` | low | pending | — | Wave 3 |
+
+### Acceptance details
+
+#### CS-01 — MCP config examples
+- `examples/mcp-config/claude-code.mcp.json`:
+  ```json
+  {
+    "mcpServers": {
+      "corpus-forge": {
+        "command": "corpus-forge",
+        "args": ["mcp", "serve"],
+        "env": { "CORPUS_FORGE_CONFIG": "~/.config/corpus-forge/config.toml" }
+      }
+    }
+  }
+  ```
+- `examples/mcp-config/claude-desktop.json` — identical shape; README documents the install path `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS).
+- `examples/mcp-config/README.md` — install steps for both surfaces, prereq `pip install corpus-forge[sqlite,mcp]`, then `corpus-forge migrate` + `corpus-forge ingest --once` warm-up.
+- Unit test `tests/unit/test_mcp_config_examples.py`:
+  - Each JSON parses cleanly.
+  - `mcpServers.corpus-forge.command == "corpus-forge"`.
+  - `args` contains `["mcp", "serve"]`.
+  - `env.CORPUS_FORGE_CONFIG` exists (string).
+
+#### CS-02 — Claude Code skill
+- `.claude/skills/corpus-forge-search/SKILL.md` with YAML frontmatter:
+  - `name: corpus-forge-search`
+  - `description:` (≤ ~200 chars, "Search a corpus-forge training corpus via its MCP server. Use when…").
+  - `allowed-tools:` lists the three MCP tools with prefix `mcp__corpus-forge__`:
+    - `mcp__corpus-forge__search`
+    - `mcp__corpus-forge__get_chunk`
+    - `mcp__corpus-forge__list_datasets`
+- Body MUST contain these H2 sections (regex-checked):
+  - `## What is corpus-forge` — training-mission framing first.
+  - `## When to invoke` — bullets covering the search-the-corpus signals.
+  - `## When NOT to invoke` — bullets covering "asking about the tool itself" + "general programming".
+  - `## Tool playbook` — `list_datasets()` → `search()` → optional `rerank=true` (warn about 600 MB download) → chain `get_chunk()`.
+  - `## Response handling` — explains `hits[].source` semantics (`dense`/`lexical`/`fused`/`reranked`).
+  - `## Citation format` — `"From {title} ({source_uri}): {quote}"`.
+- Unit test `tests/unit/test_claude_skill_frontmatter.py`:
+  - Frontmatter parses as valid YAML.
+  - `name`, `description`, `allowed-tools` keys all present.
+  - `allowed-tools` contains the three `mcp__corpus-forge__<tool>` entries.
+  - Body contains each H2 (regex match on heading).
+
+#### CS-03 — Agent SDK subagent
+- `.claude/agents/corpus-forge-researcher.md` matches the existing `~/.claude/agents/*.md` frontmatter style (no leading quotes; bare `model:`; `tools:` as YAML list).
+- Frontmatter shape:
+  ```yaml
+  ---
+  name: corpus-forge-researcher
+  description: Research librarian for a corpus-forge training corpus. Spawn when the parent needs grounded citations from the indexed corpus.
+  model: sonnet
+  tools:
+    - mcp__corpus-forge__search
+    - mcp__corpus-forge__get_chunk
+    - mcp__corpus-forge__list_datasets
+  ---
+  ```
+- Body sets persona, citation discipline, default `search(query, k=10)`, `rerank=true` only for high-stakes parent tasks, dataset scoping rule.
+- Unit test `tests/unit/test_claude_agent_frontmatter.py`:
+  - Frontmatter parses.
+  - `name`, `description`, `model`, `tools` keys present.
+  - `tools` lists the three MCP tool names.
+
+#### CS-04 — Walkthrough doc
+- `docs/claude-integration.md` with H2 sections (regex-checked):
+  - `## Prerequisites` (working install + at least one dataset ingested).
+  - `## Wire-up` (point at `examples/mcp-config/claude-code.mcp.json`).
+  - `## Verify` (commands to list tools / confirm server is responsive).
+  - `## First search` (example user prompt that triggers the skill).
+  - `## Subagent` (delegated research example).
+  - `## Troubleshooting` (server not found, empty results, rerank slow first time, schema validation errors).
+- Unit test `tests/unit/test_claude_integration_doc.py`:
+  - File exists.
+  - Each required H2 heading present (regex).
+
+#### CS-05 — Contract test (rot-detector)
+- `tests/smoke/test_skill_tool_contract.py`:
+  - `pytest.importorskip("mcp")`; mark `pytestmark = pytest.mark.smoke`.
+  - Reuse the seed-corpus pattern from `tests/smoke/test_mcp_stdio.py` (seed at `/tmp/corpus-forge-test.db`; `pytest.skip` if missing).
+  - Subprocess-launch `uv run corpus-forge mcp serve` via `StdioServerParameters`.
+  - Drive `ClientSession.initialize()` + `list_tools()`.
+  - Parse `.claude/skills/corpus-forge-search/SKILL.md` frontmatter; strip the `mcp__corpus-forge__` prefix from each `allowed-tools` entry.
+  - Assert every stripped name appears in the server's `tools/list` response.
+- This test breaks loudly if R5+ ever renames a tool.
+
+#### CS-06 — README pointer
+- Locate the existing "Agent integration (MCP)" section (or, if missing, add it ABOVE the License footer).
+- Append exactly three bullets:
+  - "Drop-in Claude Code skill: see `examples/mcp-config/` and `.claude/skills/corpus-forge-search/`."
+  - "Agent SDK subagent: `.claude/agents/corpus-forge-researcher.md`."
+  - "Full walkthrough: `docs/claude-integration.md`."
+- Do not touch any other line.  Phase BR owns the full rewrite.
+
+#### CS-07 — Rot-detector manual verification
+- Locally: rename `name="search"` → `name="search_v2"` inside `corpus_forge/mcp/server.py::build_server`'s `@server.list_tools()` handler.
+- Run `uv run pytest tests/smoke/test_skill_tool_contract.py -v`.  Confirm the test FAILS with a clear "tool not advertised" assertion.
+- Revert the rename.  Re-run the test — green.
+- **Do NOT commit the rename.**  Log result in `qa-status.md`.
+
+#### CS-08 — Close-out summary
+- Append a `### Phase CS — close-out` block to this file with: files added, commit hashes, gates run, coverage delta, 1Password lock notes (if any), and any hand-offs for Phase BR.
+
+### Phase CS — DAG / waves
+
+- Wave 0 (parallel, 4 tasks): CS-01, CS-02, CS-03, CS-04.
+- Wave 1: CS-05 (after CS-02's SKILL.md exists).
+- Wave 2: CS-06 (after Wave 0 + Wave 1 land, so all referenced paths exist).
+- Wave 3: CS-07 + CS-08 (verification + bookkeeping).
+
+### Phase CS commit prefix
+
+`[<role>] phase-cs/<task-id>: <slice>` — HEREDOC, signed, Co-Authored-By: Claude Opus 4.7 (1M context).
+
