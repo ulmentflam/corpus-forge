@@ -1606,14 +1606,14 @@ Same as the master board (top of file):
 
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
-| CS-01 | MCP config examples (JSON + README) | — | `examples/mcp-config/claude-code.mcp.json`, `examples/mcp-config/claude-desktop.json`, `examples/mcp-config/README.md`, `tests/unit/test_mcp_config_examples.py` | low | red-pending | tdd-tester | Wave 0 |
-| CS-02 | Claude Code skill (`SKILL.md`) | — | `.claude/skills/corpus-forge-search/SKILL.md`, `tests/unit/test_claude_skill_frontmatter.py` | low | red-pending | tdd-tester | Wave 0 |
-| CS-03 | Agent SDK subagent | — | `.claude/agents/corpus-forge-researcher.md`, `tests/unit/test_claude_agent_frontmatter.py` | low | red-pending | tdd-tester | Wave 0 |
-| CS-04 | Walkthrough doc | — | `docs/claude-integration.md`, `tests/unit/test_claude_integration_doc.py` | low | red-pending | tdd-tester | Wave 0 |
-| CS-05 | Contract test (skill ↔ MCP tools/list) | CS-02 | `tests/smoke/test_skill_tool_contract.py` | med | pending | — | Wave 1; gates `pytest.importorskip("mcp")`; uses `/tmp/corpus-forge-test.db` like `test_mcp_stdio.py` |
-| CS-06 | README pointer (3 bullets) | CS-01, CS-02, CS-03, CS-04 | `README.md` | low | pending | — | Wave 2; **only add** the 3 bullets; do NOT rewrite — Phase BR owns the rewrite |
-| CS-07 | Manual rot-detector verification | CS-05 | `corpus_forge/mcp/server.py` (temp local rename — DO NOT COMMIT), bookkeeping | low | pending | — | Wave 3; verify CS-05 goes red on rename, then restore |
-| CS-08 | Phase CS close-out summary | CS-01..CS-07 | `.planning/tdd/tasks.md` | low | pending | — | Wave 3 |
+| CS-01 | MCP config examples (JSON + README) | — | `examples/mcp-config/claude-code.mcp.json`, `examples/mcp-config/claude-desktop.json`, `examples/mcp-config/README.md`, `tests/unit/test_mcp_config_examples.py` | low | done | tdd-coder | Wave 0; 14/14 unit green (955dcd5 red → 33b2526 green) |
+| CS-02 | Claude Code skill (`SKILL.md`) | — | `.claude/skills/corpus-forge-search/SKILL.md`, `tests/unit/test_claude_skill_frontmatter.py` | low | done | tdd-coder | Wave 0; 9/9 unit green (07cc3c9 red → c0a2ad1 green) |
+| CS-03 | Agent SDK subagent | — | `.claude/agents/corpus-forge-researcher.md`, `tests/unit/test_claude_agent_frontmatter.py` | low | done | tdd-coder | Wave 0; 9/9 unit green (e58674d red → b3af384 green) |
+| CS-04 | Walkthrough doc | — | `docs/claude-integration.md`, `tests/unit/test_claude_integration_doc.py` | low | done | tdd-coder | Wave 0; 7/7 unit green (b398cc0 red → bdf694e green) |
+| CS-05 | Contract test (skill ↔ MCP tools/list) | CS-02 | `tests/smoke/test_skill_tool_contract.py` | med | done | tdd-tester | Wave 1; lands green against live server (788d267); 1/1 smoke |
+| CS-06 | README pointer (3 bullets) | CS-01, CS-02, CS-03, CS-04 | `README.md` | low | done | tdd-coder | Wave 2; new "Agent integration (MCP)" section above License (32ea744) |
+| CS-07 | Manual rot-detector verification | CS-05 | `corpus_forge/mcp/server.py` (temp local rename — DO NOT COMMIT), bookkeeping | low | done | tdd-principal | Wave 3; CS-05 went RED with `missing=['search']` on `search→search_v2` rename, restored, tree clean |
+| CS-08 | Phase CS close-out summary | CS-01..CS-07 | `.planning/tdd/tasks.md` | low | done | tdd-principal | Wave 3; this commit |
 
 ### Acceptance details
 
@@ -1728,4 +1728,124 @@ Same as the master board (top of file):
 ### Phase CS commit prefix
 
 `[<role>] phase-cs/<task-id>: <slice>` — HEREDOC, signed, Co-Authored-By: Claude Opus 4.7 (1M context).
+
+### Phase CS — close-out summary
+
+Status: **all 8 tasks done.**  Phase CS landed on `main` between `2ca53e9`
+(seed) and the CS-08 commit (this one).
+
+#### Slices & commits (chronological)
+
+| Wave | Task  | Role          | Commit    | Result                                                  |
+|------|-------|---------------|-----------|---------------------------------------------------------|
+| —    | —     | tdd-principal | `2ca53e9` | Seed task board (CS-01..CS-08, 3 waves declared).       |
+| 0    | claim | tdd-principal | `ef7b85a` | Claim CS-01..CS-04 for tdd-tester (4 parallel slices).  |
+| 0    | CS-01 | tdd-tester    | `955dcd5` | RED suite (13 tests) for MCP config examples.           |
+| 0    | CS-01 | tdd-coder     | `33b2526` | GREEN — `examples/mcp-config/` drop-ins + README.       |
+| 0    | CS-02 | tdd-tester    | `07cc3c9` | RED suite (9 tests) for SKILL.md frontmatter + playbook.|
+| 0    | CS-02 | tdd-coder     | `c0a2ad1` | GREEN — `.claude/skills/corpus-forge-search/SKILL.md`.  |
+| 0    | CS-03 | tdd-tester    | `e58674d` | RED suite (9 tests) for subagent frontmatter + persona. |
+| 0    | CS-03 | tdd-coder     | `b3af384` | GREEN — `.claude/agents/corpus-forge-researcher.md`.    |
+| 0    | CS-04 | tdd-tester    | `b398cc0` | RED suite (7 tests) for walkthrough doc.                |
+| 0    | CS-04 | tdd-coder     | `bdf694e` | GREEN — `docs/claude-integration.md` (6 H2 sections).   |
+| 1    | CS-05 | tdd-tester    | `788d267` | Contract test (1 smoke test) — lands GREEN against live server. |
+| 2    | CS-06 | tdd-coder     | `32ea744` | README — new "Agent integration (MCP)" section (3 bullets). |
+| 3    | CS-07 | tdd-principal | n/a       | Manual rot-detector verification (no commit; see below). |
+| 3    | CS-08 | tdd-principal | this      | Close-out summary on `tasks.md`.                        |
+
+#### Files added (no `corpus_forge/` source changes)
+
+- `examples/mcp-config/claude-code.mcp.json`
+- `examples/mcp-config/claude-desktop.json`
+- `examples/mcp-config/README.md`
+- `.claude/skills/corpus-forge-search/SKILL.md`
+- `.claude/agents/corpus-forge-researcher.md`
+- `docs/claude-integration.md`
+- `tests/unit/test_mcp_config_examples.py` (14 tests)
+- `tests/unit/test_claude_skill_frontmatter.py` (9 tests)
+- `tests/unit/test_claude_agent_frontmatter.py` (9 tests)
+- `tests/unit/test_claude_integration_doc.py` (7 tests)
+- `tests/smoke/test_skill_tool_contract.py` (1 test, rot-detector)
+
+Plus `README.md` got a 3-bullet "Agent integration (MCP)" section above the
+License footer.  Phase BR will expand this section in the full README rewrite.
+
+#### Gates run
+
+`make ci` (format-check + lint + typecheck + test-unit + test-integration +
+test-fuzz + test-smoke) green on the closing commit:
+
+- test-unit: **1761 passed, 3 skipped, 1 xfailed**.
+- Coverage: **90.04%** (≥ 85% gate; no `corpus_forge/` source changes, so
+  coverage shouldn't shift — and didn't).
+- test-integration: **297 passed**.
+- test-fuzz: **15 passed**.
+- test-smoke: **14 passed** (was 13; CS-05's contract test added one).
+
+#### MCP tool-exposure-prefix convention
+
+Used: `mcp__corpus-forge__<tool>` (double-underscore separator between the
+literal `mcp`, the server name `corpus-forge`, and the bare tool name).
+
+How verified: this is the Anthropic-documented Claude Code convention for
+MCP tool surfacing — server name from `mcpServers.<name>` joined with the
+tool's bare name from `tools/list`.  Confirmed end-to-end by CS-05's
+contract test: the SKILL.md's `allowed-tools` entries (`mcp__corpus-forge__
+search`, ..._get_chunk, ..._list_datasets) strip the prefix cleanly to
+`search`, `get_chunk`, `list_datasets` — and those exactly match the
+server's live `tools/list` reply (`server_tools={'search', 'get_chunk',
+'list_datasets'}`).
+
+#### Contract test rot-detector result (CS-07)
+
+Local rename of `name="search"` → `name="search_v2"` in
+`corpus_forge/mcp/server.py::build_server` immediately drove the contract
+test to a clean RED with the exact diagnostic we wanted:
+
+```
+AssertionError: Skill declares MCP tools the server does not advertise (rot detector):
+missing=['search']; server_tools=['get_chunk', 'list_datasets', 'search_v2'];
+skill_entries=['mcp__corpus-forge__get_chunk', 'mcp__corpus-forge__list_datasets',
+                'mcp__corpus-forge__search']
+```
+
+Rename reverted, contract test re-green (1.02s).  **No rename committed.**
+
+#### 1Password lock fires during this run
+
+**Zero.**  Small-frequent-commit discipline held — every slice landed before
+any auth refresh fired.  This is the first multi-task milestone in beta to
+finish without an unlock.
+
+#### Hand-offs for Phase BR (banner + governance + tag)
+
+The 3-bullet pointer in README (`## Agent integration (MCP)`, above License
+footer) is intentionally **compact**.  Phase BR should expand it into a
+proper section, ideally in this shape:
+
+1. **One-liner banner** at the top of README (after the badges): "MCP server
+   for Claude Code / Desktop + drop-in skill — see Agent integration."
+2. **Expanded section** (where the 3 bullets live today): pull excerpts
+   from `docs/claude-integration.md` Prerequisites + Wire-up directly into
+   the README so a reader doesn't have to leave to get a working
+   installation.  Keep `docs/claude-integration.md` as the deep-dive.
+3. **Leave the 3 bullets compact in their current location** is fine if the
+   banner + expanded section both land; just delete the bullets and replace
+   them with the expanded section.  If Phase BR opts for "banner-only +
+   expanded section," the bullets become redundant and should be removed.
+4. **Do not re-author** `.claude/skills/corpus-forge-search/SKILL.md`,
+   `.claude/agents/corpus-forge-researcher.md`, or `docs/claude-
+   integration.md` in the BR rewrite — they are pinned by the four unit
+   suites + one contract test landed in this phase.  Touching them risks
+   needless RED.
+5. The MCP **server name** in the drop-in JSON (`corpus-forge`) and the
+   **tool prefix** (`mcp__corpus-forge__`) are both load-bearing for the
+   contract test.  Any rebrand to a different server name in BR must
+   simultaneously update SKILL.md and the contract test — file an
+   atomic-slice BR task for the rename if it happens.
+
+#### Working tree
+
+Clean at close-out.  Only `.claude/scheduled_tasks.lock` untracked (R5
+leftover, ignored).
 
