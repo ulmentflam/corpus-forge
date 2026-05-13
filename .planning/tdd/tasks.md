@@ -1606,10 +1606,10 @@ Same as the master board (top of file):
 
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
-| CS-01 | MCP config examples (JSON + README) | — | `examples/mcp-config/claude-code.mcp.json`, `examples/mcp-config/claude-desktop.json`, `examples/mcp-config/README.md`, `tests/unit/test_mcp_config_examples.py` | low | pending | — | Wave 0 |
-| CS-02 | Claude Code skill (`SKILL.md`) | — | `.claude/skills/corpus-forge-search/SKILL.md`, `tests/unit/test_claude_skill_frontmatter.py` | low | pending | — | Wave 0 |
-| CS-03 | Agent SDK subagent | — | `.claude/agents/corpus-forge-researcher.md`, `tests/unit/test_claude_agent_frontmatter.py` | low | pending | — | Wave 0 |
-| CS-04 | Walkthrough doc | — | `docs/claude-integration.md`, `tests/unit/test_claude_integration_doc.py` | low | pending | — | Wave 0 |
+| CS-01 | MCP config examples (JSON + README) | — | `examples/mcp-config/claude-code.mcp.json`, `examples/mcp-config/claude-desktop.json`, `examples/mcp-config/README.md`, `tests/unit/test_mcp_config_examples.py` | low | red-pending | tdd-tester | Wave 0 |
+| CS-02 | Claude Code skill (`SKILL.md`) | — | `.claude/skills/corpus-forge-search/SKILL.md`, `tests/unit/test_claude_skill_frontmatter.py` | low | red-pending | tdd-tester | Wave 0 |
+| CS-03 | Agent SDK subagent | — | `.claude/agents/corpus-forge-researcher.md`, `tests/unit/test_claude_agent_frontmatter.py` | low | red-pending | tdd-tester | Wave 0 |
+| CS-04 | Walkthrough doc | — | `docs/claude-integration.md`, `tests/unit/test_claude_integration_doc.py` | low | red-pending | tdd-tester | Wave 0 |
 | CS-05 | Contract test (skill ↔ MCP tools/list) | CS-02 | `tests/smoke/test_skill_tool_contract.py` | med | pending | — | Wave 1; gates `pytest.importorskip("mcp")`; uses `/tmp/corpus-forge-test.db` like `test_mcp_stdio.py` |
 | CS-06 | README pointer (3 bullets) | CS-01, CS-02, CS-03, CS-04 | `README.md` | low | pending | — | Wave 2; **only add** the 3 bullets; do NOT rewrite — Phase BR owns the rewrite |
 | CS-07 | Manual rot-detector verification | CS-05 | `corpus_forge/mcp/server.py` (temp local rename — DO NOT COMMIT), bookkeeping | low | pending | — | Wave 3; verify CS-05 goes red on rename, then restore |
