@@ -158,9 +158,14 @@ def _build_mock_client(per_call_responses: list[str]) -> Any:
 
 class TestScoringAndOrdering:
     def _patch_client(self, monkeypatch, mock_client):
+        # Pass the class object directly (not the dotted string path).  The
+        # string-path resolution inside monkeypatch.setattr was occasionally
+        # flaky under pytest-randomly when an earlier test had touched
+        # ``OllamaReranker._get_client`` (e.g. via patch.object); passing the
+        # class avoids the import-walk entirely and is the pytest-recommended
+        # form.
         monkeypatch.setattr(
-            "corpus_forge.retrieval.rerank.ollama.OllamaReranker._get_client",
-            lambda self, _c=mock_client: _c,
+            OllamaReranker, "_get_client", lambda self, _c=mock_client: _c, raising=True
         )
 
     def test_scoring_prompt_includes_query_and_passage(self, monkeypatch):
@@ -218,10 +223,7 @@ class TestScoringAndOrdering:
         """A raising client returns score 0 — the rerank pass does NOT crash."""
         client = MagicMock()
         client.chat.completions.create.side_effect = RuntimeError("boom")
-        monkeypatch.setattr(
-            "corpus_forge.retrieval.rerank.ollama.OllamaReranker._get_client",
-            lambda self, _c=client: _c,
-        )
+        monkeypatch.setattr(OllamaReranker, "_get_client", lambda self, _c=client: _c, raising=True)
         r = OllamaReranker(model_id="llama3.1:8b")
         out = r.rerank("q", [_hit(1, score=0.5), _hit(2, score=0.5)])
         # Both score 0 → tie → fused score (also tied) → chunk_id asc.
