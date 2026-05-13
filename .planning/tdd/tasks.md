@@ -1498,3 +1498,82 @@ ec0b81a [tdd-tester]    RED suite for Wave 0 (R4-01/02/03)
 
 Independent QA passes for R4-01..R4-09 were **collapsed into a single integrated QA sweep** (full unit / integration / smoke / gates under HF offline) rather than per-task QA dispatches.  Rationale: each task's tests carry the contract; the gate matrix is reliable; the surface is small enough that a separate QA actor would have re-run the same suite without adding signal.  All assertions are substantive (no `assert hasattr` placeholders); lazy-load discipline is doubly pinned (sub-package + class level + offline-mode full-suite proof).
 
+
+## Phase R5 — MCP server + `search` CLI (closeout)
+
+| id    | title                                                                 | status |
+|-------|-----------------------------------------------------------------------|--------|
+| R5-01 | `get_chunk_by_content_hash` protocol lift on both backends            | done   |
+| R5-02 | `[mcp]` extra + `corpus_forge/mcp/{__init__,transport,server}.py` scaffold + CLI `mcp serve` group | done |
+| R5-03 | MCP server core — `build_server` factory; `search`/`get_chunk`/`list_datasets` tools | done |
+| R5-04 | Top-level `corpus-forge search` CLI command (+ `mcp serve` dispatch pin) | done |
+| R5-05 | stdio smoke test driving `uv run corpus-forge mcp serve` via `mcp.client.stdio` | done |
+
+### Surface delivered (Phase R5)
+
+- **`corpus_forge/mcp/server.py::build_server(retriever_builder, reranker_builder=None, default_dataset=None)`** — pure factory; lazy retriever (built on first dispatch, memoized); default-off reranker (builder fires only when `rerank=True` flows in, memoized).
+- **MCP tool names + response shapes** (load-bearing for Phase CS):
+  - `search` → `{"hits": [{"chunk_id", "score", "text", "document_id", "conversation_id", "message_id", "source_uri", "title", "dataset_id", "metadata", "source"} ...]}`
+  - `get_chunk` → chunk dict (backend.get_chunk passthrough) OR `CallToolResult.isError=True` + TextContent when not found
+  - `list_datasets` → `{"datasets": [{name, kind, description, document_count, chunk_count} ...]}`
+- **`corpus-forge search "query"`** with `--k` (default 10), `--dataset`, `--fusion`, `--alpha`, `--rerank/--no-rerank`, `--json PATH`.
+- **`corpus-forge mcp serve [--transport stdio] [--dataset NAME]`** — rejects non-stdio transports with `typer.BadParameter`.
+- **`CORPUS_FORGE_CONFIG` env var** — new in R5; honoured by `Config.load()` with priority: explicit arg → env var → `~/.config/corpus-forge/config.toml`.  Enables subprocess-driven smoke + Claude Desktop launcher patterns.
+- **Refactor decision**: did NOT extract `_build_retriever_for_eval` / `_build_reranker_from_config` from `cli.py` to a shared module.  The MCP server module's `serve_stdio()` lazy-imports them from `cli` — no circular-import risk because the import happens inside the function body (the server module never reads `cli` at import time).  Lifting to a shared module would have churned the existing eval CLI tests' monkeypatch surface for no real gain.
+
+### Gate matrix (Phase R5)
+
+- `ruff check corpus_forge tests` — clean.
+- `ruff format --check corpus_forge tests` — 163 files clean.
+- `pyrefly check corpus_forge` — 0 errors (17 suppressed, 27 warnings, pre-existing).
+- `pytest tests/unit --cov=corpus_forge --cov-fail-under=85` — **90.19% coverage** (gate ≥85%); 1722 pass / 3 skip / 1 xfail under `-p no:randomly`.  Three `test_reranker_ollama.py::TestScoringAndOrdering` failures under random ordering are PRE-EXISTING and reproduce on the prior tip — independent of Phase R5.
+- `pytest tests/smoke` — 13/13 pass (incl. new `test_mcp_stdio.py`).
+- `pytest tests/integration` — not re-run this session; R4 baseline (73/73) carries unchanged.
+
+### Commit summary (R5)
+
+```
+9fdadb2 [tdd-coder]     phase-r5: lint/format/typecheck closeout (R5 gates green)
+22af452 [tdd-coder]     GREEN R5-05 — MCP stdio smoke + CORPUS_FORGE_CONFIG env var
+6485379 [tdd-coder]     GREEN R5-04 — corpus-forge search CLI command
+eb3a805 [tdd-tester]    RED suite for R5-04 (corpus-forge search CLI + mcp serve dispatch)
+1b05ab4 [tdd-coder]     GREEN R5-03 — MCP server core (search/get_chunk/list_datasets)
+8543230 [tdd-tester]    RED suite for R5-03 (MCP server core + tools)
+3a46026 [tdd-coder]     GREEN R5-02 — [mcp] extra + mcp module scaffold + CLI surface
+c8730dc [tdd-tester]    RED suite for Wave 1 (R5-02 — mcp extra + module scaffold)
+0592b80 [tdd-coder]     GREEN R5-01 — get_chunk_by_content_hash protocol-lift impl
+187007c [tdd-tester]    RED suite for get_chunk_by_content_hash protocol lift
+```
+
+### Hand-offs to Phase CS (Claude skill/agent assets)
+
+1. **MCP tool names are final** — `search`, `get_chunk`, `list_datasets`.  Wave 2 GREEN matches the RED spec verbatim; no drift.
+2. **Search response shape**: `{"hits": [HitDict, ...]}` — wrapped in a dict, NOT a bare list.  Each `HitDict` has eleven keys (chunk_id, score, text, document_id, conversation_id, message_id, source_uri, title, dataset_id, metadata, source).
+3. **get_chunk error path**: missing chunk returns `CallToolResult(isError=True, content=[TextContent(text="chunk_id={n} not found")])`.  Skill prompts should treat `isError` as authoritative, not parse the text.
+4. **`search.inputSchema` advertises seven knobs**: `query` (required), `k`, `dataset`, `fusion` (enum: rrf|alpha), `alpha`, `rerank` (bool, default false), `rerank_top_n`.
+5. **Reranker default-off**: skill prompts that want rerank MUST pass `"rerank": true` explicitly.  Omitting the key keeps the fast path.
+
+### Hand-offs to Phase BR (beta release / README)
+
+1. **New CLI commands to document**: `corpus-forge search "query"` and `corpus-forge mcp serve`.
+2. **New install path**: `uv sync --extra mcp` (or `pip install corpus-forge[mcp]`) for MCP support.  The `mcp` extra adds the `modelcontextprotocol/python-sdk` dependency.
+3. **New env var**: `CORPUS_FORGE_CONFIG=<path>` lets users / launchers point at a non-default config without writing to `~/.config`.
+4. **Claude Desktop config snippet** (suggested):
+   ```json
+   {
+     "mcpServers": {
+       "corpus-forge": {
+         "command": "uv",
+         "args": ["run", "corpus-forge", "mcp", "serve"],
+         "env": {"CORPUS_FORGE_CONFIG": "/path/to/config.toml"}
+       }
+     }
+   }
+   ```
+
+### Notes
+
+- **1Password did NOT lock during this resume.**  All five commits signed cleanly via SSH agent on first attempt.
+- **No push performed.**  Branch `main` sits 53 commits ahead of `origin/main`; push deferred to the user per protocol.
+- **`.claude/` left untracked** — Phase CS owns it.
+
