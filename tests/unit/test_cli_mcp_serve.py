@@ -1,0 +1,67 @@
+"""R5-02 / R5-04 — `corpus-forge mcp serve` CLI surface.
+
+R5-02 scope: pin the existence of the ``mcp serve`` subcommand and its
+``--transport`` flag (only ``stdio`` is valid in v1).
+
+R5-04 will extend this module with end-to-end CLI tests that exercise
+the serve loop against a seeded fake retriever.  For Wave 1 we only
+pin the help-surface so the typer registration lands correctly.
+"""
+
+from __future__ import annotations
+
+from typer.testing import CliRunner
+
+
+def test_help_lists_mcp_subcommand() -> None:
+    """`corpus-forge --help` advertises the `mcp` subcommand group."""
+    from corpus_forge.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0, result.output
+    assert "mcp" in result.output, (
+        f"`mcp` subcommand must appear in `corpus-forge --help`; got:\n{result.output}"
+    )
+
+
+def test_help_lists_serve_under_mcp() -> None:
+    """`corpus-forge mcp --help` advertises the `serve` subcommand."""
+    from corpus_forge.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mcp", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "serve" in result.output, (
+        f"`serve` must appear in `corpus-forge mcp --help`; got:\n{result.output}"
+    )
+
+
+def test_help_lists_stdio_transport() -> None:
+    """`corpus-forge mcp serve --help` documents the `--transport` flag.
+
+    In v1, only ``stdio`` is a valid transport.  The CLI surfaces the flag
+    so users can future-proof against later transports (HTTP, etc.).
+    """
+    from corpus_forge.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mcp", "serve", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "--transport" in result.output, (
+        f"`mcp serve --help` must list `--transport`; got:\n{result.output}"
+    )
+    assert "stdio" in result.output.lower(), (
+        f"`mcp serve --help` must mention `stdio` transport; got:\n{result.output}"
+    )
+
+
+def test_invalid_transport_rejected() -> None:
+    """Anything other than ``stdio`` must be rejected (v1 only ships stdio)."""
+    from corpus_forge.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mcp", "serve", "--transport", "http"])
+    assert result.exit_code != 0, (
+        f"`--transport http` should be rejected in v1; got:\n{result.output}"
+    )

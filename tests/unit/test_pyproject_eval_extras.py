@@ -60,11 +60,12 @@ def test_numpy_floor_at_least_1_26():
         assert (major, minor) >= (1, 26), f"[{which}] numpy floor must be >= 1.26 (got {np_pin})"
 
 
-def test_mcp_extra_not_yet_declared():
-    """R5 owns it; if it appears here, someone leaked R5 scope into R3."""
+def test_mcp_extra_landed_by_r5():
+    """R5 lands the [mcp] extra.  Belt-and-braces pin so a regression here
+    surfaces in both R3 and R5 test modules."""
     pp = _load_pyproject()
     extras = pp.get("project", {}).get("optional-dependencies", {})
-    assert "mcp" not in extras, "R3 must NOT declare the [mcp] extra; that belongs to Phase R5."
+    assert "mcp" in extras, "[mcp] extra must be present (landed by R5-02)."
 
 
 def test_numpy_importable_in_dev_env():
