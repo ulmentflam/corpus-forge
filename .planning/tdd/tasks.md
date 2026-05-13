@@ -798,3 +798,81 @@ _Plan reference: `/Users/evanowen/.claude/plans/crispy-yawning-crescent.md` (CI-
 6. ☑ `Makefile` `stop` / `logs` dispatch on `uname -s`; `make -n stop` on darwin yields the macOS path.
 7. ☑ `pythonpath = ["."]` removed; full unit suite passes via the hatchling editable install (with macOS iCloud hidden-flag workaround via `make _unhide-pth`).
 8. ☑ Working tree clean (only `.claude/` untracked, user-private). All commits SSH-signed.
+
+---
+
+## Phase R1 — Lexical index + protocol lift
+
+_Source plan: `/Users/evanowen/.claude/plans/crispy-yawning-crescent.md` § Phase R1._
+
+**Dispatch mode**: Option B (fused) — Agent tool not present in current toolset; tdd-principal executes RED then GREEN slices in-process and atomically commits each slice prefixed `[tdd-principal] phase-r1: <slice>`.
+
+**Headline**: introduce the first retrieval surface on `StorageBackend`. 5 new methods: `search_dense`, `search_lexical`, `get_chunk`, `list_datasets`, `backfill_lexical_index`. New `corpus_forge/retrieval/{__init__.py, types.py}` module exporting `Hit`, `SearchOptions`, `RetrievalMetrics`. New `004_fts.sql` migrations for both dialects: Postgres `text_tsv` GENERATED column + GIN index; SQLite `chunks_fts` FTS5 virtual table + ai/ad/au triggers + idempotent `backfill_lexical_index()` invocation.
+
+### Tasks (R1)
+
+| id | title | depends_on | surface | risk | status | claimed_by | notes |
+|----|-------|------------|---------|------|--------|------------|-------|
+| R1-01 | RED — `retrieval/types.py` + protocol-surface signature pins (unit) | — | `tests/unit/test_retrieval_types.py`, `tests/unit/test_protocol_retrieval_surface.py` | low | pending | tdd-principal | — |
+| R1-02 | RED — migration 004 parser + FTS5 trigger semantics (unit) | — | `tests/unit/test_migration_004_postgres.py`, `tests/unit/test_migration_004_sqlite.py`, `tests/unit/test_sqlite_fts_triggers.py` | low | pending | tdd-principal | — |
+| R1-03 | RED — dual-backend integration: search_dense + search_lexical + get_chunk + list_datasets + backfill | — | `tests/integration/test_backend_dual.py` (additions), `tests/integration/test_migrate_004_sqlite.py`, `tests/integration/test_migrate_004_postgres.py` | med | pending | tdd-principal | — |
+| R1-04 | GREEN — `004_fts.sql` (postgres + sqlite) + `migrate.py` backfill wiring | R1-02 | `corpus_forge/schema/004_fts.sql`, `corpus_forge/schema/sqlite/004_fts.sql`, `corpus_forge/schema/migrate.py` | low | pending | tdd-principal | — |
+| R1-05 | GREEN — `corpus_forge/retrieval/{__init__.py, types.py}` | R1-01 | `corpus_forge/retrieval/__init__.py`, `corpus_forge/retrieval/types.py` | low | pending | tdd-principal | — |
+| R1-06 | GREEN — protocol surface in `backends/base.py` | R1-01, R1-05 | `corpus_forge/backends/base.py` | low | pending | tdd-principal | — |
+| R1-07 | GREEN — sqlite backend impls + inline `migrate()` 004 application | R1-04, R1-06 | `corpus_forge/backends/sqlite.py` | med | pending | tdd-principal | search_dense lifted from `scripts/query_repo_sqlite.py`. |
+| R1-08 | GREEN — postgres backend impls (parity) | R1-04, R1-06 | `corpus_forge/backends/postgres.py` | med | pending | tdd-principal | inline `migrate()` already runs numbered files via `apply_migrations`. |
+| R1-09 | QA — `make ci` + integration + idempotency + dogfood `scripts/query_repo_sqlite.py` | R1-04..R1-08 | n/a | high | pending | tdd-principal | — |
+
+### Waves
+
+- Wave 0 (RED, all parallel-safe by file surface): R1-01, R1-02, R1-03.
+- Wave 1 (GREEN, parallel-safe): R1-04, R1-05.
+- Wave 2 (GREEN, depends on Wave 1): R1-06 (then R1-07 + R1-08 fan out).
+- Wave 3 (QA): R1-09.
+
+### Acceptance details
+
+#### R1-01 — retrieval types
+- `Hit` is `@dataclass(frozen=True)` with exactly: `chunk_id: int`, `score: float`, `text: str`, `document_id: int | None`, `source_uri: str | None`, `title: str | None`, `dataset_id: int`, `metadata: dict[str, Any]`, `source: Literal["dense","lexical","fused","reranked"]`.
+- `SearchOptions` defaults: `k=10`, `dataset=None`, `fusion="rrf"`, `alpha=0.5`, `rerank=False`, `rerank_top_n=50`.
+- `RetrievalMetrics` fields: `ndcg`, `mrr`, `recall`, each `dict[int, float]`.
+- `Hit.source` literal MUST include all four values (forward-compat for R2/R4).
+- Protocol pin: `StorageBackend` has 5 new methods with the spec signatures; `Hit` is only imported under `TYPE_CHECKING` so no runtime circular import.
+
+#### R1-02 — migrations
+- `004_fts.sql` (postgres): `ALTER TABLE corpus.chunks ADD COLUMN IF NOT EXISTS text_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED;` + `CREATE INDEX IF NOT EXISTS chunks_tsv_idx ON corpus.chunks USING GIN (text_tsv);`.
+- `sqlite/004_fts.sql`: `CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, content='chunks', content_rowid='id', tokenize='porter unicode61');` + `chunks_ai`, `chunks_ad`, `chunks_au` triggers; each trigger guarded `CREATE TRIGGER IF NOT EXISTS`.
+- Triggers verified via in-memory `sqlite3.connect(":memory:")` execution of the migration against a tiny seed schema (chunks table only) and observing rowid mirroring on INSERT/UPDATE/DELETE.
+
+#### R1-03 — dual-backend integration
+- `test_search_dense_returns_topk`: deterministic vectors, top-k ordering, `Hit.source == "dense"`, score = 1.0 - distance for sqlite normalized cosine.
+- `test_search_lexical_matches_phrase`: insert chunks, search a phrase, verify Hit (`source == "lexical"`).
+- `test_search_lexical_excludes_other_datasets`: dataset filter excludes other dataset.
+- `test_get_chunk_joins_document`: returns dict with `source_uri` + `title`.
+- `test_list_datasets_counts`: two datasets, correct document/chunk counts.
+- `test_backfill_lexical_index_idempotent_sqlite` (sqlite-only): N then 0.
+- `test_migrate_004_sqlite`: fresh tmp_path db, migrate twice → no error, `chunks_fts` exists, INSERT/UPDATE/DELETE mirror.
+- `test_migrate_004_postgres`: testcontainer Postgres; `text_tsv` GENERATED column present, GIN index in `pg_indexes`, EXPLAIN ANALYZE on a `text_tsv @@ websearch_to_tsquery(...)` query uses the GIN index.
+
+#### R1-04 — migration files + backfill wiring
+- File `corpus_forge/schema/004_fts.sql` — exactly the Postgres ALTER + CREATE INDEX.
+- File `corpus_forge/schema/sqlite/004_fts.sql` — virtual table + 3 triggers.
+- `apply_migrations(...)` invokes `backend.backfill_lexical_index()` once after applying `004_fts` on the SQLite dialect. Backend whose `backfill_lexical_index` returns int. Idempotent on re-run.
+
+#### R1-07 / R1-08 — backend impls
+- `search_dense` (sqlite): lift SQL from `scripts/query_repo_sqlite.py:67–92`. `MATCH ... AND k = ?` against `embeddings_<safe>` vec0 table. LEFT JOIN documents (chunk may have NULL `document_id` for message chunks). Filter by `dataset_id` if provided. `Hit.score = 1.0 - distance`.
+- `search_dense` (postgres): `ORDER BY embedding <=> %s LIMIT %s` on `corpus.embeddings_<safe>`. `Hit.score = 1.0 - cosine_distance`.
+- `search_lexical` (sqlite): `chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT ?`, normalized `1/(1+bm25)`.
+- `search_lexical` (postgres): `ts_rank_cd(text_tsv, websearch_to_tsquery('english', %s)) AS rank`. Clip to `[0,1]` if needed.
+- `get_chunk(chunk_id)`: returns row dict joined to documents (LEFT JOIN) or `None`.
+- `list_datasets()`: returns list of dicts `{name, kind, description, document_count, chunk_count}` ordered by `name`.
+- `backfill_lexical_index()`: sqlite returns rowcount of inserted rows; postgres returns 0.
+
+#### R1-09 — QA acceptance
+- `make ci` green: format-check, lint, pyrefly strict, unit tests + ≥ 85% coverage.
+- `make test-integration` green: new dual-backend + migrate_004 tests pass on both backends.
+- `corpus-forge migrate` twice → no errors / no duplicate triggers / no duplicate columns.
+- `scripts/query_repo_sqlite.py` still runs end-to-end against `/tmp/corpus-forge-test.db` (sample query produces results).
+- `backend.search_lexical("how does lock_source work", k=5)` returns plausible hits on the seeded corpus on both backends.
+- All commits prefixed `[tdd-principal] phase-r1: <slice>`; SSH-signed; tree clean at end (only `.claude/` untracked).
+
