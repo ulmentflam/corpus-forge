@@ -40,7 +40,7 @@ def register_hypothesis_profiles() -> None:
         suppress_health_check=(HealthCheck.too_slow,),
     )
 
-    # ── ci: PR-gate matrix runs (3 OS × 3 Py later; single-OS in CI-1) ──
+    # ── ci: PR-gate matrix runs (3 OS x 3 Py later; single-OS in CI-1) ──
     settings.register_profile(
         "ci",
         max_examples=100,

@@ -18,7 +18,6 @@ import sys
 
 import pytest
 
-
 pytest_plugins = ["pytester"]
 
 
@@ -82,11 +81,7 @@ def test_xfail_strict_fails_on_unexpected_pass(pytester: pytest.Pytester) -> Non
             "    assert True\n"
         )
     )
-    pytester.makeini(
-        "[pytest]\n"
-        "xfail_strict = true\n"
-        "addopts = --strict-markers\n"
-    )
+    pytester.makeini("[pytest]\nxfail_strict = true\naddopts = --strict-markers\n")
     result = pytester.runpytest("-p", "no:cacheprovider")
     # With xfail_strict, XPASS -> failure. assert_outcomes counts failures.
     result.assert_outcomes(failed=1)
