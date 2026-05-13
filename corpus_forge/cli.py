@@ -572,5 +572,59 @@ def eval_corpus_quality(
     _do_eval(dataset, k, metric, fusion, alpha, rerank, json_out)
 
 
+# ── mcp subcommand group (Phase R5) ───────────────────────────────────────
+
+
+mcp_app = typer.Typer(
+    name="mcp",
+    help=(
+        "Model Context Protocol server.  Exposes corpus-forge's retrieval "
+        "stack to MCP-compatible clients (Claude Desktop, mcp-cli, ...) "
+        "over stdio."
+    ),
+    add_completion=False,
+)
+app.add_typer(mcp_app, name="mcp")
+
+
+@mcp_app.command("serve")
+def mcp_serve(
+    transport: str = typer.Option(
+        "stdio",
+        "--transport",
+        help="Transport for the MCP server.  Only `stdio` is supported in v1.",
+    ),
+    dataset: str | None = typer.Option(
+        None,
+        "--dataset",
+        "-d",
+        help="Optional default dataset name to scope tool calls when not specified.",
+    ),
+) -> None:
+    """Launch the corpus-forge MCP server.
+
+    The server registers three tools: ``search`` (hybrid retrieval),
+    ``get_chunk`` (chunk lookup by id), and ``list_datasets`` (catalogue
+    enumeration).  See ``corpus_forge.mcp.server`` for the schemas.
+    """
+    from corpus_forge.mcp.transport import Transport
+
+    try:
+        chosen = Transport(transport)
+    except ValueError as exc:
+        valid = ", ".join(t.value for t in Transport)
+        raise typer.BadParameter(f"unknown transport {transport!r}; valid: {valid}") from exc
+
+    # Wave 2/3 wires the server through; Wave 1 only pins help + flag
+    # validation.  When the server module lands the body below will
+    # dispatch to corpus_forge.mcp.server.serve_stdio(...).
+    if chosen is Transport.STDIO:
+        from corpus_forge.mcp.server import serve_stdio
+
+        serve_stdio(default_dataset=dataset)
+    else:  # pragma: no cover — defensive; the enum currently has only STDIO
+        raise typer.BadParameter(f"transport {chosen.value!r} not implemented")
+
+
 if __name__ == "__main__":
     app()
