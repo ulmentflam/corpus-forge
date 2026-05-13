@@ -8,6 +8,17 @@ from pathlib import Path
 import pytest
 from hypothesis import settings as hypothesis_settings
 
+# CI workflows set FORCE_COLOR=1 so pytest itself colorizes nicely, but that
+# leaks into typer/Rich help rendering inside CliRunner — Rich then wraps
+# each flag character in ANSI escapes (``--k`` becomes
+# ``\x1b[1;36m-\x1b[0m\x1b[1;36m-k\x1b[0m``) and substring assertions like
+# ``'--k' in result.output`` start failing on CI even though they pass
+# locally.  Force a plain-text rendering for the entire test session.  This
+# must happen *before* any module-level click/typer import so the runtime
+# never sees FORCE_COLOR.
+os.environ.pop("FORCE_COLOR", None)
+os.environ["NO_COLOR"] = "1"
+
 from corpus_forge.sources.base import RawConversation, RawDocument, RawMessage
 from tests.fuzz.profiles import register_hypothesis_profiles
 
