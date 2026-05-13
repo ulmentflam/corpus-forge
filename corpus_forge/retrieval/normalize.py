@@ -28,8 +28,11 @@ def min_max(scores: Iterable[float]) -> list[float]:
 
     Behaviour:
     - Empty input → empty output.
-    - Single element → ``[0.0]`` (no useful spread).
-    - All-equal input → all-zeros (avoids division-by-zero; deterministic).
+    - Single element → ``[1.0]``.  Semantically the single hit is the best
+      of its (degenerate) list — emitting 0.0 would silently delete the only
+      candidate from the alpha-fusion blend.
+    - All-equal input (≥ 2 elements) → all-zeros.  Distinct from the
+      single-element case because there is no "best" among equals.
     - NaN inputs are coerced to the minimum (they sink to 0.0 in the output).
     - Negative inputs are accepted; the result is shifted so the minimum is 0.
     - Input is never mutated; a new list is always returned.
@@ -42,15 +45,20 @@ def min_max(scores: Iterable[float]) -> list[float]:
     if not raw:
         return []
 
+    if len(raw) == 1:
+        # Single element: emit 1.0 so the alpha-fusion blend keeps the hit.
+        # Emitting 0.0 would erase the only candidate from the blend when
+        # the other list contributes anything (see the dual-backend
+        # TestHybridSearch::test_hybrid_search_alpha_fusion_blends_scores
+        # case with alpha=0.0).
+        return [1.0]
+
     # Replace NaN with the minimum-finite value so they sink to 0 below.
     finite: list[float] = [x for x in raw if not math.isnan(x)]
     if not finite:
         return [0.0 for _ in raw]
     lo = min(finite)
     hi = max(finite)
-
-    if len(raw) == 1:
-        return [0.0]
 
     spread = hi - lo
     if spread == 0.0:

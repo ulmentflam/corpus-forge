@@ -73,8 +73,8 @@ class HybridRetriever:
 
     def __init__(
         self,
-        backend: "StorageBackend",
-        embedder: "Embedder",
+        backend: StorageBackend,
+        embedder: Embedder,
         embedder_id: int,
         reranker: Any | None = None,
     ) -> None:

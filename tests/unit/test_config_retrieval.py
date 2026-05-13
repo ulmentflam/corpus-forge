@@ -31,7 +31,6 @@ from typing import get_args, get_origin, get_type_hints
 import pytest
 from pydantic import ValidationError
 
-
 # ── presence ──────────────────────────────────────────────────────────────
 
 

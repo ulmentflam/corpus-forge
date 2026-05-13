@@ -135,9 +135,7 @@ class _FakeBackend:
         k: int,
         dataset_id: int | None = None,
     ) -> list[Hit]:
-        self.search_lexical_calls.append(
-            {"query": query, "k": k, "dataset_id": dataset_id}
-        )
+        self.search_lexical_calls.append({"query": query, "k": k, "dataset_id": dataset_id})
         return list(self.lexical_hits[:k])
 
     def find_dataset_id_by_name(self, name: str) -> int | None:
@@ -356,7 +354,7 @@ class TestDatasetFilter:
         assert be.find_dataset_calls == []
 
     def test_unknown_dataset_returns_empty(self):
-        """If dataset name does not resolve, return empty list — don't silently leak across datasets."""
+        """Unknown dataset name → empty list; do NOT silently leak across datasets."""
         from corpus_forge.retrieval import HybridRetriever
 
         be = _FakeBackend(dataset_ids={})  # unknown name → None
@@ -472,7 +470,7 @@ def test_retriever_protocol_runtime_checkable_against_hybrid():
     # @runtime_checkable, so we just verify the method exists and the type is
     # a Protocol class.
     assert hasattr(r, "search")
-    assert callable(getattr(r, "search"))
+    assert callable(r.search)
     # Smoke: Retriever class is importable and is a class (Protocol).
     assert Retriever is not None
 
@@ -489,13 +487,13 @@ def test_imports_dont_pull_in_torch_or_sentence_transformers():
         if mod.startswith("corpus_forge.retrieval.retriever"):
             del sys.modules[mod]
 
-    import corpus_forge.retrieval.retriever  # noqa: F401
-
     # We don't ban torch outright (existing modules may have pulled it in by
     # this test's execution time), but we do require the retriever module
     # itself to not import torch top-level.  Approximate by checking the
     # module file source.
     import inspect
+
+    import corpus_forge.retrieval.retriever
 
     src = inspect.getsource(corpus_forge.retrieval.retriever)
     assert "import torch" not in src, "retriever.py must not import torch"

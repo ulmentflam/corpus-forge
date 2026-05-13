@@ -21,7 +21,6 @@ import math
 
 import pytest
 
-
 # ── module presence ───────────────────────────────────────────────────────
 
 
@@ -56,8 +55,15 @@ class TestMinMax:
         assert self._fn()([]) == []
 
     def test_single_element(self):
+        """Single-element input → ``[1.0]``.
+
+        Semantically the single hit is the best (and only) member of its
+        list, so it should pass the full weight through to alpha fusion.
+        Emitting 0.0 would silently delete the only candidate from the
+        blend — see the dual-backend hybrid-alpha-fusion test.
+        """
         out = self._fn()([0.7])
-        assert out == [0.0]
+        assert out == [1.0]
 
     def test_all_equal_values(self):
         """All-equal → all-zero (avoids div-by-zero; keeps deterministic ranks)."""
