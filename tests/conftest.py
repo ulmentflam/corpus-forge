@@ -8,16 +8,34 @@ from pathlib import Path
 import pytest
 from hypothesis import settings as hypothesis_settings
 
-# CI workflows set FORCE_COLOR=1 so pytest itself colorizes nicely, but that
-# leaks into typer/Rich help rendering inside CliRunner — Rich then wraps
-# each flag character in ANSI escapes (``--k`` becomes
-# ``\x1b[1;36m-\x1b[0m\x1b[1;36m-k\x1b[0m``) and substring assertions like
-# ``'--k' in result.output`` start failing on CI even though they pass
-# locally.  Force a plain-text rendering for the entire test session.  This
-# must happen *before* any module-level click/typer import so the runtime
-# never sees FORCE_COLOR.
+# CI workflows export FORCE_COLOR=1 for pytest's own readability.  That
+# leaks into typer/Rich help rendering inside CliRunner — Rich wraps each
+# ``--flag`` in bold ANSI escapes, and substring assertions like
+# ``'--k' in result.output`` then fail on CI even though they pass locally.
+# Popping FORCE_COLOR + NO_COLOR is necessary but NOT sufficient: NO_COLOR
+# only strips *color* codes, Rich still emits bold (``\x1b[1m``) styles,
+# and on Linux + pytest-xdist workers the click/rich console may have
+# already cached its terminal state before conftest runs anyway.  The
+# bulletproof fix is to scrub ANSI off ``click.testing.Result.output``
+# itself, so every CliRunner-based test sees a clean string regardless of
+# Rich's render decisions.  Applied once at conftest import.
 os.environ.pop("FORCE_COLOR", None)
 os.environ["NO_COLOR"] = "1"
+os.environ.setdefault("TERM", "dumb")
+
+import re as _re
+
+from click.testing import Result as _ClickResult
+
+if not getattr(_ClickResult, "_ansi_strip_patched", False):
+    _ANSI_RE = _re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+    _orig_output_fget = _ClickResult.output.fget
+
+    def _stripped_output(self) -> str:
+        return _ANSI_RE.sub("", _orig_output_fget(self))
+
+    _ClickResult.output = property(_stripped_output)
+    _ClickResult._ansi_strip_patched = True
 
 from corpus_forge.sources.base import RawConversation, RawDocument, RawMessage
 from tests.fuzz.profiles import register_hypothesis_profiles
