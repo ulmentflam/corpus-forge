@@ -317,3 +317,15 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 - All 57 Wave-0 tests pass.  Combined eval-module coverage: **94.41%**.
 - `corpus_forge/eval/__init__.py` re-exports `GoldQuery`, `load_gold`, `mrr_at_k`, `ndcg_at_k`, `recall_at_k`, `RetrievalMetrics`.  Runner (`evaluate_retriever`, `report`) lands in R3-04/05.
 - Gates: ruff (auto-fixed import order in 3 files), format, pyrefly all clean.
+
+### R3-04 (runner + pinned NDCG@10 baseline) — GREEN
+
+- `corpus_forge/eval/runner.py` (147 lines).  Public funcs: `evaluate_retriever`, `report`, `dump_json`; internal `_evaluate_queries` factored out so the CLI can compose around it.
+- `evaluate_retriever` calls `retriever.search(q.query, SearchOptions(k=max(k_values)))` once per query, then computes ndcg/mrr/recall for every `k` in `k_values`, averaging across queries.
+- `report` emits a 3-column ASCII table (k | ndcg | mrr | recall).  `dump_json` writes a `{"ndcg": {...}, "mrr": {...}, "recall": {...}}` payload with str-keyed inner dicts.
+- `corpus_forge/eval/__init__.py` extended to re-export `evaluate_retriever`, `report`, `dump_json`.
+- **Pinned NDCG@10 floor 0.80** — measured baseline against the toy corpus + FakeEmbedder = **1.0** (all 10 gold queries land their relevant chunk at rank 1).  20 points of headroom against the floor.
+- **Sanity test passes**: `_AsymmetricBadEmbedder` (constant query vector) + forced `alpha=1.0` (dense-only) collapses to NDCG@10 below the floor — the baseline is provably non-vacuous.
+- Pyrefly side-fix: `corpus_forge/eval/metrics.py` `GradedMap = Mapping[Any, int]` alias replaces the invariant `Mapping[int | str, int]`, restoring assignability for `dict[int, int]` callers (matches the loader output).
+- Full unit suite: 1561 passed; coverage 90.81%.
+- Gates: ruff (auto-fixed 3× C420), format, pyrefly all clean.
