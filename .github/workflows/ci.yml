@@ -94,28 +94,14 @@ jobs:
       matrix:
         os: [ubuntu-22.04, macos-14, windows-2022]
         python-version: ["3.11", "3.12", "3.13"]
-        # ALL Windows cells are soft-fail for the v0.1.0b1 beta.  Windows
-        # has a real surface of issues we surfaced for the first time
-        # this milestone — path-separator assertions, cp1252-vs-UTF-8
-        # default encoding, ``os.uname`` not existing, iCloud detection
-        # being macOS-only — that are architectural to fix and don't
-        # belong in a beta-gating commit.  Beta ships honest "Linux +
-        # macOS first-class, Windows post-beta" support; the cells
-        # still run for visibility, they just don't fail the gate.
-        # TODO(post-beta): un-soften Windows once portability issues
-        # are tracked + fixed (see issues #TBD).
-        #
-        # macOS-arm64 + py3.13 stays soft-fail until sentence-transformers
-        # / torch wheels stabilize; revisit weekly.
+        # 3.13 wheels for sentence-transformers / torch are still landing
+        # on macOS-arm64 and Windows.  Allow those cells to fail without
+        # blocking the merge until upstream stabilizes (revisit weekly).
+        # TODO: drop continue-on-error once sentence-transformers ships
+        # py3.13 wheels for all three runner architectures.
         include:
           - os: macos-14
             python-version: "3.13"
-            allow-failure: true
-          - os: windows-2022
-            python-version: "3.11"
-            allow-failure: true
-          - os: windows-2022
-            python-version: "3.12"
             allow-failure: true
           - os: windows-2022
             python-version: "3.13"
