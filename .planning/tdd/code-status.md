@@ -286,3 +286,34 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 - SQLite choice: used `RETURNING id` (already used extensively throughout sqlite.py — the project targets SQLite >= 3.35). `lastrowid` not needed.
 - Other dialect leaks found beyond the 3 known sites: NONE. The smoke test surface is the contract.
 - Status: green — handed off to tdd-qa
+
+---
+
+## Phase R3 — eval harness
+
+### R3-01 (pyproject extras) — GREEN
+
+- `pyproject.toml` `[project.optional-dependencies]`: added `retrieval = ["numpy>=1.26"]` and `eval = ["numpy>=1.26"]`.  R4 (`rerank`) and R5 (`mcp`) NOT touched.
+- Inline comment documents the rationale (sentence-transformers already pulls numpy transitively; the extras make the dependency explicit for downstream consumers).
+- `uv sync --all-extras --group dev` succeeds; no transitive collisions.
+
+### R3-02 (metrics) — GREEN
+
+- `corpus_forge/eval/metrics.py` (159 lines).  Pure NumPy.
+- Public funcs: `ndcg_at_k`, `mrr_at_k`, `recall_at_k`.  Gain function `2**grade - 1` (industry standard); discount `1/log2(rank+1)`.
+- Helpers: `_normalise_relevant` (set[int] coercion), `_normalise_graded` (str|int→int key coercion), `_gain`.
+- Coverage: 98% (1 unreachable: defensive `idcg == 0.0` short-circuit after the effective-relevant check already proved non-empty).
+
+### R3-03 (dataset loader) — GREEN
+
+- `corpus_forge/eval/dataset.py` (143 lines).
+- Frozen `GoldQuery` dataclass with required fields + `graded` + `content_hashes` optional.
+- `load_gold(path)` parses JSONL one row at a time; emits `ValueError` with `{path}:{lineno}: <reason>` shape.  Blank + `#`-comment lines skipped.  `FileNotFoundError` for missing path.
+- Validations: required-field shape checks; bool-vs-int discriminator on chunk_ids and graded values; content_hashes parallel-length invariant; bad-JSON line numbering preserved.
+- Coverage: 91% (7 misses are defensive error paths overlapping with already-covered ones — acceptable for this slice).
+
+### Wave 0 GREEN summary
+
+- All 57 Wave-0 tests pass.  Combined eval-module coverage: **94.41%**.
+- `corpus_forge/eval/__init__.py` re-exports `GoldQuery`, `load_gold`, `mrr_at_k`, `ndcg_at_k`, `recall_at_k`, `RetrievalMetrics`.  Runner (`evaluate_retriever`, `report`) lands in R3-04/05.
+- Gates: ruff (auto-fixed import order in 3 files), format, pyrefly all clean.

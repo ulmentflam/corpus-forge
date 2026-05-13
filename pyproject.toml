@@ -52,10 +52,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-openai  = ["openai>=1.30"]
-hf      = ["datasets>=2.20"]
-tokens  = ["tiktoken>=0.7"]
-sqlite  = ["sqlite-vec>=0.1"]
+openai     = ["openai>=1.30"]
+hf         = ["datasets>=2.20"]
+tokens     = ["tiktoken>=0.7"]
+sqlite     = ["sqlite-vec>=0.1"]
+# R3: numpy floor for the retrieval surface (R1/R2) and the eval harness.
+# `numpy` is already pulled in transitively by sentence-transformers, but
+# pinning it here makes the dependency explicit for downstream consumers
+# who install with `pip install corpus-forge[retrieval]` / `[eval]`.
+# R4 will add `rerank` (sentence-transformers split); R5 will add `mcp`.
+retrieval  = ["numpy>=1.26"]
+eval       = ["numpy>=1.26"]
 
 [project.scripts]
 corpus-forge = "corpus_forge.cli:app"
