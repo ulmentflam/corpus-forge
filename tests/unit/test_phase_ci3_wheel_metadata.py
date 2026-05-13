@@ -81,9 +81,7 @@ def built_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
     except FileNotFoundError as exc:  # pragma: no cover - depends on host env
         pytest.skip(f"python -m build unavailable: {exc}")
     except subprocess.CalledProcessError as exc:
-        pytest.fail(
-            f"python -m build failed:\nSTDOUT:\n{exc.stdout}\nSTDERR:\n{exc.stderr}"
-        )
+        pytest.fail(f"python -m build failed:\nSTDOUT:\n{exc.stdout}\nSTDERR:\n{exc.stderr}")
     wheels = list(out_dir.glob("*.whl"))
     assert wheels, f"No wheel produced in {out_dir}"
     assert len(wheels) == 1, f"Expected exactly one wheel; got {wheels}"
@@ -138,9 +136,12 @@ class TestWheelIdentity:
         assert metadata["Version"] == "0.1.0b1"
 
     def test_requires_python(self, metadata: dict) -> None:
-        assert metadata["Requires-Python"] == ">=3.11,<3.14", (
-            f"Got Requires-Python: {metadata['Requires-Python']!r}"
-        )
+        # Hatchling re-canonicalises the spec; the two parts may swap order
+        # (`<3.14,>=3.11` ↔ `>=3.11,<3.14`). Both are equivalent — assert on
+        # the parts, not the literal pin order.
+        rp = metadata["Requires-Python"] or ""
+        assert ">=3.11" in rp, f"Got Requires-Python: {rp!r}"
+        assert "<3.14" in rp, f"Got Requires-Python: {rp!r}"
 
 
 # ── license expression ──────────────────────────────────────────────────────
@@ -186,8 +187,7 @@ class TestClassifiers:
     @pytest.mark.parametrize("classifier", EXPECTED_CLASSIFIERS)
     def test_classifier(self, metadata: dict, classifier: str) -> None:
         assert classifier in metadata["Classifier"], (
-            f"Classifier {classifier!r} missing from wheel METADATA; "
-            f"got {metadata['Classifier']}"
+            f"Classifier {classifier!r} missing from wheel METADATA; got {metadata['Classifier']}"
         )
 
     def test_classifier_count(self, metadata: dict) -> None:
@@ -214,16 +214,17 @@ class TestKeywords:
 # ── project urls ────────────────────────────────────────────────────────────
 
 
-class TestProjectURLs:
-    EXPECTED = {
-        "Homepage": "https://github.com/ulmentflam/corpus-forge",
-        "Documentation": "https://github.com/ulmentflam/corpus-forge#readme",
-        "Repository": "https://github.com/ulmentflam/corpus-forge",
-        "Issues": "https://github.com/ulmentflam/corpus-forge/issues",
-        "Changelog": "https://github.com/ulmentflam/corpus-forge/blob/main/CHANGELOG.md",
-    }
+_EXPECTED_PROJECT_URLS = {
+    "Homepage": "https://github.com/ulmentflam/corpus-forge",
+    "Documentation": "https://github.com/ulmentflam/corpus-forge#readme",
+    "Repository": "https://github.com/ulmentflam/corpus-forge",
+    "Issues": "https://github.com/ulmentflam/corpus-forge/issues",
+    "Changelog": "https://github.com/ulmentflam/corpus-forge/blob/main/CHANGELOG.md",
+}
 
-    @pytest.mark.parametrize(("label", "target"), list(EXPECTED.items()))
+
+class TestProjectURLs:
+    @pytest.mark.parametrize(("label", "target"), list(_EXPECTED_PROJECT_URLS.items()))
     def test_url(self, metadata: dict, label: str, target: str) -> None:
         entries = metadata["Project-URL"]
         # Each entry is `Label, URL`.
@@ -272,9 +273,12 @@ class TestPipInstall:
     def test_corpus_forge_help(self, built_wheel: Path, tmp_path: Path) -> None:
         venv_dir = tmp_path / "venv"
         subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
-        py = venv_dir / "bin" / "python" if not sys.platform.startswith("win") else venv_dir / "Scripts" / "python.exe"
+        bin_dir = "Scripts" if sys.platform.startswith("win") else "bin"
+        py_name = "python.exe" if sys.platform.startswith("win") else "python"
+        cli_name = "corpus-forge.exe" if sys.platform.startswith("win") else "corpus-forge"
+        py = venv_dir / bin_dir / py_name
         subprocess.run([str(py), "-m", "pip", "install", str(built_wheel)], check=True)
-        cli = venv_dir / "bin" / "corpus-forge" if not sys.platform.startswith("win") else venv_dir / "Scripts" / "corpus-forge.exe"
+        cli = venv_dir / bin_dir / cli_name
         out = subprocess.run([str(cli), "--help"], check=True, capture_output=True, text=True)
         assert out.returncode == 0
         # Don't pin exact text; just confirm Typer banner.

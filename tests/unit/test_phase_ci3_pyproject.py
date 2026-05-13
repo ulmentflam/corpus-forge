@@ -77,8 +77,7 @@ class TestProjectMetadata:
 
     def test_version_is_beta(self, project_table: dict) -> None:
         assert project_table.get("version") == "0.1.0b1", (
-            f"Expected version 0.1.0b1 (PEP 440 beta marker); "
-            f"got {project_table.get('version')!r}"
+            f"Expected version 0.1.0b1 (PEP 440 beta marker); got {project_table.get('version')!r}"
         )
 
     def test_license_is_apache2_spdx(self, project_table: dict) -> None:
@@ -91,9 +90,7 @@ class TestProjectMetadata:
 
     def test_license_files(self, project_table: dict) -> None:
         files = project_table.get("license-files")
-        assert files == ["LICENSE"], (
-            f"Expected license-files = ['LICENSE']; got {files!r}"
-        )
+        assert files == ["LICENSE"], f"Expected license-files = ['LICENSE']; got {files!r}"
 
     def test_requires_python_has_upper_bound(self, project_table: dict) -> None:
         rp = project_table.get("requires-python", "")
@@ -151,17 +148,13 @@ class TestClassifiers:
     @pytest.mark.parametrize("classifier", REQUIRED_CLASSIFIERS)
     def test_classifier(self, project_table: dict, classifier: str) -> None:
         classifiers = project_table.get("classifiers", [])
-        assert classifier in classifiers, (
-            f"Classifier {classifier!r} missing; got {classifiers}"
-        )
+        assert classifier in classifiers, f"Classifier {classifier!r} missing; got {classifiers}"
 
     def test_license_classifier_is_apache(self, project_table: dict) -> None:
         """Belt-and-suspenders: no MIT classifier should ever land here."""
         classifiers = project_table.get("classifiers", [])
         for c in classifiers:
-            assert "MIT License" not in c, (
-                f"Saw forbidden MIT License classifier: {c!r}"
-            )
+            assert "MIT License" not in c, f"Saw forbidden MIT License classifier: {c!r}"
 
 
 # ── keywords ────────────────────────────────────────────────────────────────
@@ -212,9 +205,7 @@ class TestProjectURLs:
     @pytest.mark.parametrize(("key", "value"), list(REQUIRED_URLS.items()))
     def test_url(self, project_table: dict, key: str, value: str) -> None:
         urls = project_table.get("urls", {})
-        assert urls.get(key) == value, (
-            f"Expected urls[{key!r}] == {value!r}; got {urls.get(key)!r}"
-        )
+        assert urls.get(key) == value, f"Expected urls[{key!r}] == {value!r}; got {urls.get(key)!r}"
 
 
 # ── pytest options: pythonpath hack removed ─────────────────────────────────
