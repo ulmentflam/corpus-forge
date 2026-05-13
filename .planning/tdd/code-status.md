@@ -349,3 +349,11 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 - Bundled dataset registry `_BUNDLED_DATASETS = {"forge_self": ...}`; `_resolve_dataset` distinguishes name vs path.
 - pyproject `[tool.ruff.lint.per-file-ignores]` for `cli.py` extended with `B008` (typer.Option defaults are idiomatic; ruff's B008 rule was firing on the new Path-typed `--json` option only because the existing patterns use plain types).
 - Full unit suite: 1575 passed; coverage 90.75%.  Gates clean (ruff/format/pyrefly).
+
+### R3-06 (bundled `forge_self` gold set + provenance) — GREEN
+
+- `corpus_forge/eval/datasets/forge_self.jsonl` — 25 hand-curated query prompts spanning architecture, schema, sync, sqlite backend, retrieval, eval (meta), daemon, embedders, chunkers, licensing.  Each row carries `relevant_chunk_ids` + parallel `content_hashes` so the R3-05 drift fallback survives chunker / source edits.
+- `corpus_forge/eval/datasets/forge_self.corpus.md` — provenance: source commit (dcd07d9), file set (markdown vault), chunker config (`max_chars=1500, overlap=200`), embedder (`sentence-transformers/all-MiniLM-L6-v2`, 384d, CPU), curation method (script-assisted top-3 RRF, hand-reviewed), rebuild instructions.
+- Curation: tokenised each prompt to alnum runs and `OR`-joined them to dodge FTS5 column-name collisions (`host`, `k`, etc. parse as column refs in bare MATCH).  Top-3 RRF results captured per query along with their content_hashes.
+- pyproject `[tool.hatch.build.targets.wheel.force-include]` adds both files so they ship in the wheel (verified by inspecting the built wheel under `/tmp/r3-wheel/`).
+- 7 new tests in `test_eval_bundled_dataset.py` all pass.  Full unit 1582 passed; coverage clean.
