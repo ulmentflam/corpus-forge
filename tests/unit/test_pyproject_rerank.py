@@ -46,11 +46,12 @@ def test_rerank_sentence_transformers_floor_at_least_3():
     )
 
 
-def test_mcp_extra_still_scoped_out_for_r5():
-    """R5 owns the [mcp] extra.  If it shows up in R4, the scope leaked."""
+def test_mcp_extra_landed_by_r5():
+    """R5-02 lands the [mcp] extra; the R4-side scope-guard is now flipped
+    into a landing pin so the absence of [mcp] surfaces as a failure."""
     pp = _load_pyproject()
     extras = pp.get("project", {}).get("optional-dependencies", {})
-    assert "mcp" not in extras, "R4 must NOT declare the [mcp] extra; that belongs to Phase R5."
+    assert "mcp" in extras, "[mcp] extra must be declared by Phase R5."
 
 
 def test_existing_extras_unchanged():
