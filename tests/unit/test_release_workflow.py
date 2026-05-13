@@ -96,14 +96,12 @@ def test_gate_job_exists(jobs: dict) -> None:
 
 def test_gate_job_uses_ci_workflow_call(jobs: dict) -> None:
     gate = jobs["gate"]
-    assert "uses" in gate, (
-        "gate job must use `uses:` to reuse ci.yml (workflow_call)"
-    )
+    assert "uses" in gate, "gate job must use `uses:` to reuse ci.yml (workflow_call)"
     uses = gate["uses"]
     assert "ci.yml" in uses, f"gate must reuse ci.yml; got uses={uses!r}"
-    assert uses.startswith("./.github/workflows/") or uses.startswith(
-        "ulmentflam/corpus-forge"
-    ), f"gate `uses:` must point at the local ci.yml; got {uses!r}"
+    assert uses.startswith("./.github/workflows/") or uses.startswith("ulmentflam/corpus-forge"), (
+        f"gate `uses:` must point at the local ci.yml; got {uses!r}"
+    )
 
 
 def test_ci_yml_is_workflow_callable() -> None:
@@ -180,9 +178,7 @@ def test_publish_uses_softprops_action_gh_release(jobs: dict) -> None:
         if isinstance(s, dict) and "softprops/action-gh-release" in str(s.get("uses", "")):
             release_step = s
             break
-    assert release_step is not None, (
-        "publish must use softprops/action-gh-release@v2"
-    )
+    assert release_step is not None, "publish must use softprops/action-gh-release@v2"
     assert "@v2" in release_step["uses"], (
         f"softprops/action-gh-release must be pinned to @v2 (got {release_step['uses']!r})"
     )

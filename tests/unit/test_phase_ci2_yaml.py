@@ -218,9 +218,7 @@ class TestIntegrationWorkflow:
         """
         text = yaml.safe_dump(integration_yaml)
         assert (
-            "colima" in text
-            or "ghaction-setup-docker" in text
-            or "setup-docker-action" in text
+            "colima" in text or "ghaction-setup-docker" in text or "setup-docker-action" in text
         ), "macOS runner needs Colima or a docker-setup action for testcontainers"
 
 

@@ -132,11 +132,12 @@ jobs:
         # See integration.yml comment: brew + Colima is the stable
         # path for macos-arm64 (crazy-max action 404s on docker CDN).
         run: |
-          # qemu is required by --vm-type=qemu; Colima 0.10 stopped bundling
-          # it and prints "run 'brew install qemu' to install" if missing.
-          brew install --quiet colima docker qemu
-          # --vm-type=qemu avoids VZ-framework crash on macos-14 runners.
-          colima start --cpu 3 --memory 5 --disk 14 --vm-type=qemu
+          brew install --quiet colima docker
+          # See integration.yml: Lima 2.1.1 panics under --vm-type=qemu
+          # on macos-14 runners; VZ + virtiofs is the supported path now
+          # that Colima 0.10.1 ships a fixed raw-disk converter.
+          colima start --cpu 3 --memory 5 --disk 14 \
+            --vm-type=vz --mount-type=virtiofs
           docker info
 
       - name: Pre-pull pgvector image
