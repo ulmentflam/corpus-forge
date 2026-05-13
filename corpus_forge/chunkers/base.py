@@ -65,10 +65,15 @@ class Chunker:
             # Move start position forward, accounting for overlap
             if end >= text_len:
                 break
-            start = end - self.overlap
+            new_start = end - self.overlap
 
-            # Ensure we make progress
-            start = max(start, 0)
+            # Guarantee strict forward progress. If the desired overlap would
+            # leave start at or behind the previous start (can happen when
+            # _find_split_point returns a position close to start), skip the
+            # overlap for this boundary rather than looping forever.
+            if new_start <= start:
+                new_start = end
+            start = max(new_start, 0)
 
         return chunks
 
