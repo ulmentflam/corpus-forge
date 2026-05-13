@@ -409,6 +409,13 @@ make ci         # full CI pipeline (format-check lint typecheck test)
 - **Docstrings**: Required for all public functions and classes
 - **Error handling**: Log and continue where possible, fail fast on config/setup
 - **Security**: Never log secrets, use secrets.env (mode 600) for passwords/keys
+
+## Agent integration (MCP)
+
+- Drop-in Claude Code skill: see `examples/mcp-config/` and `.claude/skills/corpus-forge-search/`.
+- Agent SDK subagent: `.claude/agents/corpus-forge-researcher.md`.
+- Full walkthrough: `docs/claude-integration.md`.
+
 ## License
 
 corpus-forge is licensed under the [Apache License, Version 2.0](LICENSE).
