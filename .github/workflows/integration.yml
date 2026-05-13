@@ -131,7 +131,10 @@ jobs:
         # docker.sock that Colima exposes.
         run: |
           brew install --quiet colima docker
-          colima start --cpu 2 --memory 4
+          # --vm-type=qemu avoids the VZ-framework disk-converter crash
+          # we saw on GitHub-hosted macos-14 runners (Colima 0.9 fatals
+          # at "creating and starting" during raw-disk conversion).
+          colima start --cpu 3 --memory 5 --disk 14 --vm-type=qemu
           docker info
 
       - name: Pre-pull pgvector image

@@ -133,7 +133,8 @@ jobs:
         # path for macos-arm64 (crazy-max action 404s on docker CDN).
         run: |
           brew install --quiet colima docker
-          colima start --cpu 2 --memory 4
+          # --vm-type=qemu avoids VZ-framework crash on macos-14 runners.
+          colima start --cpu 3 --memory 5 --disk 14 --vm-type=qemu
           docker info
 
       - name: Pre-pull pgvector image
