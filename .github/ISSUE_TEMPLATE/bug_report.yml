@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a defect in corpus-forge (ingest, embedder, backend, retrieval, MCP, sync).
+title: "[bug] <short description>"
+labels:
+  - bug
+  - triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please fill in every field so we can
+        reproduce quickly. If you're reporting a security issue, stop —
+        email `evan@jwo3.io` instead (see `SECURITY.md`).
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One-sentence description of the bug.
+      placeholder: "Hybrid search returns zero hits when `dataset` filter is set on SQLite backend."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Minimal commands or code to reproduce. Include `corpus-forge --version` output.
+      placeholder: |
+        1. `corpus-forge migrate`
+        2. `corpus-forge ingest --once`
+        3. `corpus-forge search "anything" --dataset foo --k 5`
+        4. Observed: 0 hits. Expected: at least 1 hit (foo has 30 documents).
+      render: bash
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, backend kind, optional extras installed.
+      placeholder: |
+        - corpus-forge: 0.1.0b1
+        - OS: macOS 14.5 (Apple Silicon)
+        - Python: 3.12.4 (via uv)
+        - Backend: sqlite (sqlite-vec 0.1.6)
+        - Extras: [sqlite, mcp]
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / stack trace
+      description: Paste the full traceback or daemon log excerpt.
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-flight checklist
+      options:
+        - label: I have searched existing issues for a duplicate.
+          required: true
+        - label: I am on a supported version (`0.1.x`).
+          required: true
+        - label: I have read `CONTRIBUTING.md` and `SECURITY.md`.
+          required: true

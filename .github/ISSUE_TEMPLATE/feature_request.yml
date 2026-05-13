@@ -1,0 +1,55 @@
+name: Feature request
+description: Propose a new feature or capability for corpus-forge.
+title: "[feat] <short description>"
+labels:
+  - enhancement
+  - triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing a feature. Please describe the user need
+        first; we'll work backwards to a design together. If this is a
+        question rather than a feature, open a Discussion instead.
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What problem are you trying to solve? Who is the user?
+      placeholder: "I'm fine-tuning a Qwen-2.5 model on my obsidian vault and want a per-tag dataset split during HF export."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would the feature look like in use? CLI flags, config keys, API shape.
+      placeholder: |
+        `corpus-forge export hf --split-by-tag` would emit one HF
+        dataset per top-level Obsidian tag, sharing the chunk-store but
+        partitioning the JSONL output by tag.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds exist today? Why aren't they sufficient?
+    validations:
+      required: false
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and backwards-compatibility
+      description: Does this change a public API? A config schema? A wire format?
+    validations:
+      required: false
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-flight checklist
+      options:
+        - label: I have searched existing issues / discussions for a similar proposal.
+          required: true
+        - label: This is not a security report (those go via `SECURITY.md`).
+          required: true
