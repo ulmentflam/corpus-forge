@@ -24,7 +24,6 @@ from unittest.mock import MagicMock
 import pytest
 from typer.testing import CliRunner
 
-
 # ── Fakes ────────────────────────────────────────────────────────────────
 
 
@@ -79,9 +78,7 @@ def test_search_help_lists_required_flags() -> None:
     result = runner.invoke(app, ["search", "--help"])
     assert result.exit_code == 0, result.output
     for flag in ("--k", "--dataset", "--fusion", "--alpha", "--rerank", "--json"):
-        assert flag in result.output, (
-            f"`search --help` must list {flag!r}; got:\n{result.output}"
-        )
+        assert flag in result.output, f"`search --help` must list {flag!r}; got:\n{result.output}"
 
 
 # ── Dispatch ─────────────────────────────────────────────────────────────
@@ -216,9 +213,7 @@ def test_search_prints_hits_to_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "22" in result.output or "bravo body" in result.output
 
 
-def test_search_json_writes_payload_to_file(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_search_json_writes_payload_to_file(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`--json PATH` writes a structured JSON dump."""
     from corpus_forge import cli
     from corpus_forge.cli import app

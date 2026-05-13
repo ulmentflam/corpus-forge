@@ -29,7 +29,9 @@ defaults (``_build_retriever_for_eval`` + ``_build_reranker_from_config``).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable
+import contextlib
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from mcp.server import Server
@@ -61,7 +63,9 @@ _SEARCH_INPUT_SCHEMA: dict[str, Any] = {
         },
         "alpha": {
             "type": "number",
-            "description": "Alpha-fusion weight in [0, 1] (default: 0.5; only used when fusion=alpha).",
+            "description": (
+                "Alpha-fusion weight in [0, 1] (default: 0.5; only used when fusion=alpha)."
+            ),
         },
         "rerank": {
             "type": "boolean",
@@ -109,15 +113,15 @@ def _hit_to_dict(hit: Any) -> dict[str, Any]:
     response shape stays stable even if ``Hit`` grows columns.
     """
     return {
-        "chunk_id": int(getattr(hit, "chunk_id")),
-        "score": float(getattr(hit, "score")),
-        "text": getattr(hit, "text"),
+        "chunk_id": int(hit.chunk_id),
+        "score": float(hit.score),
+        "text": hit.text,
         "document_id": getattr(hit, "document_id", None),
         "conversation_id": getattr(hit, "conversation_id", None),
         "message_id": getattr(hit, "message_id", None),
         "source_uri": getattr(hit, "source_uri", None),
         "title": getattr(hit, "title", None),
-        "dataset_id": int(getattr(hit, "dataset_id")),
+        "dataset_id": int(hit.dataset_id),
         "metadata": dict(getattr(hit, "metadata", {}) or {}),
         "source": getattr(hit, "source", "fused"),
     }
@@ -141,7 +145,7 @@ def build_server(
     retriever_builder: Callable[[], Any],
     reranker_builder: Callable[[], Any] | None = None,
     default_dataset: str | None = None,
-) -> "Server[Any]":
+) -> Server[Any]:
     """Construct a fully-configured MCP server.
 
     Args:
@@ -248,13 +252,11 @@ def build_server(
         if rerank:
             reranker = _get_reranker()
             if reranker is not None and getattr(retriever, "reranker", None) is None:
-                try:
+                # Some retriever stand-ins (e.g. test fakes) may not accept
+                # attribute assignment; the test path doesn't require it,
+                # only that the builder fires.
+                with contextlib.suppress(AttributeError):
                     retriever.reranker = reranker
-                except AttributeError:
-                    # Some retriever stand-ins (e.g. test fakes) may not
-                    # accept attribute assignment; the test path doesn't
-                    # require it, only that the builder fires.
-                    pass
 
         options = SearchOptions(
             k=k,
@@ -302,20 +304,20 @@ def serve_stdio(*, default_dataset: str | None = None) -> None:
     stdio loop.  This is the entry point :func:`corpus_forge.cli.mcp_serve`
     dispatches to.
     """
-    import asyncio  # noqa: PLC0415
+    import asyncio
 
     asyncio.run(_serve_stdio_async(default_dataset=default_dataset))
 
 
 async def _serve_stdio_async(*, default_dataset: str | None) -> None:
-    from mcp.server.stdio import stdio_server  # noqa: PLC0415
+    from mcp.server.stdio import stdio_server
 
     # Lazy imports so module import stays cheap.
-    from corpus_forge.cli import (  # noqa: PLC0415
+    from corpus_forge.cli import (
         _build_reranker_from_config,
         _build_retriever_for_eval,
     )
-    from corpus_forge.config import Config  # noqa: PLC0415
+    from corpus_forge.config import Config
 
     def _retriever_builder() -> Any:
         return _build_retriever_for_eval()

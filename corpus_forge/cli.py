@@ -632,13 +632,13 @@ def mcp_serve(
 def _hit_to_jsonable(hit) -> dict:
     """Serialize a ``Hit`` (frozen dataclass) to a JSON-safe dict."""
     return {
-        "chunk_id": int(getattr(hit, "chunk_id")),
-        "score": float(getattr(hit, "score")),
-        "text": getattr(hit, "text"),
+        "chunk_id": int(hit.chunk_id),
+        "score": float(hit.score),
+        "text": hit.text,
         "document_id": getattr(hit, "document_id", None),
         "source_uri": getattr(hit, "source_uri", None),
         "title": getattr(hit, "title", None),
-        "dataset_id": int(getattr(hit, "dataset_id")),
+        "dataset_id": int(hit.dataset_id),
         "metadata": dict(getattr(hit, "metadata", {}) or {}),
         "source": getattr(hit, "source", "fused"),
     }
@@ -648,12 +648,8 @@ def _hit_to_jsonable(hit) -> dict:
 def search(
     query: str = typer.Argument(..., help="Natural-language search query."),
     k: int = typer.Option(10, "--k", help="Number of hits to return."),
-    dataset: str = typer.Option(
-        None, "--dataset", "-d", help="Optional dataset name filter."
-    ),
-    fusion: str = typer.Option(
-        None, "--fusion", help="Fusion strategy override: rrf|alpha."
-    ),
+    dataset: str = typer.Option(None, "--dataset", "-d", help="Optional dataset name filter."),
+    fusion: str = typer.Option(None, "--fusion", help="Fusion strategy override: rrf|alpha."),
     alpha: float = typer.Option(
         None, "--alpha", help="Alpha-fusion weight (0.0..1.0); only used when fusion=alpha."
     ),
@@ -674,9 +670,9 @@ def search(
     that powers ``corpus-forge eval`` and the MCP server (Phase R5).
     Default-off reranker — pass ``--rerank`` to opt in.
     """
-    import json as _json  # noqa: PLC0415
+    import json as _json
 
-    from corpus_forge.retrieval.types import SearchOptions  # noqa: PLC0415
+    from corpus_forge.retrieval.types import SearchOptions
 
     # Build the reranker FIRST (lazy; default-off) so we can pass it to
     # the retriever builder.  Mirrors `eval`'s wiring exactly.
@@ -694,10 +690,13 @@ def search(
 
     retriever = _build_retriever_for_eval(fusion=fusion, alpha=alpha, reranker=reranker)
 
+    fusion_resolved: str = fusion if fusion is not None else "rrf"
+    if fusion_resolved not in ("rrf", "alpha"):
+        raise typer.BadParameter(f"--fusion must be 'rrf' or 'alpha'; got {fusion_resolved!r}")
     options = SearchOptions(
         k=k,
         dataset=dataset,
-        fusion=fusion if fusion is not None else "rrf",
+        fusion=fusion_resolved,  # type: ignore[arg-type]
         alpha=alpha if alpha is not None else 0.5,
         rerank=rerank,
         rerank_top_n=rerank_top_n,
@@ -721,11 +720,12 @@ def search(
     for rank, hit in enumerate(hits, start=1):
         title = getattr(hit, "title", None) or ""
         source_uri = getattr(hit, "source_uri", None) or ""
-        chunk_id = getattr(hit, "chunk_id")
-        score = getattr(hit, "score")
+        chunk_id = hit.chunk_id
+        score = hit.score
         text = getattr(hit, "text", "") or ""
         # Truncate body to keep the terminal output tidy.
-        body = text if len(text) <= 240 else text[:237] + "..."
+        _MAX_BODY_CHARS = 240
+        body = text if len(text) <= _MAX_BODY_CHARS else text[: _MAX_BODY_CHARS - 3] + "..."
         header_bits = [f"#{rank}", f"chunk={chunk_id}", f"score={score:.4f}"]
         if title:
             header_bits.append(f"title={title!r}")

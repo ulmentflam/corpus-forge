@@ -87,9 +87,7 @@ def test_mcp_serve_stdio_dispatches_to_serve_stdio(monkeypatch) -> None:
     runner = CliRunner()
     result = runner.invoke(app, ["mcp", "serve"])
     assert result.exit_code == 0, result.output
-    assert calls["count"] == 1, (
-        f"serve_stdio must be invoked once; got {calls['count']}"
-    )
+    assert calls["count"] == 1, f"serve_stdio must be invoked once; got {calls['count']}"
 
 
 def test_mcp_serve_passes_default_dataset(monkeypatch) -> None:
