@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     import numpy as np
 
     from corpus_forge.embedders.base import Embedder
+    from corpus_forge.retrieval.types import Hit
     from corpus_forge.sources.base import RawConversation, RawDocument
 
 
@@ -88,3 +89,28 @@ class StorageBackend(Protocol):
     def find_dataset_id_by_name(self, name: str) -> "int | None": ...
 
     def register_source(self, dataset_id: int, plugin: str, identity: str, host: str) -> int: ...
+
+    # --- Retrieval surface (Phase R1) ----------------------------------------
+
+    def search_dense(
+        self,
+        embedder_id: int,
+        query_vector: "np.ndarray",
+        *,
+        k: int,
+        dataset_id: int | None = None,
+    ) -> "list[Hit]": ...
+
+    def search_lexical(
+        self,
+        query: str,
+        *,
+        k: int,
+        dataset_id: int | None = None,
+    ) -> "list[Hit]": ...
+
+    def get_chunk(self, chunk_id: int) -> "dict | None": ...
+
+    def list_datasets(self) -> "list[dict]": ...
+
+    def backfill_lexical_index(self) -> int: ...
