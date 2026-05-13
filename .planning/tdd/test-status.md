@@ -1657,3 +1657,34 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
 - Skip-on-missing-seed: if `/tmp/corpus-forge-test.db` is absent OR has zero chunks, the test pytest.skips with a clear pointer to `scripts/vectorize_repo_sqlite.py`.
 - Asserts exit code 0, table on stdout (ndcg/mrr/recall + k=10), JSON dump parseable with all three metric blocks and values in [0, 1].
 - **Real-corpus measured baseline (NDCG@10 = 0.717, MRR@10 = 0.920, Recall@10 = 0.760)** against the auto-curated forge_self gold set + minilm embedder. The pinned unit-test floor (0.80) is against the FakeEmbedder + toy corpus, not against this real one.
+
+---
+
+## Phase BR test status
+
+### BR-01 (governance files) — RED
+
+- Wrote `tests/unit/test_governance_files.py` (18 tests).
+- Surface: LICENSE (re-pin, Apache-2.0 not MIT), CHANGELOG.md (Keep-a-Changelog header + `## [0.1.0b1] - YYYY-MM-DD` entry + SQLite/CI/MCP/Claude milestone anchors), CONTRIBUTING.md (`make dev` + `make ci` + commit-style), CODE_OF_CONDUCT.md (Contributor Covenant 2.1 + evan@jwo3.io), SECURITY.md (`evan@jwo3.io` + supported `0.1.x` + reporting flow).
+- LICENSE pins pass already (CI-3 work); the rest RED until BR-01 coder lands.
+
+### BR-02 (.github templates + dependabot + FUNDING) — RED
+
+- Wrote `tests/unit/test_github_templates.py` (8 tests) + `tests/unit/test_dependabot_config.py` (5 tests).
+- Templates suite covers: bug_report.yml (GitHub form keys + bug label), feature_request.yml (form keys + enhancement label), config.yml (blank_issues_enabled: false), PULL_REQUEST_TEMPLATE.md (non-empty, summary + checklist), FUNDING.yml (parses).
+- Dependabot suite covers: version 2, ≥2 ecosystems, pip + github-actions weekly, directory present on each.
+
+### BR-03 (banner + logo SVG assets) — RED
+
+- Wrote `tests/unit/test_banner_assets.py` (10 tests + 1 optional PNG).
+- Surface: `assets/banner.svg`, `assets/banner-dark.svg`, `assets/logo.svg`. Each must parse as XML/SVG, have viewBox; banners must include wordmark + tagline. Logo viewBox must be 1:1 square. banner.png is best-effort — test skips when absent, validates magic bytes when present.
+
+### BR-04 (release workflow + cliff.toml) — RED
+
+- Wrote `tests/unit/test_release_workflow.py` (14 tests) + `tests/unit/test_cliff_config.py` (4 tests).
+- Release suite: on.push.tags `v*`, gate job uses `./.github/workflows/ci.yml` (workflow_call), build needs gate + runs `uv build` + sha256sum > SHA256SUMS + upload-artifact, publish needs build + downloads artifact + uses softprops/action-gh-release@v2 with files=dist/*, prerelease derived from `contains(github.ref, 'b') || contains(github.ref, 'rc')`, generate_release_notes: true, contents: write permission grant.
+- Cliff suite: TOML parses, has [changelog].body + [git] section with commit_parsers (recognising feat/fix or [tdd-*]), tag_pattern accepts `v0.1.0b1`.
+
+### BR Wave 0 RED summary
+
+47 new tests added. Locally: 2 pre-existing passes (LICENSE pin already on disk; ci.yml workflow_call gate from CI-1), 1 conditional skip (banner.png), 44 errors/fails — exactly the expected RED shape before BR-01..BR-04 GREEN passes.
