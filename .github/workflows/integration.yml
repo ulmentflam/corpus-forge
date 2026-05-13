@@ -1,0 +1,158 @@
+name: Integration
+
+# CI-2: dedicated workflow for the testcontainers-Postgres integration suite.
+# Linux + macOS only — Windows has no Docker daemon on GitHub-hosted runners
+# (the CI workflow's Windows matrix cells set CI_NO_DOCKER=1 to skip).
+#
+# Linux runners use a Postgres + pgvector `services:` container with a
+# pg_isready healthcheck.  testcontainers' Python client picks up the
+# running service when DSN env vars are passed; for tests that ALSO spawn
+# their own testcontainers Postgres (most of them today), having the
+# service-managed image already pre-pulled keeps the per-test container
+# spin-up snappy.
+#
+# macOS runners install Docker via docker/setup-docker-action so
+# testcontainers can spin up postgres-pgvector on-demand.
+#
+# 3.13 is intentionally dropped from this workflow's matrix until
+# sentence-transformers + torch ship stable wheels on python 3.13 for
+# macos-arm64 (revisit weekly).
+# TODO: re-add 3.13 to integration.yml matrix when sentence-transformers
+# wheels stable on 3.13.
+
+on:
+  pull_request:
+    paths:
+      - "corpus_forge/**"
+      - "tests/integration/**"
+      - "tests/conftest.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/integration.yml"
+      - ".github/actions/setup-uv/**"
+  push:
+    branches: [main]
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  HYPOTHESIS_PROFILE: ci
+  FORCE_COLOR: "1"
+  UV_NO_PROGRESS: "1"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  integration-linux:
+    name: Integration (ubuntu-22.04 / py${{ matrix.python-version }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04]
+        python-version: ["3.11", "3.12"]
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: corpus_forge_ci
+        ports:
+          - 5432:5432
+        # pg_isready is the canonical liveness probe for a running cluster;
+        # testcontainers' Python client also waits on this, but having a
+        # service-level healthcheck means GitHub starts our steps only once
+        # the container is genuinely accepting connections.
+        options: >-
+          --health-cmd "pg_isready -U postgres -d corpus_forge_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv + Python
+        uses: ./.github/actions/setup-uv
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Restore uv cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('uv.lock', 'pyproject.toml') }}
+          restore-keys: |
+            uv-${{ runner.os }}-py${{ matrix.python-version }}-
+            uv-${{ runner.os }}-
+
+      - name: Restore Hugging Face cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          restore-keys: |
+            hf-${{ runner.os }}-
+
+      - name: Integration tests (testcontainers Postgres)
+        run: make test-integration
+
+  integration-macos:
+    name: Integration (macos-14 / py${{ matrix.python-version }})
+    runs-on: macos-14
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14]
+        python-version: ["3.11", "3.12"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Docker (Colima-backed) on macOS runner
+        # GitHub-hosted macos-14 has no Docker pre-installed.
+        # setup-docker-action installs Colima + docker CLI; testcontainers
+        # picks up the resulting docker.sock automatically.
+        uses: docker/setup-docker-action@v3
+
+      - name: Pre-pull pgvector image
+        # Pre-pull so the first testcontainers spin-up doesn't add cold-pull
+        # latency to a test's clock budget.
+        run: docker pull pgvector/pgvector:pg16
+
+      - name: Setup uv + Python
+        uses: ./.github/actions/setup-uv
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Restore uv cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('uv.lock', 'pyproject.toml') }}
+          restore-keys: |
+            uv-${{ runner.os }}-py${{ matrix.python-version }}-
+            uv-${{ runner.os }}-
+
+      - name: Restore Hugging Face cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          restore-keys: |
+            hf-${{ runner.os }}-
+
+      - name: Integration tests (testcontainers Postgres)
+        run: make test-integration
