@@ -1,10 +1,45 @@
+[build-system]
+requires      = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
 [project]
 name            = "corpus-forge"
-version         = "0.1.0"
-description     = "HF-format corpus + multi-embedder ingestion daemon for personal text and chat data."
-requires-python = ">=3.11"
-license         = { text = "MIT" }
+version         = "0.1.0b1"
+description     = "Forge a HuggingFace-format training corpus from your notes and chat history."
+requires-python = ">=3.11,<3.14"
+license         = "Apache-2.0"
+license-files   = ["LICENSE"]
 readme          = "README.md"
+authors         = [{ name = "Evan Owen", email = "evan@qwerky.ai" }]
+keywords = [
+  "huggingface",
+  "datasets",
+  "fine-tuning",
+  "training-corpus",
+  "embeddings",
+  "pgvector",
+  "sqlite-vec",
+  "obsidian",
+  "claude-code",
+  "rag",
+  "personal-knowledge",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Database",
+  "Typing :: Typed",
+]
 dependencies = [
   "sentence-transformers>=3.0",
   "psycopg[binary]>=3.1",
@@ -25,6 +60,13 @@ sqlite  = ["sqlite-vec>=0.1"]
 [project.scripts]
 corpus-forge = "corpus_forge.cli:app"
 
+[project.urls]
+Homepage      = "https://github.com/ulmentflam/corpus-forge"
+Documentation = "https://github.com/ulmentflam/corpus-forge#readme"
+Repository    = "https://github.com/ulmentflam/corpus-forge"
+Issues        = "https://github.com/ulmentflam/corpus-forge/issues"
+Changelog     = "https://github.com/ulmentflam/corpus-forge/blob/main/CHANGELOG.md"
+
 [dependency-groups]
 dev = [
   "pytest>=8.2",
@@ -41,6 +83,26 @@ dev = [
   "mkdocs-material>=9.5",                    # docs site (built on demand)
   "mkdocstrings[python]>=0.25",              # API docs from docstrings
   "build>=1.2",                              # CI-1: sdist/wheel builder for release artifacts
+]
+
+# ── hatchling build target (explicit so the editable install picks up the
+#    `corpus_forge` package even with our somewhat-noisy repo root) ──
+
+[tool.hatch.build.targets.wheel]
+packages = ["corpus_forge"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "corpus_forge",
+  "tests",
+  "packaging",
+  "scripts",
+  "LICENSE",
+  "README.md",
+  "config.example.toml",
+  "secrets.env.example",
+  "Makefile",
+  "pyproject.toml",
 ]
 
 # ── tool config (also see Tooling & development workflow above) ──
@@ -76,12 +138,10 @@ project_includes = ["corpus_forge"]
 python_version   = "3.11"
 
 [tool.pytest.ini_options]
+# CI-3: `pythonpath = ["."]` removed. `uv sync` now installs corpus_forge in
+# editable mode via the hatchling build-system above, so `import corpus_forge`
+# resolves without sys.path gymnastics.
 testpaths     = ["tests"]
-# Repo root on sys.path so `tests/conftest.py` can `import corpus_forge` and
-# `tests.fuzz.profiles` without PYTHONPATH gymnastics. The project ships
-# without a [build-system] until CI-3, so editable install isn't available.
-# CI-3: replace with editable install via hatchling build-system
-pythonpath    = ["."]
 addopts       = "-ra --strict-markers --strict-config --timeout=60 --timeout-method=thread"
 xfail_strict  = true
 markers = [
