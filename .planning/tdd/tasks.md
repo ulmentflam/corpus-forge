@@ -954,13 +954,13 @@ _Source plan: `/Users/evanowen/.claude/plans/crispy-yawning-crescent.md`._
 
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
-| R2-01 | RED — fusion / normalize / retriever / encode_query / config unit pins + dual-integration hybrid test | — | `tests/unit/test_retrieval_fusion.py`, `tests/unit/test_retrieval_normalize.py`, `tests/unit/test_retrieval_retriever.py`, `tests/unit/test_embedder_encode_query.py`, `tests/unit/test_config_retrieval.py`, `tests/integration/test_backend_dual.py` | med | pending | tdd-principal | — |
-| R2-02 | GREEN — `RetrievalConfig` model + attach to `Config` | R2-01 | `corpus_forge/config.py` | low | pending | tdd-principal | — |
-| R2-03 | GREEN — `Embedder.encode_query` protocol + `BaseEmbedder` default + Qwen3 override on `SentenceTransformersEmbedder` | R2-01 | `corpus_forge/embedders/base.py`, `corpus_forge/embedders/sentence_transformers.py` | low | pending | tdd-principal | — |
-| R2-04 | GREEN — `retrieval/normalize.py` (min-max) + `retrieval/fusion.py` (RRF + alpha_blend) | R2-01 | `corpus_forge/retrieval/normalize.py`, `corpus_forge/retrieval/fusion.py`, `corpus_forge/retrieval/__init__.py` | low | pending | tdd-principal | — |
-| R2-05 | GREEN — `retrieval/retriever.py` (`Retriever` protocol + `HybridRetriever`) | R2-03, R2-04 | `corpus_forge/retrieval/retriever.py`, `corpus_forge/retrieval/__init__.py` | med | pending | tdd-principal | reranker param exists but unused (R4 plumbing) |
-| R2-06 | GREEN — dual-backend integration: `test_hybrid_search_returns_fused_hits[*]` passes on real seeded corpus | R2-05 | `tests/integration/test_backend_dual.py` | low | pending | tdd-principal | wave 1 already added the test class in R2-01; this slice ensures it goes green |
-| R2-Z | Close-out summary + acceptance check | R2-02..R2-06 | `.planning/tdd/tasks.md` | low | pending | tdd-principal | — |
+| R2-01 | RED — fusion / normalize / retriever / encode_query / config unit pins + dual-integration hybrid test | — | `tests/unit/test_retrieval_fusion.py`, `tests/unit/test_retrieval_normalize.py`, `tests/unit/test_retrieval_retriever.py`, `tests/unit/test_embedder_encode_query.py`, `tests/unit/test_config_retrieval.py`, `tests/integration/test_backend_dual.py` | med | done | tdd-principal | commit `9850a58` — 89 failing tests; pins full R2 surface. |
+| R2-02 | GREEN — `RetrievalConfig` model + attach to `Config` | R2-01 | `corpus_forge/config.py` | low | done | tdd-principal | commit `ac40e4a` — 13/13 unit tests green. |
+| R2-03 | GREEN — `Embedder.encode_query` protocol + `BaseEmbedder` default + Qwen3 override on `SentenceTransformersEmbedder` | R2-01 | `corpus_forge/embedders/base.py`, `corpus_forge/embedders/sentence_transformers.py` | low | done | tdd-principal | commit `b4c961c` — 19/19 + 52 existing embedder tests green. |
+| R2-04 | GREEN — `retrieval/normalize.py` (min-max) + `retrieval/fusion.py` (RRF + alpha_blend) | R2-01 | `corpus_forge/retrieval/normalize.py`, `corpus_forge/retrieval/fusion.py`, `corpus_forge/retrieval/__init__.py` | low | done | tdd-principal | commit `66f6e6e` — 30/30 unit tests green. |
+| R2-05 | GREEN — `retrieval/retriever.py` (`Retriever` protocol + `HybridRetriever`) | R2-03, R2-04 | `corpus_forge/retrieval/retriever.py`, `corpus_forge/retrieval/__init__.py` | med | done | tdd-principal | commit `12cef88` — 28/28 retriever tests green; reranker stored but never called. |
+| R2-06 | GREEN — dual-backend integration: `test_hybrid_search_*[*]` passes; gate-clean polish | R2-05 | `corpus_forge/retrieval/normalize.py`, `tests/*` | low | done | tdd-principal | commit `34338ae` — single-element normalise contract corrected to `[1.0]`; 6/6 hybrid integration; 287/287 full integration; ruff/format/pyrefly clean. |
+| R2-Z | Close-out summary + acceptance check | R2-02..R2-06 | `.planning/tdd/tasks.md` | low | done | tdd-principal | This block. |
 
 ### DAG
 - Wave 0: R2-01 (RED ratchet)
@@ -968,3 +968,69 @@ _Source plan: `/Users/evanowen/.claude/plans/crispy-yawning-crescent.md`._
 - Wave 2: R2-05 (HybridRetriever uses everything above)
 - Wave 3: R2-06 (integration goes green; no new code, just sanity-check)
 - Wave 4: R2-Z (close-out)
+
+### Phase R2 close-out
+
+**Commits (7)**:
+1. `e40a029` — seed task board (R2-01..R2-Z).
+2. `9850a58` — RED ratchet: 5 new unit test files + extension of dual-integration suite.
+3. `ac40e4a` — GREEN: `RetrievalConfig` + attach to `Config`.
+4. `b4c961c` — GREEN: `Embedder.encode_query` + Qwen3 override.
+5. `66f6e6e` — GREEN: `retrieval.normalize.min_max` + `retrieval.fusion` (RRF + alpha_blend).
+6. `12cef88` — GREEN: `Retriever` protocol + `HybridRetriever`.
+7. `34338ae` — GREEN polish: single-element normalise fix; lint / format / pyrefly clean.
+
+**Files added (5)**:
+- `corpus_forge/retrieval/normalize.py` (44 lines)
+- `corpus_forge/retrieval/fusion.py` (84 lines)
+- `corpus_forge/retrieval/retriever.py` (175 lines)
+- `tests/unit/test_retrieval_normalize.py` (95 lines, 9 tests)
+- `tests/unit/test_retrieval_fusion.py` (157 lines, 21 tests)
+- `tests/unit/test_retrieval_retriever.py` (475 lines, 28 tests)
+- `tests/unit/test_embedder_encode_query.py` (305 lines, 19 tests)
+- `tests/unit/test_config_retrieval.py` (178 lines, 13 tests)
+
+**Files modified (4)**:
+- `corpus_forge/config.py` — `RetrievalConfig` model + attach to `Config`.
+- `corpus_forge/embedders/base.py` — `Embedder.encode_query` protocol + `BaseEmbedder.encode_query` default delegate.
+- `corpus_forge/embedders/sentence_transformers.py` — Qwen3 detection + instruct-prefix override on `encode_query`.
+- `corpus_forge/retrieval/__init__.py` — re-export `min_max`, `reciprocal_rank_fusion`, `alpha_blend`, `Retriever`, `HybridRetriever`.
+- `tests/integration/test_backend_dual.py` — `TestHybridSearch` (3 tests × {postgres, sqlite}).
+
+**Fusion strategy implemented**:
+- **RRF (default)** — rank-only.  Sidesteps the R1 score-scale mismatch entirely (no normalisation needed).
+- **alpha-weighted** — `per-list min_max → alpha_blend`.  R1 carry-over #1 honoured.
+
+**Score normalisation discoveries / surprises**:
+- **`min_max([x])` must return `[1.0]`, not `[0.0]`.**  Discovered when the dual-backend `TestHybridSearch::test_hybrid_search_alpha_fusion_blends_scores[postgres/sqlite]` case with `alpha=0.0` failed: the lexical search for the unique keyword `"baobab"` returned exactly one hit; normalising that singleton to `0.0` silently erased it from the blend.  All-equal multi-element lists still emit zeros (no "best" among equals).
+- **No additional scale-mismatch issues beyond the R1 flag.**  RRF doesn't care; alpha path is normalise-then-blend; backend score scales (sqlite `relevance/(1+relevance)` ∈ [0,1); postgres `ts_rank_cd` clipped to [0,1]) survive the round-trip cleanly once each list is min-maxed.
+
+**Qwen3 prefix detection**:
+- Two `model_id` prefix variants (case-insensitive): `Qwen/Qwen3-Embedding` (HF canonical) and `qwen3-embedding` (Ollama-style alias).
+- Tested against the parametrised set `{Qwen/Qwen3-Embedding-{0.6,4,8}B, qwen3-embedding-{0.6,4,8}b}` — 6 variants, all green.
+- The `encode` (document-side) path is NEVER prefixed — only `encode_query` is.
+
+**Gates** (final QA):
+- `ruff check corpus_forge tests` — All checks passed.
+- `ruff format --check corpus_forge tests` — 132 files already formatted.
+- `pyrefly check corpus_forge` — 0 errors (16 suppressed).
+- `pytest tests/unit -n auto --cov-fail-under=85` — **1493 passed / 3 skipped / 1 xfailed; coverage 88.10%.**
+- `pytest tests/integration` — **287 passed in 2m29s** (no R1/R2 regressions; the iCloud-watcher flake noted in R1 close-out did not re-surface this run).
+- `pytest tests/integration/test_backend_dual.py::TestHybridSearch` — **6/6 green** (3 tests × {postgres, sqlite}).
+
+**Working tree**: clean modulo `.claude/` (user-private, untracked).
+
+**Acceptance status**:
+1. ☑ `make ci`-style gauntlet (format-check, lint, pyrefly, unit + coverage 88.10% ≥ 85%) all green.
+2. ☑ `make test-integration` 287/287 green.
+3. ☑ `HybridRetriever(backend, embedder, embedder_id).search(...)` returns `list[Hit]` of correct length with `source="fused"` on both backends.
+4. ☑ With `fusion="alpha"`, scores blend linearly with `alpha` — verified end-to-end in both unit + dual-backend integration.
+5. ☑ `SentenceTransformersEmbedder.encode_query` for Qwen3 prepends the instruction prompt (6 variants); non-Qwen passes through.
+6. ☑ All 7 R2 commits follow `[tdd-principal] phase-r2: <slice>` prefix; signed by 1Password SSH.
+7. ☑ Tree clean at end.
+
+**Hand-off to Phase R3 (eval harness)**:
+- The retriever is ready to be evaluated.  R3 imports `HybridRetriever` + `SearchOptions` + `Hit` from `corpus_forge.retrieval` (all re-exported).
+- The `RetrievalConfig` model is in place; R3 can read `cfg.retrieval.default_k` etc. directly.
+- Pyproject `[retrieval]` extra is **NOT** added in R2 (reserved for R3 per the plan).  Add when wiring the `eval` CLI.
+- Note for the eval harness: when scoring with a Qwen3 model, the harness must call `embedder.encode_query(...)` for the query side and `embedder.encode(...)` for the corpus side — asymmetric is now the contract.
