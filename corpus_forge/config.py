@@ -200,9 +200,23 @@ class Config(BaseModel):
 
     @classmethod
     def load(cls, config_path: Path | None = None, secrets_path: Path | None = None) -> "Config":
-        """Load configuration from TOML file and optional secrets file."""
+        """Load configuration from TOML file and optional secrets file.
+
+        Resolution order for ``config_path``:
+
+        1. Explicit ``config_path`` argument (used by tests).
+        2. ``CORPUS_FORGE_CONFIG`` environment variable.  Added in
+           Phase R5 so subprocess-driven smoke tests (and Claude Desktop
+           launchers that already set env vars) can point at a custom
+           config without writing to ``~/.config``.
+        3. ``~/.config/corpus-forge/config.toml`` (the default).
+        """
         if config_path is None:
-            config_path = Path.home() / ".config" / "corpus-forge" / "config.toml"
+            env_path = os.environ.get("CORPUS_FORGE_CONFIG")
+            if env_path:
+                config_path = Path(env_path)
+            else:
+                config_path = Path.home() / ".config" / "corpus-forge" / "config.toml"
 
         if not config_path.exists():
             raise FileNotFoundError(f"Configuration file not found: {config_path}")
