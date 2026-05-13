@@ -59,7 +59,7 @@ def nightly_yaml() -> dict:
 
 
 class TestCIMatrixExpansion:
-    """CI-2 expands the test matrix to 3 OS × 3 Python with fail-fast off."""
+    """CI-2 expands the test matrix to 3 OS x 3 Python with fail-fast off."""
 
     def test_test_job_matrix_three_os(self, ci_yaml: dict) -> None:
         test_job = ci_yaml["jobs"]["test"]
@@ -77,15 +77,11 @@ class TestCIMatrixExpansion:
 
     def test_fail_fast_false(self, ci_yaml: dict) -> None:
         strategy = ci_yaml["jobs"]["test"]["strategy"]
-        assert strategy.get("fail-fast") is False, (
-            "CI-2 requires fail-fast: false on the matrix"
-        )
+        assert strategy.get("fail-fast") is False, "CI-2 requires fail-fast: false on the matrix"
 
     def test_actionlint_job_present(self, ci_yaml: dict) -> None:
         jobs = ci_yaml["jobs"]
-        assert "actionlint" in jobs, (
-            f"CI-2 must add an 'actionlint' job; jobs: {list(jobs)}"
-        )
+        assert "actionlint" in jobs, f"CI-2 must add an 'actionlint' job; jobs: {list(jobs)}"
 
     def test_actionlint_runs_on_ubuntu(self, ci_yaml: dict) -> None:
         job = ci_yaml["jobs"]["actionlint"]
@@ -208,16 +204,12 @@ class TestIntegrationWorkflow:
 
     def test_postgres_healthcheck_present(self, integration_yaml: dict) -> None:
         text = yaml.safe_dump(integration_yaml)
-        assert "pg_isready" in text, (
-            "Postgres service must have a healthcheck using pg_isready"
-        )
+        assert "pg_isready" in text, "Postgres service must have a healthcheck using pg_isready"
 
     def test_macos_docker_setup(self, integration_yaml: dict) -> None:
         """macOS runner needs docker/setup-docker-action so testcontainers works."""
         text = yaml.safe_dump(integration_yaml)
-        assert "setup-docker-action" in text, (
-            "macOS runner needs docker/setup-docker-action@v3"
-        )
+        assert "setup-docker-action" in text, "macOS runner needs docker/setup-docker-action@v3"
 
 
 # ── nightly.yml — cron + nightly hypothesis profile ────────────────────────

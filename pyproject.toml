@@ -80,6 +80,7 @@ testpaths     = ["tests"]
 # Repo root on sys.path so `tests/conftest.py` can `import corpus_forge` and
 # `tests.fuzz.profiles` without PYTHONPATH gymnastics. The project ships
 # without a [build-system] until CI-3, so editable install isn't available.
+# CI-3: replace with editable install via hatchling build-system
 pythonpath    = ["."]
 addopts       = "-ra --strict-markers --strict-config --timeout=60 --timeout-method=thread"
 xfail_strict  = true
