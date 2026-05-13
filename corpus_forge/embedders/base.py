@@ -7,7 +7,13 @@ import numpy as np
 
 
 class Embedder(Protocol):
-    """Pluggable embedder. Implementations live behind this Protocol."""
+    """Pluggable embedder. Implementations live behind this Protocol.
+
+    Phase R2 adds the asymmetric ``encode_query`` method.  Symmetric models
+    (the majority) can leave the default-impl path on ``BaseEmbedder`` which
+    just delegates to ``encode``.  Models with documented asymmetric
+    instruction prompts (Qwen3-Embedding, E5, GTE, etc.) override.
+    """
 
     name: str
     provider: str
@@ -17,6 +23,7 @@ class Embedder(Protocol):
     distance: str
 
     def encode(self, texts: Sequence[str], *, batch_size: int = 32) -> np.ndarray: ...
+    def encode_query(self, texts: Sequence[str], *, batch_size: int = 32) -> np.ndarray: ...
     def warmup(self) -> None: ...
 
 
@@ -43,3 +50,13 @@ class BaseEmbedder:
         """Warm up the embedder (e.g., load model)."""
         # Base implementation does nothing
         pass
+
+    def encode_query(self, texts: Sequence[str], *, batch_size: int = 32) -> np.ndarray:
+        """Encode a query (default: delegate to ``encode``).
+
+        Subclasses MAY override for asymmetric model families.  See
+        ``SentenceTransformersEmbedder.encode_query`` for the Qwen3 override.
+        """
+        # `self.encode` is supplied by concrete subclasses or attribute-
+        # injected at runtime (used by a handful of tests and ad-hoc embedders).
+        return self.encode(texts, batch_size=batch_size)  # type: ignore[attr-defined]

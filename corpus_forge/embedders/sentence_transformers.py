@@ -13,6 +13,25 @@ except ImportError:
 
 from .base import BaseEmbedder
 
+# Qwen3-Embedding documented query-side instruction prompt.  Prepended to
+# every query text in `encode_query` for Qwen3-family models.
+_QWEN3_QUERY_INSTRUCT_PREFIX = (
+    "Instruct: Given a web search query, retrieve relevant passages that "
+    "answer the query\nQuery: "
+)
+
+# Model-id prefixes that trigger the Qwen3 query override.  Detection is
+# case-insensitive on the lowercase form.
+_QWEN3_LOWER_PREFIXES = ("qwen/qwen3-embedding", "qwen3-embedding")
+
+
+def _is_qwen3_embedding(model_id: str) -> bool:
+    """Return True if `model_id` names a Qwen3-Embedding-family model."""
+    if not model_id:
+        return False
+    lower = model_id.lower()
+    return any(lower.startswith(p) for p in _QWEN3_LOWER_PREFIXES)
+
 
 class SentenceTransformersEmbedder(BaseEmbedder):
     """Sentence Transformers embedder."""
@@ -93,3 +112,23 @@ class SentenceTransformersEmbedder(BaseEmbedder):
             )
 
         return embeddings
+
+    def encode_query(self, texts: Sequence[str], *, batch_size: int = 32) -> np.ndarray:
+        """Encode a query.
+
+        For Qwen3-Embedding-family models (detected by ``model_id`` prefix
+        ``Qwen/Qwen3-Embedding`` or the lowercase ``qwen3-embedding`` alias)
+        the documented query-side instruction prompt is prepended to every
+        text before delegation to ``encode``.
+
+        For all other models, delegates to ``encode`` unchanged so symmetric
+        embedders Just Work.
+        """
+        if not texts:
+            return np.empty((0, self.dimension), dtype=np.float32)
+
+        if _is_qwen3_embedding(self.model_id):
+            prefixed = [_QWEN3_QUERY_INSTRUCT_PREFIX + t for t in texts]
+            return self.encode(prefixed, batch_size=batch_size)
+
+        return self.encode(texts, batch_size=batch_size)
