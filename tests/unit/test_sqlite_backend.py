@@ -181,9 +181,15 @@ class TestPragmasAfterMigrate:
 class TestSchemaTablePresence:
     """After migrate(), all expected tables must exist."""
 
-    # Tables extracted from 001_core.sql, 002_chunk_content_hash.sql, 003_sync.sql.
+    # Tables extracted from 001_core.sql, 002_chunk_content_hash.sql, 003_sync.sql,
+    # 004_fts.sql.
     # 002 adds a column to chunks (no new table).
     # 003 adds document_revisions table.
+    # 004 adds the chunks_fts FTS5 virtual table; SQLite's FTS5 module
+    #     automatically materialises four shadow tables alongside the user-facing
+    #     virtual table (config / data / docsize / idx) — these are FTS5 internals
+    #     and visible via sqlite_master.  Pin them explicitly so an unexpected
+    #     extra table still fails this test.
     EXPECTED_TABLES = sorted(
         [
             "datasets",
@@ -198,6 +204,12 @@ class TestSchemaTablePresence:
             "document_labels",
             "conversation_labels",
             "document_revisions",
+            # FTS5 (chunks_fts virtual table + its four shadow tables).
+            "chunks_fts",
+            "chunks_fts_config",
+            "chunks_fts_data",
+            "chunks_fts_docsize",
+            "chunks_fts_idx",
         ]
     )
 
