@@ -3,7 +3,7 @@
 import os
 import socket
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 try:
     import tomllib  # Python 3.11+
@@ -106,6 +106,28 @@ class EmbedderConfig(BaseModel):
     api_key_env: str = Field(default="OPENAI_API_KEY")
 
 
+class RetrievalConfig(BaseModel):
+    """Phase R2 — hybrid retrieval knobs.
+
+    Defaults match the master plan verbatim:
+
+    - ``alpha = 0.5`` (50/50 blend when ``fusion="alpha"``).
+    - ``fusion = "rrf"`` (rank-based reciprocal-rank fusion; default).
+    - ``default_k = 10`` (top-k returned to callers when unset).
+    - ``rerank_top_n = 50`` (R4 reranker cap; ignored in R2).
+    - ``rerank_enabled = False`` (R4 toggle; ignored in R2).
+
+    R4 will add a ``reranker`` field describing the reranker shape
+    (``{"kind": "cross_encoder", "model_id": ...}``).
+    """
+
+    alpha: float = Field(default=0.5, ge=0.0, le=1.0)
+    fusion: Literal["rrf", "alpha"] = "rrf"
+    default_k: int = Field(default=10, gt=0)
+    rerank_top_n: int = Field(default=50, gt=0)
+    rerank_enabled: bool = False
+
+
 class Config(BaseModel):
     """Main configuration for corpus-forge."""
 
@@ -113,6 +135,7 @@ class Config(BaseModel):
     daemon: DaemonConfig
     datasets: list[DatasetConfig]
     embedders: list[EmbedderConfig]
+    retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
 
     model_config = ConfigDict(
         str_strip_whitespace=True,
