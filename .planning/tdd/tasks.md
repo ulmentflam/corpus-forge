@@ -2021,7 +2021,7 @@ Same as the master board:
 
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
-| D-01 | Alembic dep + scaffold + revision-chain unit pin | — | `pyproject.toml`, `alembic.ini`, `corpus_forge/alembic/__init__.py`, `corpus_forge/alembic/env.py`, `corpus_forge/alembic/script.py.mako`, `corpus_forge/alembic/versions/.gitkeep`, `tests/unit/test_alembic_revision_chain.py` | low | pending | — | Wave 0 |
+| D-01 | Alembic dep + scaffold + revision-chain unit pin | — | `pyproject.toml`, `alembic.ini`, `corpus_forge/alembic/__init__.py`, `corpus_forge/alembic/env.py`, `corpus_forge/alembic/script.py.mako`, `corpus_forge/alembic/versions/.gitkeep`, `tests/unit/test_alembic_revision_chain.py` | low | claimed | tdd-tester | Wave 0; RED suite for scaffold + revision-chain pin |
 | D-02 | Revision 0001_core (PG + SQLite) | D-01 | `corpus_forge/alembic/versions/0001_core.py`, `tests/integration/test_alembic_parity_postgres.py`, `tests/integration/test_alembic_parity_sqlite.py` | med | pending | — | Wave 1; parity assertions can scope to "head=0001" for this slice and lift later |
 | D-03 | Revision 0002_chunk_content_hash + backfill | D-02 | `corpus_forge/alembic/versions/0002_chunk_content_hash.py`, `tests/integration/test_alembic_backfill_content_hash.py` | med | pending | — | Wave 1; data-migration step inside upgrade() |
 | D-04 | Revision 0003_views (Postgres-only) | D-03 | `corpus_forge/alembic/versions/0003_views.py` | low | pending | — | Wave 2; dialect-gated body |
