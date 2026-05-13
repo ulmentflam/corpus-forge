@@ -46,6 +46,16 @@ def apply_migrations(
         print(f"Applying migration: {migration_file.name}")
         sql_content = migration_file.read_text()
 
+        # SQLite + CREATE TRIGGER:  trigger bodies contain "BEGIN ... END;"
+        # blocks; naive split-by-";" mangles them.  Use the backend's
+        # executescript helper, which streams the full script through
+        # sqlite3.Connection.executescript().  Postgres handles trigger
+        # bodies natively via psycopg, so this is purely a SQLite quirk.
+        if dialect == "sqlite" and "CREATE TRIGGER" in sql_content.upper():
+            backend._executescript(sql_content)  # type: ignore[attr-defined]
+            applied.add(migration_file.stem)
+            continue
+
         # Split by semicolon and execute each statement.
         # Strip leading comment lines before checking for real SQL content, because a
         # statement that starts with "-- comment" may still contain actual SQL below.
@@ -67,6 +77,15 @@ def apply_migrations(
             SET content_hash = encode(sha256(text::bytea), 'hex')
             WHERE content_hash IS NULL
         """)
+
+    # --- 004_fts: SQLite-side backfill (Postgres GENERATED column auto-populates) ---
+    # The chunks_fts virtual table is empty right after CREATE VIRTUAL TABLE,
+    # so any rows that pre-date the 004 migration must be mirrored once.
+    # The AFTER INSERT trigger handles new rows from this point onward.
+    if dialect == "sqlite" and "004_fts" in applied:
+        backfilled = backend.backfill_lexical_index()  # type: ignore[attr-defined]
+        if backfilled:
+            print(f"Running 004 backfill: mirrored {backfilled} chunks into chunks_fts")
 
 
 def main() -> None:
