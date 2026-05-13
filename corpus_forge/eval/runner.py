@@ -131,7 +131,7 @@ def _evaluate_queries(
     for q in queries:
         hits = retriever.search(q.query, opts)
         ranked_ids = _resolve_ranking(hits)
-        relevant, resolved_graded = _resolve_relevant(q, backend)
+        relevant, resolved_graded = _resolve_gold_ids(q, backend)
 
         for k in k_values:
             sums_ndcg[k] += ndcg_at_k(ranked_ids, relevant, k, graded=resolved_graded)
@@ -154,7 +154,7 @@ def _resolve_ranking(hits) -> list[int]:
 # ── drift-tolerant relevant-set resolver (R3-05) ─────────────────────────
 
 
-def _resolve_relevant(q: GoldQuery, backend) -> tuple[set[int], dict[int, int] | None]:
+def _resolve_gold_ids(q: GoldQuery, backend) -> tuple[set[int], dict[int, int] | None]:
     """Resolve ``q.relevant_chunk_ids`` against the live corpus.
 
     Returns ``(resolved_ids, resolved_graded_or_None)``.
@@ -238,30 +238,26 @@ def _chunk_hash_matches(chunk, expected_hash: str) -> bool:
 
 
 def _lookup_chunk_id_by_content_hash(backend, content_hash: str) -> int | None:
-    """Resolve a chunk_id by its ``content_hash`` via a thin SQL shim.
+    """Resolve a chunk_id by its ``content_hash`` via the storage protocol.
 
-    The protocol does not (yet) expose a typed ``get_chunk_by_content_hash``
-    surface; R4/R5 should lift this into ``StorageBackend`` cleanly.  For
-    now we use the dialect-aware ``_execute`` path that both ``SQLiteBackend``
-    and ``PostgresBackend`` already expose for the CLI sync surface.
+    Phase R5-01: lifted onto ``StorageBackend.get_chunk_by_content_hash``.
+    This helper now delegates to that method and projects the resolved
+    chunk row down to its ``id``.  Any backend exception is swallowed
+    (parity with the previous SQL-shim behaviour) so a missing backend
+    method or transient failure surfaces as a drop+log in the caller
+    rather than a hard runner crash.
     """
-    exec_fn = getattr(backend, "_execute", None)
-    if exec_fn is None:
+    getter = getattr(backend, "get_chunk_by_content_hash", None)
+    if getter is None:
         return None
-    backend_cls = type(backend).__name__
-    if backend_cls == "PostgresBackend":
-        sql = "SELECT id FROM corpus.chunks WHERE content_hash = %s LIMIT 1"
-    else:
-        sql = "SELECT id FROM chunks WHERE content_hash = ? LIMIT 1"
     try:
-        rows = exec_fn(sql, (content_hash,))
+        chunk = getter(content_hash)
     except Exception:  # pragma: no cover — backend errors surface elsewhere
         return None
-    if not rows:
+    if chunk is None:
         return None
-    row = rows[0]
-    # Both backends return dict-row-like objects with an "id" key.
-    return int(row["id"]) if "id" in row else None
+    chunk_id = chunk.get("id") if isinstance(chunk, dict) else None
+    return int(chunk_id) if chunk_id is not None else None
 
 
 # ── reporting ─────────────────────────────────────────────────────────────

@@ -1115,6 +1115,41 @@ class PostgresBackend(StorageBackend):
         )
         return rows[0] if rows else None
 
+    def get_chunk_by_content_hash(self, content_hash: str) -> "dict | None":
+        """Return the chunk row with the given ``content_hash``, joined to its document.
+
+        Phase R5-01: protocol-lifted from the ad-hoc SQL shim in
+        ``corpus_forge/eval/runner.py``.  Mirrors the join surface of
+        :meth:`get_chunk` so consumers receive the same dict shape.
+
+        Tiebreak: when multiple chunks share the same content_hash the row
+        with the LOWEST ``id`` is returned (``ORDER BY c.id ASC LIMIT 1``).
+        This stability is part of the protocol contract — callers rely on it
+        for reproducible drift resolution across runs.
+
+        Non-string / unmatched inputs (e.g. ``""``, ``None``) return ``None``
+        rather than raising; psycopg's parameter binding either rejects with
+        a typed error (which we let propagate to the caller's own try/except)
+        or simply fails to match.
+        """
+        rows = self._execute(
+            """
+            SELECT c.id, c.document_id, c.conversation_id, c.message_id,
+                   c.chunk_index, c.text, c.heading, c.role, c.token_count,
+                   c.metadata, c.content_hash,
+                   COALESCE(d.dataset_id, cv.dataset_id) AS dataset_id,
+                   d.source_uri, d.title
+            FROM corpus.chunks c
+            LEFT JOIN corpus.documents d ON d.id = c.document_id
+            LEFT JOIN corpus.conversations cv ON cv.id = c.conversation_id
+            WHERE c.content_hash = %s
+            ORDER BY c.id ASC
+            LIMIT 1
+            """,
+            (content_hash,),
+        )
+        return rows[0] if rows else None
+
     def list_datasets(self) -> "list[dict]":
         """Return all datasets with document + chunk counts (text + chat)."""
         rows = self._execute(

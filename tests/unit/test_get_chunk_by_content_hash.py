@@ -96,7 +96,7 @@ def test_empty_string_returns_none(tmp_path: Path) -> None:
 
 def test_multi_chunk_same_hash_returns_lowest_id(tmp_path: Path) -> None:
     """When two chunks share a content_hash, the lowest id wins (deterministic)."""
-    backend, ds_id, _ = _seed_backend(tmp_path)
+    backend, _ds_id, _ = _seed_backend(tmp_path)
     # Force-insert two chunks with the same content_hash via _execute, attached
     # to the same dataset's first document.
     doc_rows = backend._execute("SELECT id FROM documents LIMIT 1")
@@ -119,9 +119,7 @@ def test_multi_chunk_same_hash_returns_lowest_id(tmp_path: Path) -> None:
 
     out = backend.get_chunk_by_content_hash(shared_hash)
     assert out is not None
-    assert out["id"] == lowest_id, (
-        f"Tiebreak: expected lowest id {lowest_id}, got {out['id']!r}"
-    )
+    assert out["id"] == lowest_id, f"Tiebreak: expected lowest id {lowest_id}, got {out['id']!r}"
 
 
 def test_returns_dataset_id_for_text_chunk(tmp_path: Path) -> None:
