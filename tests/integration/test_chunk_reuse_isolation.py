@@ -103,35 +103,58 @@ def _make_doc(path: Path, source_uri: str, text: str) -> RawDocument:
     )
 
 
+def _chunks_count(pg_dsn: str) -> int:
+    """Return COUNT(*) on corpus.chunks; returns -1 if the schema doesn't exist
+    (i.e. the fixture dropped it as expected)."""
+    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT EXISTS ("
+            "  SELECT 1 FROM information_schema.tables "
+            "  WHERE table_schema='corpus' AND table_name='chunks'"
+            ")"
+        )
+        exists_row = cur.fetchone()
+        if not (exists_row and exists_row[0]):
+            return -1
+        cur.execute("SELECT COUNT(*) FROM corpus.chunks")
+        row = cur.fetchone()
+        return row[0] if row else 0
+
+
 class TestChunkReuseIsolation:
-    """The pg_dsn fixture must isolate per-test schema state."""
+    """The pg_dsn fixture must isolate per-test schema state.
 
-    def test_back_to_back_ingest_does_not_reuse_across_tests(
-        self, pg_dsn: str, tmp_path: Path
-    ) -> None:
-        """Single test simulates the cross-test pattern: ingest twice with the same
-        embedder name + identical text but *different* source_uris.
+    The cross-test flake mechanism (CI-1 carry-over):
 
-        Without per-test schema reset this would still work inside one test
-        because the second ingest's embedder *would* reuse, but the assertion
-        we need to pin is on the **fixture**: the table state at fixture entry
-        is empty.  We verify that by counting rows in corpus.chunks before any
-        ingest happens (must be 0) and again in the embeddings table.
-        """
-        # ── Contract A: the fixture hands us an empty corpus schema. ─────────
-        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM corpus.chunks")
-            row = cur.fetchone()
-            assert row is not None
-            chunk_count_at_entry = row[0]
+    1. Test A ingests _build_doc(12) under embedder name X, registering
+       embeddings_X table rows for every chunk.
+    2. Test B (using the same session-scoped container, no schema reset)
+       ingests the *same* _build_doc(12) text under the *same* embedder name
+       X. ingest_one → upsert_document → _copy_reusable_embeddings finds
+       embeddings_X rows whose content_hash matches the new chunks and
+       bulk-copies them. ``chunks_missing_embedding`` then returns 0.
+    3. Test B's spy assertion ``encoder.call_count >= 10`` fails: the
+       encoder was never called because reuse covered everything.
 
-        assert chunk_count_at_entry == 0, (
-            "pg_dsn must hand each test an empty corpus.chunks table; "
-            f"found {chunk_count_at_entry} pre-existing rows. "
-            "Implement per-test schema reset in tests/conftest.py."
+    The fix lives in tests/conftest.py: the ``pg_dsn`` fixture drops the
+    ``corpus`` schema (CASCADE) before yielding so each test starts with no
+    chunks, no embeddings, no datasets — and ``_copy_reusable_embeddings``
+    has nothing to find.
+
+    These three tests run in order (no:randomly via the class) so the second
+    and third tests would FAIL if the reset hook didn't run.
+    """
+
+    def test_first_run_starts_clean(self, pg_dsn: str, tmp_path: Path) -> None:
+        """Contract A: fixture entry hands us a wiped schema."""
+        count = _chunks_count(pg_dsn)
+        assert count in (-1, 0), (
+            f"pg_dsn must reset the schema between tests; "
+            f"found {count} pre-existing rows in corpus.chunks. "
+            "See tests/conftest.py::pg_dsn for the per-test DROP SCHEMA hook."
         )
 
-        # ── Contract B: a brand-new ingest must call encode() at least once. ─
+        # Contract B: an ingest into the clean schema actually invokes encode().
         backend = PostgresBackend(dsn=pg_dsn, schema="corpus")
         backend.migrate()
         embedder = _CountingEmbedder(name="iso-fake")
@@ -139,62 +162,61 @@ class TestChunkReuseIsolation:
 
         ds_rows = backend._execute(
             "INSERT INTO corpus.datasets (name, kind) VALUES (%s, %s) RETURNING id",
-            ("iso-dataset", "text"),
+            ("iso-dataset-1", "text"),
         )
         ds_id = ds_rows[0]["id"]
 
         doc_path = tmp_path / "iso.md"
         raw = _make_doc(doc_path, "vault://iso/note.md", _build_doc(12))
-
         ingest_one(backend, raw, chunker, [embedder], ds_id)
 
         first_pass_arg_count = sum(len(args[0]) for args, _ in embedder.call_args_list)
         assert first_pass_arg_count >= _MIN_INITIAL_CHUNKS, (
             f"First ingest into a CLEAN schema must encode ≥{_MIN_INITIAL_CHUNKS} texts; "
-            f"got {first_pass_arg_count}. This indicates _copy_reusable_embeddings "
-            f"is pre-filling embeddings from a prior test's residue — the pg_dsn "
-            f"fixture is not resetting the corpus schema between tests."
+            f"got {first_pass_arg_count}. _copy_reusable_embeddings is pulling from "
+            "a prior test's residue — the pg_dsn fixture isn't dropping corpus."
         )
 
-    def test_back_to_back_test_runs_each_see_clean_chunks_table(
+    def test_second_run_does_not_inherit_first_runs_embeddings(
         self, pg_dsn: str, tmp_path: Path
     ) -> None:
-        """A second test sharing the same session container also sees an empty schema."""
-        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM corpus.chunks")
-            row = cur.fetchone()
-            assert row is not None
-            count = row[0]
+        """Re-run the same pattern under the same embedder name — same assertion.
 
-        assert count == 0, (
-            "Each test must receive an empty corpus.chunks table; "
-            f"found {count} rows from a prior test in the same session."
+        Without the reset, ``test_first_run_starts_clean`` would have left
+        ``embeddings_iso_fake`` rows for the 12 chunks of _build_doc(12). If
+        the fixture doesn't drop the schema, this test would observe 0
+        encoder calls and fail.
+        """
+        count = _chunks_count(pg_dsn)
+        assert count in (-1, 0), (
+            f"Second test got {count} pre-existing chunks — fixture reset is not firing."
         )
 
-        # Smoke-burn the schema so the next test would fail without reset.
         backend = PostgresBackend(dsn=pg_dsn, schema="corpus")
         backend.migrate()
-        embedder = _CountingEmbedder(name="iso-fake-2")
+        embedder = _CountingEmbedder(name="iso-fake")  # SAME NAME on purpose
         chunker = MarkdownChunker(max_chars=_MAX_CHARS, overlap=_OVERLAP)
+
         ds_rows = backend._execute(
             "INSERT INTO corpus.datasets (name, kind) VALUES (%s, %s) RETURNING id",
             ("iso-dataset-2", "text"),
         )
         ds_id = ds_rows[0]["id"]
-        doc_path = tmp_path / "iso2.md"
-        raw = _make_doc(doc_path, "vault://iso2/note.md", _build_doc(12))
+
+        doc_path = tmp_path / "iso.md"  # different tmp_path between tests anyway
+        raw = _make_doc(doc_path, "vault://iso/note.md", _build_doc(12))
         ingest_one(backend, raw, chunker, [embedder], ds_id)
-        # No assertion here — purpose is to leave rows behind so the *next*
-        # test in this class will fail loudly if the fixture skips reset.
+
+        encoded = sum(len(args[0]) for args, _ in embedder.call_args_list)
+        assert encoded >= _MIN_INITIAL_CHUNKS, (
+            f"Second ingest must also encode ≥{_MIN_INITIAL_CHUNKS} texts; "
+            f"got {encoded}. Cross-test residue is leaking through fixture reset."
+        )
 
     def test_third_run_still_clean(self, pg_dsn: str) -> None:
-        """Third call into the fixture must still see 0 chunks."""
-        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM corpus.chunks")
-            row = cur.fetchone()
-            assert row is not None
-            count = row[0]
-        assert count == 0, (
-            f"Third pg_dsn test should see clean schema; got {count} rows. "
-            "Reset hook not running."
+        """A read-only third test confirms the reset is stable across runs."""
+        count = _chunks_count(pg_dsn)
+        assert count in (-1, 0), (
+            f"Third pg_dsn invocation should see clean schema; got {count} rows. "
+            "Reset hook regressed."
         )

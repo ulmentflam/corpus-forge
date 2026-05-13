@@ -47,6 +47,22 @@ def _testcontainers_available() -> bool:
         return False
 
 
+def _ci_no_docker() -> bool:
+    """CI-2: Return True when the CI_NO_DOCKER env var is set to a truthy value.
+
+    Windows GitHub Actions runners have no Docker daemon; the workflow sets
+    CI_NO_DOCKER=1 on those matrix cells and we use that as the explicit
+    signal to skip every integration test (rather than relying on
+    _docker_available() returning False, which it may not on a runner with
+    a stale docker CLI but no daemon).
+
+    Accepts ``1``, ``true``, ``TRUE``, ``yes`` (case-insensitive) as True.
+    Anything else — including unset, empty, ``0``, ``false`` — is False.
+    """
+    raw = os.environ.get("CI_NO_DOCKER", "")
+    return raw.lower() in {"1", "true", "yes"}
+
+
 # Lazy import — only when Docker is available
 if _docker_available() and _testcontainers_available():
     from testcontainers.postgres import PostgresContainer
@@ -68,14 +84,28 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Skip integration tests when Docker is not available."""
-    if not _docker_available() or not _testcontainers_available():
-        skip = pytest.mark.skip(reason="Docker or testcontainers not available")
-        for item in items:
-            if "integration" in item.keywords or item.module.__name__.startswith(
-                "tests.integration"
-            ):
-                item.add_marker(skip)
+    """Skip integration tests when Docker is unavailable or CI_NO_DOCKER is set.
+
+    CI-2: ``CI_NO_DOCKER`` is the explicit kill-switch used on Windows runners
+    where ``_docker_available()`` may still spuriously return True (a CLI
+    without a daemon).  Either signal triggers the skip; reason string carries
+    the active reason so failure mode is clear in the run summary.
+    """
+    docker_missing = not _docker_available() or not _testcontainers_available()
+    ci_no_docker = _ci_no_docker()
+    if not (docker_missing or ci_no_docker):
+        return
+
+    if ci_no_docker:
+        reason = "CI_NO_DOCKER set — integration tests skipped on Docker-less runner"
+    else:
+        reason = "Docker or testcontainers not available"
+    skip = pytest.mark.skip(reason=reason)
+
+    for item in items:
+        module_name = getattr(item.module, "__name__", "")
+        if "integration" in item.keywords or module_name.startswith("tests.integration"):
+            item.add_marker(skip)
 
 
 @pytest.fixture
@@ -160,13 +190,34 @@ def pg_dsn(postgres_container) -> str:  # type: ignore[return]
     Returns a bare postgresql:// DSN that psycopg.connect() accepts directly,
     rather than the SQLAlchemy-style postgresql+psycopg2:// returned by
     postgres_container.get_connection_url().
+
+    CI-2: Drops and recreates the ``corpus`` schema (CASCADE) before yielding
+    so each test starts with a clean slate.  Without this reset, two tests
+    that ingest the same markdown text under the same embedder name share
+    chunk content_hashes, and ``_copy_reusable_embeddings`` silently bulk-
+    copies embeddings forward between tests — bypassing ``encode()`` calls
+    and breaking encoder-spy assertions.  See ``tests/integration/
+    test_chunk_reuse_isolation.py`` for the pin.
     """
     c = postgres_container
-    return (
+    dsn = (
         f"postgresql://{c.username}:{c.password}"
         f"@{c.get_container_host_ip()}:{c.get_exposed_port(5432)}"
         f"/{c.dbname}"
     )
+
+    # Local import so the fixture is importable even when psycopg isn't
+    # available (e.g. on Windows CI matrix cells where CI_NO_DOCKER=1 already
+    # skips the integration suite before this fixture is requested).
+    import psycopg  # noqa: PLC0415
+
+    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute("DROP SCHEMA IF EXISTS corpus CASCADE")
+        # NOTE: do NOT pre-create corpus schema here — let backend.migrate()
+        # do it.  Re-creating empty would mask migrations that depend on the
+        # schema not existing (rare but possible for IF NOT EXISTS guards).
+
+    return dsn
 
 
 @pytest.fixture
