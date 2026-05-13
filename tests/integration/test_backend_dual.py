@@ -784,6 +784,46 @@ class TestGetChunk:
         assert result is None
 
 
+class TestGetChunkByContentHash:
+    """R5-01 — protocol-lifted ``get_chunk_by_content_hash`` works on both backends."""
+
+    def test_known_hash_returns_chunk_with_document_metadata(
+        self, storage_backend: StorageBackend
+    ) -> None:
+        ds_id = _insert_dataset(storage_backend, "dual-gcbch-known")
+        _seed_doc_with_chunks(
+            storage_backend,
+            ds_id,
+            "dual://gcbch-known.md",
+            "GCBCH Known",
+            ["chunk text for hash lookup"],
+        )
+        # Grab the chunk's actual content_hash via search_lexical (avoids
+        # depending on the backend's internal hashing scheme).
+        hits = storage_backend.search_lexical("hash", k=5, dataset_id=ds_id)
+        assert len(hits) >= 1
+        cid = hits[0].chunk_id
+        row = storage_backend.get_chunk(cid)
+        assert row is not None
+        h = row["content_hash"]
+
+        out = storage_backend.get_chunk_by_content_hash(h)
+        assert out is not None
+        assert out["id"] == cid
+        assert out["content_hash"] == h
+        assert out["source_uri"] == "dual://gcbch-known.md"
+        assert out["title"] == "GCBCH Known"
+        assert out["dataset_id"] == ds_id
+
+    def test_unknown_hash_returns_none(self, storage_backend: StorageBackend) -> None:
+        # 64-char zero string — a syntactically valid sha256 that no chunk owns.
+        result = storage_backend.get_chunk_by_content_hash("0" * 64)
+        assert result is None
+
+    def test_empty_hash_returns_none(self, storage_backend: StorageBackend) -> None:
+        assert storage_backend.get_chunk_by_content_hash("") is None
+
+
 class TestListDatasets:
     def test_list_datasets_counts(self, storage_backend: StorageBackend) -> None:
         ds_a = _insert_dataset(storage_backend, "dual-ld-a")
