@@ -1034,3 +1034,101 @@ _Source plan: `/Users/evanowen/.claude/plans/crispy-yawning-crescent.md`._
 - The `RetrievalConfig` model is in place; R3 can read `cfg.retrieval.default_k` etc. directly.
 - Pyproject `[retrieval]` extra is **NOT** added in R2 (reserved for R3 per the plan).  Add when wiring the `eval` CLI.
 - Note for the eval harness: when scoring with a Qwen3 model, the harness must call `embedder.encode_query(...)` for the query side and `embedder.encode(...)` for the corpus side — asymmetric is now the contract.
+
+---
+
+## Phase R3 — Eval harness + bundled gold set + `eval` CLI
+
+_Owner: tdd-principal.  Plan ref: `/Users/evanowen/.claude/plans/crispy-yawning-crescent.md` § "Phase R3"._
+
+**Carry-overs from R2 (load-bearing)**:
+1. Asymmetric `embedder.encode_query(...)` for queries; `embedder.encode(...)` for corpus.  Qwen3-Embedding silently degrades otherwise.
+2. `HybridRetriever`, `Retriever`, `SearchOptions`, `Hit`, `RetrievalMetrics` re-exported from `corpus_forge.retrieval`.
+3. `Config.retrieval` exposes `default_k`, `fusion`, `alpha`, `rerank_top_n`, `rerank_enabled` — wire CLI defaults to these.
+4. R3 owns the `[retrieval]` and `[eval]` extras in `pyproject.toml`.
+
+**Hard rules** (re-asserted for every R3 worker):
+- No reranker code — R4 owns it.  `--rerank` flag is a no-op that prints a friendly "lands in R4" message when explicitly passed.
+- No MCP code — R5 owns it.
+- `--rerank` must NOT silently misbehave; an explicit friendly stderr/stdout notice is mandatory.
+- Pinned baseline NDCG@10 floor is REAL — hard-fail CI.  Pick a floor that catches regressions but survives innocuous changes.
+- Tolerate chunk-id drift via optional `content_hash` fallback in the gold-set loader (and runner).
+- Do not touch README — Phase BR owns the rewrite.
+- Atomic commits prefixed `[role] phase-r3: <slice>`; HEREDOC body; Co-Authored-By trailer; signed (do NOT pass `--no-gpg-sign`).
+
+### R3 tasks
+
+| id | title | depends_on | surface | risk | status | claimed_by | notes |
+|----|-------|------------|---------|------|--------|------------|-------|
+| R3-01 | Add `[retrieval]` + `[eval]` extras to pyproject | — | `pyproject.toml` | low | pending | — | numpy>=1.26 floor; align with existing pins; don't bump dev deps. |
+| R3-02 | `eval/metrics.py` (ndcg_at_k, mrr_at_k, recall_at_k) | — | `corpus_forge/eval/metrics.py`, `tests/unit/test_eval_metrics.py` | low | pending | — | Pure NumPy.  Known-answer tests for binary + graded NDCG; tie-break pinned; edge cases (empty ranking, empty relevant, k>len). |
+| R3-03 | `eval/dataset.py` — JSONL loader + `GoldQuery` | — | `corpus_forge/eval/dataset.py`, `tests/unit/test_eval_dataset.py` | low | pending | — | Schema: `query_id`, `query`, `relevant_chunk_ids` (req), `graded` (opt, str/int keys), `content_hash` (opt list, for drift fallback).  Raise `ValueError` with path on bad rows. |
+| R3-04 | `eval/runner.py` — `evaluate_retriever` + `report` + JSON dump + pinned baseline test | R3-02, R3-03 | `corpus_forge/eval/runner.py`, `tests/unit/test_eval_runner.py` | med | pending | — | End-to-end with in-memory SQLite + FakeEmbedder + toy gold set.  Pinned NDCG@10 floor (>= 0.55 baseline; tester picks exact value, document it).  Hard-fail CI on regression. |
+| R3-05 | `eval/__init__.py` + content_hash drift fallback in runner | R3-02, R3-03, R3-04 | `corpus_forge/eval/__init__.py`, `corpus_forge/eval/runner.py`, `corpus_forge/eval/dataset.py`, `tests/unit/test_eval_runner.py` (drift case) | med | pending | — | Re-export `RetrievalMetrics`, public eval fns.  Runner falls back to `content_hash` lookup when configured `chunk_id` missing.  Tolerant fallback discoverable but not noisy. |
+| R3-06 | Bundled gold set `forge_self.jsonl` + provenance md | R3-04, R3-05 | `corpus_forge/eval/datasets/forge_self.jsonl`, `corpus_forge/eval/datasets/forge_self.corpus.md` | med | pending | — | ≥20 hand-curated queries against `/tmp/corpus-forge-test.db` seeded from this repo via `scripts/vectorize_repo_sqlite.py`.  1–5 relevant chunk_ids per query.  Pin corpus provenance: chunker (max_chars=1500, overlap=200), default embedder, file set.  Use `scripts/query_repo_sqlite.py` to assist curation; record each chunk_id's content_hash for drift tolerance. |
+| R3-07 | `eval` CLI subcommand group (`retrieval`, `corpus-quality`) | R3-04, R3-05 | `corpus_forge/cli.py`, `tests/unit/test_cli_eval.py` | med | pending | — | Two subcommands.  Dual-use docstrings (training-corpus quality FIRST, retrieval correctness SECOND).  `--rerank` prints friendly "lands in R4" message and no-ops.  `--json` writes metrics JSON.  Defaults pulled from `Config.retrieval`. |
+| R3-08 | Smoke test for `eval retrieval` CLI | R3-06, R3-07 | `tests/smoke/test_eval_smoke.py` | low | pending | — | `CliRunner` invokes `corpus-forge eval retrieval --dataset forge_self --k 10 --json <tmp>` against a seeded db (or skip-on-missing seed); asserts exit 0, table prints, JSON parseable.  Skip / xfail if seeded db absent — never silently pass without verification. |
+
+### Acceptance details
+
+#### R3-01
+- `pyproject.toml` `[project.optional-dependencies]`: `retrieval = ["numpy>=1.26"]` and `eval = ["numpy>=1.26"]`.
+- Keep R4 (`rerank`) and R5 (`mcp`) extras OUT of this PR.
+- `uv sync --extra retrieval --extra eval` succeeds; no transitive collisions.
+
+#### R3-02
+- Signatures:
+  - `ndcg_at_k(ranked_ids: list[int], relevant_ids: set[int] | list[int], k: int, *, graded: dict[int, int] | None = None) -> float`
+  - `mrr_at_k(ranked_ids: list[int], relevant_ids: set[int] | list[int], k: int) -> float`
+  - `recall_at_k(ranked_ids: list[int], relevant_ids: set[int] | list[int], k: int) -> float`
+- Known-answer tests:
+  - NDCG binary: `ndcg([1,2,3], {1,3}, k=3)` = computed-by-hand value (DCG = 1/log2(2) + 0 + 1/log2(4); ideal DCG = 1/log2(2) + 1/log2(3); normalise).
+  - NDCG graded: `ndcg([1,2,3], {1,2,3}, k=3, graded={1:3,2:1,3:2})` = computed value.
+  - MRR@10: first hit at rank 1 → 1.0; rank 5 → 0.2; no hit → 0.0.
+  - Recall@k: set-overlap math.
+- Edge cases: empty rankings → 0.0; empty relevant → 0.0; k > len(ranked) — use what's there, don't IndexError.
+
+#### R3-03
+- `@dataclass(frozen=True) class GoldQuery: query_id: str; query: str; relevant_chunk_ids: list[int]; graded: dict[int, int] | None = None; content_hashes: list[str] | None = None`.
+- `load_gold(path: Path) -> list[GoldQuery]`.
+- Schema validation: missing `query_id`/`query`/`relevant_chunk_ids` → `ValueError` with line + path.
+- Graded keys may be str or int; normalise to int internally.
+- Mixed binary + graded rows accepted in the same file.
+
+#### R3-04
+- `evaluate_retriever(retriever, gold_path, k_values, *, max_queries=None) -> RetrievalMetrics`.
+- `report(metrics: RetrievalMetrics) -> str` — formatted table (k vs ndcg/mrr/recall).
+- `dump_json(metrics: RetrievalMetrics, out: Path) -> None`.
+- Calls `retriever.search(q.query, SearchOptions(k=max(k_values)))` per query; computes per-query then averages.
+- Pinned NDCG@10 floor test: builds toy gold set + in-memory SQLite + FakeEmbedder, runs `evaluate_retriever`, asserts `metrics.ndcg[10] >= <pinned floor>` AND `<= 1.0`.  Document the exact pinned floor in test docstring and in `notes` after green.
+
+#### R3-05
+- `corpus_forge/eval/__init__.py` re-exports: `RetrievalMetrics`, `GoldQuery`, `load_gold`, `evaluate_retriever`, `report`, `dump_json`, the three metric fns.
+- Content-hash drift fallback:
+  - `GoldQuery.content_hashes` is `list[str] | None`, parallel to `relevant_chunk_ids`.
+  - Runner: when a gold `chunk_id` is missing from the corpus, look up by `content_hash` via `backend.get_chunk_by_content_hash(hash)` (or equivalent — coordinate with R2 surface; if not present, use a thin `backend._execute(...)` shim in the runner with a TODO for R4/R5 to lift cleanly).
+  - Drift-fallback test: verify a stale chunk_id resolves via content_hash and the metric is unchanged.
+
+#### R3-06
+- Build script-assisted: wipe `/tmp/corpus-forge-test.db`, run `scripts/vectorize_repo_sqlite.py`, then `scripts/query_repo_sqlite.py` per candidate query.
+- ≥20 queries spanning: architecture, schema, sync, sqlite-backend, retrieval, eval (meta), licensing, install, embedders, chunkers.
+- Each query: 1–5 relevant chunk_ids.  Record content_hashes alongside chunk_ids for drift tolerance.
+- `forge_self.corpus.md`: which embedder (`sentence-transformers/all-MiniLM-L6-v2` default), chunker config (`max_chars=1500, overlap=200`), source file set, curation date, how to rebuild.
+
+#### R3-07
+- `corpus-forge eval retrieval` options: `--dataset` (name or path), `--k 10,20`, `--metric ndcg,mrr,recall`, `--fusion rrf|alpha`, `--alpha float`, `--rerank/--no-rerank`, `--json PATH`.
+- `corpus-forge eval corpus-quality` mirror options, `--dataset` is required path to user JSONL.
+- Docstrings frame training-corpus quality as primary use; retrieval-eval as secondary.
+- `--rerank=True` → print `"Reranker lands in Phase R4 — running without rerank."` to stderr, proceed without rerank.
+
+#### R3-08
+- `tests/smoke/test_eval_smoke.py` uses `typer.testing.CliRunner` (or invokes via subprocess if CliRunner can't reach the lazy imports).
+- If `/tmp/corpus-forge-test.db` is absent OR the bundled gold set's chunk_ids no longer resolve (no fallback hits either), `pytest.skip` with a clear message — do NOT silently pass.
+
+### DAG (R3 waves)
+
+- **Wave 0** (parallel, 3 tasks): R3-01, R3-02, R3-03 — all independent.
+- **Wave 1** (1 task): R3-04 — needs metrics + dataset.
+- **Wave 2** (1 task): R3-05 — needs runner + dataset; touches runner so sequential after R3-04.
+- **Wave 3** (parallel, 2 tasks): R3-06 (gold set), R3-07 (CLI) — both depend on R3-04/R3-05, surface disjoint.
+- **Wave 4** (1 task): R3-08 (smoke) — needs CLI + gold set.
