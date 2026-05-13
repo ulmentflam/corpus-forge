@@ -124,7 +124,9 @@ class TestIdempotencyAndSafety:
         upper = sql.upper()
         assert "BIGSERIAL" not in upper
         assert "TSVECTOR" not in upper, "tsvector is Postgres-only — keep in schema/004_fts.sql"
-        assert "GIN" not in upper, "GIN is Postgres-only"
+        # USING GIN is the only legitimate Postgres-only token to ban here;
+        # plain "GIN" substring matches "BEGIN" inside trigger bodies.
+        assert "USING GIN" not in upper, "GIN indexes are Postgres-only"
         assert "GENERATED ALWAYS" not in upper, "Stored-generated columns are Postgres-only"
 
     def test_no_schema_prefix(self, sql):

@@ -437,6 +437,47 @@ class SQLiteBackend:
         schema_dir = Path(__file__).parent.parent / "schema"
         _migrate_module.apply_migrations(self, schema_dir=schema_dir, dialect="sqlite")  # pyrefly: ignore[bad-argument-type]  # migrate.py annotates backend as PostgresBackend; SQLiteBackend is structurally compatible
 
+    def _executescript(self, sql: str) -> None:
+        """Execute a multi-statement SQL script as-is.
+
+        Bypasses the per-statement comment-stripper / IF-NOT-EXISTS rewriter
+        in ``_execute`` because those transforms break SQLite trigger bodies
+        which contain a ``BEGIN ... END;`` block — the migration runner's
+        ``";"`` splitter would otherwise produce malformed fragments.
+
+        Use sparingly: only for migrations that legitimately need to ship
+        ``CREATE TRIGGER`` bodies (currently just ``004_fts.sql``).
+        """
+        with self._get_connection() as conn:
+            conn.executescript(sql)
+            conn.commit()
+
+    def backfill_lexical_index(self) -> int:
+        """Populate ``chunks_fts`` for any rows that pre-date the 004 migration.
+
+        The ``chunks_ai`` AFTER INSERT trigger keeps ``chunks_fts`` in sync
+        for all new rows once the migration is applied, but rows that already
+        existed when the migration ran need a one-shot backfill — the FTS5
+        virtual table is empty after ``CREATE VIRTUAL TABLE``.
+
+        Returns:
+            The number of rows actually inserted into ``chunks_fts``.  On
+            re-call the count is 0 (idempotent — the ``NOT IN`` filter skips
+            rows already mirrored).
+        """
+        # Idempotent INSERT: only rows whose id is not yet a chunks_fts.rowid.
+        # We need rowcount, so call sqlite3 directly (the _execute helper
+        # discards cursor.rowcount).
+        with self._get_connection() as conn:
+            cur = conn.execute(
+                "INSERT INTO chunks_fts(rowid, text) "
+                "SELECT id, text FROM chunks "
+                "WHERE id NOT IN (SELECT rowid FROM chunks_fts)"
+            )
+            inserted = int(cur.rowcount or 0)
+            conn.commit()
+        return inserted
+
     def register_embedder(self, embedder) -> int:  # pyrefly: ignore[missing-param-type]
         """Register an embedder and ensure its per-embedder vector table exists.
 
