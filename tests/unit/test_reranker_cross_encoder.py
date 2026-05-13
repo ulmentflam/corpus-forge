@@ -312,6 +312,4 @@ class TestEdgeCases:
         from corpus_forge.retrieval.rerank import Reranker
 
         r = CrossEncoderReranker()
-        assert isinstance(r, Reranker), (
-            "CrossEncoderReranker should satisfy the Reranker Protocol"
-        )
+        assert isinstance(r, Reranker), "CrossEncoderReranker should satisfy the Reranker Protocol"

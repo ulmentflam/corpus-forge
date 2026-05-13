@@ -72,9 +72,9 @@ class TestParseScore:
 
     def test_clips_to_zero_ten(self):
         assert _parse_score("100") == 10.0
-        # Negatives — the regex captures positive numbers only; "−3" → 0
-        # because the minus is a Unicode minus that the regex won't bind.
-        # Standard ASCII "-3" → 3 (regex captures bare digits).
+        # Negatives — the regex captures positive numbers only.  A Unicode
+        # minus sign would never bind; ASCII "-3" → 3 (regex captures
+        # bare digits without consuming the sign).
         # We only need the clip to [0, 10] to hold for runaway high vals.
         assert _parse_score("9999") == 10.0
 

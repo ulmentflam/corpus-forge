@@ -1,4 +1,4 @@
-"""Phase R2 — `Retriever` protocol + `HybridRetriever` implementation.
+"""Phase R2 + R4 — `Retriever` protocol + `HybridRetriever` implementation.
 
 `HybridRetriever` is the user-facing entry point for hybrid (dense +
 lexical) retrieval.  It composes:
@@ -8,7 +8,8 @@ lexical) retrieval.  It composes:
 - an ``Embedder`` (calls ``encode_query``, not ``encode`` — see R2 plan);
 - an ``embedder_id`` (the backend's row id for the embedder; the dense
   search is per-embedder);
-- an optional ``reranker`` (R4 wires this; R2 stores it but never calls it).
+- an optional ``reranker`` (R4 wires this; default ``None`` — even when
+  configured, the reranker is consulted only when ``options.rerank=True``).
 
 Fusion strategy is per-call via ``SearchOptions.fusion``:
 
@@ -22,6 +23,28 @@ Dataset filter (``SearchOptions.dataset``) is resolved through
 ``backend.find_dataset_id_by_name(name)`` and pushed straight to both
 backend calls.  An unresolvable dataset name returns an empty list (does
 NOT silently leak across datasets).
+
+Rerank path (R4)
+----------------
+
+When ``options.rerank=True`` AND ``self.reranker is not None``:
+
+1. Fuse the dense + lexical lists as above, but materialise the top
+   ``options.rerank_top_n`` (NOT ``options.k``) fused hits instead of
+   just the top-k.  ``rerank_top_n`` defaults to 50.
+2. Pass those hits to ``self.reranker.rerank(query, hits, top_n=options.k)``.
+3. Return the reranker's output verbatim — HybridRetriever does NOT
+   re-sort, re-truncate, or otherwise massage what the reranker
+   returns.  Source label flips to ``"reranked"`` (set by the reranker).
+
+When ``options.rerank=True`` AND ``self.reranker is None``: behave as if
+``rerank`` were false — return the fused top-k.  No crash.  This lets a
+caller toggle rerank purely via the search options without having to
+also tear down the retriever.
+
+When ``options.rerank=False`` (the default): the reranker is never
+consulted, even if one is configured.  This is the surprise-free default
+that prevents accidental 600 MB model downloads.
 """
 
 from __future__ import annotations
@@ -155,8 +178,14 @@ class HybridRetriever:
         # ── Step 5: materialise & truncate ────────────────────────────
         # Sort descending by fused score; ties broken by chunk_id (stable).
         ordered = sorted(fused_scores.items(), key=lambda kv: (-kv[1], kv[0]))
+
+        # When rerank is active, we materialise top-`rerank_top_n` fused
+        # hits so the reranker has headroom.  Otherwise just top-k.
+        rerank_active = options.rerank and self.reranker is not None
+        materialise_count = options.rerank_top_n if rerank_active else options.k
+
         top: list[Hit] = []
-        for cid, score in ordered[: options.k]:
+        for cid, score in ordered[:materialise_count]:
             src = hits_by_id.get(cid)
             if src is None:
                 continue
@@ -174,10 +203,20 @@ class HybridRetriever:
                 )
             )
 
-        # NB: the reranker is intentionally NOT called here.  R4 wires it.
-        # The presence of `options.rerank=True` + a non-None `self.reranker`
-        # is a no-op in R2 (documented in the plan).
+        # ── Step 6: rerank (R4) ───────────────────────────────────────
+        # Only when the caller explicitly asks AND a reranker is wired.
+        # We pass `top_n=options.k` so the reranker returns the final
+        # top-k.  HybridRetriever does NOT re-sort the reranker's output
+        # — the reranker is the authority on the final order.
+        if rerank_active:
+            # `self.reranker` is not None here (checked in `rerank_active`).
+            # pyrefly knows this via the assignment, but be explicit for
+            # readers.
+            assert self.reranker is not None
+            return self.reranker.rerank(query, top, top_n=options.k)
 
+        # No rerank → return the fused top-k.  `top` is already truncated
+        # to `options.k` in the materialisation step above.
         return top
 
     # ── internals ────────────────────────────────────────────────────────

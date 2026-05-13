@@ -367,11 +367,14 @@ class TestDatasetFilter:
         assert be.search_lexical_calls == []
 
 
-# ── reranker not yet called (R4 owns) ─────────────────────────────────────
+# ── reranker default-off discipline (R4 wired) ────────────────────────────
 
 
-class TestRerankerNotCalledYet:
-    def test_reranker_not_invoked_even_when_set(self):
+class TestRerankerDefaultOff:
+    """The reranker is opt-in via `options.rerank=True`, even when wired."""
+
+    def test_reranker_not_invoked_when_rerank_false(self):
+        """`rerank=False` (the default) → configured reranker is silent."""
         from corpus_forge.retrieval import HybridRetriever
 
         be = _FakeBackend(
@@ -381,18 +384,20 @@ class TestRerankerNotCalledYet:
         em = _FakeEmbedder()
         rr = MagicMock()
         r = HybridRetriever(backend=be, embedder=em, embedder_id=1, reranker=rr)
-        r.search("q", SearchOptions(k=2, rerank=True))
-        # R2 does not call rerank yet — even with rerank=True.  R4 wires it.
+        # Default options → rerank=False
+        r.search("q", SearchOptions(k=2))
         rr.rerank.assert_not_called()
-        rr.assert_not_called()
+        # Also explicit rerank=False.
+        r.search("q", SearchOptions(k=2, rerank=False))
+        rr.rerank.assert_not_called()
 
     def test_reranker_default_none_no_error(self):
+        """`rerank=True` + `reranker=None` is a clean no-op (no crash)."""
         from corpus_forge.retrieval import HybridRetriever
 
         be = _FakeBackend(dense_hits=[_hit(1, 0.9)])
         em = _FakeEmbedder()
         r = HybridRetriever(backend=be, embedder=em, embedder_id=1)
-        # No exception even with rerank=True (silent no-op until R4).
         r.search("q", SearchOptions(k=1, rerank=True))
 
 
