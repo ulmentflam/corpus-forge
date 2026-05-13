@@ -16,8 +16,7 @@ from .base import BaseEmbedder
 # Qwen3-Embedding documented query-side instruction prompt.  Prepended to
 # every query text in `encode_query` for Qwen3-family models.
 _QWEN3_QUERY_INSTRUCT_PREFIX = (
-    "Instruct: Given a web search query, retrieve relevant passages that "
-    "answer the query\nQuery: "
+    "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: "
 )
 
 # Model-id prefixes that trigger the Qwen3 query override.  Detection is

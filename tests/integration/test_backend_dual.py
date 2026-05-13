@@ -988,16 +988,12 @@ class TestHybridSearch:
         )
 
         # alpha=1.0 → dense only → chunk 0 wins
-        out_dense = retriever.search(
-            "baobab", SearchOptions(k=1, fusion="alpha", alpha=1.0)
-        )
+        out_dense = retriever.search("baobab", SearchOptions(k=1, fusion="alpha", alpha=1.0))
         assert len(out_dense) == 1
         assert out_dense[0].chunk_id == dense_target_id
 
         # alpha=0.0 → lexical only → "baobab" chunk (chunk 1) wins
-        out_lex = retriever.search(
-            "baobab", SearchOptions(k=1, fusion="alpha", alpha=0.0)
-        )
+        out_lex = retriever.search("baobab", SearchOptions(k=1, fusion="alpha", alpha=0.0))
         assert len(out_lex) == 1
         assert out_lex[0].chunk_id == lexical_target_id
 
@@ -1050,12 +1046,8 @@ class TestHybridSearch:
             embedder_id=eid,
         )
 
-        out_a = retriever.search(
-            "keyword", SearchOptions(k=5, dataset="dual-hybrid-ds-a")
-        )
-        out_b = retriever.search(
-            "keyword", SearchOptions(k=5, dataset="dual-hybrid-ds-b")
-        )
+        out_a = retriever.search("keyword", SearchOptions(k=5, dataset="dual-hybrid-ds-a"))
+        out_b = retriever.search("keyword", SearchOptions(k=5, dataset="dual-hybrid-ds-b"))
 
         for h in out_a:
             assert h.dataset_id == ds_a, (

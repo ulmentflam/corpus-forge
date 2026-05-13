@@ -25,7 +25,6 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-
 # ── Protocol surface ──────────────────────────────────────────────────────
 
 
@@ -95,8 +94,7 @@ def test_base_embedder_encode_query_default_batch_size():
 
 
 _QWEN_INSTRUCT_PREFIX = (
-    "Instruct: Given a web search query, retrieve relevant passages that "
-    "answer the query\nQuery: "
+    "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: "
 )
 
 
@@ -286,13 +284,8 @@ def test_encode_query_signature_has_batch_size_kwarg():
     # keyword-only or kwarg with default 32
     assert bs.default == 32
 
-    # also pin no instance method consumes positional batch_size
-    pos_kinds = (
-        inspect.Parameter.POSITIONAL_ONLY,
-        inspect.Parameter.POSITIONAL_OR_KEYWORD,
-    )
-    # texts may be POSITIONAL_OR_KEYWORD; batch_size must NOT be positional
-    assert bs.kind not in (inspect.Parameter.POSITIONAL_ONLY,)
+    # texts may be POSITIONAL_OR_KEYWORD; batch_size must NOT be positional-only
+    assert bs.kind is not inspect.Parameter.POSITIONAL_ONLY
 
 
 @pytest.mark.parametrize(
