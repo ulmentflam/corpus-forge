@@ -1997,3 +1997,36 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
     regex; the test comment documents the intent.
   - Wave gate: `make format-check` clean (ruff reformatted the file before commit), `make lint`
     clean, `make typecheck` clean (0 errors).
+
+## E-02
+- Test files: `tests/integration/test_two_ingester_one_mcp.py`
+- Run command: `.venv/bin/python -m pytest tests/integration/test_two_ingester_one_mcp.py -v`
+- Edge case checklist:
+  - [x] happy path — 3/3 PASS; both hosts' content reachable; dataset listed
+  - [x] boundaries — N/A for chunk count; used 3 chunks per host (above minimum to avoid edge-case false pass)
+  - [x] type/format — N/A (pure storage behavior; no type-polymorphic paths)
+  - [x] state — module-scoped fixture: fresh schema per module run; no cross-test bleed
+  - [ ] N/A — concurrency (sequential ingestion; sync engine not exercised here)
+  - [x] failure paths — isError=True on MCP result raises AssertionError with message; mismatched source_uri raises with cross-host leakage note
+  - [ ] N/A — locale/time (text content only; no timestamps exercised)
+  - [x] production-realistic — chunk texts contain multi-word unique phrases; source_uri uses vault:// scheme matching real markdown vault pattern
+  - [x] regression hooks — source_uri host-prefix assertion will fire if a future change makes search_lexical ignore dataset_id scoping or merges host docs
+- Green output (tail):
+  ```
+  tests/integration/test_two_ingester_one_mcp.py::test_search_hits_mac_b_chunks PASSED [ 33%]
+  tests/integration/test_two_ingester_one_mcp.py::test_search_hits_mac_a_chunks PASSED [ 66%]
+  tests/integration/test_two_ingester_one_mcp.py::test_list_datasets_sees_both_hosts PASSED [100%]
+  3 passed in 2.15s
+  ```
+- Status: GREEN (load-bearing pin) — handed off to tdd-coder
+- Notes:
+  - host_id does NOT flow through PostgresBackend.__init__ — it is passed explicitly to
+    register_source(host=...) and insert_revision(author_host=...) per-operation. There is no
+    backend-level host attribute. This is by design.
+  - MCP server is fully exercisable in-process via server.request_handlers[CallToolRequest](req)
+    — no subprocess required. build_server() wires a retriever_builder callback; the LexicalRetriever
+    stub bypasses all ML model loading. asyncio.run() wraps the async handler call.
+  - The mcp.Server.call_tool() method is a DECORATOR (registers the handler), NOT a callable for
+    dispatching tool calls. Dispatch goes through server.request_handlers[CallToolRequest].
+  - list_datasets backend API returns per-dataset rows (not per-host). Multi-host presence is
+    verified via a direct SQL query on corpus.sources, which is the correct assertion surface.
