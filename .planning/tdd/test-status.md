@@ -1771,3 +1771,31 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   - The postgres_container fixture is session-scoped; each test calls _reset_schema() to drop/recreate the corpus schema, giving full isolation without spawning extra containers.
   - Legacy SQL file 002_chunk_content_hash.sql does not yet exist; the parity test _apply_legacy call at head=0002 will also fail (FileNotFoundError from shutil copy), but the Alembic CommandError fires first since Alembic runs second in the parity flow. Acceptable RED.
 - Status: red — handed off to tdd-coder
+
+## D-04
+- Test files:
+  - `tests/integration/test_alembic_parity_postgres.py`
+  - `tests/integration/test_alembic_parity_sqlite.py`
+- Run command: `.venv/bin/python -m pytest tests/integration/test_alembic_parity_postgres.py tests/integration/test_alembic_parity_sqlite.py -v`
+- Edge case checklist:
+  - [x] happy — head=0003_views added to both dialect parametrize lists; will pass once revision exists
+  - [x] boundaries — legacy file list for Postgres head=0003_views includes all three files in sorted() order (001_core, 002_chunk_content_hash, 002_views); SQLite list is identical to head=0002 (no views SQL in sqlite/ tree)
+  - [x] type/format — N/A (parity tests compare schema dicts, not data types added in this revision)
+  - [x] state — existing head=0001_core and head=0002_chunk_content_hash remain GREEN (no regression)
+  - [N/A] concurrency — single-connection parity test; pure dialect-gate migration
+  - [x] failure paths — RED fires with canonical CommandError("Can't locate revision identified by '0003_views'") for both dialects
+  - [N/A] locale/time — no locale/timezone-sensitive schema objects in 0003_views (views are structural)
+  - [x] production-realistic — same Postgres container and SQLite tmp_path fixtures as prior heads
+  - [x] regression hooks — 4/6 pass (0001_core + 0002_chunk_content_hash for both dialects); 2/6 fail (0003_views for both dialects)
+  - [x] SQLite dialect-gate — SQLite legacy list at head=0003_views is identical to head=0002 (002_chunk_content_hash.sql only, no 002_views.sql); Alembic at head=0003_views must be a no-op for SQLite (dialect-gated body)
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_alembic_parity_sqlite.py::test_parity_sqlite[head=0003_views]
+  FAILED tests/integration/test_alembic_parity_postgres.py::test_parity_postgres[head=0003_views]
+  alembic.util.exc.CommandError: Can't locate revision identified by '0003_views'
+  4 passed (head=0001_core + head=0002_chunk_content_hash, both dialects), 2 failed, 6 warnings in 2.55s
+  ```
+- Status: red — handed off to tdd-coder
+- Notes:
+  - The legacy migrator's sort key is `int(p.stem.split("_")[0])`, so `002_chunk_content_hash.sql` and `002_views.sql` are both in bucket 002. Within a tie bucket, Python's stable sort preserves glob (filesystem) order — not guaranteed alphabetical on macOS. The Postgres parity test stderr showed `002_views.sql` ran before `002_chunk_content_hash.sql` for the sliced-directory legacy run. The D-04 coder must ensure `002_views.sql` CREATE VIEW statements do not depend on objects introduced only in `002_chunk_content_hash.sql` (or vice versa). If they do, the legacy migrator's tie-breaking is unpredictable. This is a pre-existing risk in the legacy migrator, not a D-04 tester blocker.
+  - Wave-gate: ruff format clean, ruff lint clean. pyrefly errors (sqlite_vec, mcp, openai) are pre-existing optional-dependency stubs — none introduced by D-04.
