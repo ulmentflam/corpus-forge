@@ -254,10 +254,11 @@ class TestWritesEnabledGate:
     def test_writes_enabled_exposes_all_11_tools(
         self, backend: SQLiteBackend, seeded: dict
     ) -> None:
-        """When writes_enabled=True, all tools (5 read + 9 write) are registered.
+        """When writes_enabled=True, all tools (5 read + 10 write) are registered.
 
+        H-02 adds register_session (write-gated) = 15 total.
         G-03 adds register_template (write-gated) + render_conversation +
-        list_chat_templates (read, always available) = 14 total.
+        list_chat_templates (read, always available) = 14 total before H-02.
         """
         server = _build_server(backend, writes_enabled=True)
         tools = _list_tools(server)
@@ -279,9 +280,11 @@ class TestWritesEnabledGate:
             "add_feedback",
             # G-03 write tool
             "register_template",
+            # H-02 write tool
+            "register_session",
         }
         assert set(tools) == expected, (
-            f"Expected 14 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
+            f"Expected 15 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
         )
 
     def test_unknown_tool_returns_error_when_writes_disabled(

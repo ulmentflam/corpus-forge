@@ -2407,3 +2407,92 @@ class SQLiteBackend:
             "SELECT * FROM messages WHERE conversation_id = ? ORDER BY turn_index",
             (conversation_id,),
         )
+
+    # ── H-02 feedback-session helpers ─────────────────────────────────────────
+
+    def upsert_feedback_session(
+        self,
+        client: str,
+        session_id: str,
+        host: str,
+        started_at: "datetime | str",
+    ) -> int:
+        """Insert a feedback_sessions row if (client, session_id) is new.
+
+        Uses INSERT OR IGNORE so a duplicate key is silently skipped.
+        Returns the id of the existing or newly-created row.
+        """
+        started_at_str = str(started_at)
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO feedback_sessions
+                  (client, session_id, host, started_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (client, session_id, host, started_at_str),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT id FROM feedback_sessions WHERE client = ? AND session_id = ?",
+                (client, session_id),
+            ).fetchone()
+        return int(row["id"])
+
+    def append_feedback_event(
+        self,
+        feedback_session_id: int,
+        *,
+        audit_id: "int | None" = None,
+        feedback_id: "int | None" = None,
+        entity_type: str,
+        entity_id: int,
+    ) -> int:
+        """Insert a feedback_events row and return its id.
+
+        At least one of audit_id or feedback_id must be non-None.
+        """
+        if audit_id is None and feedback_id is None:
+            raise ValueError(
+                "append_feedback_event requires at least one of audit_id or feedback_id to be set"
+            )
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO feedback_events
+                  (feedback_session_id, audit_id, feedback_id, entity_type, entity_id)
+                VALUES (?, ?, ?, ?, ?)
+                RETURNING id
+                """,
+                (feedback_session_id, audit_id, feedback_id, entity_type, entity_id),
+            ).fetchone()
+            conn.commit()
+        return int(row["id"])
+
+    def end_feedback_session(self, client: str, session_id: str) -> bool:
+        """Set ended_at on the matching open session row.
+
+        Returns True if a row was updated, False if no open row was found.
+        """
+        from datetime import UTC, datetime  # noqa: PLC0415
+
+        ended_at = datetime.now(UTC).isoformat()
+        with self._get_connection() as conn:
+            cur = conn.execute(
+                """
+                UPDATE feedback_sessions
+                SET ended_at = ?
+                WHERE client = ? AND session_id = ? AND ended_at IS NULL
+                """,
+                (ended_at, client, session_id),
+            )
+            conn.commit()
+        return cur.rowcount > 0
+
+    def get_feedback_session_by_key(self, client: str, session_id: str) -> "dict | None":
+        """Return the feedback_sessions row for (client, session_id), or None."""
+        rows = self._execute(
+            "SELECT * FROM feedback_sessions WHERE client = ? AND session_id = ? LIMIT 1",
+            (client, session_id),
+        )
+        return rows[0] if rows else None

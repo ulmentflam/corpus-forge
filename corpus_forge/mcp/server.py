@@ -327,6 +327,28 @@ _REGISTER_TEMPLATE_INPUT_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+_REGISTER_SESSION_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "client": {
+            "type": "string",
+            "description": "MCP client identifier (e.g. 'cursor', 'claude-code').",
+        },
+        "session_id": {
+            "type": "string",
+            "description": "Unique session identifier for the MCP client session.",
+        },
+        "host": {
+            "type": "string",
+            "description": (
+                "Optional host override.  Defaults to the server's configured host_id."
+            ),
+        },
+    },
+    "required": ["client", "session_id"],
+    "additionalProperties": False,
+}
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -553,6 +575,16 @@ def build_server(
                     ),
                     inputSchema=_REGISTER_TEMPLATE_INPUT_SCHEMA,
                 ),
+                # H-02 write tool (gated by writes_enabled)
+                mt.Tool(
+                    name="register_session",
+                    description=(
+                        "Explicitly bind a client session id to the feedback_sessions table.  "
+                        "Returns feedback_session_id and created flag.  "
+                        "Useful when CORPUS_FORGE_SESSION_ID env var is not workable."
+                    ),
+                    inputSchema=_REGISTER_SESSION_INPUT_SCHEMA,
+                ),
             ]
         return tools
 
@@ -589,6 +621,9 @@ def build_server(
             # G-03 write tool
             if name == "register_template":
                 return await _dispatch_register_template(arguments)
+            # H-02 write tool
+            if name == "register_session":
+                return await _dispatch_register_session(arguments)
         return _error_result(f"unknown tool: {name!r}")
 
     # ── dispatchers (closures share `_get_retriever` / `_get_reranker`)
@@ -784,10 +819,16 @@ def build_server(
     # ── write dispatchers (only reached when writes_enabled=True) ────────
 
     def _make_write_ctx() -> Any:
-        """Build a minimal WriteContext from a placeholder host identity."""
+        """Build a WriteContext from env vars + config host identity."""
+        import os
+
         from corpus_forge.mcp.writes import WriteContext
 
-        return WriteContext(host="mcp-server", client=None, session_id=None)
+        return WriteContext(
+            host="mcp-server",
+            client=os.environ.get("CORPUS_FORGE_CLIENT"),
+            session_id=os.environ.get("CORPUS_FORGE_SESSION_ID"),
+        )
 
     def _get_write_backend() -> Any:
         retriever = _get_retriever()
@@ -986,6 +1027,22 @@ def build_server(
             arguments["jinja"],
             description=arguments.get("description"),
             dry_run=bool(arguments.get("dry_run", False)),
+        )
+        return result
+
+    async def _dispatch_register_session(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp import writes
+
+        backend = _get_write_backend()
+        if backend is None:
+            return _error_result("retriever has no backend; cannot register session")
+        ctx = _make_write_ctx()
+        result = writes.register_session(
+            backend,
+            ctx,
+            arguments["client"],
+            arguments["session_id"],
+            host=arguments.get("host"),
         )
         return result
 

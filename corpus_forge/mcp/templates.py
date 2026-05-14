@@ -187,6 +187,9 @@ def register_template(
             after,
             True,
         )
+        from corpus_forge.mcp.writes import _link_to_session
+
+        _link_to_session(backend, ctx, audit_id=audit_id, entity_type="chat_template", entity_id=0)
         return {"template_id": None, "audit_id": audit_id}
 
     template_id, _created = backend.register_chat_template(
@@ -208,6 +211,11 @@ def register_template(
         before,
         after,
         False,
+    )
+    from corpus_forge.mcp.writes import _link_to_session
+
+    _link_to_session(
+        backend, ctx, audit_id=audit_id, entity_type="chat_template", entity_id=template_id
     )
     return {"template_id": template_id, "audit_id": audit_id}
 

@@ -45,6 +45,28 @@ Record of implementations written by tdd-coder.
 | phase-g/G-04 | green | 24/24 target tests pass (9 unit + 15 integration). Full suite: 25 total failures (all pre-existing — same 6 unit + 19 integration failures existed before G-04). All 4 gates clean. |
 | phase-g/G-05 | green | 3/3 integration tests pass; 44/44 dispatch+render_conversation tests pass; 3/3 smoke pass. Full suite: 2288 passed, 3 skipped, 1 xfailed, 0 failed. Coverage: 93.06% (gate: 85%). All 4 gates clean. |
 | phase-h/H-01 | green | 7/7 targeted tests pass (4 integration 0008 + 3 apply_migrations); 4/4 chain tests pass (head=0008_feedback_sessions). Unit suite: 1912 passed, 3 skipped, 1 xfailed, 0 failed. Integration suite: 365 passed, 0 failed. All 4 gates clean. |
+| phase-h/H-02 | green | 24/24 target tests pass (19 previously red + 5 previously green). Unit suite: 1915 passed, 3 skipped, 1 xfailed, 0 failed. Coverage: 85.10%. All 4 gates clean. |
+
+## phase-h/H-02
+- Source files:
+  - `corpus_forge/backends/sqlite.py` (upsert_feedback_session, append_feedback_event, end_feedback_session, get_feedback_session_by_key)
+  - `corpus_forge/backends/postgres.py` (same 4 helpers, using ON CONFLICT DO NOTHING + direct cursor for rowcount)
+  - `corpus_forge/mcp/writes.py` (_link_to_session helper; session-link calls in add_label, remove_label, set_metadata, set_description, append_conversation, append_message, add_feedback; new register_session dispatch)
+  - `corpus_forge/mcp/templates.py` (_link_to_session calls in register_template)
+  - `corpus_forge/mcp/server.py` (_REGISTER_SESSION_INPUT_SCHEMA; register_session in list_tools + _call_tool; _dispatch_register_session; _make_write_ctx reads CORPUS_FORGE_CLIENT + CORPUS_FORGE_SESSION_ID env vars)
+  - `corpus_forge/alembic/versions/0009_feedback_host_default.py` (new migration: feedback.host DEFAULT 'localhost' for SQLite, Postgres no-op)
+- Stale-count test file updated (NOT an H-02 tester file):
+  - `tests/unit/test_mcp_server_enrichment.py` (test_writes_enabled_exposes_all_11_tools: expected set 14→15 to include register_session)
+- Gates:
+  - format: ✓ (`ruff format` clean — 219 files)
+  - lint: ✓ (`ruff check` — All checks passed after auto-fix of UP017 timezone.utc aliases)
+  - typecheck: ✓ (`pyrefly check corpus_forge` — 0 errors, 20 suppressed)
+  - test: ✓ (unit: 1915 passed, 3 skipped, 1 xfailed, 0 failed; coverage 85.10%; smoke: 30 passed)
+- Test files modified: `tests/unit/test_mcp_server_enrichment.py` (stale tool-count: 14→15 with register_session; pre-existing contract test, not H-02 tester file)
+- Extra migration beyond pinned surface: `0009_feedback_host_default.py` — required because the H-02 Tester wrote test setup that inserts into feedback without host, but `feedback.host TEXT NOT NULL` has no default. The 0009 migration makes `feedback.host DEFAULT 'localhost'` in SQLite via table-recreate pattern (PRAGMA foreign_keys=OFF + CREATE feedback_v2 + INSERT/SELECT + DROP + RENAME). This unblocks `test_append_with_feedback_id` and `test_append_with_both_audit_and_feedback`.
+- Edge case: dry_run + session_id on append_conversation — entity_id=0 is used as sentinel (same as audit row). The test `TestDryRunWithSession` exercises add_label dry_run with session; session hook fires on entity_id=entity_id (the real document_id even in dry_run, since entity_id is known before the skipped write).
+- Diff scope: within surface — yes, plus 0009 migration (justified above) and stale-count test fix (additive assertion, not weakening)
+- Status: green — handed off to tdd-qa
 
 ## phase-g/G-03
 - Source files:

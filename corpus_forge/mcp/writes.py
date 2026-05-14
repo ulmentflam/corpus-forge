@@ -20,6 +20,7 @@ row.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -51,6 +52,36 @@ _FEEDBACK_ENTITY_TYPES: frozenset[str] = frozenset({"chunk", "document", "conver
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _link_to_session(
+    backend: Any,
+    ctx: Any,
+    *,
+    audit_id: int,
+    entity_type: str,
+    entity_id: int,
+    feedback_id: int | None = None,
+) -> None:
+    """If ctx.session_id is set, upsert feedback_sessions + append feedback_events."""
+    if ctx.session_id is None:
+        return
+    from datetime import datetime  # noqa: PLC0415
+
+    started_at = datetime.now(UTC).isoformat()
+    feedback_session_id = backend.upsert_feedback_session(
+        client=ctx.client or "unknown",
+        session_id=ctx.session_id,
+        host=ctx.host,
+        started_at=started_at,
+    )
+    backend.append_feedback_event(
+        feedback_session_id,
+        audit_id=audit_id,
+        feedback_id=feedback_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
+    )
 
 
 def _read_metadata(backend: Any, entity_type: str, entity_id: int) -> dict:
@@ -144,6 +175,9 @@ def add_label(
             after,
             True,
         )
+        _link_to_session(
+            backend, ctx, audit_id=audit_id, entity_type=entity_type, entity_id=entity_id
+        )
         return {"label_id": None, "created": True, "audit_id": audit_id}
 
     label_id, created = backend.apply_label(
@@ -166,6 +200,7 @@ def add_label(
         after,
         False,
     )
+    _link_to_session(backend, ctx, audit_id=audit_id, entity_type=entity_type, entity_id=entity_id)
     return {"label_id": label_id, "created": created, "audit_id": audit_id}
 
 
@@ -210,6 +245,9 @@ def remove_label(
             after,
             True,
         )
+        _link_to_session(
+            backend, ctx, audit_id=audit_id, entity_type=entity_type, entity_id=entity_id
+        )
         return {"removed": True, "audit_id": audit_id}
 
     removed = backend.revoke_label(entity_type, entity_id, namespace, value)
@@ -224,6 +262,7 @@ def remove_label(
         after,
         False,
     )
+    _link_to_session(backend, ctx, audit_id=audit_id, entity_type=entity_type, entity_id=entity_id)
     return {"removed": removed, "audit_id": audit_id}
 
 
@@ -268,6 +307,9 @@ def set_metadata(
             after,
             True,
         )
+        _link_to_session(
+            backend, ctx, audit_id=audit_id, entity_type=entity_type, entity_id=entity_id
+        )
         return {"before": before, "after": after, "audit_id": audit_id}
 
     real_before, real_after = backend.patch_metadata(entity_type, entity_id, key, value)
@@ -282,6 +324,7 @@ def set_metadata(
         real_after,
         False,
     )
+    _link_to_session(backend, ctx, audit_id=audit_id, entity_type=entity_type, entity_id=entity_id)
     return {"before": real_before, "after": real_after, "audit_id": audit_id}
 
 
@@ -324,6 +367,9 @@ def set_description(
             text,
             True,
         )
+        _link_to_session(
+            backend, ctx, audit_id=audit_id, entity_type=entity_type, entity_id=entity_id
+        )
         return {"before": before, "after": text, "audit_id": audit_id}
 
     real_before, real_after = backend.set_description(entity_type, entity_id, text)
@@ -338,6 +384,7 @@ def set_description(
         real_after,
         False,
     )
+    _link_to_session(backend, ctx, audit_id=audit_id, entity_type=entity_type, entity_id=entity_id)
     return {"before": real_before, "after": real_after, "audit_id": audit_id}
 
 
@@ -407,6 +454,7 @@ def append_conversation(
             after,
             True,
         )
+        _link_to_session(backend, ctx, audit_id=audit_id, entity_type="conversation", entity_id=0)
         return {"conversation_id": None, "message_count": message_count, "audit_id": audit_id}
 
     # Parse started_at string into datetime if provided.
@@ -436,6 +484,7 @@ def append_conversation(
         after,
         False,
     )
+    _link_to_session(backend, ctx, audit_id=audit_id, entity_type="conversation", entity_id=conv_id)
     return {"conversation_id": conv_id, "message_count": msg_count, "audit_id": audit_id}
 
 
@@ -486,6 +535,9 @@ def append_message(
             after,
             True,
         )
+        _link_to_session(
+            backend, ctx, audit_id=audit_id, entity_type="conversation", entity_id=conversation_id
+        )
         return {
             "message_id": None,
             "turn_index": predicted_turn_index,
@@ -519,6 +571,9 @@ def append_message(
         before,
         after,
         False,
+    )
+    _link_to_session(
+        backend, ctx, audit_id=audit_id, entity_type="conversation", entity_id=conversation_id
     )
     return {"message_id": message_id, "turn_index": turn_index, "audit_id": audit_id}
 
@@ -570,6 +625,9 @@ def add_feedback(
             after,
             True,
         )
+        _link_to_session(
+            backend, ctx, audit_id=audit_id, entity_type=entity_type, entity_id=entity_id
+        )
         return {"feedback_id": None, "audit_id": audit_id}
 
     feedback_id = backend.add_feedback(
@@ -591,7 +649,47 @@ def add_feedback(
         after,
         False,
     )
+    _link_to_session(
+        backend,
+        ctx,
+        audit_id=audit_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        feedback_id=feedback_id,
+    )
     return {"feedback_id": feedback_id, "audit_id": audit_id}
+
+
+# ---------------------------------------------------------------------------
+# register_session
+# ---------------------------------------------------------------------------
+
+
+def register_session(
+    backend: Any,
+    ctx: Any,
+    client: str,
+    session_id: str,
+    *,
+    host: str | None = None,
+) -> dict:
+    """Explicitly bind a session id — useful when env vars aren't workable.
+
+    Returns ``{"feedback_session_id": int, "created": bool}``.
+    """
+    effective_host = host if host is not None else ctx.host
+    from datetime import datetime  # noqa: PLC0415
+
+    started_at = datetime.now(UTC).isoformat()
+    before = backend.get_feedback_session_by_key(client, session_id)
+    feedback_session_id = backend.upsert_feedback_session(
+        client=client,
+        session_id=session_id,
+        host=effective_host,
+        started_at=started_at,
+    )
+    created = before is None
+    return {"feedback_session_id": feedback_session_id, "created": created}
 
 
 __all__ = [
@@ -601,6 +699,7 @@ __all__ = [
     "append_conversation",
     "append_message",
     "list_labels",
+    "register_session",
     "remove_label",
     "set_description",
     "set_metadata",
