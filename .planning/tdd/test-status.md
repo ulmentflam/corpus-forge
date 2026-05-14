@@ -138,6 +138,34 @@ Record of test suites written by tdd-tester.
   and resolve custom templates before calling render). This is the Coder's fix target.
 - Status: red — 2/3 integration tests failing for right reason; handed off to tdd-coder
 
+## H-03 — claude_code source links session to conversation
+- Test files:
+  - `tests/unit/test_claude_code_session_link.py` (new — 8 tests across 2 classes)
+  - `tests/integration/test_claude_code_session_link_e2e.py` (new — 3 tests)
+- Run command: `.venv/bin/python -m pytest tests/unit/test_claude_code_session_link.py tests/integration/test_claude_code_session_link_e2e.py -v`
+- Edge case checklist:
+  - [x] happy — test_sets_conversation_id_and_returns_true; test_happy_path_links_and_returns_true; test_ingest_links_existing_feedback_session
+  - [x] boundaries — already-linked row returns False (idempotent, no overwrite); no-row returns False without raising
+  - [ ] N/A — type/format (pure integer/string args; no format variation needed)
+  - [x] state — fresh in-memory backend per test; idempotency on re-link asserted; feedback_sessions unchanged when no match
+  - [ ] N/A — concurrency (sequential ingest path; no shared mutable state)
+  - [x] failure paths — no matching row returns False; already linked returns False; different client returns False
+  - [ ] N/A — locale/time (timestamps stored as ISO strings, not asserted in these tests)
+  - [x] production-realistic — uses real SQLiteBackend (migrated), real ClaudeCodeSource.parse(), real ingest_one; fake .jsonl with realistic JSONL message structure
+  - [x] regression hooks — test_ingest_session_without_feedback_session_row_does_not_create_one pins that ingest never writes to feedback_sessions; test_different_client_no_match pins client-scoped isolation
+- Red output (tail):
+  ```
+  collecting ... collected 0 items / 2 errors
+
+  ERROR tests/unit/test_claude_code_session_link.py
+  ERROR tests/integration/test_claude_code_session_link_e2e.py
+
+  E   ModuleNotFoundError: No module named 'corpus_forge.sources._session_link'
+
+  2 errors in 0.14s
+  ```
+- Status: red — handed off to tdd-coder
+
 ## Phase B — SQLite Backend
 
 ## B-03-fix — Narrow backfill-gating assertion to ignore schema comments
