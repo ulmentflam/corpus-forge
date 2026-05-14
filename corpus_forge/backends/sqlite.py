@@ -7,6 +7,7 @@ no schema namespacing so the value is stored and ignored at query time.
 
 import contextlib
 import json
+import logging
 import re
 import sqlite3
 import threading
@@ -27,6 +28,8 @@ if TYPE_CHECKING:
 
     from ..retrieval.types import Hit
     from ..sources.base import RawConversation
+
+logger = logging.getLogger(__name__)
 
 # Valid entity types for labels and feedback helpers.
 _LABEL_ENTITY_TYPES: tuple[str, ...] = ("chunk", "document", "conversation")
@@ -744,6 +747,10 @@ class SQLiteBackend:
                             new_chunk_id, chunk_hash, embedder_ids, cache
                         )
 
+            # Phase D / Wave 3 — persist extractor-emitted labels on the
+            # document row. Idempotent.
+            self._apply_document_labels(doc_id, doc)
+
             return doc_id
         else:
             # Insert new document with ON CONFLICT for safety
@@ -785,7 +792,39 @@ class SQLiteBackend:
             if embedder_ids:
                 self._copy_reusable_embeddings(row[0]["id"], chunk_hash, embedder_ids, cache)
 
+        # Phase D / Wave 3 — persist extractor-emitted labels on the
+        # document row. Idempotent.
+        self._apply_document_labels(doc_id, doc)
+
         return doc_id
+
+    def _apply_document_labels(self, doc_id: int, doc: "RawDocument") -> None:
+        """Persist ``doc.labels`` against the ``document_labels`` junction.
+
+        Mirrors :meth:`PostgresBackend._apply_document_labels`. Forward-
+        compatible with ``ExtractedDocument.labels`` emitted by the
+        Phase D multi-format extractor stack. Tolerates a missing or
+        empty labels list silently; per-label failures are logged at
+        DEBUG and skipped so the rest of the upsert stays atomic.
+        """
+        labels = getattr(doc, "labels", None)
+        if not labels:
+            return
+        for entry in labels:
+            try:
+                namespace, value = entry
+            except (TypeError, ValueError):
+                continue
+            try:
+                self.apply_label("document", doc_id, namespace, value, source="extractor")
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.debug(
+                    "apply_label('document', %s, %r, %r) failed: %s",
+                    doc_id,
+                    namespace,
+                    value,
+                    exc,
+                )
 
     def _copy_reusable_embeddings(
         self,

@@ -127,6 +127,18 @@ dev = [
   "mkdocs-material>=9.5",                    # docs site (built on demand)
   "mkdocstrings[python]>=0.25",              # API docs from docstrings
   "build>=1.2",                              # CI-1: sdist/wheel builder for release artifacts
+  # Phase D / Wave 3 (D-17): fixture-corpus generation script
+  # (`scripts/build_fixture_corpus.py`).  These deps are needed *only*
+  # to regenerate the synthetic PDFs / DOCX / PPTX / XLSX fixtures
+  # under `tests/fixtures/multi_format_corpus/` from a clean checkout
+  # — they are NOT part of the runtime ingest path. Kept in the `dev`
+  # group so production installs (and the `[multi-format]` extra) stay
+  # lean.
+  "reportlab>=4.0",                          # digital-PDF synthesis
+  "python-docx>=1.1",                        # .docx synthesis
+  "python-pptx>=0.6",                        # .pptx synthesis
+  "openpyxl>=3.1",                           # .xlsx synthesis
+  "Pillow>=10.0",                            # EPUB cover + diagram bitmaps; Docling transitive but pinned for the script
 ]
 
 # ── hatchling build target (explicit so the editable install picks up the
@@ -162,6 +174,14 @@ include = [
 [tool.ruff]
 line-length    = 100
 target-version = "py311"
+# Phase D / Wave 3 (D-17): the multi-format fixture corpus is a tree
+# of intentionally-trivial files in many languages (Python `hello world`,
+# a Jupyter notebook with literal cell IDs, etc.) — none of them should
+# be lint-checked or auto-formatted. Excluding the whole subtree keeps
+# ruff focused on production code and tests.
+extend-exclude = [
+  "tests/fixtures/multi_format_corpus",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "ARG", "PTH", "RUF", "PL", "C4", "PT"]

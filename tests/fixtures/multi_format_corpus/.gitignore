@@ -1,0 +1,13 @@
+# Local negations for the multi-format fixture corpus — D-17 / Wave 3.
+#
+# The project-root `.gitignore` excludes `build/` (Python build artefact
+# directory). That rule also matches `code/build/` under this fixture,
+# silently dropping the Makefile / Dockerfile / .gitignore /
+# .editorconfig fixtures we depend on for the e2e test.
+#
+# The negations below re-include the fixture build/ contents.
+# `git check-ignore -v <path>` is the canonical debug tool if these
+# stop applying.
+
+!code/build/
+!code/build/**

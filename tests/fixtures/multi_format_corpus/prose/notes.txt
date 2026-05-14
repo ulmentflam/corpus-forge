@@ -1,0 +1,5 @@
+Plain-text notes for the fixture corpus.
+Two short paragraphs separated by a blank line.
+
+A second paragraph confirming the PlainTextExtractor wires the
+chunker_hint = "passthrough" path.

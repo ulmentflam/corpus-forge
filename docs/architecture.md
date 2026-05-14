@@ -88,3 +88,64 @@ The two implementations expose the same method surface but differ in deployment 
 - Use **postgres** if you need cross-host sync (`sync_enabled = true` on any dataset).
 - Use **postgres** if multiple processes on multiple hosts will write concurrently — its per-key advisory locks are finer-grained than SQLite's global write lock.
 - Use **postgres** when you want approximate-nearest-neighbour search at scale; the SQLite path gains ANN only when `sqlite-vec` is installed, and the BLOB fallback is write-only.
+
+## Multi-format extractor layer
+
+Phase D introduced a new layer between the existing `Source` and `Chunker` protocols so corpus-forge can ingest arbitrary file formats without proliferating per-format `Source` classes. A `FilesystemSource` walks a heterogeneous directory tree, dispatches every file through an `ExtractorRegistry` to an `Extractor`, and emits a `RawDocument` whose `metadata.chunker_hint` selects the chunker downstream.
+
+```
+┌──────────────────┐    ┌────────────────────┐    ┌─────────────┐
+│ FilesystemSource │───▶│ ExtractorRegistry  │───▶│  Extractor  │
+└──────────────────┘    └────────────────────┘    └──────┬──────┘
+                                                         │
+                                                         ▼
+                                            ┌────────────────────────┐
+                                            │ ExtractedDocument      │
+                                            │  text, chunker_hint,   │
+                                            │  language?, metadata,  │
+                                            │  labels                │
+                                            └────────────┬───────────┘
+                                                         │
+                                                         ▼
+                                              ┌─────────────────────┐
+                                              │  RawDocument        │
+                                              │  (source-layer)     │
+                                              └──────────┬──────────┘
+                                                         │
+                                                         ▼
+                                            ┌────────────────────────┐
+                                            │  ChunkerDispatcher     │
+                                            │  on metadata.          │
+                                            │  chunker_hint          │
+                                            └────────────┬───────────┘
+                                                         │
+                                                         ▼
+                                                  StorageBackend
+                                            (Postgres / SQLite + pgvector)
+```
+
+This makes every concrete extractor a leaf plugin — adding a new format is one new file under `corpus_forge/extractors/` plus a one-line registration in `register_default_extractors`. The embedder and storage layers are untouched.
+
+### Extractor matrix (P0)
+
+| Extension(s) | Extractor | Strategy | `chunker_hint` | License of backend |
+|---|---|---|---|---|
+| `.md` `.markdown` | `PassthroughMarkdownExtractor` | read text | `markdown` | stdlib |
+| `.txt` `.log` `.rst` `.org` `.tex` `.adoc` | `PlainTextExtractor` | read text | `passthrough` | stdlib |
+| `.pdf` (digital) | `PdfDigitalExtractor` | `pymupdf4llm` → markdown | `markdown` | AGPL-3.0 |
+| `.html` `.htm` `.xhtml` | `HtmlExtractor` | `readability-lxml` → `markdownify` | `markdown` | LGPL-3.0 / MIT |
+| `.epub` | `EpubExtractor` | `ebooklib` → `markdownify` | `markdown` | AGPL-3.0 / MIT |
+| `.docx` `.pptx` `.xlsx` | `OfficeExtractor` | Docling | `markdown` | MIT |
+| `.ipynb` | `NotebookExtractor` | `jupytext` py-percent + cell→markdown | `markdown` | MIT |
+| `.csv` `.tsv` | `CsvExtractor` | pandas → markdown table (size-bounded) | `markdown` | BSD-3 |
+| `.json` `.yaml` `.yml` `.toml` | `StructuredDataExtractor` | pretty-print fenced | `passthrough` | stdlib + MIT (`PyYAML`) |
+| `.srt` `.vtt` | `SubtitleExtractor` | strip timing → flat text | `passthrough` | stdlib |
+| 45+ source-code extensions (`.py .js .ts .tsx .go .rs .java .kt .rb .ex .erl .pl .hs .ml .clj .lisp .scm .sh .sql .css .lua .zig .nim .cr .r .jl .swift .dart .nix .c .h .cpp .hpp .m .mm .scala …`) | `CodeExtractor` | `tree-sitter-language-pack` → tagged regions | `code` | Apache-2.0 / MIT |
+
+`CodeExtractor` also handles the extension-less long-tail (`Makefile`, `Dockerfile`, `.gitignore`, `.editorconfig`) via the registry's second-pass `supported_filenames` lookup. When a tree-sitter grammar is not available locally, the extractor calls `pack.download([language])` lazily on first encounter — failures fall back to `CodeChunker`'s byte-line splitter, so no document is ever dropped.
+
+### P1 / OCR layer (deferred to Wave 5–6)
+
+`PdfExtractor` will gain a text-density check; pages with sparse text layers escalate to a `VLMBackend` (`OllamaVLM` or `MistralOCR`). A separate `ImageExtractor` will run the same VLM against `.png` / `.jpg` / `.heic` / etc. Both paths are documented in the milestone plan and gated behind a future `[ocr]` extra.
+
+For the wave-by-wave history of how this layer was built, see [`.planning/tdd/multi_format.md`](../.planning/tdd/multi_format.md).

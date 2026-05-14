@@ -155,7 +155,7 @@ Set `device = "auto"` to let sentence-transformers pick.
 ## Optional extras
 
 ```bash
-pip install 'corpus-forge[sqlite,openai,hf,tokens,retrieval,rerank,mcp,eval]'
+pip install 'corpus-forge[sqlite,openai,hf,tokens,retrieval,rerank,mcp,eval,code,multi-format]'
 ```
 
 | Extra | What it enables |
@@ -168,6 +168,33 @@ pip install 'corpus-forge[sqlite,openai,hf,tokens,retrieval,rerank,mcp,eval]'
 | `[rerank]` | `sentence-transformers` cross-encoder rerankers (BGE default). |
 | `[mcp]` | Model Context Protocol stdio server for Claude / Agent SDK clients. |
 | `[eval]` | Bundled gold-set evaluation harness (NDCG / MRR / Recall). |
+| `[code]` | `tree-sitter` + `tree-sitter-language-pack` for the `CodeChunker` and language-aware code ingest. Apache-2.0 / MIT. |
+| `[multi-format]` | PDF / HTML / EPUB / Office / Notebook / CSV extractors — **includes AGPL-3.0 components**. See [Distribution / licensing](#distribution--licensing). |
+
+## Distribution / licensing
+
+Corpus-forge's core is permissively licensed (Apache-2.0), but two of the Phase D
+multi-format extractors depend on AGPL-3.0 libraries. The license posture of an
+installed copy depends on which extras you pull in:
+
+| Install | Effective license | Notes |
+|---|---|---|
+| `pip install corpus-forge` | **Apache-2.0** | Pure core. Markdown vault + chat history sources only; no PDF / EPUB / Office ingest. |
+| `pip install corpus-forge[code]` | **Apache-2.0 + MIT** | Adds the `CodeChunker` and the `CodeExtractor`. Dependencies (`tree-sitter`, `tree-sitter-language-pack`) are Apache-2.0 / MIT — no copyleft contamination. |
+| `pip install 'corpus-forge[multi-format]'` | **AGPL-3.0** (effective) | Pulls in `pymupdf4llm` (AGPL-3.0) for digital PDF extraction and `ebooklib` (AGPL-3.0) for EPUBs. AGPL's network-use clause binds your application if you redistribute or expose it as a service. |
+| (P1, Wave 5–6) `pip install 'corpus-forge[ocr]'` | Apache-2.0 + permissive HTTP clients | Will add `pdf2image` (MIT) + the Ollama / Mistral OCR HTTP clients. No further copyleft entanglement on top of `[multi-format]`. |
+
+**Practical guidance.** If you plan to redistribute corpus-forge or a derived
+application, stay on pure-core or pure-core + `[code]` — both are
+Apache-2.0-clean. If you are using it personally or inside your organisation,
+`[multi-format]` is fine; the AGPL surface only matters once you ship the binary
+to someone else or expose it as a network service.
+
+The `[multi-format]` choice was made deliberately on 2026-05-14 to keep the
+quality-of-extraction story competitive (Docling for Office, `pymupdf4llm` for
+PDFs with text layers, `ebooklib` for EPUBs). The alternatives that would have
+kept the install Apache-2.0 — `marker-pdf`, `MinerU` — are themselves GPL/AGPL,
+so the trade-off is not avoidable today.
 
 ## Architecture
 

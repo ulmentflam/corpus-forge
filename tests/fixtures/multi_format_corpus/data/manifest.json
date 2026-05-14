@@ -1,0 +1,6 @@
+{
+  "name": "fixture-corpus",
+  "version": "1.0.0",
+  "description": "Synthetic fixture set for the multi-format e2e test",
+  "files": ["records.csv", "config.toml"]
+}

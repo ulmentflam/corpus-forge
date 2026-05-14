@@ -1,6 +1,7 @@
 """PostgreSQL storage backend implementation for corpus-forge."""
 
 import json
+import logging
 import os
 import socket
 import uuid
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
     from corpus_forge.sources.base import RawConversation, RawDocument
 
     from ..retrieval.types import Hit
+
+logger = logging.getLogger(__name__)
 
 # Valid entity types for labels and feedback helpers (mirrors sqlite.py constants).
 _LABEL_ENTITY_TYPES: tuple[str, ...] = ("chunk", "document", "conversation")
@@ -444,6 +447,11 @@ class PostgresBackend(StorageBackend):
                             row[0]["id"], chunk_hash, embedder_ids, cache
                         )
 
+            # Phase D / Wave 3 — persist extractor-emitted labels on the
+            # document row. Idempotent: ``apply_label`` is a no-op when
+            # the (namespace, value) pair is already attached.
+            self._apply_document_labels(doc_id, doc)
+
             return doc_id
         else:
             # Insert new document
@@ -481,7 +489,44 @@ class PostgresBackend(StorageBackend):
             if embedder_ids is not None:
                 self._copy_reusable_embeddings(row[0]["id"], chunk_hash, embedder_ids, cache)
 
+        # Phase D / Wave 3 — persist extractor-emitted labels on the
+        # document row. Idempotent: ``apply_label`` is a no-op when
+        # the (namespace, value) pair is already attached.
+        self._apply_document_labels(doc_id, doc)
+
         return doc_id
+
+    def _apply_document_labels(self, doc_id: int, doc: "RawDocument") -> None:
+        """Persist ``doc.labels`` against the ``corpus.document_labels`` junction.
+
+        Extractors (Phase D) emit ``ExtractedDocument.labels`` such as
+        ``[("format", "pdf")]``. ``FilesystemSource`` forwards those onto
+        ``RawDocument.labels``. Without this hook the labels never reach
+        the database and downstream filters (``backend.list_labels`` /
+        retrieval-time label enrichment) can't see them.
+
+        Tolerates a missing or empty labels list silently. Failures while
+        attaching a single label are logged at DEBUG and skipped — the
+        rest of the upsert remains atomic from the caller's point of view.
+        """
+        labels = getattr(doc, "labels", None)
+        if not labels:
+            return
+        for entry in labels:
+            try:
+                namespace, value = entry
+            except (TypeError, ValueError):
+                continue
+            try:
+                self.apply_label("document", doc_id, namespace, value, source="extractor")
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.debug(
+                    "apply_label('document', %s, %r, %r) failed: %s",
+                    doc_id,
+                    namespace,
+                    value,
+                    exc,
+                )
 
     def upsert_conversation(
         self,

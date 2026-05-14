@@ -135,11 +135,11 @@ corpus: PDFs (digital + OCR), HTML, EPUB, Office, notebooks, structured
 data, subtitles, and every human-readable code file via tree-sitter.
 
 #### P0 — Text & code extractors (no model required)
-- [ ] D-01..D-06 Wave 0 — `Extractor` protocol, `CodeChunker`, leaf extractors, `ChunkerDispatcher`, `ExtractionConfig`
-- [ ] D-07..D-13 Wave 1 — PDF (digital), HTML, EPUB, Office, Notebook, CSV, Code extractors
-- [ ] D-14..D-16 Wave 2 — `FilesystemSource`, ingest wiring, `config.example.toml`
-- [ ] D-17..D-19 Wave 3 — fixture corpus, E2E integration test, pyproject extras + docs
-- [ ] D-20 — **P0 gate**: `make ci` green at ≥85% coverage
+- [x] D-01..D-06 Wave 0 — `Extractor` protocol, `CodeChunker`, leaf extractors, `ChunkerDispatcher`, `ExtractionConfig`
+- [x] D-07..D-13 Wave 1 — PDF (digital), HTML, EPUB, Office, Notebook, CSV, Code extractors
+- [x] D-14..D-16 Wave 2 — `FilesystemSource`, ingest wiring, `config.example.toml`
+- [x] D-17..D-19 Wave 3 — fixture corpus, E2E integration test, pyproject extras + docs
+- [x] D-20 — **P0 gate**: `make ci` green at ≥85% coverage
 
 #### P1 — Vision/OCR (local Ollama qwen2.5vl:7b + Mistral OCR fallback)
 - [ ] E-01..E-04 Wave 4 — `VLMBackend` protocol, `OllamaVLM`, `MistralOCR`, `VLMConfig`
