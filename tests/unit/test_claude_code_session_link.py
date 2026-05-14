@@ -24,10 +24,10 @@ from datetime import UTC, datetime
 
 import pytest
 
+from corpus_forge.backends.sqlite import SQLiteBackend
+
 # This module does not exist yet — import will fail at collection time (RED).
 from corpus_forge.sources._session_link import link_session_to_conversation
-
-from corpus_forge.backends.sqlite import SQLiteBackend
 
 pytestmark = pytest.mark.unit
 

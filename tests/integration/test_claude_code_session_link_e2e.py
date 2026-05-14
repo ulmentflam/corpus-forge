@@ -30,12 +30,12 @@ from pathlib import Path
 
 import pytest
 
-# This import will fail until H-03 production code lands — RED trip-wire.
-from corpus_forge.sources._session_link import link_session_to_conversation
-
 from corpus_forge.backends.sqlite import SQLiteBackend
 from corpus_forge.chunkers.conversation import ConversationChunker
 from corpus_forge.ingest import ingest_one
+
+# This import will fail until H-03 production code lands — RED trip-wire.
+from corpus_forge.sources._session_link import link_session_to_conversation
 from corpus_forge.sources.claude_code import ClaudeCodeSource
 
 pytestmark = pytest.mark.integration
