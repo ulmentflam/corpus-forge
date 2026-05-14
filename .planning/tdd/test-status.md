@@ -2109,3 +2109,34 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
     don't pin this edge case to give Coder flexibility.
   - Parent-rollup (chunk hit inherits document's labels) is marked skip with
     reason="parent-rollup is F-04's concern" — boundary explicitly documented.
+
+## phase-f/F-03
+- Test files:
+  - `tests/unit/test_mcp_writes_dispatch.py` (44 tests)
+  - `tests/smoke/test_mcp_writes_disabled_by_default.py` (3 tests)
+- Run command: `uv run python -m pytest tests/unit/test_mcp_writes_dispatch.py tests/smoke/test_mcp_writes_disabled_by_default.py -v`
+- Edge case checklist:
+  - [x] happy path — every tool has a basic "returns expected keys" test
+  - [x] boundaries — dry_run=True on every write tool; empty messages list; None for optional args (rating, text, client, session_id)
+  - [x] type/format — invalid entity_type → ValueError; None conversation_id on dry_run; None message_id on dry_run
+  - [x] state — before/after dicts tested; idempotent remove (double-revoke → removed=False)
+  - [ ] N/A — concurrency (dispatch functions are thin wrappers; SQLiteBackend concurrency tested in F-02)
+  - [x] failure paths — invalid entity_type raises; dry_run does not persist across multiple tools
+  - [ ] N/A — locale/time (timestamps are passed as strings; no timezone math in dispatch layer)
+  - [x] production-realistic data — seeded fixture matches F-02 test pattern exactly
+  - [ ] N/A — regression hooks (no known bugs to encode; this is new surface)
+  - [x] audit identity — host/client/session_id flow-through test; null client/session accepted
+  - [x] list_labels — no audit row emitted (read tool); filter by entity_type and namespace
+  - [x] append_conversation — dry_run returns conversation_id=None; audit references real conv_id; turn_indexes sequential
+  - [x] append_message — dry_run returns message_id=None; turn_index predicted correctly
+  - [x] smoke: writes_enabled=False (explicit kwarg) omits write tools; writes_enabled=True exposes all 11; calling write tool when disabled errors
+- Red output (tail):
+  ```
+  collecting ... collected 0 items / 2 errors
+  ERROR tests/unit/test_mcp_writes_dispatch.py
+    ImportError: cannot import name 'writes' from 'corpus_forge.mcp'
+  ERROR tests/smoke/test_mcp_writes_disabled_by_default.py
+    ImportError: cannot import name 'writes' from 'corpus_forge.mcp'
+  2 errors during collection
+  ```
+- Status: red — handed off to tdd-coder
