@@ -137,6 +137,35 @@ def export_chat_cmd(
     typer.echo(f"exported to {out}", err=True)
 
 
+@export_app.command("feedback-pairs")
+def export_feedback_pairs_cmd(
+    dataset: Annotated[str, typer.Option("--dataset", "-d", help="Dataset name to export.")],
+    out: Annotated[Path, typer.Option("--out", "-o", help="Output file path.")],
+    template: Annotated[
+        str, typer.Option("--template", "-t", help="Chat template name.")
+    ] = "chatml",
+    format: Annotated[
+        str, typer.Option("--format", "-f", help="Output format: jsonl or parquet.")
+    ] = "jsonl",
+    model_id: Annotated[str | None, typer.Option("--model-id", help="HF model_id.")] = None,
+    custom_jinja: Annotated[
+        str | None, typer.Option("--custom-jinja", help="Inline Jinja override.")
+    ] = None,
+) -> None:
+    """Export feedback events as templated training rows."""
+    from corpus_forge.export import export_feedback_pairs
+
+    export_feedback_pairs(
+        dataset=dataset,
+        template=template,
+        out_path=out,
+        format=format,
+        model_id=model_id,
+        custom_jinja=custom_jinja,
+    )
+    typer.echo(f"exported to {out}", err=True)
+
+
 # ── sync subcommand group ────────────────────────────────────────────────
 
 

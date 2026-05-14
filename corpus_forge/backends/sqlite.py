@@ -2515,3 +2515,87 @@ class SQLiteBackend:
             (client, session_id),
         )
         return rows[0] if rows else None
+
+    # ── H-04 feedback-export helpers ──────────────────────────────────────────
+
+    def list_feedback_events_for_dataset(self, dataset_id: int) -> "list[dict]":
+        """Return feedback_events joined to linked feedback_sessions for *dataset_id*.
+
+        Only events whose session has conversation_id IS NOT NULL and whose
+        conversation belongs to *dataset_id* are included.  Events from
+        unlinked sessions are silently skipped.
+
+        Each row contains all feedback_events columns plus the feedback_session
+        fields: client, session_id (as session_id), host, and conversation_id.
+        """
+        return self._execute(
+            """
+            SELECT
+                fe.id,
+                fe.feedback_session_id,
+                fe.audit_id,
+                fe.feedback_id,
+                fe.entity_type,
+                fe.entity_id,
+                fe.ts,
+                fs.client,
+                fs.session_id,
+                fs.host,
+                fs.conversation_id
+            FROM feedback_events fe
+            JOIN feedback_sessions fs ON fs.id = fe.feedback_session_id
+            JOIN conversations c ON c.id = fs.conversation_id
+            WHERE c.dataset_id = ?
+              AND fs.conversation_id IS NOT NULL
+            ORDER BY fe.id
+            """,
+            (dataset_id,),
+        )
+
+    def get_audit_event(self, audit_id: int) -> "dict | None":
+        """Return the mcp_audit row for *audit_id*, or None on miss."""
+        rows = self._execute(
+            "SELECT * FROM mcp_audit WHERE id = ? LIMIT 1",
+            (audit_id,),
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        # before/after are stored as JSON text in SQLite — deserialise them.
+        for col in ("before", "after"):
+            if isinstance(row.get(col), str):
+                with contextlib.suppress(json.JSONDecodeError, TypeError):
+                    row[col] = json.loads(row[col])
+        return row
+
+    def get_feedback(self, feedback_id: int) -> "dict | None":
+        """Return the feedback row for *feedback_id*, or None on miss."""
+        rows = self._execute(
+            "SELECT * FROM feedback WHERE id = ? LIMIT 1",
+            (feedback_id,),
+        )
+        return rows[0] if rows else None
+
+    def get_conversation_messages_up_to_ts(
+        self, conversation_id: int, ts: "str | None"
+    ) -> "list[dict]":
+        """Return messages for *conversation_id* with message.ts <= *ts*.
+
+        Messages are ordered by turn_index.  If *ts* is None or no messages
+        fall within the window, all messages for the conversation are returned.
+        """
+        if ts is not None:
+            rows = self._execute(
+                """
+                SELECT * FROM messages
+                WHERE conversation_id = ? AND ts <= ?
+                ORDER BY turn_index
+                """,
+                (conversation_id, ts),
+            )
+            if rows:
+                return rows
+        return self._execute(
+            "SELECT * FROM messages WHERE conversation_id = ? ORDER BY turn_index",
+            (conversation_id,),
+        )

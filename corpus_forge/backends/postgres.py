@@ -1972,3 +1972,79 @@ class PostgresBackend(StorageBackend):
             (client, session_id),
         )
         return rows[0] if rows else None
+
+    # ── H-04 feedback-export helpers ──────────────────────────────────────────
+
+    def list_feedback_events_for_dataset(self, dataset_id: int) -> "list[dict]":
+        """Return feedback_events joined to linked feedback_sessions for *dataset_id*.
+
+        Only events whose session has conversation_id IS NOT NULL and whose
+        conversation belongs to *dataset_id* are included.  Events from
+        unlinked sessions are silently skipped.
+
+        Each row contains all feedback_events columns plus the feedback_session
+        fields: client, session_id, host, and conversation_id.
+        """
+        return self._execute(
+            """
+            SELECT
+                fe.id,
+                fe.feedback_session_id,
+                fe.audit_id,
+                fe.feedback_id,
+                fe.entity_type,
+                fe.entity_id,
+                fe.ts,
+                fs.client,
+                fs.session_id,
+                fs.host,
+                fs.conversation_id
+            FROM corpus.feedback_events fe
+            JOIN corpus.feedback_sessions fs ON fs.id = fe.feedback_session_id
+            JOIN corpus.conversations c ON c.id = fs.conversation_id
+            WHERE c.dataset_id = %s
+              AND fs.conversation_id IS NOT NULL
+            ORDER BY fe.id
+            """,
+            (dataset_id,),
+        )
+
+    def get_audit_event(self, audit_id: int) -> "dict | None":
+        """Return the corpus.mcp_audit row for *audit_id*, or None on miss."""
+        rows = self._execute(
+            "SELECT * FROM corpus.mcp_audit WHERE id = %s LIMIT 1",
+            (audit_id,),
+        )
+        return rows[0] if rows else None
+
+    def get_feedback(self, feedback_id: int) -> "dict | None":
+        """Return the corpus.feedback row for *feedback_id*, or None on miss."""
+        rows = self._execute(
+            "SELECT * FROM corpus.feedback WHERE id = %s LIMIT 1",
+            (feedback_id,),
+        )
+        return rows[0] if rows else None
+
+    def get_conversation_messages_up_to_ts(
+        self, conversation_id: int, ts: "str | None"
+    ) -> "list[dict]":
+        """Return messages for *conversation_id* with message.ts <= *ts*.
+
+        Messages are ordered by turn_index.  If *ts* is None or no messages
+        fall within the window, all messages for the conversation are returned.
+        """
+        if ts is not None:
+            rows = self._execute(
+                """
+                SELECT * FROM corpus.messages
+                WHERE conversation_id = %s AND ts <= %s
+                ORDER BY turn_index
+                """,
+                (conversation_id, ts),
+            )
+            if rows:
+                return rows
+        return self._execute(
+            "SELECT * FROM corpus.messages WHERE conversation_id = %s ORDER BY turn_index",
+            (conversation_id,),
+        )
