@@ -158,3 +158,17 @@ The working tree has the correct H-04 production code. The coder must create a n
 
 - Verdict: **rework**
 - Notes: Phase H surface tests (53/53) are GREEN on working-tree code. The iCloud Drive race that struck Phase CI-2 and G struck again here: the H-05 tester's git commit included stale versions of the H-04 production files. Fix: coder recovery commit adding the 4 production files + test_apply_migrations_uses_alembic.py, then QA re-runs.
+
+---
+
+## Phase I — I-02 (close-out QA)
+
+- Suite: 2405 passed, 0 failed, 3 skipped, 1 xfailed (unit + integration + smoke, 123.15s)
+- Phase I surface: 64 passed, 0 failed (8 test files: test_opencode_agent_frontmatter, test_opencode_command_frontmatter, test_opencode_integration_doc, test_mcp_config_opencode, test_gemini_extension_manifest, test_gemini_md_content, test_gemini_integration_doc, test_mcp_config_gemini)
+- Coverage: 84.75% unit-only (threshold 85%) — pre-existing structural gap identical to H-06 QA finding; Phase I added zero production Python; postgres.py covered only by integration tests; unit+integration together: PASS
+- Smoke (JSON parse): python3 -c "json.load(...)" on all 3 JSON assets (opencode-client.mcp.json, gemini-cli.mcp.json, gemini-extension.json) — PASS; both MCP configs declare mcpServers.corpus-forge with command=corpus-forge, args=["mcp","serve"]
+- Smoke (doc content): grep confirms both integration docs contain "mcp serve" and "CORPUS_FORGE_CONFIG" — PASS
+- Regression sweep: adjacent Claude client assets (test_claude_integration_doc, test_claude_agent_frontmatter, test_claude_skill_frontmatter, test_mcp_config_examples) 39/39 PASS; no regressions from Phase I changes; git diff HEAD confirms Phase I committed zero production Python modifications
+- Issues: coverage 84.75% is pre-existing (identical value to Phase H close-out); not introduced by Phase I; logged but not blocking
+- Verdict: approved
+- Notes: Phase I milestone goal fully met — OpenCode + Gemini CLI achieve client parity with Claude Code pattern. 64 rot-detector tests pin 8 asset files. Binary-installation smoke deferred to Phase J (requires actual opencode/gemini binaries in PATH).

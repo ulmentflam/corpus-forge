@@ -2703,7 +2703,31 @@ Client assets only — mirror the Claude pattern. Sub-phases I1 + I2 run in para
 
 | id | title | depends_on | surface | risk | status |
 |----|-------|------------|---------|------|--------|
-| I1-01 | OpenCode client assets | — | `examples/mcp-config/opencode-client.mcp.json`, `.opencode/agent/corpus-forge-researcher.md`, `.opencode/command/corpus-forge-search.md`, `docs/opencode-integration.md`, 5 rot-detector tests | low | pending |
-| I2-01 | Gemini CLI client assets | — | `examples/mcp-config/gemini-cli.mcp.json`, `examples/gemini-extension/GEMINI.md`, `examples/gemini-extension/.gemini-extension.json`, `docs/gemini-integration.md`, 5 rot-detector tests | low | pending |
-| I-02 | tdd-qa close-out | I1-01, I2-01 | `.planning/tdd/tasks.md` | low | pending |
+| I1-01 | OpenCode client assets | — | `examples/mcp-config/opencode-client.mcp.json`, `.opencode/agent/corpus-forge-researcher.md`, `.opencode/command/corpus-forge-search.md`, `docs/opencode-integration.md`, 5 rot-detector tests | low | done | tdd-coder | 30 tests green; all 4 asset files + integration doc created; rot-detectors pin JSON schema + YAML frontmatter + doc sections |
+| I2-01 | Gemini CLI client assets | — | `examples/mcp-config/gemini-cli.mcp.json`, `examples/gemini-extension/GEMINI.md`, `examples/gemini-extension/gemini-extension.json`, `docs/gemini-integration.md`, 5 rot-detector tests | low | done | tdd-coder | 34 tests green; all 4 asset files + integration doc created; rot-detectors pin JSON schema + GEMINI.md content + doc sections |
+| I-02 | tdd-qa close-out | I1-01, I2-01 | `.planning/tdd/tasks.md` | low | done | tdd-qa | Clean-room re-run: 64 Phase I tests GREEN; full suite 2405 passed / 0 failed / 3 skipped / 1 xfailed; all 8 asset files present; both JSON configs parse + serve mcp; coverage 84.75% (pre-existing gap, not Phase I) |
 
+
+---
+
+## Phase I — Close-out (I-02, tdd-qa)
+
+- **Files added**:
+  - `.opencode/agent/corpus-forge-researcher.md` — research-mode delegate agent for OpenCode
+  - `.opencode/command/corpus-forge-search.md` — search command (skill equivalent for OpenCode)
+  - `examples/mcp-config/opencode-client.mcp.json` — mcpServers JSON snippet for opencode.json
+  - `examples/gemini-extension/GEMINI.md` — context file with corpus-forge tool instructions
+  - `examples/gemini-extension/gemini-extension.json` — Gemini CLI extension manifest
+  - `examples/mcp-config/gemini-cli.mcp.json` — mcpServers block for ~/.gemini/settings.json
+  - `docs/opencode-integration.md` — 6-H2 walkthrough for OpenCode users
+  - `docs/gemini-integration.md` — 6-H2 walkthrough for Gemini CLI users
+- **Files modified**: none (zero production Python changes)
+- **Gates run**:
+  - Full suite (unit + integration + smoke): **2405 passed, 0 failed, 3 skipped, 1 xfailed** (123.15s)
+  - Phase I surface (64 tests, 8 test files): **64 passed, 0 failed** (0.17s)
+  - Adjacent Claude client surface (39 tests): **39 passed, 0 failed** (no regressions)
+  - JSON parse smoke (3 JSON assets): all valid
+  - Coverage (unit-only `--cov-fail-under=85`): 84.75% — pre-existing structural gap (H-06 QA noted: `corpus_forge/backends/postgres.py` only covered by integration tests; Phase I added zero production code so cannot be the cause)
+- **Risk closure**: Client parity proven for OpenCode + Gemini CLI. Both clients share the same MCP serve pattern (`corpus-forge mcp serve`) and `CORPUS_FORGE_CONFIG` env wiring as the Claude Code client. 5 rot-detector tests per client pin JSON schema, frontmatter fields, doc H2 sections, and content references against future drift.
+- **Deferred**: Real-installation smoke (launching `opencode` or `gemini` CLI binaries pointing at the MCP config) is not feasible in CI — neither binary is guaranteed present. The rot-detector suite (file existence + JSON validity + content pins) provides the next-best guard. Flag for Phase J to add binary-smoke behind a `OPENCODE_BIN` / `GEMINI_CLI_BIN` env gate.
+- **Hand-off**: Phase J — additional chat-source plugins: `gemini_cli` source, `codex_cli` source, `chatgpt_export` source, `jsonl_chat` source.
