@@ -38,6 +38,7 @@ Record of implementations written by tdd-coder.
 | B-13 | green | SQLite wiring in ingest.py + embed.py. 30/30 wiring tests + 35/35 scoped tests pass. Full unit suite: 1059 passed, 8 skipped, 0 failed. postgres import kept at module level in embed.py (tests require it); sqlite branch uses lazy import; migrate() added to embed.backfill_embedder after embedder config lookup; test_backfill_embedder_unsupported_backend + test_ingest_once_unsupported_backend updated to kind="duckdb". All 4 gates clean. |
 | phase-f/F-03 | green | 47/47 F-03 tests pass. Full unit suite: 1688 passed, 3 skipped, 1 xfailed. |
 | phase-f/F-04 | green | 10/10 F-04 tests pass. F-02/F-03 regressions: 0. Unit coverage: 82.77% (pre-existing deficit; baseline before F-04 was 83.81% — also below threshold). |
+| phase-f/F-05 | green | 15/15 F-05 tests pass (12 integration + 3 smoke). F-02 unit suite: 43 passed/1 skipped/0 failed. Unit coverage: 85.47% (above 85% gate). |
 
 ## phase-f/F-04
 - Source files: `corpus_forge/backends/sqlite.py`, `corpus_forge/mcp/server.py`
@@ -54,6 +55,22 @@ Record of implementations written by tdd-coder.
 - Added hydrate_document_metadata to SQLiteBackend: bulk-fetch labels/description/feedback for a list of document_ids using 3 queries (no N+1), mirroring hydrate_hit_metadata for the document entity type.
 - Schema change: _ADD_FEEDBACK_INPUT_SCHEMA rating changed from `"type": "integer"` to `"type": ["integer", "null"]` to allow rating=None (required by test_search_hit_includes_recent_feedback).
 - Unit coverage impact: pre-existing deficit at 83.81% before F-04; F-04 adds uncovered code exercised only by integration tests → 82.77%. Not introduced by F-04 alone.
+- Status: green — handed off to tdd-qa
+
+## phase-f/F-05
+- Source files: `corpus_forge/mcp/writes.py`, `corpus_forge/backends/postgres.py`, `corpus_forge/backends/sqlite.py`
+- Gates:
+  - format: ✓ (`ruff format --check` clean — 190 files formatted)
+  - lint: ✓ (`ruff check` — All checks passed)
+  - typecheck: ✓ (`pyrefly check corpus_forge` — 0 errors, 20 suppressed pre-existing)
+  - test: ✓ (`pytest tests/integration/test_mcp_writes_postgres.py tests/integration/test_append_conversation_e2e.py tests/smoke/test_skill_tool_contract.py` — 15/15 passed; unit suite 1730 passed/3 skipped/1 xfailed; coverage 85.47%)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (writes.py placeholder helpers + postgres.py + sqlite.py write helper additions)
+- Bug A fix: replaced _read_metadata/_read_description/_count_messages hand-crafted SQL (used `?` placeholders — broke psycopg) with calls to new backend helpers get_entity_metadata/get_entity_description/count_messages that route through each backend's native _execute path.
+- Bug B fix: chunk-once-on-append strategy. append_conversation now inserts one chunk per non-empty message immediately after message insert, with correct message_id linkage. append_message inserts a chunk row for the new message. Both backends updated (PG + SQLite). No ConversationChunker reuse from daemon — the daemon path goes through upsert_conversation with pre-computed chunked_messages; append path inserts per_message chunks inline (same result without the RawConversation overhead).
+- patch_metadata PG fix: added ::text cast to jsonb_build_object key parameter to resolve "could not determine data type of parameter $1" psycopg error.
+- append_message PG fix: separated FOR UPDATE lock onto conversations row (PG doesn't allow FOR UPDATE with aggregate); aggregate MAX runs in second query within same transaction.
+- Pre-existing failures (2 alembic tests): confirmed pre-existing before this diff.
 - Status: green — handed off to tdd-qa
 
 ## B-01

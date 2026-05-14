@@ -1213,6 +1213,48 @@ class PostgresBackend(StorageBackend):
 
     # ── F-02 write helpers ────────────────────────────────────────────────────
 
+    def get_entity_metadata(self, entity_type: str, entity_id: int) -> dict:
+        """Return the current metadata dict for a document or conversation entity.
+
+        Uses the backend's native execute path (%s placeholders) so psycopg
+        does not raise a placeholder-mismatch error.  Returns {} when the
+        entity is not found or has NULL metadata.
+        """
+        table = _ENTITY_TABLE_MAP[entity_type]
+        rows = self._execute(f"SELECT metadata FROM {table} WHERE id = %s", (entity_id,))
+        if not rows or rows[0]["metadata"] is None:
+            return {}
+        raw = rows[0]["metadata"]
+        if isinstance(raw, dict):
+            return raw
+        return json.loads(raw)
+
+    def get_entity_description(self, entity_type: str, entity_id: int) -> "str | None":
+        """Return the current description for a document or conversation entity.
+
+        Uses the backend's native execute path (%s placeholders).  Returns
+        None when the entity is not found or has NULL description.
+        """
+        table = _ENTITY_TABLE_MAP[entity_type]
+        rows = self._execute(f"SELECT description FROM {table} WHERE id = %s", (entity_id,))
+        if not rows:
+            return None
+        return rows[0]["description"]
+
+    def count_messages(self, conversation_id: int) -> int:
+        """Return the current message count for a conversation.
+
+        Uses MAX(turn_index)+1 which equals the message count when turn
+        indices are 0-based and contiguous.  Returns 0 for an empty
+        conversation.
+        """
+        rows = self._execute(
+            "SELECT COALESCE(MAX(turn_index), -1) AS m FROM corpus.messages"
+            " WHERE conversation_id = %s",
+            (conversation_id,),
+        )
+        return int(rows[0]["m"]) + 1
+
     def apply_label(
         self,
         entity_type: str,
@@ -1339,7 +1381,7 @@ class PostgresBackend(StorageBackend):
         self._execute(
             f"UPDATE {table}"
             f" SET metadata = COALESCE(metadata, '{{}}'::jsonb)"
-            f"   || jsonb_build_object(%s, %s::jsonb)"
+            f"   || jsonb_build_object(%s::text, %s::jsonb)"
             f" WHERE id = %s",
             (key, value_json, entity_id),
         )
@@ -1382,10 +1424,14 @@ class PostgresBackend(StorageBackend):
         metadata: dict | None = None,
         labels: list[tuple[str, str]] | None = None,
     ) -> tuple[int, int]:
-        """Insert a new conversation row with its messages.
+        """Insert a new conversation row with its messages and per-message chunks.
 
-        Returns ``(conversation_id, message_count)``.
+        Returns ``(conversation_id, message_count)``.  Chunks are inserted so
+        that ``search_lexical`` (which queries the ``text_tsv`` GIN index on
+        ``corpus.chunks``) can find appended content immediately.
         """
+        from ..identity import chunk_content_hash as _chunk_hash  # noqa: PLC0415
+
         source_uri = f"append://{uuid.uuid4()}"
         content_hash = source_uri  # unique per call
         meta_json = psycopg.types.json.Json(metadata or {})
@@ -1410,17 +1456,20 @@ class PostgresBackend(StorageBackend):
         )
         conv_id: int = result[0]["id"]
 
+        # Insert messages and collect their ids for chunk linkage.
+        message_ids: list[int] = []
         for i, msg in enumerate(messages):
             tool_calls = msg.get("tool_calls")
             tool_results = msg.get("tool_results")
             ts_val = msg.get("ts")
             msg_meta = msg.get("metadata", {})
-            self._execute(
+            msg_result = self._execute(
                 """
                 INSERT INTO corpus.messages
                   (conversation_id, turn_index, role, content,
                    tool_calls, tool_results, ts, metadata)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (
                     conv_id,
@@ -1431,6 +1480,32 @@ class PostgresBackend(StorageBackend):
                     psycopg.types.json.Json(tool_results) if tool_results is not None else None,
                     ts_val,
                     psycopg.types.json.Json(msg_meta),
+                ),
+            )
+            message_ids.append(msg_result[0]["id"])
+
+        # Insert one chunk per non-empty message (mirrors the per_message daemon path).
+        for i, msg in enumerate(messages):
+            text = msg.get("content", "")
+            if not text.strip():
+                continue
+            role = msg.get("role", "")
+            ch = _chunk_hash(text)
+            self._execute(
+                """
+                INSERT INTO corpus.chunks
+                  (conversation_id, message_id, chunk_index, text,
+                   role, metadata, content_hash)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    conv_id,
+                    message_ids[i],
+                    0,
+                    text,
+                    role,
+                    psycopg.types.json.Json({}),
+                    ch,
                 ),
             )
 
@@ -1454,14 +1529,24 @@ class PostgresBackend(StorageBackend):
         """Append a single message to an existing conversation.
 
         Uses ``SELECT MAX(turn_index) + 1 ... FOR UPDATE`` to serialise
-        concurrent appends within Postgres.
+        concurrent appends within Postgres.  Also inserts a chunk row so the
+        message is immediately searchable via the ``text_tsv`` GIN index.
 
         Returns ``(message_id, turn_index)``.
         """
+        from ..identity import chunk_content_hash as _chunk_hash  # noqa: PLC0415
+
         with self._get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            # Lock the conversation row to serialise concurrent appends, then
+            # compute the next turn_index in a separate aggregate query.  PG
+            # does not permit FOR UPDATE with aggregate functions.
+            cur.execute(
+                "SELECT id FROM corpus.conversations WHERE id = %s FOR UPDATE",
+                (conversation_id,),
+            )
             cur.execute(
                 "SELECT COALESCE(MAX(turn_index), -1) AS m FROM corpus.messages"
-                " WHERE conversation_id = %s FOR UPDATE",
+                " WHERE conversation_id = %s",
                 (conversation_id,),
             )
             max_row = cur.fetchone()
@@ -1488,6 +1573,28 @@ class PostgresBackend(StorageBackend):
             )
             row = cur.fetchone()
             message_id: int = row["id"]  # type: ignore[index]
+
+            # Insert a chunk so the message is indexed by search_lexical.
+            if content.strip():
+                ch = _chunk_hash(content)
+                cur.execute(
+                    """
+                    INSERT INTO corpus.chunks
+                      (conversation_id, message_id, chunk_index, text,
+                       role, metadata, content_hash)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        conversation_id,
+                        message_id,
+                        0,
+                        content,
+                        role,
+                        psycopg.types.json.Json({}),
+                        ch,
+                    ),
+                )
+
             conn.commit()
 
         return message_id, turn_index

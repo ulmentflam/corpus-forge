@@ -1663,6 +1663,44 @@ class SQLiteBackend:
 
     # ── F-02 write helpers ────────────────────────────────────────────────────
 
+    def get_entity_metadata(self, entity_type: str, entity_id: int) -> dict:
+        """Return the current metadata dict for a document or conversation entity.
+
+        Uses the backend's native execute path (? placeholders).  Returns {}
+        when the entity is not found or has NULL/empty metadata.
+        """
+        table = _ENTITY_TABLE_MAP[entity_type]
+        rows = self._execute(f"SELECT metadata FROM {table} WHERE id = ?", (entity_id,))
+        if not rows or rows[0]["metadata"] is None:
+            return {}
+        raw = rows[0]["metadata"]
+        if isinstance(raw, dict):
+            return raw
+        return json.loads(raw)
+
+    def get_entity_description(self, entity_type: str, entity_id: int) -> "str | None":
+        """Return the current description for a document or conversation entity.
+
+        Uses the backend's native execute path (? placeholders).  Returns
+        None when the entity is not found or has NULL description.
+        """
+        table = _ENTITY_TABLE_MAP[entity_type]
+        rows = self._execute(f"SELECT description FROM {table} WHERE id = ?", (entity_id,))
+        if not rows:
+            return None
+        return rows[0]["description"]
+
+    def count_messages(self, conversation_id: int) -> int:
+        """Return the current message count for a conversation.
+
+        Returns 0 for an empty (or missing) conversation.
+        """
+        rows = self._execute(
+            "SELECT COALESCE(MAX(turn_index), -1) AS m FROM messages WHERE conversation_id = ?",
+            (conversation_id,),
+        )
+        return int(rows[0]["m"]) + 1
+
     def apply_label(
         self,
         entity_type: str,
@@ -1845,9 +1883,11 @@ class SQLiteBackend:
         metadata: dict | None = None,
         labels: list[tuple[str, str]] | None = None,
     ) -> tuple[int, int]:
-        """Insert a new conversation row with its messages.
+        """Insert a new conversation row with its messages and per-message chunks.
 
-        Returns ``(conversation_id, message_count)``.
+        Returns ``(conversation_id, message_count)``.  Chunks are inserted so
+        that ``search_lexical`` (which queries the ``chunks_fts`` FTS5 table)
+        can find appended content immediately.
         """
         meta_json = json.dumps(metadata or {})
         started_str: str | None = None
@@ -1882,17 +1922,20 @@ class SQLiteBackend:
             ).fetchone()
             conv_id: int = row[0]
 
+            # Insert messages and collect their ids for chunk linkage.
+            message_ids: list[int] = []
             for i, msg in enumerate(messages):
                 tool_calls = msg.get("tool_calls")
                 tool_results = msg.get("tool_results")
                 ts_val = msg.get("ts")
                 msg_meta = msg.get("metadata", {})
-                conn.execute(
+                msg_row = conn.execute(
                     """
                     INSERT INTO messages
                       (conversation_id, turn_index, role, content,
                        tool_calls, tool_results, ts, metadata)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id
                     """,
                     (
                         conv_id,
@@ -1904,6 +1947,24 @@ class SQLiteBackend:
                         ts_val,
                         json.dumps(msg_meta),
                     ),
+                ).fetchone()
+                message_ids.append(msg_row[0])
+
+            # Insert one chunk per non-empty message (mirrors the per_message daemon path).
+            for i, msg in enumerate(messages):
+                text = msg.get("content", "")
+                if not text.strip():
+                    continue
+                role = msg.get("role", "")
+                ch = chunk_content_hash(text)
+                conn.execute(
+                    """
+                    INSERT INTO chunks
+                      (conversation_id, message_id, chunk_index, text,
+                       role, metadata, content_hash)
+                    VALUES (?, ?, ?, ?, ?, '{}', ?)
+                    """,
+                    (conv_id, message_ids[i], 0, text, role, ch),
                 )
 
             conn.commit()
@@ -1928,7 +1989,8 @@ class SQLiteBackend:
         """Append a single message to an existing conversation.
 
         Computes ``turn_index`` as ``MAX(turn_index) + 1`` under a write lock
-        so concurrent callers get distinct indexes.
+        so concurrent callers get distinct indexes.  Also inserts a chunk row
+        so the message is immediately searchable via the FTS5 index.
 
         Returns ``(message_id, turn_index)``.
         """
@@ -1974,6 +2036,20 @@ class SQLiteBackend:
             )
             msg_row = cursor.fetchone()
             message_id: int = msg_row[0]
+
+            # Insert a chunk so the message is indexed by search_lexical.
+            if content.strip():
+                ch = chunk_content_hash(content)
+                conn.execute(
+                    """
+                    INSERT INTO chunks
+                      (conversation_id, message_id, chunk_index, text,
+                       role, metadata, content_hash)
+                    VALUES (?, ?, ?, ?, ?, '{}', ?)
+                    """,
+                    (conversation_id, message_id, 0, content, role, ch),
+                )
+
             conn.commit()
 
         return message_id, turn_index

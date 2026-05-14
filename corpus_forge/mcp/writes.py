@@ -19,7 +19,6 @@ row.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -55,43 +54,51 @@ _FEEDBACK_ENTITY_TYPES: frozenset[str] = frozenset({"chunk", "document", "conver
 
 
 def _read_metadata(backend: Any, entity_type: str, entity_id: int) -> dict:
-    """Read the current metadata dict for an entity without mutating it."""
-    table_map = {
-        "chunk": "chunks",
-        "document": "documents",
-        "conversation": "conversations",
-    }
-    table = table_map[entity_type]
-    with backend._get_connection() as conn:
-        row = conn.execute(f"SELECT metadata FROM {table} WHERE id = ?", (entity_id,)).fetchone()
-    if row is None or row["metadata"] is None:
-        return {}
-    return json.loads(row["metadata"])
+    """Read the current metadata dict for an entity without mutating it.
+
+    Delegates to backend.patch_metadata's internal read logic by fetching
+    the entity row via the backend's native execute path (no hand-crafted
+    placeholders that differ between SQLite and psycopg).
+    """
+    # Use get_chunk for chunk entities; for others fall back to patch_metadata
+    # with a no-op merge (reading before/after gives us the before dict).
+    if entity_type == "chunk":
+        row = backend.get_chunk(entity_id)
+        if row is None:
+            return {}
+        raw = row.get("metadata")
+        if raw is None:
+            return {}
+        if isinstance(raw, dict):
+            return raw
+        import json as _json  # noqa: PLC0415
+
+        return _json.loads(raw)
+
+    # For document / conversation: use patch_metadata with a sentinel key
+    # that won't collide — actually, the cleanest approach is to call
+    # get_entity_metadata which both backends now provide.
+    return backend.get_entity_metadata(entity_type, entity_id)
 
 
 def _read_description(backend: Any, entity_type: str, entity_id: int) -> str | None:
-    """Read the current description for an entity without mutating it."""
-    table_map = {
-        "chunk": "chunks",
-        "document": "documents",
-        "conversation": "conversations",
-    }
-    table = table_map[entity_type]
-    with backend._get_connection() as conn:
-        row = conn.execute(f"SELECT description FROM {table} WHERE id = ?", (entity_id,)).fetchone()
-    if row is None:
-        return None
-    return row["description"]
+    """Read the current description for an entity without mutating it.
+
+    Delegates to each backend's native execute path so psycopg gets %s and
+    SQLite gets ?, rather than hand-crafting the SQL here.
+    """
+    if entity_type == "chunk":
+        row = backend.get_chunk(entity_id)
+        if row is None:
+            return None
+        return row.get("description")
+
+    return backend.get_entity_description(entity_type, entity_id)
 
 
 def _count_messages(backend: Any, conversation_id: int) -> int:
     """Return the current message count for a conversation."""
-    with backend._get_connection() as conn:
-        row = conn.execute(
-            "SELECT COALESCE(MAX(turn_index), -1) AS m FROM messages WHERE conversation_id = ?",
-            (conversation_id,),
-        ).fetchone()
-    return int(row["m"]) + 1
+    return backend.count_messages(conversation_id)
 
 
 # ---------------------------------------------------------------------------
