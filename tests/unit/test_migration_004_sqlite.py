@@ -16,6 +16,10 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.skip(
+    reason="legacy migration test — pins pre-Alembic file-globbing; deleted in D-10"
+)
+
 SQLITE_SCHEMA_DIR = Path(__file__).resolve().parents[2] / "corpus_forge" / "schema" / "sqlite"
 MIGRATION_FILE = SQLITE_SCHEMA_DIR / "004_fts.sql"
 

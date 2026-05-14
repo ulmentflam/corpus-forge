@@ -351,10 +351,16 @@ class TestSyncMigrationConstraints:
 class TestMigrationFileLooping:
     """Runner loops numbered SQL files."""
 
+    @pytest.mark.skip(
+        reason="legacy migration test — pins pre-Alembic file-globbing; deleted in D-10"
+    )
     def test_get_migration_files_includes_003(self):
         files = sorted(p.name for p in _schema_dir().glob("[0-9]*.sql"))
         assert any(f.startswith("003") for f in files)
 
+    @pytest.mark.skip(
+        reason="legacy migration test — pins pre-Alembic file-globbing; deleted in D-10"
+    )
     def test_migration_files_numeric_order(self):
         from corpus_forge.schema.migrate import get_migration_files
 

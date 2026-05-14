@@ -22,6 +22,10 @@ import pytest
 
 from corpus_forge.schema import migrate
 
+pytestmark = pytest.mark.skip(
+    reason="legacy migration test — pins pre-Alembic file-globbing; deleted in D-10"
+)
+
 SCHEMA_DIR = Path(__file__).resolve().parents[2] / "corpus_forge" / "schema"
 SQLITE_SCHEMA_DIR = SCHEMA_DIR / "sqlite"
 

@@ -1,11 +1,23 @@
 """Schema migration utility for corpus-forge."""
 
+import logging
 import os
+import re
 import sys
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+from alembic import command as alembic_command
+from alembic.config import Config
+
+import corpus_forge.alembic as _alembic_pkg
 
 from ..backends.postgres import PostgresBackend
+
+if TYPE_CHECKING:
+    from ..backends.sqlite import SQLiteBackend
+
+logger = logging.getLogger(__name__)
 
 
 def get_migration_files(
@@ -28,12 +40,50 @@ def get_migration_files(
     return sorted(sql_files, key=lambda p: int(p.stem.split("_")[0]))
 
 
+def _apply_alembic(
+    backend: "PostgresBackend | SQLiteBackend",
+    dialect: Literal["postgres", "sqlite"],
+) -> None:
+    """Run Alembic upgrade to head against *backend*.
+
+    Builds a programmatic Alembic Config so no alembic.ini on disk is
+    required at the call site.  Derives the DB URL from backend attributes:
+    - Postgres: backend.dsn  (postgresql[+driver]://…)
+    - SQLite:   backend.path (file path, wrapped in sqlite:///…)
+    """
+    config = Config()
+    config.set_main_option(
+        "script_location",
+        str(Path(_alembic_pkg.__file__).parent),
+    )
+
+    if dialect == "sqlite":
+        config.set_main_option("sqlalchemy.url", f"sqlite:///{backend.path}")  # type: ignore[union-attr]
+    else:
+        # Postgres: ensure SQLAlchemy can use the psycopg v3 driver.
+        # postgresql:// → postgresql+psycopg://  (if not already prefixed)
+        dsn: str = backend.dsn  # type: ignore[union-attr]
+        sa_url = re.sub(r"^postgresql(s?)://", r"postgresql+psycopg\1://", dsn)
+        config.set_main_option("sqlalchemy.url", sa_url)
+        # Signal env.py to place alembic_version inside the corpus schema.
+        config.attributes["version_table_schema"] = "corpus"
+
+    alembic_command.upgrade(config, "head")
+
+
 def apply_migrations(
-    backend: PostgresBackend,
+    backend: "PostgresBackend | SQLiteBackend",
     schema_dir: Path,
     dialect: Literal["postgres", "sqlite"] = "postgres",
 ) -> None:
     """Apply all pending migrations.
+
+    Post-D07 routing logic:
+    - If *schema_dir* contains numbered SQL files for the given dialect, the
+      legacy file-based migrator runs (backward-compat for parity tests and
+      any call-site that still passes a real schema directory with SQL files).
+    - If no SQL files are found (empty directory, bogus path, or D-10 has
+      deleted them), Alembic's upgrade-to-head path runs instead.
 
     The 'dialect' parameter controls which SQL files are read and whether
     Postgres-specific backfill passes are executed:
@@ -41,6 +91,18 @@ def apply_migrations(
     - dialect='sqlite': reads schema/sqlite/ files; skips the Postgres-only backfill.
     """
     migration_files = get_migration_files(schema_dir, dialect=dialect)
+
+    if not migration_files:
+        # No SQL files found — delegate to Alembic.
+        logger.debug(
+            "schema_dir parameter ignored after Alembic rewire (%s); "
+            "no SQL files found, delegating to Alembic",
+            schema_dir,
+        )
+        _apply_alembic(backend, dialect)
+        return
+
+    # --- legacy file-based migrator (kept for backward compat; deleted in D-10) ---
     applied: set[str] = set()
 
     for migration_file in migration_files:

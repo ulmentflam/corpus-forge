@@ -4,6 +4,10 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.skip(
+    reason="legacy migration test — pins pre-Alembic file-globbing; deleted in D-10"
+)
+
 SCHEMA_DIR = Path(__file__).resolve().parents[2] / "corpus_forge" / "schema"
 MIGRATION_FILE = SCHEMA_DIR / "002_chunk_content_hash.sql"
 

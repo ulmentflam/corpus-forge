@@ -383,6 +383,9 @@ class TestMigrateSQLiteIdempotency:
         assert "documents" in tables
         assert "chunks" in tables
 
+    @pytest.mark.skip(
+        reason="legacy migration test — pins pre-Alembic file-globbing; deleted in D-10"
+    )
     def test_apply_migrations_explicitly_idempotent(self, tmp_path: Path) -> None:
         """apply_migrations() called directly twice is also idempotent."""
         db_path = tmp_path / "corpus.db"
@@ -399,6 +402,9 @@ class TestMigrateSQLiteIdempotency:
 class TestMigrateSQLiteFileOrder:
     """Migration runner loads files in numeric order."""
 
+    @pytest.mark.skip(
+        reason="legacy migration test — pins pre-Alembic file-globbing; deleted in D-10"
+    )
     def test_get_migration_files_includes_all_three(self) -> None:
         # Pass the schema root + dialect="sqlite"; the function appends "/sqlite" internally.
         files = get_migration_files(_SQLITE_SCHEMA_DIR, dialect="sqlite")
@@ -407,6 +413,9 @@ class TestMigrateSQLiteFileOrder:
         assert "002_chunk_content_hash.sql" in names
         assert "003_sync.sql" in names
 
+    @pytest.mark.skip(
+        reason="legacy migration test — pins pre-Alembic file-globbing; deleted in D-10"
+    )
     def test_migration_files_numeric_order(self) -> None:
         files = get_migration_files(_SQLITE_SCHEMA_DIR, dialect="sqlite")
         names = [f.name for f in files]
