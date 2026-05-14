@@ -2469,3 +2469,33 @@ Follow-up items for Phase F:
 - The `corpus-forge migrate history` no-DB defect from Phase D still open (deferred D-08 bug: `ArgumentError: Expected string or URL object, got None` when no DATABASE_URL is set; fix is to pass `indicate_current=False` by default or gate on env var presence).
 - E-02's `_LexicalRetriever` stub is hand-rolled in-test with no dense search. If Phase F adds search-result enrichment (re-ranking, hybrid dense+sparse), refactor to use real retriever and add an embedder fixture.
 - The `BackendConfig` pydantic `schema` field shadow warning (`UserWarning: Field name "schema" in "BackendConfig" shadows an attribute in parent "BaseModel"`) is pre-existing and benign but worth addressing in a Phase F cleanup pass.
+
+---
+
+# Phase F — MCP write surface: annotations, chats, feedback + read-side enrichment
+
+_Source plan: `/Users/evanowen/.claude/plans/let-s-begin-a-new-jiggly-salamander.md` § Phase F._
+
+The big one. Four halves shipped together:
+1. **Annotation writes** — labels, descriptions, metadata via MCP.
+2. **Chat / message writes** — `append_conversation` + `append_message` make the live chat a first-class data source.
+3. **Explicit feedback writes** — dedicated `add_feedback` tool (ratings, kinds, free text) — captures user-meaningful judgments distinct from the recoverability-oriented audit log.
+4. **Read-side enrichment** — `search` and `get_chunk` responses gain `labels`, `description`, `recent_feedback` (last 5). Closes the self-distillation loop — the model sees prior feedback on the *next* query.
+
+Single-operator model. Every write logged to `corpus.mcp_audit` with host + client + session id + before/after.
+
+## Phase F tasks
+
+| id | title | depends_on | surface | risk | status | claimed_by | notes |
+|----|-------|------------|---------|------|--------|------------|-------|
+| F-01 | Alembic revision 0006_writes_and_feedback | — | `corpus_forge/alembic/versions/0006_writes_and_feedback.py`, `tests/integration/test_alembic_0006_writes_and_feedback.py` | med | pending | — | Wave 0; ALTER documents/conversations/chunks ADD COLUMN description TEXT; CREATE TABLE mcp_audit (id BIGSERIAL, ts, host, client, session_id, tool, entity_type, entity_id, before JSONB, after JSONB, dry_run); CREATE TABLE feedback (id BIGSERIAL, ts, host, client, session_id, entity_type, entity_id, kind, rating INT, text, metadata JSONB); plus indexes. PG + SQLite. Test: upgrade clean, columns/tables exist with right types. |
+| F-02 | Backend write helpers (postgres.py + sqlite.py) | F-01 | `corpus_forge/backends/postgres.py`, `corpus_forge/backends/sqlite.py`, `tests/unit/test_backend_write_helpers.py` | high | pending | — | Wave 1; apply_label/revoke_label/patch_metadata/set_description/append_conversation/append_message/add_feedback/audit_event/hydrate_hit_metadata (label+desc+feedback bulk-load for hit enrichment, no N+1). Both backends. Unit-tested in-process. |
+| F-03 | MCP write tools dispatch + server registration | F-02 | `corpus_forge/mcp/writes.py`, `corpus_forge/mcp/server.py`, `tests/unit/test_mcp_writes_dispatch.py`, `tests/smoke/test_mcp_writes_disabled_by_default.py` | high | pending | — | Wave 2; writes.py = 8-tool dispatch module mirroring read-dispatch pattern; server.py extends build_server with `writes_enabled: bool` flag (default `False`); tools omitted from `tools/list` when disabled. `dry_run` param on each write tool, default `false`. All writes stamp `source='user'` for labels. |
+| F-04 | Read-side enrichment (search + get_chunk responses) | F-02 | `corpus_forge/mcp/server.py`, `corpus_forge/retrieval/hybrid.py`, `tests/integration/test_mcp_read_enrichment.py` | med | pending | — | Wave 3; modify existing `search`/`get_chunk` response builders to call `hydrate_hit_metadata(hits)` once (no N+1) and return `labels`, `description`, `recent_feedback`. Optional toggles `include_labels`/`include_description`/`include_feedback` default `true`. Parent-entity rollup: chunk hits carry their document/conversation enrichment too. |
+| F-05 | End-to-end integration smoke | F-03, F-04 | `tests/integration/test_mcp_writes_postgres.py`, `tests/integration/test_append_conversation_e2e.py`, update `tests/smoke/test_skill_tool_contract.py` | med | pending | — | Wave 4; testcontainers PG; client A appends a conversation, adds labels + description + feedback; client B searches and gets the new content with enrichment fields populated. Skill-contract test extended to cover the new 8 write tool names. |
+| F-06 | tdd-qa clean-room re-run + close-out summary | F-05 | `.planning/tdd/tasks.md` | low | pending | — | Wave 5; principal bookkeeping. |
+
+## Phase F commit prefix
+
+`[<role>] phase-f/<task-id>: <slice>`.
+
