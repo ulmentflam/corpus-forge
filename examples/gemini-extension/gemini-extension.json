@@ -1,0 +1,15 @@
+{
+  "name": "corpus-forge-search",
+  "version": "0.1.0",
+  "description": "Search a corpus-forge training corpus via its MCP server. Use when the user asks a question that should be grounded in indexed content (codebases, docs, conversations) rather than answered from model knowledge.",
+  "mcpServers": {
+    "corpus-forge": {
+      "command": "corpus-forge",
+      "args": ["mcp", "serve"],
+      "env": {
+        "CORPUS_FORGE_CONFIG": "~/.config/corpus-forge/config.toml"
+      }
+    }
+  },
+  "contextFileName": "GEMINI.md"
+}
