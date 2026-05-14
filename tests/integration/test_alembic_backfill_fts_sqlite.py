@@ -57,20 +57,31 @@ _ALEMBIC_INI = _REPO_ROOT / "alembic.ini"
 # ---------------------------------------------------------------------------
 
 _CHUNK_TEXTS: list[str] = [
-    "The quick brown fox jumps over the lazy dog.",  # unique: "jumps"
-    "Sphinx of black quartz, judge my vow.",  # unique: "sphinx"
-    "How vexingly quick daft zebras jump!",  # unique: "vexingly"
-    "Pack my box with five dozen liquor jugs.",  # unique: "liquor"
-    "Jackdaws love my big sphinx of quartz.",  # unique: "jackdaws"
+    # unique: "jackdaws" — porter stem "jackdaw"; no other chunk contains this word
+    "The quick brown fox leaps over jackdaws and lazy dogs in the evening light.",
+    # unique: "judge" — porter stem "judg"; no other chunk contains judg* variants
+    "Sphinx of black quartz, judge my vow.",
+    # unique: "vexingly" — porter stem "vexingli"; no other chunk contains vexing* variants
+    "How vexingly quick daft zebras jump!",
+    # unique: "liquor" — porter stem "liquor"; no other chunk contains liquor* variants
+    "Pack my box with five dozen liquor jugs.",
+    # unique: "lazily" — porter stem "lazili"; no other chunk contains lazili* variants
+    "The five boxing wizards jump lazily over the quiet dog.",
 ]
 
 # Words guaranteed to be unique within _CHUNK_TEXTS (one per chunk, for MATCH queries).
+# Porter-stem uniqueness verified per chunk:
+#   [0] "jackdaws" → stem "jackdaw"  — only in chunk 0
+#   [1] "judge"    → stem "judg"     — only in chunk 1
+#   [2] "vexingly" → stem "vexingli" — only in chunk 2
+#   [3] "liquor"   → stem "liquor"   — only in chunk 3
+#   [4] "lazily"   → stem "lazili"   — only in chunk 4
 _UNIQUE_WORDS: list[str] = [
-    "jumps",
+    "jackdaws",
     "judge",
     "vexingly",
     "liquor",
-    "jackdaws",
+    "lazily",
 ]
 
 # ---------------------------------------------------------------------------
@@ -213,7 +224,7 @@ def test_preexisting_chunks_searchable_after_backfill(tmp_path: Path) -> None:
     chunk0_id, _chunk0_text = chunk_rows[0]
     chunk2_id, _chunk2_text = chunk_rows[2]
 
-    word0 = _UNIQUE_WORDS[0]  # "jumps" — unique to chunk 0
+    word0 = _UNIQUE_WORDS[0]  # "jackdaws" — unique to chunk 0
     word2 = _UNIQUE_WORDS[2]  # "vexingly" — unique to chunk 2
 
     hits0 = _fts_match_rowids(db_path, word0)
