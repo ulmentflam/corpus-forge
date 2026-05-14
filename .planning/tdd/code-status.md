@@ -47,6 +47,7 @@ Record of implementations written by tdd-coder.
 | phase-h/H-01 | green | 7/7 targeted tests pass (4 integration 0008 + 3 apply_migrations); 4/4 chain tests pass (head=0008_feedback_sessions). Unit suite: 1912 passed, 3 skipped, 1 xfailed, 0 failed. Integration suite: 365 passed, 0 failed. All 4 gates clean. |
 | phase-h/H-02 | green | 24/24 target tests pass (19 previously red + 5 previously green). Unit suite: 1915 passed, 3 skipped, 1 xfailed, 0 failed. Coverage: 85.10%. All 4 gates clean. |
 | phase-h/H-03 | green | 11/11 target tests pass. Full suite: 1862 passed, 2 skipped, 1 xfailed, 1 pre-existing alembic failure (was red before H-03; unrelated). All 4 gates clean. |
+| phase-h/H-04 | green | 17/17 target tests pass (8 unit export + 6 CLI + 3 integration). Full suite: 2351 passed, 3 skipped, 1 xfailed, 2 pre-existing failures (alembic version table tests, unrelated). All 4 gates clean. |
 
 ## phase-h/H-02
 - Source files:
@@ -84,6 +85,23 @@ Record of implementations written by tdd-coder.
 - Test files modified: NONE (verified)
 - Diff scope: within surface — yes. Extra touch: `_parse_ts()` in claude_code.py fixes a pre-existing bug (ISO string stored instead of float Unix timestamp) required for the integration test to pass ingest_one.
 - wiring note: `source` not passed from test to `ingest_one`; client derived from `source_uri` scheme via `_client_from_source_uri()` as fallback (e.g. "claude-code://" → "claude-code"). `_session_link_client` class attr on ClaudeCodeSource used when source object is available.
+- Status: green — handed off to tdd-qa
+
+## phase-h/H-04
+- Source files:
+  - `corpus_forge/backends/sqlite.py` (4 new methods: list_feedback_events_for_dataset, get_audit_event, get_feedback, get_conversation_messages_up_to_ts)
+  - `corpus_forge/backends/postgres.py` (same 4 helpers, using %s placeholders and corpus. schema prefix)
+  - `corpus_forge/export.py` (export_feedback_pairs function)
+  - `corpus_forge/cli.py` (export feedback-pairs subcommand)
+- Gates:
+  - format: ✓ (`ruff format` — cli.py reformatted, 3 others unchanged)
+  - lint: ✓ (`ruff check` — All checks passed after fixing SIM105: try/except/pass → contextlib.suppress)
+  - typecheck: ✓ (`pyrefly check` — 0 errors, 10 suppressed, 28 warnings not shown)
+  - test: ✓ (17/17 H-04 tests; full suite: 2351 passed, 3 skipped, 1 xfailed, 2 pre-existing failures unrelated to H-04)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes
+- Tie-break note: when an event has both audit_id and feedback_id, kind="feedback" is chosen (user-facing judgment takes precedence over audit diff). The code checks feedback_id first; audit branch only fires if kind is still None.
+- Backend join note: list_feedback_events_for_dataset uses a 3-table JOIN (feedback_events ⋈ feedback_sessions ⋈ conversations) with WHERE c.dataset_id = ? AND fs.conversation_id IS NOT NULL — the IS NOT NULL guard on the JOIN column makes the INNER JOIN to conversations already enforce it, but is kept explicit for clarity. get_audit_event deserialises before/after JSON text columns in SQLite.
 - Status: green — handed off to tdd-qa
 
 ## phase-g/G-03
