@@ -216,6 +216,8 @@ class TestSchemaTablePresence:
             # F-01 (0006_writes_and_feedback) adds these two append-only log tables.
             "mcp_audit",
             "feedback",
+            # G-01 (0007_chat_templates) adds the chat_templates table.
+            "chat_templates",
         ]
     )
 
