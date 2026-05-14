@@ -1962,3 +1962,38 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
     The harness uses `python -m corpus_forge.cli` as the invocation to avoid this. The coder should
     install the `[mcp]` extra (`uv pip install 'corpus-forge[mcp]'`) to make the tests GREEN.
   - Wave gate: ruff format + ruff check both clean on the new test file.
+
+## E-01
+- Test files: `tests/smoke/test_satellite_deployment_doc.py`
+- Run command: `.venv/bin/python -m pytest tests/smoke/test_satellite_deployment_doc.py -v`
+- Edge case checklist:
+  - [x] happy — `test_doc_exists` confirms file presence
+  - [x] boundaries — N/A (doc existence / substring checks; no numeric boundaries)
+  - [x] type / format — regex uses `re.MULTILINE` + `re.escape` to handle special chars in heading names
+  - [x] state — N/A (read-only doc; idempotency trivially satisfied)
+  - [ ] N/A — concurrency (pure filesystem read, no shared state)
+  - [x] failure paths — missing doc surfaces as clear `AssertionError` in `test_doc_exists`; subsequent read-based tests surface as `FileNotFoundError` with explicit path in message
+  - [ ] N/A — locale/time (markdown doc, no time/locale sensitivity)
+  - [ ] N/A — production-realistic data (doc is the artifact, not a data shape)
+  - [ ] N/A — regression hooks (no referenced bug; new surface)
+- Red output (tail):
+  ```
+  FAILED tests/smoke/test_satellite_deployment_doc.py::test_doc_exists - AssertionError: missing .../docs/deployment-satellite.md
+  FAILED tests/smoke/test_satellite_deployment_doc.py::test_doc_references_host_id_path - FileNotFoundError: [Errno 2] No such file or directory: '.../docs/deployment-satellite.md'
+  FAILED tests/smoke/test_satellite_deployment_doc.py::test_doc_references_sync_status_command - FileNotFoundError
+  FAILED tests/smoke/test_satellite_deployment_doc.py::test_doc_has_required_h2_sections - FileNotFoundError
+  FAILED tests/smoke/test_satellite_deployment_doc.py::test_doc_references_migrate_command - FileNotFoundError
+  5 failed in 0.15s
+  ```
+- Status: red — handed off to tdd-coder
+- Notes:
+  - Surprise from `test_claude_integration_doc.py`: it does NOT use `pytestmark = pytest.mark.smoke`
+    (it lives under `tests/unit/` and carries no mark). The new test correctly adds `pytestmark =
+    pytest.mark.smoke` since it lives under `tests/smoke/`.
+  - The existing pattern uses `rf"^##\s+{heading}\b"` (allowing trailing words). E-01 tightens to
+    `rf"^## {re.escape(heading)}$"` (exact line match) since the H2 headings are fixed tokens — this
+    was an intentional choice to pin heading names precisely and prevent partial matches like
+    `## Configure host_id globally`. If the coder wants to allow trailing words they can relax the
+    regex; the test comment documents the intent.
+  - Wave gate: `make format-check` clean (ruff reformatted the file before commit), `make lint`
+    clean, `make typecheck` clean (0 errors).
