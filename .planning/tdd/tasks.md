@@ -2694,3 +2694,16 @@ Close the self-distillation loop. When the user runs a Claude Code session that 
 
 `[<role>] phase-h/<task-id>: <slice>`.
 
+
+---
+
+# Phase I — OpenCode + Gemini CLI client assets
+
+Client assets only — mirror the Claude pattern. Sub-phases I1 + I2 run in parallel (disjoint files).
+
+| id | title | depends_on | surface | risk | status |
+|----|-------|------------|---------|------|--------|
+| I1-01 | OpenCode client assets | — | `examples/mcp-config/opencode-client.mcp.json`, `.opencode/agent/corpus-forge-researcher.md`, `.opencode/command/corpus-forge-search.md`, `docs/opencode-integration.md`, 5 rot-detector tests | low | pending |
+| I2-01 | Gemini CLI client assets | — | `examples/mcp-config/gemini-cli.mcp.json`, `examples/gemini-extension/GEMINI.md`, `examples/gemini-extension/.gemini-extension.json`, `docs/gemini-integration.md`, 5 rot-detector tests | low | pending |
+| I-02 | tdd-qa close-out | I1-01, I2-01 | `.planning/tdd/tasks.md` | low | pending |
+
