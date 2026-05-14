@@ -4,7 +4,7 @@ These three tests assert that after the D-07 rewire:
 - apply_migrations builds an Alembic Config from the backend's DSN (ignoring
   the schema_dir parameter entirely) and calls command.upgrade("head").
 - The corpus.alembic_version table (PG) or alembic_version table (SQLite) is
-  populated with version_num == "0005_fts" (the current head revision).
+  populated with version_num == "0006_writes_and_feedback" (the current head revision).
 - All five revisions ran: corpus.documents, corpus.chunks, corpus.document_revisions
   are present in the resulting schema.
 
@@ -68,7 +68,7 @@ def _reset_corpus_schema(dsn: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 1 — Postgres: alembic_version populated with head=0005_fts
+# Test 1 — Postgres: alembic_version populated with head=0006_writes_and_feedback
 # ---------------------------------------------------------------------------
 
 
@@ -78,7 +78,7 @@ def test_apply_migrations_creates_alembic_version_table_pg(
 ) -> None:
     """apply_migrations(backend, schema_dir=bogus_path, dialect='postgres') must:
     - Ignore schema_dir entirely (bogus path proves it).
-    - Write corpus.alembic_version with version_num == '0005_fts'.
+    - Write corpus.alembic_version with version_num == '0006_writes_and_feedback'.
 
     FAILS at RED: legacy apply_migrations reads schema_dir/*.sql and never
     touches alembic_version at all.
@@ -121,14 +121,14 @@ def test_apply_migrations_creates_alembic_version_table_pg(
 
     assert len(rows) == 1, f"Expected exactly 1 row in corpus.alembic_version, got {len(rows)}. "
     version_num = rows[0][0]
-    assert version_num == "0005_fts", (
-        f"Expected version_num='0005_fts', got {version_num!r}. "
+    assert version_num == "0006_writes_and_feedback", (
+        f"Expected version_num='0006_writes_and_feedback', got {version_num!r}. "
         "The rewired apply_migrations must call command.upgrade('head')."
     )
 
 
 # ---------------------------------------------------------------------------
-# Test 2 — SQLite: alembic_version populated with head=0005_fts
+# Test 2 — SQLite: alembic_version populated with head=0006_writes_and_feedback
 # ---------------------------------------------------------------------------
 
 
@@ -137,7 +137,7 @@ def test_apply_migrations_creates_alembic_version_table_sqlite(
 ) -> None:
     """apply_migrations(backend, schema_dir=bogus_path, dialect='sqlite') must:
     - Ignore schema_dir entirely.
-    - Write the alembic_version table with version_num == '0005_fts'.
+    - Write the alembic_version table with version_num == '0006_writes_and_feedback'.
 
     FAILS at RED: legacy apply_migrations reads schema_dir/sqlite/*.sql and
     never touches alembic_version.
@@ -171,8 +171,8 @@ def test_apply_migrations_creates_alembic_version_table_sqlite(
 
     assert len(rows) == 1, f"Expected exactly 1 row in alembic_version, got {len(rows)}."
     version_num = rows[0][0]
-    assert version_num == "0005_fts", (
-        f"Expected version_num='0005_fts', got {version_num!r}. "
+    assert version_num == "0006_writes_and_feedback", (
+        f"Expected version_num='0006_writes_and_feedback', got {version_num!r}. "
         "The rewired apply_migrations must call command.upgrade('head')."
     )
 
