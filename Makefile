@@ -45,7 +45,7 @@ typecheck: ## pyrefly strict
 test: test-unit test-integration test-fuzz test-smoke ## All four test categories
 
 test-unit: ## Fast, parallel, no Docker, coverage-gated
-	uv run pytest tests/unit -v -n auto --timeout=60 --cov=corpus_forge --cov-report=term-missing --cov-fail-under=85
+	uv run pytest tests/unit -v -n auto --timeout=60 --cov=corpus_forge --cov-report=term-missing --cov-fail-under=90
 
 test-integration: ## Requires Docker (testcontainers pgvector)
 	uv run pytest tests/integration -v
