@@ -435,3 +435,34 @@ This was uncovered because R3-08 is the FIRST test that exercises the full eval-
   - Postgres and SQLite branches both match their respective reference SQL files (minus AUTOINCREMENT on SQLite side).
 - FK ordering: CREATE TABLE document_revisions first, then ALTER documents, then ALTER sources. FK from sources.last_pulled_revision_id to document_revisions(id) is safe because the table already exists at that point.
 - Status: green — handed off to tdd-qa
+
+## phase-d/D-06
+- Source files: `corpus_forge/alembic/versions/0005_fts.py` (new)
+- Gates:
+  - format: pass (`ruff format --check corpus_forge tests` — 186 files already formatted after auto-fix on 0005_fts.py)
+  - lint: pass (`ruff check corpus_forge tests` — All checks passed)
+  - typecheck: pass (`pyrefly check corpus_forge` — 8 errors, all pre-existing optional-dep gaps: sqlite_vec, mcp, openai; no new errors from 0005_fts file; confirmed identical count to D-05 baseline)
+  - test: PARTIAL — see escalation below
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (`corpus_forge/alembic/versions/0005_fts.py` only)
+- Results:
+  - chain test: 4/4 PASS (head=0005_fts, chain 0001->0002->0003->0004->0005)
+  - backfill content_hash: 3/3 PASS (no regressions)
+  - parity SQLite head=0001_core: PASS
+  - parity SQLite head=0002_chunk_content_hash: PASS
+  - parity SQLite head=0003_views: PASS
+  - parity SQLite head=0004_sync: PASS
+  - parity SQLite head=0005_fts: PASS
+  - backfill FTS test_chunks_fts_virtual_table_exists: PASS
+  - backfill FTS test_after_insert_trigger_fires_for_new_chunks: PASS
+  - backfill FTS test_fts_total_chunk_count_after_backfill: PASS
+  - backfill FTS test_preexisting_chunks_searchable_after_backfill: FAIL (see escalation)
+  - backfill FTS test_no_delete_markers_after_rebuild_backfill: FAIL (see escalation)
+  - unit suite: 1779 passed, 16 skipped, 1 xfailed, 2 failed — pre-existing failures (TestPinnedBaseline + TestCopyReusableEmbeddings)
+- DDL drift: none. Postgres branch: ALTER TABLE + CREATE INDEX copied verbatim from schema/004_fts.sql. SQLite branch: CREATE VIRTUAL TABLE + 3 triggers (chunks_ai, chunks_ad, chunks_au) copied verbatim from schema/sqlite/004_fts.sql, followed by `INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')` backfill. IF NOT EXISTS stripped from stored sqlite_master representation by SQLite itself (not an issue). Parity passes for all 5 heads.
+- ESCALATION — Tester bug in 2/5 backfill tests:
+  The reference SQL `schema/sqlite/004_fts.sql` specifies `tokenize='porter unicode61'`. With the porter stemmer, "jumps" (chunk 0) and "jump" (chunk 3) both stem to "jump". The Tester chose "jumps" as the unique word for chunk 0 in `_UNIQUE_WORDS`, but it is NOT unique under porter stemming. Two tests fail:
+    - `test_preexisting_chunks_searchable_after_backfill`: MATCH 'jumps' returns [1, 3], expected [1]
+    - `test_no_delete_markers_after_rebuild_backfill`: COUNT for 'jumps' returns 2, expected 1
+  Using `tokenize='unicode61'` fixes the backfill tests but breaks parity. No implementation satisfies both constraints without modifying the test or the reference SQL. Principal must route to Tester: fix `_UNIQUE_WORDS[0]` to a porter-unique word (e.g., replace "jumps" with "lazily" and "The quick brown fox jumps" with a text containing "lazily"; or simply replace chunk 0 with text that avoids "jump*" entirely). Words "judge", "vexingly", "liquor", "jackdaws" are confirmed porter-unique within the 5-chunk corpus.
+- Status: partial-green (3/5 backfill tests + 5/5 SQLite parity + chain + all other tests) — ESCALATE to Principal for Tester fix on _UNIQUE_WORDS[0] / chunk 0 text
