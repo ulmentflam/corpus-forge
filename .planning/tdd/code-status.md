@@ -501,3 +501,21 @@ This was uncovered because R3-08 is the FIRST test that exercises the full eval-
   - `migrate revision -m <msg>` and `migrate history` wired via lazy imports of `alembic.command` and `_build_alembic_config`.
   - Manual smoke: `corpus-forge migrate --help` shows both subcommands (revision, history). `corpus-forge migrate history` exits 1 with ArgumentError (no sqlalchemy.url set + no DB available in dev) — expected; unit tests pass via monkeypatching alembic.command.history.
 - Status: green — handed off to tdd-qa
+
+## phase-d/D-09
+- Source files: no production code changes — `[mcp]` extra installed via `uv sync --all-extras --group dev`
+- Gates:
+  - format: pass (`ruff format` — 189 files unchanged)
+  - lint: pass (`ruff check` — All checks passed)
+  - typecheck: pass (`pyrefly` — 0 errors, 18 suppressed)
+  - test: pass (smoke: 6/6; unit: 1609 passed, 212 skipped, 1 xfailed; all 20 smoke tests passed)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (only `uv.lock` updated by `uv sync --all-extras`; no source files touched)
+- Path taken: A — installed `[mcp]` extra via `uv sync --all-extras --group dev` (which is what `make dev` already does)
+- Implementation notes:
+  - `mcp` package was not installed in the venv; `uv sync --all-extras --group dev` installs it (+ httpx-sse, anyio, starlette, uvicorn etc.) as declared in `pyproject.toml` `[project.optional-dependencies] mcp = ["mcp>=1.0,<2.0"]`.
+  - No production code changes were needed. Boot path already routes Alembic to stderr (commit 66ab179) and the MCP initialize exchange produces a single clean JSON-RPC line on stdout.
+  - The `_build_retriever_for_eval()` (which calls `backend.migrate()`) is invoked lazily on first tool dispatch — NOT during initialize — so no migration noise reaches stdout during the smoke test's initialize exchange.
+  - Fresh-DB boot: for the fresh-DB test the server runs `apply_migrations` during `backend.migrate()` on first retriever build, after the initialize response is already sent.
+  - 6/6 smoke assertions green: stdout has exactly one JSON object, no migration log markers, stderr is non-empty.
+- Status: green — handed off to tdd-qa
