@@ -2247,3 +2247,48 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   4 failed, 1 passed in 1.93s
   ```
 - Status: red — handed off to tdd-coder
+
+## phase-g/G-02
+- Test files:
+  - tests/unit/test_template_registry.py
+  - tests/unit/test_template_builtins.py
+  - tests/unit/test_template_hf.py
+  - tests/unit/test_chat_template_backend_helpers.py
+- Run command: uv run pytest tests/unit/test_template_registry.py tests/unit/test_template_builtins.py tests/unit/test_template_hf.py tests/unit/test_chat_template_backend_helpers.py -v
+- Edge case checklist:
+  - [x] happy — render dispatches to each of 6 builtins; register/list/get on backend
+  - [x] boundaries — empty message list per builtin; empty/None template name raises; list from empty table returns []
+  - [x] type/format — None chat_template from HF raises a clear error; custom_jinja overrides name; wrong template name raises KeyError/ValueError
+  - [x] state — HF cache cleared between tests (monkeypatch + _TEMPLATE_CACHE.clear()); duplicate register is idempotent
+  - [ ] N/A — concurrency (pure render functions + single-host SQLite; no shared mutable state under test)
+  - [x] failure paths — HF from_pretrained raises OSError (propagates); chat_template=None raises with model name in message; HF_HUB_OFFLINE=1 simulated
+  - [ ] N/A — locale/time (no date/locale logic in template rendering)
+  - [x] production-realistic data — fixture uses system+user+assistant three-turn shape matching HF dataset conventions
+  - [ ] N/A — regression hooks (no prior bug reference for G-02)
+- Golden string strategy: hand-rolled substring containment assertions derived from
+  each format's canonical spec (not snapshot files). Assertions check format-specific
+  control tokens (e.g. <|im_start|>, <|begin_of_text|>, ### Instruction:) rather than
+  exact full-string equality, making tests resilient to minor whitespace changes.
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_template_registry.py::TestListBuiltins::test_list_builtins_returns_six_names
+    ModuleNotFoundError: No module named 'corpus_forge.templates'
+
+  FAILED tests/unit/test_template_builtins.py::TestBuiltinContracts::test_each_builtin_has_name_jinja_render[chatml]
+    ModuleNotFoundError: No module named 'corpus_forge.templates'
+
+  FAILED tests/unit/test_template_hf.py::TestHfTemplateHappyPath::test_hf_template_calls_AutoTokenizer_from_pretrained
+    ModuleNotFoundError: No module named 'corpus_forge.templates'
+
+  FAILED tests/unit/test_chat_template_backend_helpers.py::TestRegisterChatTemplate::test_register_creates_row
+    AttributeError: 'SQLiteBackend' object has no attribute 'register_chat_template'
+
+  FAILED tests/unit/test_chat_template_backend_helpers.py::TestListChatTemplates::test_list_returns_empty_when_no_templates
+    AttributeError: 'SQLiteBackend' object has no attribute 'list_chat_templates'
+
+  FAILED tests/unit/test_chat_template_backend_helpers.py::TestGetChatTemplateByName::test_get_returns_matching_row
+    AttributeError: 'SQLiteBackend' object has no attribute 'get_chat_template_by_name'
+
+  115 failed in 0.93s
+  ```
+- Status: red — handed off to tdd-coder
