@@ -2670,3 +2670,27 @@ Phase H next: feedback-session capture + self-distillation prep. Builds on F's a
 - MCP writes auto-link to current session if `CORPUS_FORGE_SESSION_ID` env is set.
 - `export_feedback_pairs(dataset, template, out_path)` emits training rows joining feedback_sessions → conversations → messages → feedback_events.
 - `register_session(client, session_id)` MCP tool optional.
+
+---
+
+# Phase H — Feedback-session capture & self-distillation prep
+
+_Source plan: `/Users/evanowen/.claude/plans/let-s-begin-a-new-jiggly-salamander.md` § Phase H._
+
+Close the self-distillation loop. When the user runs a Claude Code session that issues MCP writes, the session itself is captured into the corpus and cross-linked to the writes/feedback it produced. Export pipeline emits `{prompt, response, after}` training rows.
+
+## Phase H tasks
+
+| id | title | depends_on | surface | risk | status | claimed_by | notes |
+|----|-------|------------|---------|------|--------|------------|-------|
+| H-01 | Alembic revision 0008_feedback_sessions | — | `corpus_forge/alembic/versions/0008_feedback_sessions.py`, `tests/integration/test_alembic_0008_feedback_sessions.py`, bump apply_migrations head pin to 0008 | low | pending | — | Wave 0; CREATE TABLE feedback_sessions(id, client, session_id, host, started_at, ended_at, conversation_id FK NULL, UNIQUE(client, session_id)) + feedback_events(id, feedback_session_id FK, audit_id FK NULL, feedback_id FK NULL, entity_type, entity_id, ts). PG + SQLite. |
+| H-02 | Writes.py session-link hook + backend helpers | H-01 | `corpus_forge/mcp/writes.py`, `corpus_forge/backends/{postgres,sqlite}.py`, `tests/unit/test_writes_session_link.py` | med | pending | — | Wave 1; on every write, if `CORPUS_FORGE_SESSION_ID` env (or ctx.session_id) is set: upsert into feedback_sessions(client=ctx.client, session_id=...) and append feedback_events(audit_id or feedback_id pointer). Add `register_session` MCP tool as optional explicit binder. Backend helpers: upsert_feedback_session, append_feedback_event. |
+| H-03 | claude_code source plugin links session | H-02 | `corpus_forge/sources/claude_code.py`, `corpus_forge/sources/_session_link.py` (new shared helper), `tests/unit/test_claude_code_session_link.py`, `tests/integration/test_claude_code_session_link_e2e.py` | med | pending | — | Wave 2; when ingesting, if a feedback_sessions row matches a discovered session file by (client, session_id), set feedback_sessions.conversation_id = conversations.id. Shared helper allows opencode/gemini variants later. |
+| H-04 | export_feedback_pairs CLI + view | H-03 | `corpus_forge/export.py` (extend), `corpus_forge/cli.py` (export feedback-pairs subcommand), `tests/unit/test_export_feedback_pairs.py`, `tests/integration/test_self_distillation_export.py` | med | pending | — | Wave 3; emits one row per audit_event with: prompt=conversation-up-to-write (templated via shared helper), response=write payload, after=entity-state-after. JSONL + Parquet. |
+| H-05 | End-to-end self-distillation smoke | H-04 | `tests/integration/test_feedback_loop_e2e.py`, extend `tests/smoke/test_skill_tool_contract.py` to 15 tools (add register_session) | low | pending | — | Wave 4; simulate a Claude Code session: set CORPUS_FORGE_SESSION_ID, append_conversation + add_label + add_feedback via MCP, ingest the synthetic session file, assert feedback_sessions.conversation_id populated, export emits training rows. |
+| H-06 | tdd-qa clean-room re-run + close-out | H-05 | `.planning/tdd/tasks.md` | low | pending | — | Wave 5; principal bookkeeping. |
+
+## Phase H commit prefix
+
+`[<role>] phase-h/<task-id>: <slice>`.
+
