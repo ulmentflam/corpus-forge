@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 3944 928" width="3944" height="928" preserveAspectRatio="xMidYMid meet" role="img" aria-label="corpus-forge — forge a HuggingFace-format training corpus from your notes and chat history">
-  <title>corpus-forge</title>
-  <desc>Forge-themed banner (dark variant): ingest sources flow into a central forge/anvil, pluggable embedders surround it, polished HuggingFace-format training corpus emerges to the right.</desc>
-  <image href="banner.png" xlink:href="banner.png" x="0" y="0" width="3944" height="928"/>
-</svg>
