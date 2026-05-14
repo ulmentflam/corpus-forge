@@ -21,6 +21,7 @@ import asyncio
 import os
 import re
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -153,8 +154,8 @@ def test_skill_tools_match_mcp_server_tools(tmp_path: Path) -> None:
     env.setdefault("TRANSFORMERS_OFFLINE", "1")
 
     server_params = StdioServerParameters(
-        command="uv",
-        args=["run", "corpus-forge", "mcp", "serve"],
+        command=sys.executable,
+        args=["-m", "corpus_forge.cli", "mcp", "serve"],
         env=env,
     )
     server_tools = set(asyncio.run(_list_server_tools(server_params)))
