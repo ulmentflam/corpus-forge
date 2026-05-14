@@ -1799,3 +1799,27 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
 - Notes:
   - The legacy migrator's sort key is `int(p.stem.split("_")[0])`, so `002_chunk_content_hash.sql` and `002_views.sql` are both in bucket 002. Within a tie bucket, Python's stable sort preserves glob (filesystem) order — not guaranteed alphabetical on macOS. The Postgres parity test stderr showed `002_views.sql` ran before `002_chunk_content_hash.sql` for the sliced-directory legacy run. The D-04 coder must ensure `002_views.sql` CREATE VIEW statements do not depend on objects introduced only in `002_chunk_content_hash.sql` (or vice versa). If they do, the legacy migrator's tie-breaking is unpredictable. This is a pre-existing risk in the legacy migrator, not a D-04 tester blocker.
   - Wave-gate: ruff format clean, ruff lint clean. pyrefly errors (sqlite_vec, mcp, openai) are pre-existing optional-dependency stubs — none introduced by D-04.
+  - Wave-gate: ruff format clean, ruff lint clean. pyrefly errors (sqlite_vec, mcp, openai) are pre-existing optional-dependency stubs — none introduced by D-04.
+
+## D-05
+- Test files: tests/integration/test_alembic_parity_postgres.py, tests/integration/test_alembic_parity_sqlite.py
+- Run command: .venv/bin/python -m pytest tests/integration/test_alembic_parity_postgres.py tests/integration/test_alembic_parity_sqlite.py -v
+- Edge case checklist:
+  - [x] happy path — head=0004_sync reaches the parity assertion once the revision file exists
+  - [x] boundaries — Postgres legacy list = 4 files (001_core + 002_chunk_content_hash + 002_views + 003_sync); SQLite list = 3 files (no 002_views.sql in sqlite/ tree)
+  - [N/A] type/format — parity tests compare schema dicts; no data-type edge cases introduced here
+  - [x] state — prior heads 0001_core, 0002_chunk_content_hash, 0003_views remain GREEN for both dialects (6 passing)
+  - [N/A] concurrency — single-connection parity test; not concurrent
+  - [x] failure paths — RED fires with canonical CommandError("Can't locate revision identified by '0004_sync'") for both dialects
+  - [N/A] locale/time — no locale/timezone-sensitive schema objects in 0004_sync scope
+  - [x] production-realistic — same Postgres testcontainers session fixture and SQLite tmp_path fixtures as prior heads
+  - [x] regression hooks — 6/8 pass (0001_core + 0002_chunk_content_hash + 0003_views, both dialects); 2/8 fail (0004_sync for both dialects)
+  - [x] SQLite dialect-gate — SQLite legacy list at head=0004_sync has no 002_views.sql (views are Postgres-only); uses 003_sync.sql from sqlite/ subdirectory
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_alembic_parity_sqlite.py::test_parity_sqlite[head=0004_sync]
+  FAILED tests/integration/test_alembic_parity_postgres.py::test_parity_postgres[head=0004_sync]
+  alembic.util.exc.CommandError: Can't locate revision identified by '0004_sync'
+  2 failed, 6 passed, 8 warnings in 3.23s
+  ```
+- Status: red — handed off to tdd-coder

@@ -55,9 +55,11 @@ _HEAD_TO_LEGACY_SQLITE: dict[str, list[str]] = {
     # Legacy SQLite schema at head=0003_views is identical to head=0002_chunk_content_hash.
     # Alembic must be a no-op for SQLite at this revision (dialect-gated body).
     "0003_views": ["001_core.sql", "002_chunk_content_hash.sql"],
-    # "0003_sync": [
-    #     "001_core.sql", "002_chunk_content_hash.sql", "003_sync.sql"
-    # ],
+    "0004_sync": [
+        "001_core.sql",
+        "002_chunk_content_hash.sql",
+        "003_sync.sql",
+    ],
     # "0004_fts": [
     #     "001_core.sql", "002_chunk_content_hash.sql", "003_sync.sql", "004_fts.sql"
     # ],
@@ -256,8 +258,8 @@ def _apply_alembic_sqlite(db_path: Path, head: str) -> None:
 
 @pytest.mark.parametrize(
     "head",
-    ["0001_core", "0002_chunk_content_hash", "0003_views"],
-    ids=["head=0001_core", "head=0002_chunk_content_hash", "head=0003_views"],
+    ["0001_core", "0002_chunk_content_hash", "0003_views", "0004_sync"],
+    ids=["head=0001_core", "head=0002_chunk_content_hash", "head=0003_views", "head=0004_sync"],
 )
 def test_parity_sqlite(head: str, tmp_path: Path) -> None:
     """Legacy apply_migrations and Alembic upgrade(head) produce identical SQLite schemas.
