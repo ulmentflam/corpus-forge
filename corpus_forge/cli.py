@@ -1,6 +1,7 @@
 """Command-line interface for corpus-forge."""
 
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
@@ -13,12 +14,48 @@ app = typer.Typer(
 )
 
 
-@app.command()
-def migrate():
-    """Apply schema migrations."""
-    from .schema.migrate import main
+migrate_app = typer.Typer(
+    help="Database migration commands.",
+    add_completion=False,
+    invoke_without_command=True,
+)
+app.add_typer(migrate_app, name="migrate")
 
-    main()
+
+@migrate_app.callback()
+def migrate_default(ctx: typer.Context) -> None:
+    """Apply schema migrations (upgrade to head)."""
+    if ctx.invoked_subcommand is None:
+        from .schema.migrate import main
+
+        main()
+
+
+@migrate_app.command("revision")
+def migrate_revision(
+    message: Annotated[
+        str,
+        typer.Option("-m", "--message", help="Revision description."),
+    ],
+) -> None:
+    """Create a new empty Alembic revision file."""
+    import alembic.command as alembic_command
+
+    from .schema.migrate import _build_alembic_config
+
+    config = _build_alembic_config()
+    alembic_command.revision(config, message=message, autogenerate=False)
+
+
+@migrate_app.command("history")
+def migrate_history() -> None:
+    """Show revision history with current head indicator."""
+    import alembic.command as alembic_command
+
+    from .schema.migrate import _build_alembic_config
+
+    config = _build_alembic_config()
+    alembic_command.history(config, verbose=False, indicate_current=True)
 
 
 @app.command()

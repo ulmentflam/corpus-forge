@@ -40,6 +40,42 @@ def get_migration_files(
     return sorted(sql_files, key=lambda p: int(p.stem.split("_")[0]))
 
 
+def _build_alembic_config(
+    backend: "PostgresBackend | SQLiteBackend | None" = None,
+    dialect: Literal["postgres", "sqlite"] = "postgres",
+) -> Config:
+    """Build a programmatic Alembic Config object.
+
+    When *backend* is provided, derives the DB URL from backend attributes:
+    - Postgres: backend.dsn  (postgresql[+driver]://…)
+    - SQLite:   backend.path (file path, wrapped in sqlite:///…)
+
+    When *backend* is None, the returned Config has no ``sqlalchemy.url``
+    set (suitable for CLI meta-operations such as ``revision`` and
+    ``history`` that read from alembic.ini / environment themselves, or
+    where the caller will set the URL separately).
+    """
+    config = Config()
+    config.set_main_option(
+        "script_location",
+        str(Path(_alembic_pkg.__file__).parent),
+    )
+
+    if backend is not None:
+        if dialect == "sqlite":
+            config.set_main_option("sqlalchemy.url", f"sqlite:///{backend.path}")  # type: ignore[union-attr]
+        else:
+            # Postgres: ensure SQLAlchemy can use the psycopg v3 driver.
+            # postgresql:// → postgresql+psycopg://  (if not already prefixed)
+            dsn: str = backend.dsn  # type: ignore[union-attr]
+            sa_url = re.sub(r"^postgresql(s?)://", r"postgresql+psycopg\1://", dsn)
+            config.set_main_option("sqlalchemy.url", sa_url)
+            # Signal env.py to place alembic_version inside the corpus schema.
+            config.attributes["version_table_schema"] = "corpus"
+
+    return config
+
+
 def _apply_alembic(
     backend: "PostgresBackend | SQLiteBackend",
     dialect: Literal["postgres", "sqlite"],
@@ -51,23 +87,7 @@ def _apply_alembic(
     - Postgres: backend.dsn  (postgresql[+driver]://…)
     - SQLite:   backend.path (file path, wrapped in sqlite:///…)
     """
-    config = Config()
-    config.set_main_option(
-        "script_location",
-        str(Path(_alembic_pkg.__file__).parent),
-    )
-
-    if dialect == "sqlite":
-        config.set_main_option("sqlalchemy.url", f"sqlite:///{backend.path}")  # type: ignore[union-attr]
-    else:
-        # Postgres: ensure SQLAlchemy can use the psycopg v3 driver.
-        # postgresql:// → postgresql+psycopg://  (if not already prefixed)
-        dsn: str = backend.dsn  # type: ignore[union-attr]
-        sa_url = re.sub(r"^postgresql(s?)://", r"postgresql+psycopg\1://", dsn)
-        config.set_main_option("sqlalchemy.url", sa_url)
-        # Signal env.py to place alembic_version inside the corpus schema.
-        config.attributes["version_table_schema"] = "corpus"
-
+    config = _build_alembic_config(backend, dialect)
     alembic_command.upgrade(config, "head")
 
 
