@@ -56,6 +56,8 @@ _WRITE_TOOL_NAMES = {
     "add_feedback",
     # G-03 write tool
     "register_template",
+    # H-02 write tool
+    "register_session",
 }
 
 _ALL_TOOL_NAMES = _READ_TOOL_NAMES | _WRITE_TOOL_NAMES
@@ -127,7 +129,7 @@ def test_default_build_server_omits_write_tools() -> None:
 
 
 def test_explicit_writes_enabled_true_exposes_writes() -> None:
-    """build_server(writes_enabled=True) exposes all 11 tools."""
+    """build_server(writes_enabled=True) exposes all 12 tools."""
     from corpus_forge.backends.sqlite import SQLiteBackend
     from corpus_forge.mcp.server import build_server
 

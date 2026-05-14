@@ -16,9 +16,9 @@ launch, same seed-corpus skip, same env-var plumbing.
 
 --- F-05 additions ---
 
-``test_server_exposes_14_tools_when_writes_enabled`` — in-process
-``build_server(writes_enabled=True)`` must advertise all 14 tools
-(5 read + 9 write).  This is a load-bearing pin that does NOT require
+``test_server_exposes_15_tools_when_writes_enabled`` — in-process
+``build_server(writes_enabled=True)`` must advertise all 15 tools
+(5 read + 10 write).  This is a load-bearing pin that does NOT require
 Docker or a seed corpus; it exercises only the server registration code.
 
 ``test_skill_tools_match_mcp_server_tools`` — relaxed in F-05 to a
@@ -51,7 +51,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client  # noqa: E402
 
 pytestmark = pytest.mark.smoke
 
-# ── Expected write tool names (F-03 / F-05 / G-03) ──────────────────────────
+# ── Expected write tool names (F-03 / F-05 / G-03 / H-02) ───────────────────
 _WRITE_TOOLS = {
     "add_label",
     "remove_label",
@@ -63,6 +63,8 @@ _WRITE_TOOLS = {
     "add_feedback",
     # G-03 write tool
     "register_template",
+    # H-02 write tool
+    "register_session",
 }
 # G-03: render_conversation + list_chat_templates are always-available read tools.
 _READ_TOOLS = {
@@ -72,7 +74,7 @@ _READ_TOOLS = {
     "render_conversation",
     "list_chat_templates",
 }
-_ALL_14_TOOLS = _READ_TOOLS | _WRITE_TOOLS
+_ALL_15_TOOLS = _READ_TOOLS | _WRITE_TOOLS
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -205,23 +207,22 @@ def _skill_allowed_tools() -> list[str]:
 # ── F-05 in-process contract test (no Docker / seed corpus needed) ────────
 
 
-def test_server_exposes_14_tools_when_writes_enabled() -> None:
-    """build_server(writes_enabled=True) must advertise all 14 tools.
+def test_server_exposes_15_tools_when_writes_enabled() -> None:
+    """build_server(writes_enabled=True) must advertise all 15 tools.
 
-    G-03 update: 5 read tools + 9 write tools = 14 total.
-    (Previously 3 read + 8 write = 11; G-03 added render_conversation,
-    list_chat_templates as read tools and register_template as a write tool.)
+    H-02 update: 5 read tools + 10 write tools = 15 total.
+    (Previously 5 read + 9 write = 14; H-02 added register_session as a write tool.)
     """
     tools = _list_in_process_server_tools(writes_enabled=True)
-    missing = _ALL_14_TOOLS - tools
-    extra = tools - _ALL_14_TOOLS
+    missing = _ALL_15_TOOLS - tools
+    extra = tools - _ALL_15_TOOLS
     assert not missing, (
         f"Server with writes_enabled=True is missing expected tools: {sorted(missing)}. "
         f"Registered tools: {sorted(tools)}"
     )
     assert not extra, (
         f"Server with writes_enabled=True registered unexpected extra tools: {sorted(extra)}. "
-        f"Expected exactly: {sorted(_ALL_14_TOOLS)}"
+        f"Expected exactly: {sorted(_ALL_15_TOOLS)}"
     )
 
 
