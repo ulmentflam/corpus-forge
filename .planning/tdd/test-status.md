@@ -2509,3 +2509,38 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   9 failed (unit), 2 collection errors (integration) in ~0.24s
   ```
 - Status: red — handed off to tdd-coder
+
+## H-04
+- Test files:
+  - `tests/unit/test_export_feedback_pairs.py` — 8 unit tests (row count, shape, prompt templating, unlinked-session skip, audit response, feedback response, custom_jinja, no-events empty)
+  - `tests/integration/test_self_distillation_export.py` — 2 integration tests (full round-trip, unlinked-session no-error)
+  - `tests/unit/test_export_feedback_pairs_cli.py` — 7 CLI tests (dispatch, format default, parquet, help args, subcommand listing, no-such-command guard, missing-args error)
+- Run command: `.venv/bin/python -m pytest tests/unit/test_export_feedback_pairs.py tests/integration/test_self_distillation_export.py tests/unit/test_export_feedback_pairs_cli.py -v --continue-on-collection-errors`
+- Edge case checklist:
+  - [x] happy — `test_export_feedback_pairs_jsonl_emits_one_row_per_event`, `test_full_round_trip_session_writes_export`
+  - [x] boundaries — `test_export_feedback_pairs_no_events_writes_empty_file` (zero events → empty file)
+  - [x] type/format — `test_export_feedback_pairs_audit_event_response_shape` / `test_export_feedback_pairs_feedback_event_response_shape` (two distinct response shapes)
+  - [x] state — `test_export_feedback_pairs_skips_unlinked_sessions` / `test_export_skips_events_when_session_not_linked` (conversation_id IS NULL → skip, no error)
+  - [ ] N/A — concurrency (sequential export, no shared state across goroutines)
+  - [x] failure paths — unlinked session silently skipped; missing subcommand → non-zero exit; AttributeError on missing function triggers collection errors
+  - [ ] N/A — locale/time (timestamps stored as ISO strings; no locale-sensitive formatting in export)
+  - [x] production-realistic — uses real SQLiteBackend in-memory + real mcp/writes.py dispatch (no mocks for data path)
+  - [x] regression hooks — pins `kind` field values to `{'audit', 'feedback'}` and response schema per kind
+- Red output (tail):
+  ```
+  ERROR tests/unit/test_export_feedback_pairs.py
+    ImportError: cannot import name 'export_feedback_pairs' from 'corpus_forge.export'
+
+  ERROR tests/integration/test_self_distillation_export.py
+    ImportError: cannot import name 'export_feedback_pairs' from 'corpus_forge.export'
+
+  FAILED tests/unit/test_export_feedback_pairs_cli.py::TestExportFeedbackPairsHelp::test_export_feedback_pairs_no_such_command_not_raised
+  FAILED tests/unit/test_export_feedback_pairs_cli.py::TestExportFeedbackPairsHelp::test_export_feedback_pairs_help_lists_args
+  FAILED tests/unit/test_export_feedback_pairs_cli.py::TestExportFeedbackPairsHelp::test_export_feedback_pairs_requires_dataset_and_out
+  FAILED tests/unit/test_export_feedback_pairs_cli.py::TestExportFeedbackPairsHelp::test_export_help_lists_feedback_pairs_subcommand
+  FAILED tests/unit/test_export_feedback_pairs_cli.py::TestExportFeedbackPairsSubcommandDispatch::test_export_feedback_pairs_format_defaults_to_jsonl
+  FAILED tests/unit/test_export_feedback_pairs_cli.py::TestExportFeedbackPairsSubcommandDispatch::test_export_feedback_pairs_subcommand_dispatches
+  FAILED tests/unit/test_export_feedback_pairs_cli.py::TestExportFeedbackPairsSubcommandDispatch::test_export_feedback_pairs_format_parquet_passed_through
+  7 failed, 2 collection errors — 9 total RED
+  ```
+- Status: red — handed off to tdd-coder
