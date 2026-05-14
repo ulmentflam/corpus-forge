@@ -61,3 +61,16 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 | R3-07   | approved | 11/11 CLI tests pass. Hand-traced the `_do_eval → _build_retriever_for_eval → evaluate_retriever` call path; verified mock targets (`corpus_forge.cli._build_retriever_for_eval`, `corpus_forge.eval.runner.evaluate_retriever`) match the import-binding sites. Friendly --rerank notice is emitted to stderr (per the err=True flag) AND captured by typer's CliRunner output buffer. Per-file ruff ignore extension (B008) scoped narrowly to cli.py and motivated by typer's idiomatic defaults. Full unit 1575 passed / 3 skipped / 1 xfailed; coverage 90.75%. **qa: approved 2026-05-13.** |
 | R3-06   | approved | 25 hand-curated queries (≥20 required); each row carries parallel `content_hashes` so drift fallback works; provenance doc pins commit / chunker / embedder for reproducible rebuild. Wheel ships the JSONL and the .corpus.md (verified by `python -m build --wheel` + zipfile inspection: `corpus_forge/eval/datasets/forge_self.{jsonl,corpus.md}` both present). Loader parses cleanly. Full unit 1582/3/1 with 7 new bundled-set tests. **qa: approved 2026-05-13.** |
 | R3-08   | approved | 1/1 smoke test green; real-corpus measured baseline NDCG@10 = 0.717, MRR@10 = 0.920, Recall@10 = 0.760 (sanity-checked by direct CLI invocation against `/tmp/corpus-forge-test.db`). Side-fix in `SQLiteBackend.search_lexical` (tokenise + OR-join sanitiser) verified by all 26 unit lexical/fts/hybrid tests + 21 integration tests still green; PostgresBackend unaffected. Full unit suite 1582 passed; smoke 11/0/0. **qa: approved 2026-05-13.** |
+
+---
+
+## Phase D — D-11 (close-out QA)
+
+- Suite: 1601 passed, 0 failed, 2 skipped, 1 xfailed (unit, 32.47s); 302 passed, 0 failed (integration, 59.27s); 15 passed (fuzz, 0.61s); 18 passed, 2 failed pre-existing (smoke, 11.74s)
+- Coverage: 88.30% on corpus_forge/ (threshold 85%) — PASS
+- Smoke (alembic-specific): `test_mcp_serve_boots_with_alembic.py` 6/6 PASS; 2 unrelated pre-existing failures in test_mcp_stdio + test_skill_tool_contract (iCloud Drive path-with-spaces subprocess issue, introduced Phase R5/CS, not Phase D)
+- Regression sweep: 302 integration tests pass including test_migrate_002/003/sqlite survivors, test_sync_tombstone, test_apply_migrations_uses_alembic; no regressions found; corpus_forge/schema/ contains only migrate.py + per_embedder.sql.tmpl (no .sql files, no sqlite/ subdir); 0 pytest.mark.skip(reason=".*deleted in D-10.*") markers; apply_migrations body is single-path Alembic-only; alembic chain: 5 revisions, single head 0005_fts; in-memory SQLite migration verified by hand (all 18 tables created); migrate --help + revision subcommand verified; history failure with no DB is known deferred D-08 bug
+- Alembic suite double-run: 25/25 run 1 (3.45s seed 1477993657), 25/25 run 2 (3.49s seed 3509799770) — no flakiness
+- Issues: none blocking; 1 known deferred defect (migrate history no-DB error); 2 pre-existing smoke failures unrelated to Phase D
+- Verdict: approved
+- Notes: Phase D milestone goal fully met — Alembic replaces hand-rolled migrate.py; all 5 revisions ported; both dialects work; public apply_migrations signature stable; parity proven across 10 verdicts before legacy deletion; stderr discipline pinned by 6 smoke tests
