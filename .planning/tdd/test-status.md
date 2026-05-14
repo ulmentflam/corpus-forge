@@ -2210,3 +2210,40 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
      messages are never indexed, so live-chat round-trip and cross-host visibility tests
      return 0 hits. Fix: insert per-message chunk rows into corpus.chunks on append, so
      the FTS index covers conversation content.
+
+## G-01
+- Test files:
+  - `tests/integration/test_alembic_0007_chat_templates.py` (new — 2 tests)
+  - `tests/integration/test_apply_migrations_uses_alembic.py` (bumped — 2 assertions)
+- Run command: `.venv/bin/python -m pytest tests/integration/test_alembic_0007_chat_templates.py tests/integration/test_apply_migrations_uses_alembic.py -v`
+- Edge case checklist:
+  - [x] happy — PG: all 8 columns + UNIQUE on name; SQLite: type conventions + datetime default
+  - [x] boundaries — nullable vs NOT NULL per column; UNIQUE constraint presence
+  - [x] type/format — bigint vs INTEGER PRIMARY KEY; timestamptz vs TEXT; corpus. prefix vs none
+  - [x] state — fresh schema reset before PG test; tmp_path isolation for SQLite
+  - [ ] N/A — concurrency (DDL migration, single-threaded)
+  - [ ] N/A — failure paths (CommandError is the intended RED failure)
+  - [ ] N/A — locale/time (migration DDL has no locale-sensitive logic)
+  - [x] regression hooks — bumped version_num assertions in test_apply_migrations_uses_alembic.py
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_alembic_0007_chat_templates.py::test_chat_templates_table_shape_pg
+  FAILED tests/integration/test_alembic_0007_chat_templates.py::test_chat_templates_table_shape_sqlite
+  FAILED tests/integration/test_apply_migrations_uses_alembic.py::test_apply_migrations_creates_alembic_version_table_pg
+  FAILED tests/integration/test_apply_migrations_uses_alembic.py::test_apply_migrations_creates_alembic_version_table_sqlite
+
+  test_chat_templates_table_shape_pg:
+    alembic.util.exc.CommandError: Can't locate revision identified by '0007_chat_templates'
+
+  test_chat_templates_table_shape_sqlite:
+    alembic.util.exc.CommandError: Can't locate revision identified by '0007_chat_templates'
+
+  test_apply_migrations_creates_alembic_version_table_pg:
+    AssertionError: Expected version_num='0007_chat_templates', got '0006_writes_and_feedback'.
+
+  test_apply_migrations_creates_alembic_version_table_sqlite:
+    AssertionError: Expected version_num='0007_chat_templates', got '0006_writes_and_feedback'.
+
+  4 failed, 1 passed in 1.93s
+  ```
+- Status: red — handed off to tdd-coder
