@@ -2731,3 +2731,15 @@ Client assets only — mirror the Claude pattern. Sub-phases I1 + I2 run in para
 - **Risk closure**: Client parity proven for OpenCode + Gemini CLI. Both clients share the same MCP serve pattern (`corpus-forge mcp serve`) and `CORPUS_FORGE_CONFIG` env wiring as the Claude Code client. 5 rot-detector tests per client pin JSON schema, frontmatter fields, doc H2 sections, and content references against future drift.
 - **Deferred**: Real-installation smoke (launching `opencode` or `gemini` CLI binaries pointing at the MCP config) is not feasible in CI — neither binary is guaranteed present. The rot-detector suite (file existence + JSON validity + content pins) provides the next-best guard. Flag for Phase J to add binary-smoke behind a `OPENCODE_BIN` / `GEMINI_CLI_BIN` env gate.
 - **Hand-off**: Phase J — additional chat-source plugins: `gemini_cli` source, `codex_cli` source, `chatgpt_export` source, `jsonl_chat` source.
+
+---
+
+# Phase J — Additional chat-source plugins
+
+Final milestone phase. Round out ingest with 4 new chat-source plugins:
+
+| id | title | depends_on | surface | risk | status |
+|----|-------|------------|---------|------|--------|
+| J-01 | gemini_cli + codex_cli + chatgpt_export + jsonl_chat source plugins | — | `corpus_forge/sources/{gemini_cli,codex_cli,chatgpt_export,jsonl_chat}.py` + 4 unit test files | med | pending |
+| J-02 | tdd-qa close-out | J-01 | `.planning/tdd/tasks.md` | low | pending |
+
