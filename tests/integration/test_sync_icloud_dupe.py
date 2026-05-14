@@ -312,12 +312,19 @@ class TestICloudDupeDiffHashRenamed:
                 "Foo 2.md still exists — rename did not happen."
             )
 
-            # 5. Two documents rows: Foo.md and the conflict file
+            # 5. Two documents rows: Foo.md and the conflict file.
+            # The conflict file was just created on disk (step 3); the daemon
+            # needs a debounce cycle + ingest pass to surface it in the DB.
+            # Wait up to 15s for the second document to appear.
             expected_doc_count = 2
+            ingested_conflict = _wait_for(
+                lambda: _doc_count(pg_dsn, _DATASET_NAME + "-diff") >= expected_doc_count,
+                timeout=15,
+            )
             final_doc_count = _doc_count(pg_dsn, _DATASET_NAME + "-diff")
-            assert final_doc_count == expected_doc_count, (
+            assert ingested_conflict and final_doc_count == expected_doc_count, (
                 f"Expected {expected_doc_count} document rows (Foo.md + conflict file) "
-                f"but found {final_doc_count}."
+                f"but found {final_doc_count} after waiting for ingest."
             )
 
         finally:
