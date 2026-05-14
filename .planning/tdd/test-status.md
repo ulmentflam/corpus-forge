@@ -1894,3 +1894,35 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   - Hidden call-site: SQLiteBackend.migrate() calls _migrate_module.apply_migrations(self, schema_dir=..., dialect="sqlite"). After D-07 rewire, schema_dir will be ignored — no call-site breakage expected.
   - Wave gate: ruff format + ruff check both clean after auto-fix pass.
   - Survey: 8 WILL-FAIL, 3 PROBABLY-OK, 2 AMBIGUOUS (see d07-legacy-test-survey.md for method-level detail).
+
+## D-08 — CLI subcommands `migrate revision` + `migrate history`
+- Test files: `tests/unit/test_cli_migrate.py`
+- Run command: `.venv/bin/python -m pytest tests/unit/test_cli_migrate.py -v`
+- Edge case checklist:
+  - [x] happy path — `migrate revision -m "msg"` exits 0 and calls `alembic.command.revision` with correct args
+  - [x] boundaries — `migrate revision` without `-m` fails non-zero with helpful error
+  - [x] type/format — N/A (thin CLI wrappers; no type coercion beyond string flags)
+  - [x] state — N/A (pure dispatch; idempotency is Alembic's concern)
+  - [ ] N/A — concurrency (single-threaded CLI dispatch)
+  - [x] failure paths — missing required `-m` arg surfaces a user-readable error
+  - [ ] N/A — locale/time (no locale/time dependencies)
+  - [x] production-realistic — `migrate history` tested with `indicate_current=True` matching actual Alembic default
+  - [x] regression hooks — `migrate --help` lists both subcommands; guards against accidental de-registration
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_cli_migrate.py::test_migrate_subcommand_help_lists_revision_and_history
+  FAILED tests/unit/test_cli_migrate.py::test_migrate_history_prints_revision_list
+  FAILED tests/unit/test_cli_migrate.py::test_migrate_revision_emits_a_file_into_versions_dir
+  FAILED tests/unit/test_cli_migrate.py::test_migrate_revision_requires_message_arg
+  4 failed in 0.22s
+  ```
+  All 4 fail with AssertionError — "Got unexpected extra argument (revision/history)" or
+  "'revision'/'history' not in help output" — NOT ImportError.
+- Status: red — handed off to tdd-coder
+- Notes:
+  - Surprise: `migrate` is a plain `@app.command()` with no subcommand group. The coder must
+    either (a) convert it to a `typer.Typer` sub-app and add `revision`/`history` commands, or
+    (b) use `@app.command("migrate")` with a `subcommand` argument — option (a) is cleaner.
+  - The existing `corpus-forge migrate` (upgrade to head) must keep working — the coder needs
+    to preserve a default-subcommand or bare-`migrate` path after the group conversion.
+  - Wave gate: ruff format + ruff check both clean.
