@@ -1926,3 +1926,39 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   - The existing `corpus-forge migrate` (upgrade to head) must keep working — the coder needs
     to preserve a default-subcommand or bare-`migrate` path after the group conversion.
   - Wave gate: ruff format + ruff check both clean.
+
+## D-09
+- Test files: `tests/smoke/test_mcp_serve_boots_with_alembic.py`
+- Run command: `.venv/bin/python -m pytest tests/smoke/test_mcp_serve_boots_with_alembic.py -v`
+- Edge case checklist:
+  - [x] happy path — pre-migrated DB, send initialize, get JSON-RPC response
+  - [x] boundaries — fresh (un-migrated) DB forces Alembic run during boot
+  - [x] type/format — assert every stdout line is a valid JSON object (starts with `{`)
+  - [x] state — pre-migrated vs fresh DB (two fixture classes)
+  - [ ] N/A — concurrency (single-process stdio server)
+  - [x] failure paths — subprocess crash emits traceback to stderr (non-empty), not stdout
+  - [ ] N/A — locale/time (JSON-RPC wire protocol only)
+  - [x] production-realistic data — uses the real MCP initialize JSON-RPC wire format (protocol 2024-11-05)
+  - [x] regression hooks — stdout-purity pin from commit 66ab179 (no "Applying migration:" noise on stdout)
+- Red output (tail):
+  ```
+  FAILED tests/smoke/test_mcp_serve_boots_with_alembic.py::TestMcpServeBootsWithPreMigratedDb::test_mcp_serve_stdout_has_no_pre_init_noise
+  FAILED tests/smoke/test_mcp_serve_boots_with_alembic.py::TestMcpServeBootsWithPreMigratedDb::test_mcp_serve_boots_with_alembicd_db_responds_to_initialize
+  FAILED tests/smoke/test_mcp_serve_boots_with_alembic.py::TestMcpServeBootsWithFreshDb::test_fresh_db_boot_responds_to_initialize
+  3 failed, 3 passed in 1.09s
+  ```
+- Exact RED reason: `ModuleNotFoundError: No module named 'mcp'` — the `mcp` optional
+  extra is not installed in this environment. The server crashes before producing any
+  stdout JSON-RPC output. The 3 stderr/noise tests pass because stderr is non-empty
+  (contains the traceback) and stdout has no non-JSON content.
+- Status: red — handed off to tdd-coder
+- Notes:
+  - Surprise from reading `test_mcp_stdio.py`: it uses `mcp.client.stdio.StdioServerParameters`
+    and `uv run corpus-forge mcp serve` via an async `stdio_client` session (the MCP SDK's
+    high-level client). D-09 deliberately uses raw `subprocess.Popen` + manual JSON-RPC framing
+    to stay SDK-independent and to capture raw stdout/stderr bytes (the SDK would swallow stderr).
+  - iCloud Drive sync corruption note: `.venv/bin/corpus-forge` entry-point script is broken in
+    this environment (`ModuleNotFoundError` even though `python -m corpus_forge.cli` works fine).
+    The harness uses `python -m corpus_forge.cli` as the invocation to avoid this. The coder should
+    install the `[mcp]` extra (`uv pip install 'corpus-forge[mcp]'`) to make the tests GREEN.
+  - Wave gate: ruff format + ruff check both clean on the new test file.
