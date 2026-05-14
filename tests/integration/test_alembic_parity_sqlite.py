@@ -50,9 +50,7 @@ _SCHEMA_SQLITE_DIR = _SCHEMA_DIR / "sqlite"
 
 _HEAD_TO_LEGACY_SQLITE: dict[str, list[str]] = {
     "0001_core": ["001_core.sql"],
-    # "0002_chunk_content_hash": [
-    #     "001_core.sql", "002_chunk_content_hash.sql"
-    # ],
+    "0002_chunk_content_hash": ["001_core.sql", "002_chunk_content_hash.sql"],
     # "0003_sync": [
     #     "001_core.sql", "002_chunk_content_hash.sql", "003_sync.sql"
     # ],
@@ -252,7 +250,11 @@ def _apply_alembic_sqlite(db_path: Path, head: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("head", ["0001_core"], ids=["head=0001_core"])
+@pytest.mark.parametrize(
+    "head",
+    ["0001_core", "0002_chunk_content_hash"],
+    ids=["head=0001_core", "head=0002_chunk_content_hash"],
+)
 def test_parity_sqlite(head: str, tmp_path: Path) -> None:
     """Legacy apply_migrations and Alembic upgrade(head) produce identical SQLite schemas.
 

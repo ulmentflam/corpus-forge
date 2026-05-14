@@ -41,6 +41,7 @@ Record of test suites written by tdd-tester.
 | B-02    | red    | 130 tests written across 4 files; 26 failed, 92 errors (fixture errors from missing SQL files), 12 passed. Red for correct reasons: SQL files don't exist; migrate.py lacks dialect param. |
 | B-03-fix | green | Narrowed `test_no_postgres_backfill_sql_executed` assertion (Option 1: strip `--` comments). 29/29 tests pass. |
 | B-04    | red    | 18 tests written for register_embedder; all failing with AttributeError (method not yet implemented). 848 existing tests still pass. |
+| D-03    | red    | backfill test (3 tests) + parity ext to 0002_chunk_content_hash — all fail CommandError; 0001_core parity GREEN. |
 
 ## Phase B — SQLite Backend
 
@@ -1736,4 +1737,37 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   alembic.util.exc.CommandError: Can't locate revision identified by '0001_core'
   ======================== 2 failed, 2 warnings in 2.36s =========================
   ```
+- Status: red — handed off to tdd-coder
+
+## D-03 — Revision 0002_chunk_content_hash + backfill
+- Test files:
+  - `tests/integration/test_alembic_backfill_content_hash.py` (3 new tests)
+  - `tests/integration/test_alembic_parity_postgres.py` (extended: added head=0002_chunk_content_hash)
+  - `tests/integration/test_alembic_parity_sqlite.py` (extended: added head=0002_chunk_content_hash)
+- Run command: `.venv/bin/python -m pytest tests/integration/test_alembic_backfill_content_hash.py tests/integration/test_alembic_parity_postgres.py tests/integration/test_alembic_parity_sqlite.py -v`
+- Edge case checklist:
+  - [x] happy path — backfill populates content_hash for all 5 chunks; column exists; index exists
+  - [x] boundaries — 5 distinct texts (pangrams, realistic prose); idempotency of WHERE content_hash IS NULL guard
+  - [x] type/format — SHA-256 hex encoding verified Python-side with hashlib; matches Postgres encode(sha256(text::bytea),'hex')
+  - [x] state — upgrade to 0001_core first, insert data, then upgrade to 0002; two-step migration sequence exercised
+  - [N/A] concurrency — single-connection test; no concurrent writers
+  - [x] failure paths — column-absent sanity check at 0001_core confirms test would catch wrong schema state
+  - [N/A] locale/time — content_hash is a deterministic hex string; no locale/timezone dependency
+  - [x] production-realistic — FK chain: datasets → documents → chunks using raw SQL matching 001_core.sql structure; 5 pangram texts with distinct SHA-256 values
+  - [x] regression hooks — head=0001_core parity tests stay GREEN; revision chain test stays 4/4 GREEN
+  - [N/A] SQLite backfill — out of scope per task brief (data migration is Postgres-only)
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_alembic_backfill_content_hash.py::test_backfill_populates_content_hash
+  FAILED tests/integration/test_alembic_backfill_content_hash.py::test_chunks_content_hash_idx_exists
+  FAILED tests/integration/test_alembic_backfill_content_hash.py::test_backfill_null_text_handled
+  FAILED tests/integration/test_alembic_parity_sqlite.py::test_parity_sqlite[head=0002_chunk_content_hash]
+  FAILED tests/integration/test_alembic_parity_postgres.py::test_parity_postgres[head=0002_chunk_content_hash]
+  alembic.util.exc.CommandError: Can't locate revision identified by '0002_chunk_content_hash'
+  2 passed (head=0001_core PG + SQLite), 4 warnings in ~7s total
+  ```
+- Notes:
+  - FK chain: datasets (no FK) -> documents (dataset_id FK) -> chunks (document_id FK). The chunks CHECK constraint requires exactly one of document_id/conversation_id non-null; tests use document_id path.
+  - The postgres_container fixture is session-scoped; each test calls _reset_schema() to drop/recreate the corpus schema, giving full isolation without spawning extra containers.
+  - Legacy SQL file 002_chunk_content_hash.sql does not yet exist; the parity test _apply_legacy call at head=0002 will also fail (FileNotFoundError from shutil copy), but the Alembic CommandError fires first since Alembic runs second in the parity flow. Acceptable RED.
 - Status: red — handed off to tdd-coder
