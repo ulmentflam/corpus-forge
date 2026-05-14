@@ -1715,3 +1715,25 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   ========================= 3 failed, 1 passed in 0.17s ==========================
   ```
 - Status: red — handed off to tdd-coder
+
+## D-02
+- Test files: `tests/integration/test_alembic_parity_postgres.py`, `tests/integration/test_alembic_parity_sqlite.py`
+- Run command: `uv run python -m pytest tests/integration/test_alembic_parity_postgres.py tests/integration/test_alembic_parity_sqlite.py -v`
+- Edge case checklist:
+  - [x] happy path — sequential legacy + Alembic apply; normalized dump comparison asserts structural equality on tables/columns/constraints/indexes
+  - [x] boundaries — both migrators applied to fresh schemas; alembic_version stripped on Alembic side; nextval() defaults normalized; empty strip_tables=frozenset() on legacy side so all tables are captured
+  - [x] type/format — schema name stripped from qualified identifiers; index defs stripped of schema prefix; constraint names normalized; SQL keywords lowercased and whitespace collapsed (SQLite side)
+  - [x] state — schema dropped+recreated between legacy and Alembic passes (Postgres); tmp_path isolation per parametrize value (SQLite); apply_migrations called after backend.migrate() for idempotency check
+  - [ ] N/A — concurrency (sequential migrators, no shared mutable state across passes)
+  - [x] failure paths — no revision file → CommandError from Alembic; testcontainers unavailable → skipif guard on PG test; corpus schema pre-created before Alembic so failure mode is canonical CommandError not ProgrammingError
+  - [ ] N/A — locale/time (schema introspection only, no date logic)
+  - [x] production-realistic — uses real postgres_container fixture from conftest (session-scoped); real SQLiteBackend.migrate() path; sqlite_master + information_schema + pg_indexes queries match prod introspection patterns
+  - [x] regression hooks — parametrize list is the explicit extension point: adding "0002_chunk_content_hash" to the head list (D-03 task) is a one-line change
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_alembic_parity_sqlite.py::test_parity_sqlite[head=0001_core]
+  FAILED tests/integration/test_alembic_parity_postgres.py::test_parity_postgres[head=0001_core]
+  alembic.util.exc.CommandError: Can't locate revision identified by '0001_core'
+  ======================== 2 failed, 2 warnings in 2.36s =========================
+  ```
+- Status: red — handed off to tdd-coder
