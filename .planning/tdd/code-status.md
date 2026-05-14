@@ -407,3 +407,15 @@ This was uncovered because R3-08 is the FIRST test that exercises the full eval-
   - Postgres DDL: no drift; `ALTER TABLE corpus.chunks ADD COLUMN IF NOT EXISTS content_hash TEXT` and `CREATE INDEX IF NOT EXISTS chunks_content_hash_idx ON corpus.chunks(content_hash)` match schema/002_chunk_content_hash.sql exactly.
   - Postgres backfill: `UPDATE corpus.chunks SET content_hash = encode(sha256(text::bytea), 'hex') WHERE content_hash IS NULL` matches migrate.py:79-83 exactly.
 - Status: green — handed off to tdd-qa
+
+## phase-d/D-04
+- Source files: `corpus_forge/alembic/versions/0003_views.py` (new)
+- Gates:
+  - format: pass (`ruff format --check corpus_forge tests` — 183 files already formatted)
+  - lint: pass (`ruff check corpus_forge tests` — All checks passed)
+  - typecheck: pass (`pyrefly check corpus_forge` — 8 errors, all pre-existing optional-dep gaps: sqlite_vec, mcp, openai; no new errors from 0003 file; confirmed identical count to baseline)
+  - test: pass (parity PG head=0001_core: pass; parity PG head=0002_chunk_content_hash: pass; parity PG head=0003_views: pass; parity SQLite head=0001_core: pass; parity SQLite head=0002_chunk_content_hash: pass; parity SQLite head=0003_views: pass; backfill: 3/3 passed; chain: 4/4 passed; unit suite: 1779 passed, 16 skipped, 1 xfailed, 2 failed — the 2 failures are pre-existing TestPinnedBaseline + TestCopyReusableEmbeddings)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (`corpus_forge/alembic/versions/0003_views.py` only)
+- DDL drift: none. SQL copied verbatim from `schema/002_views.sql` using `CREATE OR REPLACE VIEW`. SQLite branch is a no-op (no `schema/sqlite/002_views.sql` exists; views are Postgres-only). The parity test for Postgres queries only `table_type = 'BASE TABLE'`, so views don't appear in the schema diff — parity test passes because Alembic and legacy both produce identical base-table schemas; the views themselves are Postgres-only and not compared.
+- Status: green — handed off to tdd-qa
