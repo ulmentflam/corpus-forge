@@ -1118,3 +1118,239 @@ class TestLabelsToWire:
         from corpus_forge.mcp.server import _labels_to_wire
 
         assert _labels_to_wire([]) == []
+
+
+# ---------------------------------------------------------------------------
+# 7. G-03 — render_conversation via in-process MCP server
+# ---------------------------------------------------------------------------
+
+
+def _seed_conversation_via_backend(backend: SQLiteBackend, n_messages: int = 3) -> dict[str, int]:
+    """Seed a dataset + conversation with n_messages messages using backend.append_conversation.
+
+    Returns {dataset_id, conversation_id}.
+    """
+    with backend._get_connection() as conn:
+        ds_id = conn.execute(
+            "INSERT INTO datasets (name, kind, description) VALUES (?, ?, ?) RETURNING id",
+            ("conv-ds", "chat", "conversation dataset"),
+        ).fetchone()[0]
+        conn.commit()
+
+    roles = ["user", "assistant", "user"]
+    messages = [
+        {"role": roles[i % len(roles)], "content": f"Message {i}"} for i in range(n_messages)
+    ]
+    conv_id, _ = backend.append_conversation(
+        dataset_id=ds_id,
+        title="Test conv",
+        started_at=None,
+        messages=messages,
+    )
+    return {"dataset_id": ds_id, "conversation_id": conv_id}
+
+
+class TestRenderConversationViaMCP:
+    def test_happy_path_with_builtin_template(self, backend: SQLiteBackend) -> None:
+        """render_conversation: chatml text, message_count=3, truncated=False."""
+        seeded = _seed_conversation_via_backend(backend, n_messages=3)
+        server = _build_server(backend, writes_enabled=True)
+        result = _call_tool(
+            server,
+            "render_conversation",
+            {
+                "conversation_id": seeded["conversation_id"],
+                "template": "chatml",
+            },
+        )
+        assert "<|im_start|>" in result["text"], (
+            f"Expected chatml markers in text; got: {result['text'][:200]}"
+        )
+        assert result["message_count"] == 3
+        assert result["template"] == "chatml"
+        assert result["truncated"] is False
+
+    def test_with_custom_jinja(self, backend: SQLiteBackend) -> None:
+        """render_conversation with custom_jinja renders the Jinja string directly."""
+        seeded = _seed_conversation_via_backend(backend, n_messages=3)
+        server = _build_server(backend, writes_enabled=True)
+        result = _call_tool(
+            server,
+            "render_conversation",
+            {
+                "conversation_id": seeded["conversation_id"],
+                "template": "chatml",
+                "custom_jinja": "{{ messages|length }}",
+            },
+        )
+        assert result["text"] == "3", (
+            f"custom_jinja '{{{{ messages|length }}}}' must render '3'; got: {result['text']!r}"
+        )
+
+    def test_nonexistent_conversation_returns_error(self, backend: SQLiteBackend) -> None:
+        """render_conversation with a non-existent conversation_id returns isError=True."""
+        server = _build_server(backend, writes_enabled=True)
+        result = _call_tool_raw(
+            server,
+            "render_conversation",
+            {"conversation_id": 99999, "template": "chatml"},
+        )
+        assert getattr(result, "isError", False), (
+            "render_conversation for missing conversation must return isError=True"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 8. G-03 — list_chat_templates via in-process MCP server
+# ---------------------------------------------------------------------------
+
+
+class TestListChatTemplatesViaMCP:
+    def test_empty_corpus_returns_empty_list(self, backend: SQLiteBackend) -> None:
+        """Fresh DB returns {'templates': []} — no built-ins are auto-inserted."""
+        server = _build_server(backend, writes_enabled=True)
+        result = _call_tool(server, "list_chat_templates", {})
+        assert result == {"templates": []}, (
+            f"Expected empty templates list on fresh DB; got: {result}"
+        )
+
+    def test_returns_registered_templates(self, backend: SQLiteBackend) -> None:
+        """Templates registered via backend.register_chat_template appear in the listing."""
+        backend.register_chat_template(
+            name="alpha",
+            source="custom",
+            jinja="{{ messages|length }}",
+            host="test",
+        )
+        backend.register_chat_template(
+            name="beta",
+            source="custom",
+            jinja="{{ messages[0].role }}",
+            host="test",
+        )
+        server = _build_server(backend, writes_enabled=True)
+        result = _call_tool(server, "list_chat_templates", {})
+        names = [t["name"] for t in result["templates"]]
+        assert "alpha" in names, f"Expected 'alpha' in templates; got: {names}"
+        assert "beta" in names, f"Expected 'beta' in templates; got: {names}"
+        assert len(result["templates"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# 9. G-03 — register_template via in-process MCP server
+# ---------------------------------------------------------------------------
+
+
+class TestRegisterTemplateViaMCP:
+    def test_creates_row_and_returns_audit_id(self, backend: SQLiteBackend) -> None:
+        """register_template inserts a chat_templates row and emits an mcp_audit entry."""
+        server = _build_server(backend, writes_enabled=True)
+        result = _call_tool(
+            server,
+            "register_template",
+            {
+                "name": "my-template",
+                "jinja": "{% for m in messages %}{{ m.role }}: {{ m.content }}\n{% endfor %}",
+                "description": "simple role:content format",
+            },
+        )
+        assert isinstance(result.get("template_id"), int), (
+            f"Expected integer template_id; got: {result}"
+        )
+        assert isinstance(result.get("audit_id"), int), f"Expected integer audit_id; got: {result}"
+        # Verify DB row exists.
+        with backend._get_connection() as conn:
+            row = conn.execute(
+                "SELECT id, name FROM chat_templates WHERE name = ?", ("my-template",)
+            ).fetchone()
+        assert row is not None, "chat_templates row must be present after register_template"
+        # Verify audit row exists.
+        with backend._get_connection() as conn:
+            audit_rows = conn.execute("SELECT * FROM mcp_audit ORDER BY id").fetchall()
+        assert len(audit_rows) >= 1, "mcp_audit must have at least one entry"
+
+    def test_dry_run_does_not_persist(self, backend: SQLiteBackend) -> None:
+        """dry_run=True emits an audit row but does NOT insert a chat_templates row."""
+        server = _build_server(backend, writes_enabled=True)
+        result = _call_tool(
+            server,
+            "register_template",
+            {
+                "name": "ephemeral-template",
+                "jinja": "{{ messages|length }}",
+                "dry_run": True,
+            },
+        )
+        # template_id must be None on dry run.
+        assert result.get("template_id") is None, (
+            f"dry_run=True must return template_id=None; got: {result}"
+        )
+        # audit_id must be present.
+        assert isinstance(result.get("audit_id"), int)
+        # No chat_templates row.
+        with backend._get_connection() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM chat_templates").fetchone()[0]
+        assert count == 0, f"dry_run=True must not persist a chat_templates row; count={count}"
+        # But an audit row IS created.
+        with backend._get_connection() as conn:
+            audit_count = conn.execute("SELECT COUNT(*) FROM mcp_audit").fetchone()[0]
+        assert audit_count >= 1, "dry_run=True must still emit an audit row"
+
+    def test_writes_disabled_omits_register_template(self, backend: SQLiteBackend) -> None:
+        """When writes_enabled=False, register_template is NOT in the tools list."""
+        server = _build_server(backend, writes_enabled=False)
+        tools = _list_tools(server)
+        assert "register_template" not in tools, (
+            f"register_template must not appear when writes_enabled=False; tools={tools}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 10. G-03 — get_chunk with template= argument via in-process MCP server
+# ---------------------------------------------------------------------------
+
+
+class TestGetChunkWithTemplate:
+    def test_message_chunk_gets_templated_text(self, backend: SQLiteBackend) -> None:
+        """get_chunk with template='chatml' on a message chunk returns templated_text."""
+        seeded = _seed_conversation_via_backend(backend, n_messages=3)
+        # Retrieve a chunk that is linked to a message (message_id IS NOT NULL).
+        with backend._get_connection() as conn:
+            row = conn.execute(
+                "SELECT id FROM chunks"
+                " WHERE conversation_id = ? AND message_id IS NOT NULL LIMIT 1",
+                (seeded["conversation_id"],),
+            ).fetchone()
+        assert row is not None, "append_conversation must have created at least one message chunk"
+        chunk_id = row[0]
+
+        server = _build_server(backend, writes_enabled=True)
+        result = _call_tool(
+            server,
+            "get_chunk",
+            {"chunk_id": chunk_id, "template": "chatml"},
+        )
+        assert "templated_text" in result, (
+            f"Expected 'templated_text' in get_chunk result; got keys={list(result)}"
+        )
+        assert result["templated_text"] is not None
+        assert "<|im_start|>" in result["templated_text"], (
+            f"Expected chatml markers in templated_text; got: {result['templated_text']!r}"
+        )
+
+    def test_document_chunk_templated_text_is_none(self, backend: SQLiteBackend) -> None:
+        """get_chunk with template= on a document chunk returns templated_text=None."""
+        # Use the standard seeded document chunk (no message_id).
+        seeded = _seed_db(backend)
+        server = _build_server(backend, writes_enabled=True)
+        result = _call_tool(
+            server,
+            "get_chunk",
+            {"chunk_id": seeded["chunk_id"], "template": "chatml"},
+        )
+        assert "templated_text" in result, (
+            f"Expected 'templated_text' key in result; got keys={list(result)}"
+        )
+        assert result["templated_text"] is None, (
+            f"Document chunk must have templated_text=None; got: {result['templated_text']!r}"
+        )
