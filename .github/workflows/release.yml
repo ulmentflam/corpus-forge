@@ -83,7 +83,7 @@ jobs:
           OUTPUT: CHANGELOG_RELEASE.md
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           prerelease: ${{ contains(github.ref, 'b') || contains(github.ref, 'rc') }}

@@ -7,7 +7,7 @@ pipeline. Three jobs are expected:
 2. ``build`` — needs gate; runs ``uv build``, computes
    ``sha256sum dist/* > dist/SHA256SUMS``, uploads ``dist/`` as an
    artifact.
-3. ``publish`` — needs build; uses ``softprops/action-gh-release@v2``,
+3. ``publish`` — needs build; uses ``softprops/action-gh-release@v3``,
    passes ``files: dist/*``, derives ``prerelease`` from the tag (any
    tag containing ``b`` or ``rc`` is a prerelease), and
    ``generate_release_notes: true``.
@@ -178,9 +178,9 @@ def test_publish_uses_softprops_action_gh_release(jobs: dict) -> None:
         if isinstance(s, dict) and "softprops/action-gh-release" in str(s.get("uses", "")):
             release_step = s
             break
-    assert release_step is not None, "publish must use softprops/action-gh-release@v2"
-    assert "@v2" in release_step["uses"], (
-        f"softprops/action-gh-release must be pinned to @v2 (got {release_step['uses']!r})"
+    assert release_step is not None, "publish must use softprops/action-gh-release@v3"
+    assert "@v3" in release_step["uses"], (
+        f"softprops/action-gh-release must be pinned to @v3 (got {release_step['uses']!r})"
     )
 
 
