@@ -327,3 +327,55 @@ def test_extension_language_mapping(tmp_path: Path, ext: str, language: str):
     p.write_text("// placeholder\n", encoding="utf-8")
     doc = CodeExtractor().extract(p)
     assert doc.language == language, f"{ext} → expected {language}, got {doc.language}"
+
+
+# ── D-14: CodeExtractor.supported_filenames (Wave 2 bridge) ──────────────
+
+
+def test_code_extractor_declares_supported_filenames_non_empty():
+    """Wave 2 wires CodeExtractor through the filename-fallback path —
+    ``supported_filenames`` must declare every filename that
+    ``_detect_language`` resolves outside the extension table."""
+    ex = CodeExtractor()
+    assert hasattr(ex, "supported_filenames")
+    assert isinstance(ex.supported_filenames, tuple)
+    assert len(ex.supported_filenames) > 0
+
+
+def test_code_extractor_supported_filenames_match_detect_language():
+    """``supported_filenames`` is the single source of truth — every
+    declared filename must resolve in ``_detect_language``, and every
+    filename ``_detect_language`` handles must be declared (DRY)."""
+    from corpus_forge.extractors import code as code_module
+
+    ex = CodeExtractor()
+    declared = set(ex.supported_filenames)
+    # Every declaration must resolve to a non-None language.
+    for name in declared:
+        lang = code_module._detect_language(Path("/tmp") / name)
+        assert lang is not None, f"declared filename {name!r} not handled by _detect_language"
+    # Every filename handled by _detect_language (lowercase keys) must be
+    # represented in ``supported_filenames`` at least once (case-folded).
+    declared_lower = {name.lower() for name in declared}
+    for filename_key in code_module._LANG_BY_FILENAME:
+        assert filename_key in declared_lower, (
+            f"filename {filename_key!r} resolved by _detect_language but missing from "
+            f"supported_filenames"
+        )
+
+
+def test_code_extractor_supported_filenames_includes_make_and_docker():
+    """Spot-check the prompt's required entries land in the tuple."""
+    ex = CodeExtractor()
+    decl = set(ex.supported_filenames)
+    required = {
+        "Makefile",
+        "makefile",
+        "GNUmakefile",
+        "Dockerfile",
+        "dockerfile",
+        ".gitignore",
+        ".editorconfig",
+    }
+    missing = required - decl
+    assert not missing, f"missing required supported_filenames: {missing}"

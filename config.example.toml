@@ -55,6 +55,45 @@ kind = "chat"
   chunker        = "conversation"
   chunker_config = { mode = "sliding_window", window_turns = 6, stride_turns = 3 }
 
+# ─────────────────────────────────────────────────────────────────────
+# Phase D — Multi-format ingest example
+# ─────────────────────────────────────────────────────────────────────
+# Heterogeneous source: PDFs, Office docs, notebooks, code, prose,
+# subtitles, structured data — anything human-readable on disk. Uses the
+# `filesystem` source plugin and the extractor registry.
+#
+# [multi-format] + [code] optional extras are required:
+#   uv sync --extra multi-format --extra code
+[[datasets]]
+name        = "knowledge-base"
+kind        = "text"
+description = "Heterogeneous personal corpus (research papers, codebases, notebooks)."
+
+  [[datasets.sources]]
+  plugin = "filesystem"
+  root   = "~/Documents/research"
+  exclude_globs = [
+    ".git/**", "node_modules/**", "**/__pycache__/**",
+    ".venv/**", "target/**", "build/**", "dist/**",
+    "*.icloud", ".trash/**", ".DS_Store",
+  ]
+  # ChunkerDispatcher picks per-document chunker from each extractor's hint.
+  # This `chunker` is the fallback for sources that don't set a hint (none here).
+  chunker        = "markdown"
+  chunker_config = { max_chars = 1500, overlap = 200 }
+
+    [datasets.sources.extraction]
+    enable_pdf      = true
+    enable_office   = true
+    enable_code     = true
+    enable_html     = true
+    enable_epub     = true
+    enable_notebook = true
+    enable_csv      = true
+    csv_max_rows    = 200
+    max_bytes       = 50_000_000
+    code_chunker_config = { max_chars = 1500, min_chars = 100, overlap = 100 }
+
 [[embedders]]
 name      = "qwen3_8b"
 provider  = "sentence_transformers"

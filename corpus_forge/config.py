@@ -81,6 +81,11 @@ class ExtractionConfig(BaseModel):
     # resulting ``ExtractedDocument.metadata`` flags ``truncated=True``
     # so callers can decide whether to fan out additional ingestion.
     csv_max_rows: int = Field(default=200, gt=0)
+    # D-14 (Wave 2): soft cap for file size in the ``FilesystemSource``
+    # walker. Files larger than ``max_bytes`` are skipped with a WARNING
+    # log entry — keeps a stray multi-GB log file from blowing up an
+    # otherwise-healthy ingest. Default 50 MB.
+    max_bytes: int = Field(default=50_000_000, gt=0)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -97,6 +102,10 @@ class DatasetSourceConfig(BaseModel):
     projects_root: ExpandedPath | None = None
     include_subagents: bool = Field(default=True)
     storage_root: ExpandedPath | None = None
+    # Phase D / Wave 2 (D-15) — generic root for the ``filesystem`` source.
+    # Existing per-plugin path fields (``vault_root``, etc.) stay for
+    # backwards compatibility. New ``filesystem`` plugin uses ``root``.
+    root: ExpandedPath | None = None
     # Chunker configuration
     chunker: str = Field(pattern="^(markdown|conversation)$")
     chunker_config: dict = Field(default_factory=dict)

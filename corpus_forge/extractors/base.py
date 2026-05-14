@@ -55,6 +55,11 @@ class Extractor(Protocol):
     :attr:`supported_extensions` and implement :meth:`extract`. Extensions
     are matched case-insensitively by :class:`ExtractorRegistry`.
 
+    Extensionless files (``Makefile``, ``Dockerfile``, ``.gitignore``,
+    ``.editorconfig``) are routed via the second-pass
+    :attr:`supported_filenames` lookup performed by
+    :class:`ExtractorRegistry` when the extension table misses (Wave 2).
+
     Implementations must be *cheap to import* — heavy backends
     (Docling, pymupdf4llm, tree-sitter) belong inside ``__init__`` or
     ``extract``, not at module top level. See
@@ -64,6 +69,20 @@ class Extractor(Protocol):
 
     supported_extensions: tuple[str, ...]
     """Extensions handled by this extractor, including the leading dot."""
+
+    supported_filenames: tuple[str, ...] = ()
+    """Exact filenames (no extension) handled by this extractor.
+
+    Consulted as a **second pass** by :class:`ExtractorRegistry` when the
+    extension table misses — keeps the hot path extension-keyed for
+    common cases while still routing ``Makefile`` / ``Dockerfile`` /
+    dotfiles into ``CodeExtractor``. Defaults to ``()`` so existing
+    extension-only extractors don't need to change.
+
+    Both ``"Makefile"`` and ``"makefile"`` can be declared simultaneously
+    — the registry stores filename declarations verbatim (case-sensitive
+    on POSIX semantics).
+    """
 
     def extract(self, path: Path) -> ExtractedDocument:
         """Read ``path`` and return a normalised :class:`ExtractedDocument`."""

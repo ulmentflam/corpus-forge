@@ -47,17 +47,33 @@ def _try_load(submodule: str, class_name: str) -> type | None:
 
 
 class ExtractorRegistry:
-    """Dispatch table from file extension to :class:`Extractor`."""
+    """Dispatch table from file extension (or filename) to :class:`Extractor`.
+
+    Dispatch is two-pass:
+
+    1. **Extension** — ``path.suffix.lower()`` against the extension table
+       (case-insensitive).
+    2. **Filename** — exact ``path.name`` against the filename table
+       (case-sensitive, but both ``"Makefile"`` and ``"makefile"`` can be
+       declared simultaneously — Wave 2 D-14).
+
+    Extension lookups are the hot path; filename fallback only fires when
+    the extension table misses. Extractors that don't declare
+    :attr:`Extractor.supported_filenames` keep working unchanged.
+    """
 
     def __init__(self) -> None:
         self._by_ext: dict[str, Extractor] = {}
+        self._by_filename: dict[str, Extractor] = {}
 
     def register(self, extractor: Extractor) -> None:
-        """Register ``extractor`` for each of its supported extensions.
+        """Register ``extractor`` for each of its supported extensions and filenames.
 
-        Last-write-wins: registering for an already-bound extension
-        replaces the previous entry. Extensions are normalised to
-        lowercase so callers do not need to be careful about case.
+        Last-write-wins: registering for an already-bound key replaces
+        the previous entry. Extension keys are normalised to lowercase so
+        callers do not need to be careful about case. Filename keys are
+        stored verbatim — declare both ``"Makefile"`` and ``"makefile"``
+        if you want cross-platform matching.
 
         Raises:
             ValueError: if any declared extension does not begin with ``.``.
@@ -70,13 +86,35 @@ class ExtractorRegistry:
                 logger.debug("ExtractorRegistry: replacing existing extractor for %s", key)
             self._by_ext[key] = extractor
 
+        # Filename fallback (Wave 2 — D-14). Tolerate extractors that
+        # don't declare the attribute by treating it as ``()``.
+        for filename in getattr(extractor, "supported_filenames", ()) or ():
+            if filename in self._by_filename:
+                logger.debug(
+                    "ExtractorRegistry: replacing existing extractor for filename %s",
+                    filename,
+                )
+            self._by_filename[filename] = extractor
+
     def get_for(self, path: Path) -> Extractor | None:
-        """Return the extractor for ``path`` or ``None`` if unsupported."""
-        return self._by_ext.get(path.suffix.lower())
+        """Return the extractor for ``path`` or ``None`` if unsupported.
+
+        Resolution order: extension first (case-insensitive), then
+        filename second-pass (verbatim). Both ``Makefile`` and
+        ``makefile`` resolve when both have been declared.
+        """
+        ext_match = self._by_ext.get(path.suffix.lower())
+        if ext_match is not None:
+            return ext_match
+        return self._by_filename.get(path.name)
 
     def extensions(self) -> Iterable[str]:
         """Return every registered (lowercase) extension."""
         return list(self._by_ext.keys())
+
+    def filenames(self) -> Iterable[str]:
+        """Return every registered filename (verbatim, case-sensitive)."""
+        return list(self._by_filename.keys())
 
 
 def register_default_extractors(config: object | None) -> ExtractorRegistry:
@@ -164,11 +202,21 @@ def register_default_extractors(config: object | None) -> ExtractorRegistry:
     if _flag("enable_csv"):
         cls = _try_load("csv", "CsvExtractor")
         if cls is not None:
-            reg.register(cls())
+            csv_max_rows = getattr(config, "csv_max_rows", None) if config is not None else None
+            if csv_max_rows is not None:
+                reg.register(cls(max_rows=csv_max_rows))
+            else:
+                reg.register(cls())
 
     if _flag("enable_code"):
         cls = _try_load("code", "CodeExtractor")
         if cls is not None:
-            reg.register(cls())
+            code_chunker_config = (
+                getattr(config, "code_chunker_config", None) if config is not None else None
+            )
+            if code_chunker_config is not None:
+                reg.register(cls(code_chunker_config=code_chunker_config))
+            else:
+                reg.register(cls())
 
     return reg

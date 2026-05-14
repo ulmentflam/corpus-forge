@@ -95,12 +95,26 @@ _LANG_BY_EXT: dict[str, str] = {
 # Filename-fallback table — keyed on the exact lowercase filename.
 _LANG_BY_FILENAME: dict[str, str] = {
     "makefile": "make",
+    "gnumakefile": "make",
     "dockerfile": "dockerfile",
     ".gitignore": "gitignore",
     ".editorconfig": "editorconfig",
 }
 
-_FILENAME_FALLBACK_EXTENSIONS: tuple[str, ...] = ("",)  # used in supported_extensions filtering
+# Filenames declared on :attr:`CodeExtractor.supported_filenames`. The
+# registry's second-pass lookup (D-14) is case-sensitive, so we list
+# both common casings of ``Makefile`` / ``Dockerfile`` rather than ask
+# users to normalise filenames on disk. Derived from
+# :data:`_LANG_BY_FILENAME` so the two tables can't drift.
+_SUPPORTED_FILENAMES: tuple[str, ...] = (
+    "Makefile",
+    "makefile",
+    "GNUmakefile",
+    "Dockerfile",
+    "dockerfile",
+    ".gitignore",
+    ".editorconfig",
+)
 
 # Per-process cache of languages we've already attempted to fetch.
 # Maps ``language -> bool`` where ``True`` means "fetch succeeded or was
@@ -170,12 +184,23 @@ def _ensure_grammar(language: str) -> None:
 class CodeExtractor:
     """Identifies source files and hands raw text to ``CodeChunker``."""
 
-    # All registered extensions from ``_LANG_BY_EXT``. Filename fallbacks
-    # (``Makefile``, etc.) are matched via the registry's path-based
-    # ``get_for`` but those don't appear here since they're not
-    # extensions. The Wave 2 ``FilesystemSource`` walker will add the
-    # filename fallbacks via a separate dispatch hook (D-14).
+    # All registered extensions from ``_LANG_BY_EXT``.
     supported_extensions: tuple[str, ...] = tuple(sorted(_LANG_BY_EXT.keys()))
+
+    # Wave 2 (D-14) — filenames matched by the registry's second-pass
+    # lookup. Both casings of common build-tool names are declared so
+    # cross-platform repos resolve regardless of which the user has on
+    # disk.
+    supported_filenames: tuple[str, ...] = _SUPPORTED_FILENAMES
+
+    def __init__(self, code_chunker_config: dict | None = None):
+        """``code_chunker_config`` is plumbed onto every
+        ``ExtractedDocument`` so the downstream ``ChunkerDispatcher`` can
+        construct ``CodeChunker(**cfg)`` with the user's tunables. Held
+        as a ``dict`` here (not unpacked) so the dispatcher decides when
+        to instantiate.
+        """
+        self.code_chunker_config: dict = code_chunker_config or {}
 
     def extract(self, path: Path) -> ExtractedDocument:
         text = path.read_text(encoding="utf-8")

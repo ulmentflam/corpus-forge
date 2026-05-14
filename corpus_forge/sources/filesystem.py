@@ -1,0 +1,213 @@
+"""Generic filesystem source — D-14 (Wave 2 of the multi-format milestone).
+
+Walks a heterogeneous tree under ``root`` and hands every file off to an
+:class:`~corpus_forge.extractors.registry.ExtractorRegistry`. Selection of
+the extractor honours the registry's two-pass dispatch:
+
+1. Extension (case-insensitive).
+2. Filename (``Makefile`` / ``Dockerfile`` / ``.gitignore`` etc.).
+
+Extractor families gated by :class:`~corpus_forge.config.ExtractionConfig`
+(``enable_pdf``, ``enable_office``, ``enable_code``, ...) are silently
+skipped on a per-file basis — the registry itself is constructed
+respecting these gates by :func:`register_default_extractors`, but we
+**also** enforce per-extractor-class gating here so a caller-supplied
+registry can't smuggle disabled families through.
+
+Files larger than :attr:`ExtractionConfig.max_bytes` are skipped with a
+WARNING log entry.
+"""
+
+from __future__ import annotations
+
+import fnmatch
+import logging
+from collections.abc import Iterator
+from pathlib import Path
+
+from corpus_forge.config import ExtractionConfig
+from corpus_forge.extractors.registry import ExtractorRegistry, register_default_extractors
+from corpus_forge.sources.base import RawDocument, WatchedSource
+
+logger = logging.getLogger(__name__)
+
+
+# Maps **extractor class name** → ``ExtractionConfig`` field that gates
+# it. Class-name lookup keeps the source decoupled from the concrete
+# extractor classes (no heavy imports at module load) while still letting
+# us refuse to invoke a disabled family even when the registry has it.
+_FAMILY_FLAGS: dict[str, str] = {
+    "PdfDigitalExtractor": "enable_pdf",
+    "OfficeExtractor": "enable_office",
+    "CodeExtractor": "enable_code",
+    "HtmlExtractor": "enable_html",
+    "EpubExtractor": "enable_epub",
+    "NotebookExtractor": "enable_notebook",
+    "CsvExtractor": "enable_csv",
+}
+
+
+def _is_excluded(path: Path, root: Path, exclude_globs: list[str]) -> bool:
+    """Return True if *path* matches any exclude glob.
+
+    Mirrors ``MarkdownVaultSource._is_excluded`` semantics:
+    - Match the relative path string against each glob (handles
+      ``dir/**``-style patterns).
+    - Match each individual path component against each glob (handles
+      simple patterns like ``.*``).
+
+    Extracted into a module-level helper so other sources (or tests) can
+    reuse the same matching logic without subclassing.
+    """
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        rel = path
+
+    rel_str = str(rel)
+    for pattern in exclude_globs:
+        if fnmatch.fnmatch(rel_str, pattern):
+            return True
+        for part in rel.parts:
+            if fnmatch.fnmatch(part, pattern):
+                return True
+    return False
+
+
+class FilesystemSource(WatchedSource):
+    """Generic walker over a heterogeneous directory tree.
+
+    One source plugin handles every file format the extractor registry
+    knows about — no per-format Source proliferation. The chunker
+    selection happens **per-document** via :class:`ChunkerDispatcher`
+    (D-05) based on ``ExtractedDocument.chunker_hint``.
+    """
+
+    name = "filesystem"
+    dataset_kind = "text"
+
+    def __init__(
+        self,
+        root: Path | str,
+        *,
+        exclude_globs: list[str] | None = None,
+        extraction: ExtractionConfig | None = None,
+        debounce: float = 2.0,
+    ):
+        super().__init__(Path(root), debounce=debounce)
+        self.exclude_globs: list[str] = list(exclude_globs) if exclude_globs else []
+        self.extraction: ExtractionConfig = extraction or ExtractionConfig()
+        # Registry baked with the user's tunables (csv_max_rows,
+        # code_chunker_config) at construction time so the hot path
+        # never re-reads config.
+        self._registry: ExtractorRegistry = register_default_extractors(self.extraction)
+
+    # ── Discovery ──────────────────────────────────────────────────────
+
+    def discover(self) -> Iterator[Path]:
+        """Walk ``root`` recursively yielding every regular file.
+
+        Excluded paths (per ``exclude_globs``) and directories are
+        skipped — the iterator yields only files.
+        """
+        for path in self.root.rglob("*"):
+            if not path.is_file():
+                continue
+            if _is_excluded(path, self.root, self.exclude_globs):
+                continue
+            yield path
+
+    # ── Parsing ────────────────────────────────────────────────────────
+
+    def parse(self, path: Path) -> RawDocument | None:
+        """Dispatch ``path`` through the extractor registry.
+
+        Returns None (and logs DEBUG) when:
+        - No extractor is registered for the path.
+        - The extractor's family flag is disabled.
+        - The file exceeds ``ExtractionConfig.max_bytes`` (logs WARNING).
+        """
+        # max_bytes guard first — cheap stat call, avoids reading huge
+        # files into memory only to throw them away.
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            logger.debug("Cannot stat %s: %s — skipping", path, exc)
+            return None
+        if size > self.extraction.max_bytes:
+            logger.warning(
+                "Skipping oversized file %s (%d bytes > max_bytes %d)",
+                path,
+                size,
+                self.extraction.max_bytes,
+            )
+            return None
+
+        extractor = self._registry.get_for(path)
+        if extractor is None:
+            logger.debug("No extractor for %s — skipping", path)
+            return None
+
+        # Per-family gate. The registry was already built honouring the
+        # gates, but a custom registry / direct registration could
+        # bypass that — enforce here too.
+        flag_name = _FAMILY_FLAGS.get(type(extractor).__name__)
+        if flag_name is not None and not getattr(self.extraction, flag_name, True):
+            logger.debug(
+                "Extractor family %s disabled (%s=False) — skipping %s",
+                type(extractor).__name__,
+                flag_name,
+                path,
+            )
+            return None
+
+        try:
+            extracted = extractor.extract(path)
+        except Exception as exc:
+            logger.warning("Extractor %s failed on %s: %s", type(extractor).__name__, path, exc)
+            return None
+
+        # Build metadata: extractor's free-form dict + reserved keys
+        # (chunker_hint, language) set by the source layer.
+        metadata: dict = dict(extracted.metadata)
+        metadata["chunker_hint"] = extracted.chunker_hint
+        if extracted.language is not None:
+            metadata["language"] = extracted.language
+
+        title = self._title_for(path, extracted.text, extracted.chunker_hint)
+
+        try:
+            modified_at = path.stat().st_mtime
+        except OSError:
+            modified_at = 0.0
+
+        return RawDocument(
+            source_uri=f"filesystem://{self.root.name}/{path.relative_to(self.root)}",
+            content_hash=self.file_content_hash(path),
+            text=extracted.text,
+            title=title,
+            modified_at=modified_at,
+            metadata=metadata,
+            labels=list(extracted.labels),
+        )
+
+    # ── Helpers ────────────────────────────────────────────────────────
+
+    def _title_for(self, path: Path, text: str, chunker_hint: str) -> str:
+        """Pick a human-friendly title for a RawDocument.
+
+        - ``chunker_hint == "markdown"`` — first ``# `` heading, else stem.
+        - ``chunker_hint == "code"`` — relative path from ``root``.
+        - Otherwise — stem.
+        """
+        if chunker_hint == "markdown":
+            first_line = text.split("\n", 1)[0] if text else ""
+            if first_line.startswith("# "):
+                return first_line[2:].strip()
+            return path.stem
+        if chunker_hint == "code":
+            try:
+                return str(path.relative_to(self.root))
+            except ValueError:
+                return path.name
+        return path.stem

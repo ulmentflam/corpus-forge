@@ -366,6 +366,22 @@ def _instantiate_source(source_config):
         from .sources.opencode import OpenCodeSource  # noqa: PLC0415
 
         return OpenCodeSource(storage_root=source_config.storage_root, debounce=2.0)
+    elif source_config.plugin == "filesystem":
+        # Phase D / Wave 2 (D-15) — generic walker over heterogeneous
+        # directory trees, dispatched per-file through the extractor
+        # registry. ``ExtractionConfig`` is optional in config but the
+        # source needs a real instance (defaults: all flags True, 50 MB
+        # max_bytes).
+        from .config import ExtractionConfig  # noqa: PLC0415
+        from .sources.filesystem import FilesystemSource  # noqa: PLC0415
+
+        extraction = source_config.extraction or ExtractionConfig()
+        return FilesystemSource(
+            root=source_config.root,
+            exclude_globs=source_config.exclude_globs or [],
+            extraction=extraction,
+            debounce=2.0,
+        )
     else:
         raise ValueError(f"Unknown source plugin: {source_config.plugin}")
 

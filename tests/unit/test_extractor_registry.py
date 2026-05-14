@@ -266,3 +266,119 @@ def test_extracted_document_field_types():
     assert "language" in hints
     assert "metadata" in hints
     assert "labels" in hints
+
+
+# ── D-14: filename-fallback dispatch (second-pass lookup) ────────────────
+
+
+class _FilenameFakeExtractor:
+    """A fake extractor that declares both extensions and filenames."""
+
+    def __init__(
+        self,
+        exts: tuple[str, ...] = (),
+        filenames: tuple[str, ...] = (),
+        hint: str = "code",
+    ):
+        self.supported_extensions = exts
+        self.supported_filenames = filenames
+        self._hint = hint
+
+    def extract(self, path: Path) -> ExtractedDocument:
+        return ExtractedDocument(text=path.name, chunker_hint=self._hint)
+
+
+def test_extractor_protocol_supported_filenames_default_empty():
+    """The ``Extractor`` protocol should declare ``supported_filenames``
+    with a default of ``()`` so existing extractors (which don't set it)
+    still satisfy the protocol surface."""
+    # Protocol-level annotation must exist; concrete extractors that omit
+    # the attribute inherit the empty default at runtime.
+    assert "supported_filenames" in Extractor.__annotations__
+
+
+def test_registry_filename_fallback_after_extension_miss(tmp_path: Path):
+    """An extractor declaring ``supported_filenames`` should be reached
+    when the file has no extension but the basename matches."""
+    reg = ExtractorRegistry()
+    fake = _FilenameFakeExtractor(filenames=("Makefile",))
+    reg.register(fake)
+    p = tmp_path / "Makefile"
+    p.write_text("all:\n\techo hi\n")
+    assert reg.get_for(p) is fake
+
+
+def test_registry_filename_fallback_does_not_override_extension(tmp_path: Path):
+    """If an extension match exists, it wins over a filename fallback —
+    the second pass is only consulted on extension miss."""
+    reg = ExtractorRegistry()
+    ext_winner = _FilenameFakeExtractor(exts=(".mk",), hint="code")
+    filename_loser = _FilenameFakeExtractor(filenames=("custom.mk",), hint="passthrough")
+    reg.register(ext_winner)
+    reg.register(filename_loser)
+    p = tmp_path / "custom.mk"
+    p.write_text("x")
+    # ``.mk`` extension match takes precedence.
+    assert reg.get_for(p) is ext_winner
+
+
+def test_registry_filename_fallback_returns_none_for_unknown(tmp_path: Path):
+    """Unknown filename + unknown extension returns None."""
+    reg = ExtractorRegistry()
+    reg.register(_FilenameFakeExtractor(filenames=("Makefile",)))
+    p = tmp_path / "RandomFile"
+    p.write_text("x")
+    assert reg.get_for(p) is None
+
+
+def test_registry_filename_fallback_accepts_both_cases(tmp_path: Path):
+    """Filename declarations must accept both ``Makefile`` and ``makefile``
+    so cross-platform repos work — registry should match exactly what was
+    declared, but the helper should let both be declared simultaneously."""
+    reg = ExtractorRegistry()
+    fake = _FilenameFakeExtractor(filenames=("Makefile", "makefile", "GNUmakefile"))
+    reg.register(fake)
+    for name in ("Makefile", "makefile", "GNUmakefile"):
+        p = tmp_path / name
+        p.write_text("x")
+        assert reg.get_for(p) is fake, name
+
+
+def test_registry_filename_fallback_routes_makefile_to_code_extractor(tmp_path: Path):
+    """End-to-end: the default registry (Wave 2 wires CodeExtractor's
+    ``supported_filenames``) routes ``Makefile`` to ``CodeExtractor``."""
+    from corpus_forge.extractors.code import CodeExtractor
+
+    reg = register_default_extractors(config=None)
+    p = tmp_path / "Makefile"
+    p.write_text("all:\n\techo hi\n")
+    extractor = reg.get_for(p)
+    assert isinstance(extractor, CodeExtractor)
+
+
+def test_registry_filename_fallback_routes_dockerfile_to_code_extractor(tmp_path: Path):
+    from corpus_forge.extractors.code import CodeExtractor
+
+    reg = register_default_extractors(config=None)
+    p = tmp_path / "Dockerfile"
+    p.write_text("FROM scratch\n")
+    assert isinstance(reg.get_for(p), CodeExtractor)
+
+
+def test_registry_filename_fallback_unknown_filename_returns_none(tmp_path: Path):
+    """Unknown filename like ``WeirdConfig`` should still resolve to None
+    even with the full default registry."""
+    reg = register_default_extractors(config=None)
+    p = tmp_path / "WeirdConfig"
+    p.write_text("x")
+    assert reg.get_for(p) is None
+
+
+def test_registry_extensions_lists_filename_fallbacks_separately():
+    """``extensions()`` lists only extensions; filename fallbacks are
+    distinct from extension dispatch and not included."""
+    reg = ExtractorRegistry()
+    reg.register(_FilenameFakeExtractor(exts=(".x",), filenames=("OnlyName",)))
+    exts = set(reg.extensions())
+    assert ".x" in exts
+    assert "OnlyName" not in exts
