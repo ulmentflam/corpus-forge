@@ -88,3 +88,17 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 - Issues: none blocking; 1 pre-existing deferred defect (migrate history no-DB ArgumentError, D-08); 1 pre-existing pydantic shadow warning (BackendConfig.schema)
 - Verdict: approved
 - Notes: Phase E milestone goal fully met — multi-host topology is now documented in `docs/deployment-satellite.md`, pinned by 5 doc-rot tests, and smoke-tested by 3 cross-host integration tests. No production code was modified.
+
+---
+
+## Phase F — F-06 (close-out QA)
+
+- Suite: unit 1730 passed, 3 skipped, 1 xfailed (17.85s); integration 328 passed, 2 failed (65.32s); fuzz 15 passed (0.65s); smoke 30 passed (15.77s)
+- Coverage: 85.47% on corpus_forge/ (threshold 85%) — PASS
+- Smoke (Phase F specific): `test_skill_tool_contract.py` 3/3 PASS (11-tool pin + 3-read-only pin + subset-check); `test_mcp_writes_disabled_by_default.py` 3/3 PASS; cross-host `test_append_conversation_cross_host_visible` 3/3 consecutive runs GREEN
+- Regression sweep: integration full suite — 2 FAILED in `test_apply_migrations_uses_alembic.py` (see Issues below). All 160 Phase F surface tests green. All 30 smoke tests green. All 1730 unit tests green. iCloud dupe thread FileNotFoundError warning pre-existing.
+- Issues:
+  - **Phase F regression**: `test_apply_migrations_creates_alembic_version_table_pg` and `::test_apply_migrations_creates_alembic_version_table_sqlite` fail because they assert `version_num == "0005_fts"` (written Phase D). Phase F's revision `0006_writes_and_feedback` moved the alembic head. Both assertions need updating to `"0006_writes_and_feedback"`. This is NOT a pre-existing flake — these tests passed in Phase D (302/0) and regressed when Phase F added a new revision. QA is NOT fixing this (read-only role); routing to Coder for a follow-up patch commit. NOT a production defect — purely stale test assertions.
+  - The iCloud Drive `.pth` hidden-flag issue: `uv run pytest` fails if `chflags nohidden` has not been run on the editable install `.pth` file since `uv sync`. `make ci-local` and `make install` run `_unhide-pth` automatically, but `make ci` calls `uv run pytest` which re-hides the flag. Workaround: use `.venv/bin/python -m pytest` directly or run `make ci-local`. Pre-existing — not Phase F's introduction.
+- Verdict: **rework** — 2 integration tests regressed by Phase F need a follow-up fix before Phase F is fully clean
+- Notes: Phase F milestone goal is functionally met (MCP write surface + read-side enrichment + self-distillation loop closed). The 2 failing tests are test-assertion bookkeeping, not production regressions. Phase G may proceed; the fix is a 2-line patch to `test_apply_migrations_uses_alembic.py`.
