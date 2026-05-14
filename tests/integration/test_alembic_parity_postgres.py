@@ -51,6 +51,29 @@ _ALEMBIC_INI = _REPO_ROOT / "alembic.ini"
 _SCHEMA_DIR = _REPO_ROOT / "corpus_forge" / "schema"
 
 # ---------------------------------------------------------------------------
+# Head → legacy SQL file mapping (Postgres)
+#
+# Maps each Alembic revision head to the ordered list of legacy SQL filenames
+# (relative to corpus_forge/schema/) that produce an equivalent schema.
+#
+# Grows monotonically: adding a new revision = one uncommented row here +
+# one id added to the @pytest.mark.parametrize list below.
+# ---------------------------------------------------------------------------
+
+_HEAD_TO_LEGACY_PG: dict[str, list[str]] = {
+    "0001_core": ["001_core.sql"],
+    # "0002_chunk_content_hash": [
+    #     "001_core.sql", "002_chunk_content_hash.sql"
+    # ],
+    # "0003_sync": [
+    #     "001_core.sql", "002_chunk_content_hash.sql", "003_sync.sql"
+    # ],
+    # "0004_fts": [
+    #     "001_core.sql", "002_chunk_content_hash.sql", "003_sync.sql", "004_fts.sql"
+    # ],
+}
+
+# ---------------------------------------------------------------------------
 # Schema dump helpers (information_schema + pg_* catalogue queries)
 # ---------------------------------------------------------------------------
 
@@ -228,19 +251,25 @@ def _reset_corpus_schema(dsn: str) -> None:
         cur.execute("DROP SCHEMA IF EXISTS corpus CASCADE")
 
 
-def _apply_legacy(dsn: str) -> None:
-    """Apply the legacy migrator into the 'corpus' schema.
+def _apply_legacy(dsn: str, head: str, tmp_path: Path) -> None:
+    """Apply the legacy migrator into the 'corpus' schema, scoped to *head*.
 
-    backend.migrate() calls apply_migrations internally.  We call
-    apply_migrations a second time to ensure idempotency is exercised
-    (also matching how existing integration tests use it).
+    Copies only the SQL files that correspond to the given Alembic head into a
+    temporary schema directory, then runs apply_migrations against that sliced
+    directory.  This prevents legacy migrations 002-004 from bleeding schema
+    features into the comparison at head=0001_core.
     """
     from corpus_forge.backends.postgres import PostgresBackend
     from corpus_forge.schema.migrate import apply_migrations
 
+    files = _HEAD_TO_LEGACY_PG[head]
+    sliced = tmp_path / "schema_pg"
+    sliced.mkdir(parents=True, exist_ok=True)
+    for fname in files:
+        (sliced / fname).write_bytes((_SCHEMA_DIR / fname).read_bytes())
+
     backend = PostgresBackend(dsn=dsn, schema="corpus")
-    backend.migrate()
-    apply_migrations(backend, _SCHEMA_DIR, dialect="postgres")
+    apply_migrations(backend, sliced, dialect="postgres")
 
 
 def _apply_alembic(dsn: str, head: str) -> None:
@@ -280,15 +309,15 @@ def _apply_alembic(dsn: str, head: str) -> None:
 
 @_skip_no_tc
 @pytest.mark.parametrize("head", ["0001_core"], ids=["head=0001_core"])
-def test_parity_postgres(head: str, postgres_container) -> None:  # type: ignore[return]
+def test_parity_postgres(head: str, postgres_container, tmp_path: Path) -> None:  # type: ignore[return]
     """Legacy apply_migrations and Alembic upgrade(head) produce byte-equal schemas.
 
     Both migrators target the hardcoded 'corpus' schema.  We apply each one
     sequentially — drop corpus → apply legacy → dump → drop corpus → apply
     alembic → dump — then compare normalized dumps.
 
-    RED until D-02 coder lands 0001_core.py:
-      alembic.util.exc.CommandError: Can't locate revision identified by '0001_core'
+    The legacy side is scoped to exactly the SQL files that correspond to
+    *head* via _HEAD_TO_LEGACY_PG, so parity holds at every intermediate head.
     """
     c = postgres_container
     dsn = (
@@ -299,12 +328,12 @@ def test_parity_postgres(head: str, postgres_container) -> None:  # type: ignore
 
     # ── Legacy pass ─────────────────────────────────────────────────────────
     _reset_corpus_schema(dsn)
-    _apply_legacy(dsn)
+    _apply_legacy(dsn, head, tmp_path)
     legacy_schema = _normalize_pg_schema(dsn, "corpus", strip_tables=frozenset())
 
-    # ── Alembic pass (raises CommandError at RED time) ───────────────────────
+    # ── Alembic pass ────────────────────────────────────────────────────────
     _reset_corpus_schema(dsn)
-    _apply_alembic(dsn, head)  # <-- RED: No revision '0001_core' exists yet
+    _apply_alembic(dsn, head)
     alembic_schema = _normalize_pg_schema(
         dsn,
         "corpus",
