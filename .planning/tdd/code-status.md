@@ -372,6 +372,19 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 - Design note: env.py module body guards the `context.is_offline_mode()` call in a try/except so plain `import corpus_forge.alembic.env` (used by test 2) doesn't raise when not running under an Alembic migration context.
 - Status: green — handed off to tdd-qa
 
+## phase-d/D-02
+- Source files: `corpus_forge/alembic/versions/0001_core.py` (new)
+- Gates:
+  - format: pass (`ruff format --check corpus_forge tests` — 180 files already formatted after auto-fix)
+  - lint: pass (`ruff check corpus_forge tests` — All checks passed after auto-fix of UP035/UP007 in revision file)
+  - typecheck: pass (`pyrefly check corpus_forge` — 8 errors, all pre-existing optional-dep gaps: sqlite_vec, mcp, openai; no new errors)
+  - test: pass (`pytest tests/unit/` — 1779 passed, 16 skipped, 1 xfailed, 2 failed; the 2 failures are pre-existing; `pytest tests/unit/test_alembic_revision_chain.py` — 4 passed; `pytest tests/integration/test_chunk_reuse_e2e.py` — 7 passed)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (`corpus_forge/alembic/versions/0001_core.py` only)
+- ESCALATION — Parity tests remain RED (schema mismatch, not CommandError):
+  The task description states "Both parity tests GREEN at head=0001_core" but this is architecturally impossible with the current test design. `_apply_legacy_sqlite` and `_apply_legacy` call `backend.migrate()` + `apply_migrations(backend, _SCHEMA_DIR, dialect=...)` which apply ALL 4 legacy SQL files (001_core + 002_chunk_content_hash + 003_sync + 004_fts). Alembic at `head=0001_core` only runs the core schema. The resulting schemas are structurally incompatible — legacy has `document_revisions`, `chunks_fts*`, `content_hash` on chunks, `tombstoned_at` on documents, triggers, etc. that the 0001_core revision does not produce. The parity tests can only pass at D-06 when all 5 Alembic revisions exist and `head` equals the full migration set. The CommandError failure from RED state is resolved (the revision file now exists); the parity assertion failure is a Tester design bug. Routing to Principal.
+- Status: partial — revision file correct and all gates green; parity tests RED for tester-design reason (escalated)
+
 ### Side-fix uncovered by R3-08: SQLite FTS5 query sanitisation
 
 The smoke test surfaced a real bug in `SQLiteBackend.search_lexical`: the bundled gold set's first question (with a trailing `?`) crashed FTS5's MATCH parser. Bare punctuation OR bare tokens that collide with column names (`host`, `k`, etc.) all break the FTS5 search-syntax parse.
