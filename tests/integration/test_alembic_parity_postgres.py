@@ -74,9 +74,13 @@ _HEAD_TO_LEGACY_PG: dict[str, list[str]] = {
         "002_views.sql",
         "003_sync.sql",
     ],
-    # "0004_fts": [
-    #     "001_core.sql", "002_chunk_content_hash.sql", "003_sync.sql", "004_fts.sql"
-    # ],
+    "0005_fts": [
+        "001_core.sql",
+        "002_chunk_content_hash.sql",
+        "002_views.sql",
+        "003_sync.sql",
+        "004_fts.sql",
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -316,8 +320,14 @@ def _apply_alembic(dsn: str, head: str) -> None:
 @_skip_no_tc
 @pytest.mark.parametrize(
     "head",
-    ["0001_core", "0002_chunk_content_hash", "0003_views", "0004_sync"],
-    ids=["head=0001_core", "head=0002_chunk_content_hash", "head=0003_views", "head=0004_sync"],
+    ["0001_core", "0002_chunk_content_hash", "0003_views", "0004_sync", "0005_fts"],
+    ids=[
+        "head=0001_core",
+        "head=0002_chunk_content_hash",
+        "head=0003_views",
+        "head=0004_sync",
+        "head=0005_fts",
+    ],
 )
 def test_parity_postgres(head: str, postgres_container, tmp_path: Path) -> None:  # type: ignore[return]
     """Legacy apply_migrations and Alembic upgrade(head) produce byte-equal schemas.

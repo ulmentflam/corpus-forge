@@ -1823,3 +1823,40 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   2 failed, 6 passed, 8 warnings in 3.23s
   ```
 - Status: red — handed off to tdd-coder
+
+## D-06
+- Test files:
+  - tests/integration/test_alembic_backfill_fts_sqlite.py (new, 5 tests)
+  - tests/integration/test_alembic_parity_postgres.py (extended: +head=0005_fts)
+  - tests/integration/test_alembic_parity_sqlite.py (extended: +head=0005_fts)
+- Run command: `.venv/bin/python -m pytest tests/integration/test_alembic_backfill_fts_sqlite.py tests/integration/test_alembic_parity_postgres.py tests/integration/test_alembic_parity_sqlite.py -v`
+- Edge case checklist:
+  - [x] happy path — pre-existing chunks visible via FTS MATCH after 0005_fts upgrade
+  - [x] boundaries — 5 distinct chunks; unique words chosen to avoid cross-chunk FTS contamination; post-migration new chunk tested separately
+  - [x] type/format — N/A (FTS queries use text words; no type-coercion edge cases in sqlite3 FTS5)
+  - [x] state — pre-FTS rows (seeded at 0004_sync head) vs post-FTS new insert; trigger test is fresh-state; backfill idempotency guarded by description in backfill_lexical_index() docstring (separate test in existing suite)
+  - [N/A] concurrency — SQLite in-process, single-threaded; FTS5 is not concurrent
+  - [x] failure paths — all 5 backfill tests fail with canonical CommandError at upgrade("0005_fts"); parity tests for 0005_fts also fail with same error
+  - [N/A] locale/time — no locale/timezone objects introduced by FTS migration
+  - [x] production-realistic — realistic pangram-style chunk texts; unique-word selection designed to mirror real vocabulary search patterns
+  - [x] regression hooks — prior heads (0001_core, 0002_chunk_content_hash, 0003_views, 0004_sync) all PASS for SQLite parity; chain tests 4/4 GREEN
+  - [x] rebuild-vs-naive — test_no_delete_markers_after_rebuild_backfill asserts COUNT=1 per unique word; documents that naive INSERT would fail for external-content FTS5 tables; test_preexisting_chunks_searchable_after_backfill asserts exact rowid matches for 2 distinct queries
+  - [x] trigger coverage — test_after_insert_trigger_fires_for_new_chunks inserts a chunk with a never-before-seen word post-migration and asserts chunks_ai fires
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_alembic_backfill_fts_sqlite.py::test_chunks_fts_virtual_table_exists
+  FAILED tests/integration/test_alembic_backfill_fts_sqlite.py::test_preexisting_chunks_searchable_after_backfill
+  FAILED tests/integration/test_alembic_backfill_fts_sqlite.py::test_fts_total_chunk_count_after_backfill
+  FAILED tests/integration/test_alembic_backfill_fts_sqlite.py::test_no_delete_markers_after_rebuild_backfill
+  FAILED tests/integration/test_alembic_backfill_fts_sqlite.py::test_after_insert_trigger_fires_for_new_chunks
+  FAILED tests/integration/test_alembic_parity_sqlite.py::test_parity_sqlite[head=0005_fts]
+  alembic.util.exc.CommandError: Can't locate revision identified by '0005_fts'
+  6 failed, 4 passed, 15 warnings in 0.69s
+  PG parity head=0005_fts: CommandError: Can't locate revision identified by '0005_fts' (skipped without Docker)
+  ```
+- Status: red — handed off to tdd-coder
+- Notes:
+  - backfill_lexical_index() lives in corpus_forge/backends/sqlite.py:455. It uses conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')") — confirmed correct (NOT naive INSERT SELECT). The Alembic 0005_fts revision must call this method (or reproduce the same SQL) after CREATE VIRTUAL TABLE + triggers are applied.
+  - The _dump_sqlite_schema helper in test_alembic_parity_sqlite.py compares schema objects (tables, indexes, triggers, views) from sqlite_master — NOT data rows. So the legacy migrator's backfill_lexical_index() call (which writes data into chunks_fts) does not affect parity, because both sides start with an empty chunks table and the FTS shadow table has no data rows to compare. Parity is schema-only.
+  - PG parity test at head=0005_fts is collected (5 items) but requires Docker testcontainer to execute. It will fire CommandError the same way when Docker is present.
+  - Wave gate: ruff format + ruff check both clean after auto-format pass.
