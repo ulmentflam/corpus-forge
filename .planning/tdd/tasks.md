@@ -2571,3 +2571,33 @@ Phase G next: chat templating + dynamic HF templating + training-ready export. B
 - `render_conversation(conversation_id, template, ...)` MCP tool feeds the chunks F-05 now creates.
 - Export views consume the same chunks for HF Dataset rows.
 - Templates registered via `register_template` MCP tool (new in G) join the existing 8 write tools as the 9th-12th.
+
+---
+
+# Phase G — Chat templating: MCP retrieval + dynamic HF templating + training export
+
+_Source plan: `/Users/evanowen/.claude/plans/let-s-begin-a-new-jiggly-salamander.md` § Phase G._
+
+Make PG-stored conversations renderable as fine-tune-ready strings under **any** template: bundled builtin, any HF model's tokenizer chat template fetched dynamically by `model_id`, or a user-registered custom Jinja template stored in PG. Three surfaces:
+
+1. **MCP retrieval** — `render_conversation` + `template`-aware `get_chunk`.
+2. **Template registry** — `register_template` + `list_chat_templates` MCP tools; storage in `corpus.chat_templates`.
+3. **CLI export** — `corpus-forge export chat --template chatml --dataset … --out …`.
+
+Phase F gave us chunks-per-message, so templating consumes existing chunks/messages without a new ingest path.
+
+## Phase G tasks
+
+| id | title | depends_on | surface | risk | status | claimed_by | notes |
+|----|-------|------------|---------|------|--------|------------|-------|
+| G-01 | Alembic revision 0007_chat_templates | — | `corpus_forge/alembic/versions/0007_chat_templates.py`, `tests/integration/test_alembic_0007_chat_templates.py` | low | pending | — | Wave 0; CREATE TABLE chat_templates(id, name UNIQUE, source 'builtin'\|'huggingface'\|'custom', jinja TEXT NULL, model_id TEXT NULL, description, host, created_at). PG + SQLite. Bump apply_migrations head pin to 0007 in test_apply_migrations_uses_alembic.py. |
+| G-02 | corpus_forge/templates/ module + builtins | G-01 | `corpus_forge/templates/__init__.py`, `corpus_forge/templates/builtins/{chatml,llama3,alpaca,vicuna,gemma,qwen}.py`, `corpus_forge/templates/hf.py`, `corpus_forge/templates/tools.py`, `tests/unit/test_template_registry.py`, `tests/unit/test_template_builtins.py`, `tests/unit/test_template_hf.py` | med | pending | — | Wave 1; pure-Python Jinja renderers (no transformers required for builtins); `templates/hf.py` lazily calls `AutoTokenizer.from_pretrained(model_id).chat_template`; tool-call rendering policy in `tools.py`. Backend helpers: `register_chat_template`, `list_chat_templates`, `get_chat_template_by_name` on both backends. |
+| G-03 | MCP read tools: render_conversation + list_chat_templates + register_template + template-aware get_chunk | G-02 | `corpus_forge/mcp/server.py`, `corpus_forge/mcp/templates.py` (new dispatch), `tests/unit/test_mcp_templates_dispatch.py`, `tests/integration/test_render_conversation_mcp.py` | med | pending | — | Wave 2; 3 new MCP tools (render_conversation/list_chat_templates/register_template); get_chunk gains `template?:str` arg producing `templated_text` on message chunks. `register_template` is a WRITE tool (gated by writes_enabled). |
+| G-04 | corpus-forge export chat CLI + new view | G-02 | `corpus_forge/export.py` (new helpers), `corpus_forge/cli.py` (export chat subcommand), `tests/unit/test_export_chat_cli.py`, `tests/integration/test_export_chat_jsonl.py`, `tests/integration/test_export_chat_parquet_hf_compatible.py` | med | pending | — | Wave 3; `corpus-forge export chat --template chatml --dataset cf-self-docs --out ./out.jsonl`; produces HF-format JSONL/Parquet rows. Optional `--push` flag to push to a Hub dataset repo (uses existing `[hf]` extra). |
+| G-05 | End-to-end integration smoke | G-03, G-04 | `tests/integration/test_render_register_export_e2e.py`, `tests/smoke/test_skill_tool_contract.py` (extend to 14 tools when writes_enabled) | med | pending | — | Wave 4; round-trip: append a conversation via F's append_conversation, register a custom Jinja via register_template, render via render_conversation, export the dataset to JSONL, load with `datasets.load_dataset`. |
+| G-06 | tdd-qa clean-room re-run + close-out | G-05 | `.planning/tdd/tasks.md` | low | pending | — | Wave 5; principal bookkeeping. |
+
+## Phase G commit prefix
+
+`[<role>] phase-g/<task-id>: <slice>`.
+
