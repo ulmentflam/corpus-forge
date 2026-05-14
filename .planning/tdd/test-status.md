@@ -2292,3 +2292,42 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   115 failed in 0.93s
   ```
 - Status: red — handed off to tdd-coder
+
+## phase-g/G-03
+- Test files:
+  - `tests/unit/test_mcp_templates_dispatch.py`
+  - `tests/integration/test_render_conversation_mcp.py`
+- Run command: `.venv/bin/python -m pytest tests/unit/test_mcp_templates_dispatch.py tests/integration/test_render_conversation_mcp.py -v --continue-on-collection-errors`
+- Edge case checklist:
+  - [x] happy — render_conversation with chatml builtin, list_chat_templates, register_template, get_chunk with template
+  - [x] boundaries — n_messages=1, empty template list, duplicate template name, nonexistent conversation_id
+  - [x] type/format — custom_jinja with Jinja expressions (length filter, role/content access)
+  - [x] state — fresh DB (empty list), dirty DB (registered templates), idempotent duplicate register
+  - [N/A] concurrency — pure dispatch functions, no concurrent paths
+  - [x] failure paths — nonexistent conversation_id raises; dry_run does not persist; document chunk has no templated_text
+  - [N/A] locale/time — no timestamp logic in these tools
+  - [x] production-realistic data — 3-message conversations with alternating user/assistant roles
+  - [x] regression hooks — truncation flag test; HF source row dispatches to hf_template (not jinja); custom source uses stored jinja
+- Resolution priority pinned: custom_jinja > model_id (HF fetch) > template_name (DB lookup → builtin fallback)
+- HF table row shape pinned: source='huggingface', jinja=NULL, model_id=NOT NULL
+- Truncation threshold: test uses >1000 as boundary; coder may choose any threshold ≤1000 (must document)
+- Red output (tail):
+  ```
+  ERROR tests/unit/test_mcp_templates_dispatch.py
+    ImportError: cannot import name 'templates' from 'corpus_forge.mcp'
+
+  FAILED tests/integration/test_render_conversation_mcp.py::TestToolsRegistered::test_render_conversation_registered
+  FAILED tests/integration/test_render_conversation_mcp.py::TestToolsRegistered::test_list_chat_templates_registered
+  FAILED tests/integration/test_render_conversation_mcp.py::TestToolsRegistered::test_register_template_registered
+  FAILED tests/integration/test_render_conversation_mcp.py::TestRenderConversationEndToEnd::test_chatml_round_trip_returns_text
+    AssertionError: MCP tool 'render_conversation' returned isError=True: unknown tool: 'render_conversation'
+  FAILED tests/integration/test_render_conversation_mcp.py::TestRenderConversationEndToEnd::test_render_with_custom_jinja_via_mcp
+  FAILED tests/integration/test_render_conversation_mcp.py::TestRenderConversationEndToEnd::test_nonexistent_conversation_returns_error
+  FAILED tests/integration/test_render_conversation_mcp.py::TestRegisterThenRender::test_register_custom_then_render
+  FAILED tests/integration/test_render_conversation_mcp.py::TestRegisterThenRender::test_dry_run_register_does_not_persist
+  FAILED tests/integration/test_render_conversation_mcp.py::TestListChatTemplatesIntegration::test_list_empty_on_fresh_backend
+  FAILED tests/integration/test_render_conversation_mcp.py::TestListChatTemplatesIntegration::test_list_includes_registered
+  FAILED tests/integration/test_render_conversation_mcp.py::TestListChatTemplatesIntegration::test_list_entries_have_required_fields
+  11 failed, 1 error in 0.60s
+  ```
+- Status: red — handed off to tdd-coder
