@@ -2380,3 +2380,23 @@ class SQLiteBackend:
         """Return the chat_templates row for *name*, or None if absent."""
         rows = self._execute("SELECT * FROM chat_templates WHERE name = ? LIMIT 1", (name,))
         return rows[0] if rows else None
+
+    # ── G-03 conversation helpers ─────────────────────────────────────────────
+
+    def get_conversation(self, conversation_id: int) -> "dict | None":
+        """Return the conversations row for *conversation_id*, or None if absent."""
+        rows = self._execute(
+            "SELECT * FROM conversations WHERE id = ? LIMIT 1",
+            (conversation_id,),
+        )
+        return rows[0] if rows else None
+
+    def list_conversation_messages(self, conversation_id: int) -> "list[dict]":
+        """Return all messages for *conversation_id* ordered by turn_index.
+
+        Each dict has at minimum: id, conversation_id, turn_index, role, content.
+        """
+        return self._execute(
+            "SELECT * FROM messages WHERE conversation_id = ? ORDER BY turn_index",
+            (conversation_id,),
+        )

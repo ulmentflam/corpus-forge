@@ -1840,3 +1840,23 @@ class PostgresBackend(StorageBackend):
         """Return the corpus.chat_templates row for *name*, or None if absent."""
         rows = self._execute("SELECT * FROM corpus.chat_templates WHERE name = %s LIMIT 1", (name,))
         return rows[0] if rows else None
+
+    # ── G-03 conversation helpers ─────────────────────────────────────────────
+
+    def get_conversation(self, conversation_id: int) -> "dict | None":
+        """Return the corpus.conversations row for *conversation_id*, or None."""
+        rows = self._execute(
+            "SELECT * FROM corpus.conversations WHERE id = %s LIMIT 1",
+            (conversation_id,),
+        )
+        return rows[0] if rows else None
+
+    def list_conversation_messages(self, conversation_id: int) -> "list[dict]":
+        """Return all messages for *conversation_id* ordered by turn_index.
+
+        Each dict has at minimum: id, conversation_id, turn_index, role, content.
+        """
+        return self._execute(
+            "SELECT * FROM corpus.messages WHERE conversation_id = %s ORDER BY turn_index",
+            (conversation_id,),
+        )

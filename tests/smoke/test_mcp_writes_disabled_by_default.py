@@ -36,7 +36,14 @@ pytestmark = pytest.mark.smoke
 # Expected tool sets
 # ---------------------------------------------------------------------------
 
-_READ_TOOL_NAMES = {"search", "get_chunk", "list_datasets"}
+# G-03: render_conversation + list_chat_templates are always-available read tools.
+_READ_TOOL_NAMES = {
+    "search",
+    "get_chunk",
+    "list_datasets",
+    "render_conversation",
+    "list_chat_templates",
+}
 
 _WRITE_TOOL_NAMES = {
     "add_label",
@@ -47,6 +54,8 @@ _WRITE_TOOL_NAMES = {
     "append_conversation",
     "append_message",
     "add_feedback",
+    # G-03 write tool
+    "register_template",
 }
 
 _ALL_TOOL_NAMES = _READ_TOOL_NAMES | _WRITE_TOOL_NAMES

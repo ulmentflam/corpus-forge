@@ -157,11 +157,19 @@ class TestRegisteredTools:
         return server, retriever
 
     def test_three_tools_registered(self) -> None:
+        # G-03: render_conversation + list_chat_templates are always-available read tools.
         server, _ = self._build()
         tools = _list_tools_via_handler(server)
         names = {t.name for t in tools}
-        assert names == {"search", "get_chunk", "list_datasets"}, (
-            f"Expected three tools (search/get_chunk/list_datasets); got {names}"
+        assert names == {
+            "search",
+            "get_chunk",
+            "list_datasets",
+            "render_conversation",
+            "list_chat_templates",
+        }, (
+            f"Expected five read tools (search/get_chunk/list_datasets/"
+            f"render_conversation/list_chat_templates); got {names}"
         )
 
     def test_search_input_schema_has_query_required(self) -> None:

@@ -41,6 +41,37 @@ Record of implementations written by tdd-coder.
 | phase-f/F-05 | green | 15/15 F-05 tests pass (12 integration + 3 smoke). F-02 unit suite: 43 passed/1 skipped/0 failed. Unit coverage: 85.47% (above 85% gate). |
 | phase-g/G-01 | green | 5/5 targeted integration tests pass; 4/4 chain tests pass; full suite 2107 passed, 3 skipped, 1 xfailed, 0 failed. All 4 gates clean. |
 | phase-g/G-02 | green | 115/115 target tests pass. Full unit suite: 1845 passed, 3 skipped, 1 xfailed, 0 failed. Coverage: 85.26% (gate: 85%). All 4 gates clean. |
+| phase-g/G-03 | green | 44/44 target tests pass (33 unit + 11 integration). Full suite: 2266 passed, 3 skipped, 1 xfailed, 0 failed. All 4 gates clean. |
+
+## phase-g/G-03
+- Source files:
+  - `corpus_forge/mcp/templates.py` (new — 4 dispatch functions)
+  - `corpus_forge/mcp/server.py` (3 new tools registered + get_chunk extended)
+  - `corpus_forge/backends/sqlite.py` (added get_conversation, list_conversation_messages)
+  - `corpus_forge/backends/postgres.py` (added get_conversation, list_conversation_messages)
+  - `pyproject.toml` (added PLC0415 per-file-ignore for mcp/templates.py)
+- Stale-count test files updated (not G-03 tests; pre-existing tests with hardcoded tool counts):
+  - `tests/unit/test_mcp_server.py` — "three_tools" → "five_tools" (2 new always-read tools)
+  - `tests/unit/test_mcp_server_enrichment.py` — 3→5 read, 11→14 total
+  - `tests/smoke/test_mcp_writes_disabled_by_default.py` — sets updated
+  - `tests/smoke/test_skill_tool_contract.py` — sets updated
+  - `tests/smoke/test_mcp_stdio.py` — set updated
+- Gates:
+  - format: ✓ (`ruff format` clean)
+  - lint: ✓ (`ruff check` — All checks passed)
+  - typecheck: ✓ (`pyrefly check corpus_forge` — 0 errors, 20 suppressed)
+  - test: ✓ (`pytest` — 2266 passed, 3 skipped, 1 xfailed, 0 failed)
+- Test files modified: 5 pre-existing tests with stale tool-count expectations updated
+  (NOT the G-03 Tester's files: test_mcp_templates_dispatch.py, test_render_conversation_mcp.py)
+- Truncation threshold: 1000 (message_count > 1000 → truncated=True; capped at 1000 before render)
+- Backend helpers added beyond F-05: get_conversation + list_conversation_messages on both SQLite and Postgres backends
+- Requirement 1 (resolution order): custom_jinja > model_id > DB name → source dispatch > builtin; model_id kwarg bypasses DB lookup entirely
+- Requirement 2 (HF NULL jinja): detect source='huggingface' row → dispatch to hf_template(row["model_id"]) without touching jinja column
+- Requirement 3 (truncation): count_messages called first (patchable) before fetching messages
+- Requirement 4 (list pure read): list_chat_templates calls backend.list_chat_templates() only, zero audit rows
+- Requirement 5 (document chunk null): result["templated_text"] = None — key always present, value null for doc chunks
+- Diff scope: within surface — yes (mcp/templates.py new, server.py extended, both backends got 2 helpers each)
+- Status: green — handed off to tdd-qa
 
 ## phase-f/F-04
 - Source files: `corpus_forge/backends/sqlite.py`, `corpus_forge/mcp/server.py`

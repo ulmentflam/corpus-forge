@@ -236,23 +236,41 @@ class TestWritesEnabledGate:
     def test_writes_disabled_exposes_only_3_tools(
         self, backend: SQLiteBackend, seeded: dict
     ) -> None:
-        """When writes_enabled=False, only search/get_chunk/list_datasets are registered."""
+        """When writes_enabled=False, only read tools are registered.
+
+        G-03: render_conversation + list_chat_templates are always-available
+        read tools, so the set is now 5 (not 3).
+        """
         server = _build_server(backend, writes_enabled=False)
         tools = _list_tools(server)
-        assert set(tools) == {"search", "get_chunk", "list_datasets"}, (
-            f"Expected exactly 3 read tools; got: {sorted(tools)}"
+        assert set(tools) == {
+            "search",
+            "get_chunk",
+            "list_datasets",
+            "render_conversation",
+            "list_chat_templates",
+        }, (
+            f"Expected exactly 5 read tools; got: {sorted(tools)}"
         )
 
     def test_writes_enabled_exposes_all_11_tools(
         self, backend: SQLiteBackend, seeded: dict
     ) -> None:
-        """When writes_enabled=True, all 11 tools (3 read + 8 write) are registered."""
+        """When writes_enabled=True, all tools (5 read + 9 write) are registered.
+
+        G-03 adds register_template (write-gated) + render_conversation +
+        list_chat_templates (read, always available) = 14 total.
+        """
         server = _build_server(backend, writes_enabled=True)
         tools = _list_tools(server)
         expected = {
             "search",
             "get_chunk",
             "list_datasets",
+            # G-03 read tools
+            "render_conversation",
+            "list_chat_templates",
+            # F-03 write tools
             "add_label",
             "remove_label",
             "set_metadata",
@@ -261,9 +279,11 @@ class TestWritesEnabledGate:
             "append_conversation",
             "append_message",
             "add_feedback",
+            # G-03 write tool
+            "register_template",
         }
         assert set(tools) == expected, (
-            f"Expected 11 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
+            f"Expected 14 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
         )
 
     def test_unknown_tool_returns_error_when_writes_disabled(

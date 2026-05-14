@@ -150,8 +150,16 @@ def test_mcp_stdio_smoke(tmp_path: Path) -> None:
     captured = asyncio.run(_drive_mcp_session(server_params))
 
     # ── Assertions ────────────────────────────────────────────────────
-    assert set(captured["tools"]) == {"search", "get_chunk", "list_datasets"}, (
-        f"Expected three tools; got {captured['tools']}"
+    # G-03: render_conversation + list_chat_templates are always-available read tools.
+    _expected_read_tools = {
+        "search",
+        "get_chunk",
+        "list_datasets",
+        "render_conversation",
+        "list_chat_templates",
+    }
+    assert set(captured["tools"]) == _expected_read_tools, (
+        f"Expected five read tools; got {captured['tools']}"
     )
     assert not captured["search_isError"], (
         f"search returned isError=True; content={captured['search_content']}"

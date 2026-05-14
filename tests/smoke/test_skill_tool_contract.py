@@ -51,7 +51,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client  # noqa: E402
 
 pytestmark = pytest.mark.smoke
 
-# ── Expected write tool names (F-03 / F-05) ──────────────────────────────────
+# ── Expected write tool names (F-03 / F-05 / G-03) ──────────────────────────
 _WRITE_TOOLS = {
     "add_label",
     "remove_label",
@@ -61,8 +61,17 @@ _WRITE_TOOLS = {
     "append_conversation",
     "append_message",
     "add_feedback",
+    # G-03 write tool
+    "register_template",
 }
-_READ_TOOLS = {"search", "get_chunk", "list_datasets"}
+# G-03: render_conversation + list_chat_templates are always-available read tools.
+_READ_TOOLS = {
+    "search",
+    "get_chunk",
+    "list_datasets",
+    "render_conversation",
+    "list_chat_templates",
+}
 _ALL_11_TOOLS = _READ_TOOLS | _WRITE_TOOLS
 
 
@@ -197,12 +206,11 @@ def _skill_allowed_tools() -> list[str]:
 
 
 def test_server_exposes_11_tools_when_writes_enabled() -> None:
-    """build_server(writes_enabled=True) must advertise exactly 11 tools.
+    """build_server(writes_enabled=True) must advertise all tools.
 
-    F-05 load-bearing pin.  Does NOT require Docker or a seed corpus —
-    only the in-process MCP server registration is exercised.
-
-    Expected: 3 read tools + 8 write tools = 11 total.
+    G-03 update: 5 read tools + 9 write tools = 14 total.
+    (Previously 3 read + 8 write = 11; G-03 added render_conversation,
+    list_chat_templates as read tools and register_template as a write tool.)
     """
     tools = _list_in_process_server_tools(writes_enabled=True)
     missing = _ALL_11_TOOLS - tools
@@ -218,9 +226,9 @@ def test_server_exposes_11_tools_when_writes_enabled() -> None:
 
 
 def test_server_exposes_only_3_tools_when_writes_disabled() -> None:
-    """build_server(writes_enabled=False) must advertise exactly 3 read tools.
+    """build_server(writes_enabled=False) must advertise only read tools.
 
-    F-05 complementary pin to the 11-tool assertion above.
+    G-03 update: 5 read tools (previously 3).
     """
     tools = _list_in_process_server_tools(writes_enabled=False)
     assert tools == _READ_TOOLS, (

@@ -119,6 +119,14 @@ _GET_CHUNK_INPUT_SCHEMA: dict[str, Any] = {
             "description": "Include recent_feedback on the chunk (default: true).",
             "default": True,
         },
+        "template": {
+            "type": "string",
+            "description": (
+                "Optional chat template name.  When provided, the response "
+                "includes templated_text (rendered text for message chunks, "
+                "null for document chunks)."
+            ),
+        },
     },
     "required": ["chunk_id"],
     "additionalProperties": False,
@@ -244,6 +252,78 @@ _ADD_FEEDBACK_INPUT_SCHEMA: dict[str, Any] = {
         "dry_run": {"type": "boolean"},
     },
     "required": ["entity_type", "entity_id", "kind"],
+    "additionalProperties": False,
+}
+
+
+# ── JSON schemas for the three G-03 template tools ────────────────────────
+
+_RENDER_CONVERSATION_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "conversation_id": {
+            "type": "integer",
+            "description": "Primary key of the conversation to render.",
+        },
+        "template": {
+            "type": "string",
+            "description": "Chat template name (default: chatml).",
+        },
+        "model_id": {
+            "type": "string",
+            "description": (
+                "HuggingFace model id.  When set, the HF tokenizer's "
+                "chat_template is fetched and used (takes priority over "
+                "template name lookup)."
+            ),
+        },
+        "custom_jinja": {
+            "type": "string",
+            "description": (
+                "Raw Jinja2 template string.  Highest priority — overrides "
+                "both model_id and template name when present."
+            ),
+        },
+        "include_tool_calls": {
+            "type": "boolean",
+            "description": "Include tool call messages in the render (default: true).",
+            "default": True,
+        },
+    },
+    "required": ["conversation_id"],
+    "additionalProperties": False,
+}
+
+_LIST_CHAT_TEMPLATES_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": False,
+}
+
+_REGISTER_TEMPLATE_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "name": {
+            "type": "string",
+            "description": "Unique name for the template.",
+        },
+        "jinja": {
+            "type": "string",
+            "description": "Jinja2 template source string.",
+        },
+        "description": {
+            "type": "string",
+            "description": "Optional human-readable description.",
+        },
+        "dry_run": {
+            "type": "boolean",
+            "description": (
+                "When true, validate but do not persist the template row "
+                "(an audit row is still emitted with dry_run=true)."
+            ),
+        },
+    },
+    "required": ["name", "jinja"],
     "additionalProperties": False,
 }
 
@@ -385,7 +465,9 @@ def build_server(
                 name="get_chunk",
                 description=(
                     "Fetch a single chunk by primary id.  Returns the chunk's "
-                    "text, content hash, dataset, and metadata."
+                    "text, content hash, dataset, and metadata.  Pass template= "
+                    "to also receive templated_text (rendered for message chunks, "
+                    "null for document chunks)."
                 ),
                 inputSchema=_GET_CHUNK_INPUT_SCHEMA,
             ),
@@ -396,6 +478,25 @@ def build_server(
                     "kind, description, and document/chunk counts."
                 ),
                 inputSchema=_LIST_DATASETS_INPUT_SCHEMA,
+            ),
+            # G-03 read tools (always available)
+            mt.Tool(
+                name="render_conversation",
+                description=(
+                    "Render a conversation's messages under a chat template.  "
+                    "Returns the rendered text, message count, and truncation flag.  "
+                    "Resolution order: custom_jinja > model_id > template name > builtin."
+                ),
+                inputSchema=_RENDER_CONVERSATION_INPUT_SCHEMA,
+            ),
+            mt.Tool(
+                name="list_chat_templates",
+                description=(
+                    "List all registered chat templates in the backend.  "
+                    "Built-in templates (chatml, llama3, …) are not included "
+                    "unless explicitly registered.  Read-only — no audit row."
+                ),
+                inputSchema=_LIST_CHAT_TEMPLATES_INPUT_SCHEMA,
             ),
         ]
         if writes_enabled:
@@ -442,6 +543,16 @@ def build_server(
                     description="Record user feedback (rating or text) on an entity.",
                     inputSchema=_ADD_FEEDBACK_INPUT_SCHEMA,
                 ),
+                # G-03 write tool (gated by writes_enabled)
+                mt.Tool(
+                    name="register_template",
+                    description=(
+                        "Register a custom Jinja2 chat template in the backend.  "
+                        "Use dry_run=true to validate without persisting.  "
+                        "Returns template_id and audit_id."
+                    ),
+                    inputSchema=_REGISTER_TEMPLATE_INPUT_SCHEMA,
+                ),
             ]
         return tools
 
@@ -453,6 +564,11 @@ def build_server(
             return await _dispatch_get_chunk(arguments)
         if name == "list_datasets":
             return await _dispatch_list_datasets(arguments)
+        # G-03 read tools — always available
+        if name == "render_conversation":
+            return await _dispatch_render_conversation(arguments)
+        if name == "list_chat_templates":
+            return await _dispatch_list_chat_templates(arguments)
         if writes_enabled:
             if name == "add_label":
                 return await _dispatch_add_label(arguments)
@@ -470,6 +586,9 @@ def build_server(
                 return await _dispatch_append_message(arguments)
             if name == "add_feedback":
                 return await _dispatch_add_feedback(arguments)
+            # G-03 write tool
+            if name == "register_template":
+                return await _dispatch_register_template(arguments)
         return _error_result(f"unknown tool: {name!r}")
 
     # ── dispatchers (closures share `_get_retriever` / `_get_reranker`)
@@ -588,11 +707,20 @@ def build_server(
         include_labels = bool(arguments.get("include_labels", True))
         include_description = bool(arguments.get("include_description", True))
         include_feedback = bool(arguments.get("include_feedback", True))
+        template_arg: str | None = arguments.get("template")
 
         retriever = _get_retriever()
         backend = getattr(retriever, "backend", None)
         if backend is None:
             return _error_result("retriever has no backend; cannot fetch chunk")
+
+        # When template= is provided, delegate to get_chunk_with_template.
+        if template_arg is not None:
+            from corpus_forge.mcp import templates as _tmpl
+
+            ctx = _make_write_ctx()
+            return _tmpl.get_chunk_with_template(backend, ctx, chunk_id, template_arg)
+
         chunk = backend.get_chunk(chunk_id)
         if chunk is None:
             return _error_result(f"chunk_id={chunk_id} not found")
@@ -808,6 +936,55 @@ def build_server(
             rating=arguments.get("rating"),
             text=arguments.get("text"),
             metadata=arguments.get("metadata"),
+            dry_run=bool(arguments.get("dry_run", False)),
+        )
+        return result
+
+    # ── G-03 template dispatchers ────────────────────────────────────────
+
+    async def _dispatch_render_conversation(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp import templates as _tmpl
+
+        backend = _get_write_backend()
+        if backend is None:
+            return _error_result("retriever has no backend; cannot render conversation")
+        ctx = _make_write_ctx()
+        try:
+            result = _tmpl.render_conversation(
+                backend,
+                ctx,
+                int(arguments["conversation_id"]),
+                arguments.get("template", "chatml"),
+                model_id=arguments.get("model_id"),
+                custom_jinja=arguments.get("custom_jinja"),
+                include_tool_calls=bool(arguments.get("include_tool_calls", True)),
+            )
+        except (ValueError, KeyError, LookupError, RuntimeError) as exc:
+            return _error_result(str(exc))
+        return result
+
+    async def _dispatch_list_chat_templates(_arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp import templates as _tmpl
+
+        backend = _get_write_backend()
+        if backend is None:
+            return {"templates": []}
+        ctx = _make_write_ctx()
+        return _tmpl.list_chat_templates(backend, ctx)
+
+    async def _dispatch_register_template(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp import templates as _tmpl
+
+        backend = _get_write_backend()
+        if backend is None:
+            return _error_result("retriever has no backend; cannot register template")
+        ctx = _make_write_ctx()
+        result = _tmpl.register_template(
+            backend,
+            ctx,
+            arguments["name"],
+            arguments["jinja"],
+            description=arguments.get("description"),
             dry_run=bool(arguments.get("dry_run", False)),
         )
         return result

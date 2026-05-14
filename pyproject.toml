@@ -149,6 +149,9 @@ ignore = ["PLR0911", "PLR0912", "PLR0913", "PLR0915"]
 # mcp/server.py defers all mcp.* imports into build_server() so the module is
 # importable without the optional [mcp] extra (mirrors retrieval/rerank/*.py).
 "corpus_forge/mcp/server.py" = ["PLC0415"]
+# mcp/templates.py uses lazy imports to avoid circular imports with the
+# corpus_forge.templates package (same pattern as mcp/server.py and cli.py).
+"corpus_forge/mcp/templates.py" = ["PLC0415"]
 # Tests use magic values, lambda args, broad raises, composite assertions freely
 "tests/**/*.py" = [
     "PLR2004",  # magic-value-comparison
