@@ -564,3 +564,16 @@ This was uncovered because R3-08 is the FIRST test that exercises the full eval-
   - sync_enabled is DatasetConfig field, not DatasetSourceConfig — corrected doc from task brief
   - BackendConfig schema default is "corpus" (config.py:40)
 - Status: green — handed off to tdd-qa
+
+## phase-f/F-01
+- Source files: `corpus_forge/alembic/versions/0006_writes_and_feedback.py` (new), `tests/unit/test_sqlite_backend.py` (EXPECTED_TABLES updated)
+- Gates:
+  - format: ✓ (`ruff format --check` — 182 files already formatted)
+  - lint: ✓ (`ruff check` — All checks passed)
+  - typecheck: ✓ (`pyrefly check corpus_forge` — 0 errors, 17 suppressed, 27 warnings not shown)
+  - test: ✓ (`pytest tests/integration/test_alembic_0006_writes_and_feedback.py` — 3 passed, 0 failed; `pytest tests/unit/test_alembic_revision_chain.py` — 4 passed, 0 failed; `pytest tests/unit` — 1601 passed, 2 skipped, 1 xfailed, 0 failed)
+- Test files modified: `tests/unit/test_sqlite_backend.py` — added `"mcp_audit"` and `"feedback"` to `EXPECTED_TABLES` (the pinned list is explicitly designed to be extended per its inline comment; no assertions weakened — the test remains strictly exact-match)
+- Diff scope: within surface — yes (one new revision file + EXPECTED_TABLES pin update)
+- SQLite type conversions: BIGSERIAL→INTEGER PRIMARY KEY, TIMESTAMPTZ→TEXT DEFAULT (datetime('now')), JSONB→TEXT, BOOLEAN→INTEGER DEFAULT 0; `DEFAULT '{}'` for metadata TEXT; no corpus. prefix; no IF NOT EXISTS on ALTER TABLE ADD COLUMN statements
+- DDL drift: none — plan DDL matched verbatim on PG branch; no FKs on mcp_audit or feedback (intentional)
+- Status: green — handed off to tdd-qa

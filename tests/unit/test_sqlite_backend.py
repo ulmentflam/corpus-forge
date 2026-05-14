@@ -213,6 +213,9 @@ class TestSchemaTablePresence:
             # Alembic tracking table added by Alembic in D-10 (was not present
             # with the legacy SQL-file migrator).
             "alembic_version",
+            # F-01 (0006_writes_and_feedback) adds these two append-only log tables.
+            "mcp_audit",
+            "feedback",
         ]
     )
 
