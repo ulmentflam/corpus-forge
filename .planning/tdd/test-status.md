@@ -2063,3 +2063,49 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
     no surprise — the plan names match what pg_indexes will expose.
   - SQLite parity is intentionally OUT OF SCOPE for this file (column type info unreliable in
     sqlite_master). The F-01 coder adds a SQLite branch in the revision itself.
+
+## F-02
+- Test files: `tests/unit/test_backend_write_helpers.py`
+- Run command: `uv run pytest tests/unit/test_backend_write_helpers.py -v`
+- Edge case checklist:
+  - [x] happy — all 9 helpers have a happy-path test
+  - [x] boundaries — empty messages list for append_conversation; single-element hit list for hydrate; revoke non-existent; idempotent double-revoke
+  - [x] type/format — before/after JSON serialization round-trip (audit_event); confidence REAL storage; NULL client/session_id in audit
+  - [x] state — duplicate label reuses label_id (created=False); description cleared on set_to_None; turn_index advances monotonically
+  - [x] concurrency — concurrent append_message threads get distinct turn_indexes
+  - [ ] N/A — failure paths (unit tests hit in-memory SQLite; disk-full / permission errors are infra-level, not logic-level)
+  - [ ] N/A — locale/time (timestamps stored as ISO strings; UTC-only in tests; DST not relevant for append operations)
+  - [x] production-realistic — seeded fixture inserts a real dataset/document/chunk/conversation hierarchy matching actual ingest output
+  - [ ] N/A — regression hooks (no prior bug referenced by F-02)
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_backend_write_helpers.py::TestAppendMessage::test_turn_index_advances_monotonically
+  FAILED tests/unit/test_backend_write_helpers.py::TestAppendMessage::test_happy_path_appends_to_existing_conversation
+  FAILED tests/unit/test_backend_write_helpers.py::TestAppendMessage::test_concurrent_appends_get_distinct_turn_indexes
+  FAILED tests/unit/test_backend_write_helpers.py::TestAppendMessage::test_optional_fields_stored
+  AttributeError: 'SQLiteBackend' object has no attribute 'audit_event'
+  AttributeError: 'SQLiteBackend' object has no attribute 'apply_label'
+  42 failed, 1 passed, 1 skipped in 0.75s
+  ```
+- Status: red — handed off to tdd-coder
+- Notes:
+  - Backend target: SQLite in-memory only. PG-only behaviour (JSONB merge, NOW() defaults,
+    BIGSERIAL sequencing) deferred to F-05 integration smoke.
+  - Dual-backend fixture decision: the existing `storage_backend` parametrize fixture in conftest
+    covers both backends for B-16 tests. F-02 unit tests use SQLite-only for speed and isolation;
+    the conftest `storage_backend` fixture could extend these tests to PG in F-05 with no changes
+    to the test bodies.
+  - audit_event design call: tests pin `audit_event` as a STANDALONE helper (not called internally
+    by the other helpers). The F-03 MCP dispatch layer calls it explicitly. This is cleaner for
+    unit testing: each helper test doesn't depend on audit_event working, and the Coder can
+    implement audit_event separately. Flag to Coder: if you wire audit_event internally, adjust
+    the happy-path tests to account for the side-effect.
+  - Hit dataclass is frozen (frozen=True) — hydrate_hit_metadata cannot mutate in-place.
+    The tests accept either a new list of augmented Hit objects OR dict objects. The Coder
+    must decide: return new objects (preferred — respects frozen dataclass) or return dicts.
+    Tests are written to handle both patterns via hasattr/isinstance guards.
+  - document_labels has NO confidence column (only chunk_labels does). apply_label with
+    confidence on a document entity_type should silently ignore confidence or raise — tests
+    don't pin this edge case to give Coder flexibility.
+  - Parent-rollup (chunk hit inherits document's labels) is marked skip with
+    reason="parent-rollup is F-04's concern" — boundary explicitly documented.
