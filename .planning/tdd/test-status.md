@@ -105,7 +105,36 @@ Record of test suites written by tdd-tester.
   ```
 - Status: red — handed off to tdd-coder
   The `render_conversation` MCP tool resolves custom templates via `backend.get_chat_template_by_name()`.
-  `export_chat` must be updated to pass `backend` into `templates.render` (or accept a `backend` param
+  `export_chat` must be updated to pass `backend` into `templates.render` (or accept a `backend` param)
+
+## H-02 — writes.py session-link hook + register_session MCP tool
+- Test files:
+  - `tests/unit/test_writes_session_link.py` (new — 15 tests)
+  - `tests/unit/test_mcp_register_session_dispatch.py` (new — 3 tests)
+  - `tests/smoke/test_mcp_writes_disabled_by_default.py` (updated — register_session added to write set, 9→10)
+  - `tests/smoke/test_skill_tool_contract.py` (updated — _ALL_14_TOOLS→_ALL_15_TOOLS, test renamed _14→_15)
+- Run command: `.venv/bin/python -m pytest tests/unit/test_writes_session_link.py tests/unit/test_mcp_register_session_dispatch.py tests/smoke/test_mcp_writes_disabled_by_default.py tests/smoke/test_skill_tool_contract.py -v`
+- Edge case checklist:
+  - [x] happy — upsert creates row; add_label with session creates session + event; register_session creates row
+  - [x] boundaries — duplicate (client, session_id) → same id; None session_id skips all feedback tables; two writes → 1 session row + 2 event rows
+  - [x] type/format — ValueError raised when append_feedback_event called with both audit_id=None + feedback_id=None
+  - [x] state — fresh in-memory backend per test; idempotency of upsert verified
+  - [ ] N/A — concurrency (pure sequential dispatch functions, no shared mutable state)
+  - [x] failure paths — end_feedback_session for unknown session returns False (no raise); no-session skips tables entirely
+  - [ ] N/A — locale/time (started_at stored as ISO string; no locale assertions needed)
+  - [x] production-realistic — uses real SQLiteBackend (migrated) + real writes.py dispatch functions
+  - [x] regression hooks — test_skips_feedback_tables_when_session_id_is_none pins back-compat with F-03 dispatch tests
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_mcp_register_session_dispatch.py::TestRegisterSessionDispatch::test_creates_session_row_and_returns_dict
+  FAILED tests/unit/test_mcp_register_session_dispatch.py::TestRegisterSessionDispatch::test_duplicate_returns_existing_id_and_created_false
+  FAILED tests/unit/test_mcp_register_session_dispatch.py::TestRegisterSessionDispatch::test_explicit_host_overrides_ctx_host
+  FAILED tests/unit/test_writes_session_link.py::TestUpsertFeedbackSession::test_creates_row_on_first_call
+  ... (14 more attribute/assertion errors)
+  E   AttributeError: 'SQLiteBackend' object has no attribute 'upsert_feedback_session'
+  19 failed, 5 passed in 0.82s
+  ```
+- Status: red — handed off to tdd-coder
   and resolve custom templates before calling render). This is the Coder's fix target.
 - Status: red — 2/3 integration tests failing for right reason; handed off to tdd-coder
 
