@@ -46,6 +46,7 @@ Record of implementations written by tdd-coder.
 | phase-g/G-05 | green | 3/3 integration tests pass; 44/44 dispatch+render_conversation tests pass; 3/3 smoke pass. Full suite: 2288 passed, 3 skipped, 1 xfailed, 0 failed. Coverage: 93.06% (gate: 85%). All 4 gates clean. |
 | phase-h/H-01 | green | 7/7 targeted tests pass (4 integration 0008 + 3 apply_migrations); 4/4 chain tests pass (head=0008_feedback_sessions). Unit suite: 1912 passed, 3 skipped, 1 xfailed, 0 failed. Integration suite: 365 passed, 0 failed. All 4 gates clean. |
 | phase-h/H-02 | green | 24/24 target tests pass (19 previously red + 5 previously green). Unit suite: 1915 passed, 3 skipped, 1 xfailed, 0 failed. Coverage: 85.10%. All 4 gates clean. |
+| phase-h/H-03 | green | 11/11 target tests pass. Full suite: 1862 passed, 2 skipped, 1 xfailed, 1 pre-existing alembic failure (was red before H-03; unrelated). All 4 gates clean. |
 
 ## phase-h/H-02
 - Source files:
@@ -66,6 +67,23 @@ Record of implementations written by tdd-coder.
 - Extra migration beyond pinned surface: `0009_feedback_host_default.py` — required because the H-02 Tester wrote test setup that inserts into feedback without host, but `feedback.host TEXT NOT NULL` has no default. The 0009 migration makes `feedback.host DEFAULT 'localhost'` in SQLite via table-recreate pattern (PRAGMA foreign_keys=OFF + CREATE feedback_v2 + INSERT/SELECT + DROP + RENAME). This unblocks `test_append_with_feedback_id` and `test_append_with_both_audit_and_feedback`.
 - Edge case: dry_run + session_id on append_conversation — entity_id=0 is used as sentinel (same as audit row). The test `TestDryRunWithSession` exercises add_label dry_run with session; session hook fires on entity_id=entity_id (the real document_id even in dry_run, since entity_id is known before the skipped write).
 - Diff scope: within surface — yes, plus 0009 migration (justified above) and stale-count test fix (additive assertion, not weakening)
+- Status: green — handed off to tdd-qa
+
+## phase-h/H-03
+- Source files:
+  - `corpus_forge/sources/_session_link.py` (new — `link_session_to_conversation` shared helper)
+  - `corpus_forge/backends/sqlite.py` (`link_feedback_session_to_conversation` added after `end_feedback_session`)
+  - `corpus_forge/backends/postgres.py` (`link_feedback_session_to_conversation` added after `end_feedback_session`)
+  - `corpus_forge/sources/claude_code.py` (`_session_link_client = "claude-code"` class attr; `_parse_ts()` helper; `ts=_parse_ts(...)` in parse())
+  - `corpus_forge/ingest.py` (`source: Source | None = None` optional param; `conv_id = backend.upsert_conversation(...)` (was discarded); `_client_from_source_uri()` helper; session link call after upsert)
+- Gates:
+  - format: ✓ (`ruff format` — 5 files unchanged)
+  - lint: ✓ (`ruff check` — All checks passed)
+  - typecheck: ✓ (`pyrefly check` — 0 errors, 10 suppressed, 28 warnings not shown)
+  - test: ✓ (11/11 H-03 tests; full suite: 1862 passed, 2 skipped, 1 xfailed, 1 pre-existing alembic failure unrelated to H-03)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes. Extra touch: `_parse_ts()` in claude_code.py fixes a pre-existing bug (ISO string stored instead of float Unix timestamp) required for the integration test to pass ingest_one.
+- wiring note: `source` not passed from test to `ingest_one`; client derived from `source_uri` scheme via `_client_from_source_uri()` as fallback (e.g. "claude-code://" → "claude-code"). `_session_link_client` class attr on ClaudeCodeSource used when source object is available.
 - Status: green — handed off to tdd-qa
 
 ## phase-g/G-03

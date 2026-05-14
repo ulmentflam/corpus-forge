@@ -73,6 +73,7 @@ def ingest_one(
     chunker: Chunker,
     embedders: list[Embedder],
     dataset_id: int,
+    source: Source | None = None,
 ) -> None:
     """Ingest a single raw document or conversation."""
     logger.debug(f"Ingesting {raw.source_uri}")
@@ -96,7 +97,24 @@ def ingest_one(
         else:  # RawConversation
             # Process conversation
             chunked_messages = _process_conversation(raw, chunker)
-            backend.upsert_conversation(dataset_id, raw, chunked_messages)
+            conv_id = backend.upsert_conversation(dataset_id, raw, chunked_messages)
+            # If the source is a chat client (claude_code/opencode/gemini), link the session.
+            # Prefer explicit _session_link_client on the source object; fall back to
+            # deriving the client from the source_uri scheme (e.g. "claude-code://...").
+            session_link_client = getattr(source, "_session_link_client", None)
+            if session_link_client is None:
+                session_link_client = _client_from_source_uri(raw.source_uri)
+            if session_link_client is not None and raw.external_id is not None:
+                from corpus_forge.sources._session_link import (  # noqa: PLC0415
+                    link_session_to_conversation,
+                )
+
+                link_session_to_conversation(
+                    backend,
+                    client=session_link_client,
+                    session_id=raw.external_id,
+                    conversation_id=conv_id,
+                )
 
         # Generate embeddings for each active embedder
         # This loop remains to handle chunks not covered by bulk copy
@@ -282,6 +300,26 @@ def _instantiate_source(source_config):
         return OpenCodeSource(storage_root=source_config.storage_root, debounce=2.0)
     else:
         raise ValueError(f"Unknown source plugin: {source_config.plugin}")
+
+
+# Maps source_uri scheme prefixes to feedback_sessions client names.
+_SOURCE_URI_TO_CLIENT: dict[str, str] = {
+    "claude-code://": "claude-code",
+    "opencode://": "opencode",
+    "gemini-cli://": "gemini-cli",
+}
+
+
+def _client_from_source_uri(source_uri: str) -> str | None:
+    """Derive the feedback_sessions client string from a source URI scheme.
+
+    Returns None for source URIs that don't correspond to a known chat client
+    (e.g. markdown vault URIs).
+    """
+    for prefix, client in _SOURCE_URI_TO_CLIENT.items():
+        if source_uri.startswith(prefix):
+            return client
+    return None
 
 
 def main(once: bool = False) -> None:

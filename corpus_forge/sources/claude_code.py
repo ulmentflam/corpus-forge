@@ -3,10 +3,29 @@
 import hashlib
 import json
 from collections.abc import Iterator
+from datetime import datetime
 from pathlib import Path
 
 from ._flatten import flatten_message
 from .base import RawConversation, RawMessage, WatchedSource
+
+
+def _parse_ts(ts_value: object) -> float | None:
+    """Convert a Claude Code timestamp to a Unix float, or None if absent/unparseable.
+
+    Claude Code session files store timestamps as ISO-8601 strings
+    (e.g. "2026-05-14T07:34:58.573552+00:00").  ``RawMessage.ts`` and
+    ``RawConversation.started_at``/``ended_at`` are typed ``float | None``
+    (Unix epoch seconds), so we must convert here.
+    """
+    if ts_value is None:
+        return None
+    if isinstance(ts_value, (int, float)):
+        return float(ts_value)
+    try:
+        return datetime.fromisoformat(str(ts_value)).timestamp()
+    except (ValueError, TypeError):
+        return None
 
 
 class ClaudeCodeSource(WatchedSource):
@@ -14,6 +33,7 @@ class ClaudeCodeSource(WatchedSource):
 
     name = "claude_code"
     dataset_kind = "chat"
+    _session_link_client: str = "claude-code"
 
     def __init__(self, projects_root: Path, include_subagents: bool = True, **kwargs):
         super().__init__(projects_root, **kwargs)
@@ -71,7 +91,7 @@ class ClaudeCodeSource(WatchedSource):
                         content=content,
                         tool_calls=None,  # Would extract from message if needed
                         tool_results=None,  # Would extract from message if needed
-                        ts=data.get("timestamp"),
+                        ts=_parse_ts(data.get("timestamp")),
                         metadata={},
                     )
                     messages.append(message)

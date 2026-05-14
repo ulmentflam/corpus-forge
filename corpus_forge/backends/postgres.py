@@ -1945,6 +1945,26 @@ class PostgresBackend(StorageBackend):
             conn.commit()
         return updated
 
+    def link_feedback_session_to_conversation(
+        self, client: str, session_id: str, conversation_id: int
+    ) -> bool:
+        """Set feedback_sessions.conversation_id if currently NULL.
+
+        Returns True if a row was updated, False if no matching row or already linked.
+        """
+        with self._get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE corpus.feedback_sessions
+                SET conversation_id = %s
+                WHERE client = %s AND session_id = %s AND conversation_id IS NULL
+                """,
+                (conversation_id, client, session_id),
+            )
+            updated = (cur.rowcount or 0) > 0
+            conn.commit()
+        return updated
+
     def get_feedback_session_by_key(self, client: str, session_id: str) -> "dict | None":
         """Return the corpus.feedback_sessions row for (client, session_id), or None."""
         rows = self._execute(
