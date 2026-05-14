@@ -2413,9 +2413,59 @@ AD-Sync P1 is already shipped (cross-host sync engine + CLI + revision tracking)
 |----|-------|------------|---------|------|--------|------------|-------|
 | E-01 | Satellite deployment doc + smoke rot-detector | — | `docs/deployment-satellite.md`, `tests/smoke/test_satellite_deployment_doc.py`, `README.md` | low | pending | — | Wave 0; required H2s (Prerequisites / Bootstrap Postgres / Configure host_id / Enable sync / Verify); rot-detector pattern mirrors `tests/unit/test_claude_integration_doc.py` |
 | E-02 | Two-ingester, one-MCP integration smoke | — | `tests/integration/test_two_ingester_one_mcp.py` | med | pending | — | Wave 0 (parallel with E-01; disjoint files); testcontainers PG; daemons ingest disjoint vaults; MCP `search` returns cross-host hits; pin `list_datasets` shows both hosts' sources |
-| E-03 | tdd-qa clean-room re-run + close-out summary | E-01, E-02 | `.planning/tdd/tasks.md` | low | pending | — | Wave 1; principal bookkeeping |
+| E-03 | tdd-qa clean-room re-run + close-out summary | E-01, E-02 | `.planning/tdd/tasks.md` | low | done | tdd-qa | Wave 1; principal bookkeeping — clean-room re-run approved, close-out summary appended |
 
 ## Phase E commit prefix
 
 Same convention: `[<role>] phase-e/<task-id>: <slice>`.
 
+
+## Phase E — close-out summary
+
+Status: **all 3 tasks done.**  Phase E landed on `main` between `1c651a9` (seed) and `e50982b` (E-01 coder GREEN), with this close-out commit on top.
+
+### Slices & commits (chronological)
+
+| Wave | Task | Role | Commit | Slice |
+|------|------|------|--------|-------|
+| 0    | E-01 | tdd-tester    | `050baec` | RED — satellite-deployment doc rot-detector (5 tests pinning required H2s + 3 content refs). |
+| 0    | E-02 | tdd-tester    | `7ddaa3c` | Cross-host topology smoke (3/3 GREEN on first run — multi-host story already works). |
+| 0    | E-01 | tdd-coder     | `e50982b` | GREEN — docs/deployment-satellite.md + README link. |
+| 1    | E-03 | tdd-qa        | this      | Clean-room re-run + close-out summary. |
+
+### Files added
+
+- `docs/deployment-satellite.md` — five-section operator walkthrough.
+- `tests/smoke/test_satellite_deployment_doc.py` — 5-test rot-detector.
+- `tests/integration/test_two_ingester_one_mcp.py` — 3-test cross-host smoke.
+- README cross-link in the "Multi-host deployment" section (line 273–276).
+
+### Files modified
+
+- `README.md` (one new "Multi-host deployment" link + blurb pointing to `docs/deployment-satellite.md`)
+
+### Gates run
+
+`make ci` result (clean-room re-run by tdd-qa):
+- Unit: **1601 passed, 2 skipped, 1 xfailed** (22.65s)
+- Integration: **305 passed, 0 failed** (56.13s) — 3 more than Phase D baseline (302) due to the 3 new E-02 cross-host tests
+- Fuzz: **15 passed** (0.30s)
+- Smoke: **25 passed, 0 failed** (15.70s) — includes all 5 new Phase E doc-rot tests
+- Coverage: **88.30%** on corpus_forge/ (threshold 85%) — PASS (unchanged from Phase D; no production Python modified)
+- Phase E 8-test scoped run: **8/8 PASS** (2.10s)
+- Cross-host smoke 3 consecutive runs: 3/3, 3/3, 3/3 — no flake
+- Migrate/alembic full suite: **77 passed** (all Phase D regression tests still green)
+
+### Risk closure
+
+- **Multi-host topology unofficial → documented + smoke-tested**: closed by E-01 + E-02. Operators can now follow `docs/deployment-satellite.md` to stand up a new satellite; the cross-host smoke catches any regression that breaks the topology.
+- **Doc rot**: the rot-detector pins the 5 H2 sections + 3 content references. If the migration story changes (e.g. `corpus-forge migrate` is renamed), the smoke test fires.
+- **AD-Sync P1 regression net**: the cross-host integration smoke pins `list_datasets` + `search` behavior across two PostgresBackend instances writing to the same DSN.
+- **`sync_enabled` placement accuracy**: doc TOML example correctly places `sync_enabled = true` at `[[datasets]]` level (confirmed: `DatasetConfig.sync_enabled` at config.py:81; `DatasetSourceConfig` has no such field).
+
+### Hand-off
+
+Follow-up items for Phase F:
+- The `corpus-forge migrate history` no-DB defect from Phase D still open (deferred D-08 bug: `ArgumentError: Expected string or URL object, got None` when no DATABASE_URL is set; fix is to pass `indicate_current=False` by default or gate on env var presence).
+- E-02's `_LexicalRetriever` stub is hand-rolled in-test with no dense search. If Phase F adds search-result enrichment (re-ranking, hybrid dense+sparse), refactor to use real retriever and add an embedder fixture.
+- The `BackendConfig` pydantic `schema` field shadow warning (`UserWarning: Field name "schema" in "BackendConfig" shadows an attribute in parent "BaseModel"`) is pre-existing and benign but worth addressing in a Phase F cleanup pass.

@@ -74,3 +74,17 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 - Issues: none blocking; 1 known deferred defect (migrate history no-DB error); 2 pre-existing smoke failures unrelated to Phase D
 - Verdict: approved
 - Notes: Phase D milestone goal fully met — Alembic replaces hand-rolled migrate.py; all 5 revisions ported; both dialects work; public apply_migrations signature stable; parity proven across 10 verdicts before legacy deletion; stderr discipline pinned by 6 smoke tests
+
+---
+
+## Phase E — E-03 (close-out QA)
+
+- Suite: 1601 passed, 2 skipped, 1 xfailed (unit, 22.65s); 305 passed, 0 failed (integration, 56.13s); 15 passed (fuzz, 0.30s); 25 passed, 0 failed (smoke, 15.70s)
+- Coverage: 88.30% on corpus_forge/ (threshold 85%) — PASS (no production Python modified; doc + test files only)
+- Smoke (Phase E specific): `tests/smoke/test_satellite_deployment_doc.py` 5/5 PASS; `tests/integration/test_two_ingester_one_mcp.py` 3/3 PASS (3 consecutive runs, no flake)
+- Regression sweep: 77 migrate/alembic integration tests all green (superset of Phase D's 25-test alembic suite); integration total 305 vs Phase D 302 — delta is exactly the 3 new E-02 cross-host tests; unit 1601 unchanged
+- Doc accuracy: `sync_enabled = true` placed at `[[datasets]]` level in doc TOML example — matches `DatasetConfig.sync_enabled` (config.py:81); `DatasetSourceConfig` has no sync_enabled field; confirmed correct
+- README link: `grep -n "deployment-satellite" README.md` hits lines 273 + 276 in "Multi-host deployment" section — link present and correct
+- Issues: none blocking; 1 pre-existing deferred defect (migrate history no-DB ArgumentError, D-08); 1 pre-existing pydantic shadow warning (BackendConfig.schema)
+- Verdict: approved
+- Notes: Phase E milestone goal fully met — multi-host topology is now documented in `docs/deployment-satellite.md`, pinned by 5 doc-rot tests, and smoke-tested by 3 cross-host integration tests. No production code was modified.
