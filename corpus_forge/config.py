@@ -76,6 +76,11 @@ class ExtractionConfig(BaseModel):
     code_chunker_config: dict = Field(
         default_factory=lambda: {"max_chars": 1500, "min_chars": 100, "overlap": 100}
     )
+    # D-12 (Wave 1): row cap for the CsvExtractor. Tables longer than
+    # ``csv_max_rows`` are sampled via ``head(csv_max_rows)`` and the
+    # resulting ``ExtractedDocument.metadata`` flags ``truncated=True``
+    # so callers can decide whether to fan out additional ingestion.
+    csv_max_rows: int = Field(default=200, gt=0)
 
     model_config = ConfigDict(extra="forbid")
 
