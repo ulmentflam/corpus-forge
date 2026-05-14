@@ -2331,3 +2331,58 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   11 failed, 1 error in 0.60s
   ```
 - Status: red — handed off to tdd-coder
+
+## phase-g/G-04
+- Test files:
+  - `tests/unit/test_export_chat_cli.py`
+  - `tests/integration/test_export_chat_jsonl.py`
+  - `tests/integration/test_export_chat_parquet_hf_compatible.py`
+- Run command: `.venv/bin/python -m pytest tests/unit/test_export_chat_cli.py tests/integration/test_export_chat_jsonl.py tests/integration/test_export_chat_parquet_hf_compatible.py -v`
+- Edge case checklist:
+  - [x] happy path — round-trip JSONL (2 convs x 3 msgs), Parquet load via datasets, dispatch stub called
+  - [x] boundaries — empty dataset (0 convs), zero-message conversation skipped, single conv, message_count=4
+  - [x] type/format — custom_jinja rendering (messages|length), llama3 template field, conversation_id as int
+  - [x] state — fresh backend; dataset not found raises; idempotent dataset name seeding
+  - [N/A] concurrency — pure function, no concurrent paths
+  - [x] failure paths — unknown dataset raises KeyError/ValueError/LookupError/RuntimeError; missing --dataset or --out rejects CLI
+  - [N/A] locale/time — no timestamp logic in export path
+  - [x] production-realistic data — SQLite in-memory with real append_conversation seeding, real chatml/llama3 templates
+  - [x] regression hooks — "no such command" guard ensures subcommand is wired (not just non-zero exit); HF model_id stub test pins monkeypatch path
+- Pinned export_chat signature:
+  ```python
+  def export_chat(
+      dataset: str,
+      template: str,
+      out_path: Path,
+      format: str = "jsonl",
+      *,
+      backend: SQLiteBackend | None = None,
+      model_id: str | None = None,
+      custom_jinja: str | None = None,
+      push: str | None = None,
+  ) -> None: ...
+  ```
+- Notes:
+  - No existing `export` Typer subgroup in `corpus_forge/cli.py`; coder must add one.
+  - New module must be `corpus_forge/export.py` (singular, top-level) to match `corpus_forge.export.export_chat`.
+  - `corpus_forge/exports/huggingface.py` (existing) is unrelated (SQL view export) — no name conflict.
+- Red output (tail):
+  ```
+  ERROR tests/integration/test_export_chat_jsonl.py
+    ModuleNotFoundError: No module named 'corpus_forge.export'
+
+  ERROR tests/integration/test_export_chat_parquet_hf_compatible.py
+    ModuleNotFoundError: No module named 'corpus_forge.export'
+
+  FAILED tests/unit/test_export_chat_cli.py::TestExportChatRequiredArgs::test_export_chat_requires_dataset_when_out_given
+  FAILED tests/unit/test_export_chat_cli.py::TestExportChatRequiredArgs::test_export_chat_requires_out_when_dataset_given
+  FAILED tests/unit/test_export_chat_cli.py::TestExportChatRequiredArgs::test_export_chat_requires_dataset_and_out
+  FAILED tests/unit/test_export_chat_cli.py::TestExportChatHelp::test_export_help_lists_chat_subcommand
+  FAILED tests/unit/test_export_chat_cli.py::TestExportChatHelp::test_export_chat_help_lists_template_and_dataset
+  FAILED tests/unit/test_export_chat_cli.py::TestExportChatDispatch::test_export_chat_dispatches_to_export_module
+  FAILED tests/unit/test_export_chat_cli.py::TestExportChatDispatch::test_export_chat_format_parquet_passed_through
+  FAILED tests/unit/test_export_chat_cli.py::TestExportChatDispatch::test_export_chat_format_defaults_to_jsonl
+  FAILED tests/unit/test_export_chat_cli.py::TestExportChatDispatch::test_export_chat_push_flag_passed_through
+  9 failed (unit), 2 collection errors (integration) in ~0.24s
+  ```
+- Status: red — handed off to tdd-coder
