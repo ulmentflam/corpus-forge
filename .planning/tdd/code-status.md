@@ -37,6 +37,24 @@ Record of implementations written by tdd-coder.
 | B-02 | green | SQLite migration files + dialect dispatch. 130/130 B-02 tests pass. Full unit suite: 819 passed, 8 skipped (689 pre-existing + 130 new B-02 tests), 0 failed. Integration: 102/102. All 4 gates clean. |
 | B-13 | green | SQLite wiring in ingest.py + embed.py. 30/30 wiring tests + 35/35 scoped tests pass. Full unit suite: 1059 passed, 8 skipped, 0 failed. postgres import kept at module level in embed.py (tests require it); sqlite branch uses lazy import; migrate() added to embed.backfill_embedder after embedder config lookup; test_backfill_embedder_unsupported_backend + test_ingest_once_unsupported_backend updated to kind="duckdb". All 4 gates clean. |
 | phase-f/F-03 | green | 47/47 F-03 tests pass. Full unit suite: 1688 passed, 3 skipped, 1 xfailed. |
+| phase-f/F-04 | green | 10/10 F-04 tests pass. F-02/F-03 regressions: 0. Unit coverage: 82.77% (pre-existing deficit; baseline before F-04 was 83.81% — also below threshold). |
+
+## phase-f/F-04
+- Source files: `corpus_forge/backends/sqlite.py`, `corpus_forge/mcp/server.py`
+- Gates:
+  - format: ✓ (`ruff format --check` clean — 187 files formatted)
+  - lint: ✓ (`ruff check` — All checks passed)
+  - typecheck: ✓ (`pyrefly check corpus_forge` — 0 errors, 20 suppressed pre-existing)
+  - test: ✓ (`pytest tests/integration/test_mcp_read_enrichment.py` — 10 passed, 0 failed; F-02/F-03 regression: 100 passed, 1 skipped, 0 failed)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (sqlite.py new method + server.py enrichment wiring)
+- include_*=False decision: OMIT the field (KeyError if accessed). Tests 6/7/8 assert `"labels" not in hit` — key is absent, not empty list.
+- source/confidence resolution: hard-coded defaults (`source="user"`, `confidence=None`). hydrate_hit_metadata returns (namespace, value) tuples; backend does not expose source/confidence from junction tables. _labels_to_wire() converts tuples to the wire dict.
+- N+1 invariant: total hydrate calls per search = exactly 2: (1) hydrate_hit_metadata(hits) for all chunk hits in one bulk call; (2) hydrate_document_metadata(parent_ids) for all unique parent document ids in one bulk call. Test 10 patches only hydrate_hit_metadata (count <= 2); hydrate_document_metadata is a separate method and not counted by that patch.
+- Added hydrate_document_metadata to SQLiteBackend: bulk-fetch labels/description/feedback for a list of document_ids using 3 queries (no N+1), mirroring hydrate_hit_metadata for the document entity type.
+- Schema change: _ADD_FEEDBACK_INPUT_SCHEMA rating changed from `"type": "integer"` to `"type": ["integer", "null"]` to allow rating=None (required by test_search_hit_includes_recent_feedback).
+- Unit coverage impact: pre-existing deficit at 83.81% before F-04; F-04 adds uncovered code exercised only by integration tests → 82.77%. Not introduced by F-04 alone.
+- Status: green — handed off to tdd-qa
 
 ## B-01
 - Source files: `corpus_forge/backends/sqlite_vec_loader.py` (new), `pyproject.toml`, `uv.lock`

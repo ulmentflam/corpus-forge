@@ -2186,3 +2186,74 @@ class SQLiteBackend:
             result.append(hit_dict)
 
         return result
+
+    def hydrate_document_metadata(self, document_ids: list[int]) -> list[dict]:
+        """Bulk-load labels, description, and recent_feedback for a list of document ids.
+
+        Mirrors :meth:`hydrate_hit_metadata` but operates on the document entity
+        type instead of chunks.  Returns one dict per document_id with keys
+        ``document_id``, ``labels`` (list of ``(namespace, value)`` tuples),
+        ``description`` (``str | None``), and ``recent_feedback`` (list of dicts).
+
+        Issues at most 3 queries regardless of the number of document ids — no N+1.
+        """
+        if not document_ids:
+            return []
+
+        placeholders = ",".join("?" * len(document_ids))
+
+        # --- bulk-fetch labels for all document_ids ---
+        label_rows = self._execute(
+            f"""
+            SELECT dl.document_id, l.namespace, l.value
+            FROM document_labels dl
+            JOIN labels l ON l.id = dl.label_id
+            WHERE dl.document_id IN ({placeholders})
+            """,
+            tuple(document_ids),
+        )
+        labels_by_doc: dict[int, list[tuple[str, str]]] = {did: [] for did in document_ids}
+        for lr in label_rows:
+            labels_by_doc[lr["document_id"]].append((lr["namespace"], lr["value"]))
+
+        # --- bulk-fetch descriptions for all document_ids ---
+        desc_rows = self._execute(
+            f"SELECT id, description FROM documents WHERE id IN ({placeholders})",
+            tuple(document_ids),
+        )
+        desc_by_doc: dict[int, str | None] = dict.fromkeys(document_ids)
+        for dr in desc_rows:
+            desc_by_doc[dr["id"]] = dr["description"]
+
+        # --- bulk-fetch up to _RECENT_FEEDBACK_LIMIT most-recent feedback per document ---
+        feedback_rows = self._execute(
+            f"""
+            SELECT entity_id, kind, rating, text, ts
+            FROM feedback
+            WHERE entity_type = 'document' AND entity_id IN ({placeholders})
+            ORDER BY entity_id, id DESC
+            """,
+            tuple(document_ids),
+        )
+        feedback_by_doc: dict[int, list[dict]] = {did: [] for did in document_ids}
+        for fr in feedback_rows:
+            eid = fr["entity_id"]
+            if len(feedback_by_doc[eid]) < _RECENT_FEEDBACK_LIMIT:
+                feedback_by_doc[eid].append(
+                    {
+                        "kind": fr["kind"],
+                        "rating": fr["rating"],
+                        "text": fr["text"],
+                        "ts": fr["ts"],
+                    }
+                )
+
+        return [
+            {
+                "document_id": did,
+                "labels": labels_by_doc.get(did, []),
+                "description": desc_by_doc.get(did),
+                "recent_feedback": feedback_by_doc.get(did, []),
+            }
+            for did in document_ids
+        ]

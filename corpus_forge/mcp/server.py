@@ -76,6 +76,21 @@ _SEARCH_INPUT_SCHEMA: dict[str, Any] = {
             "description": "Fused pool size passed to the reranker (default: 50).",
             "minimum": 1,
         },
+        "include_labels": {
+            "type": "boolean",
+            "description": "Include labels on each hit (default: true).",
+            "default": True,
+        },
+        "include_description": {
+            "type": "boolean",
+            "description": "Include description on each hit (default: true).",
+            "default": True,
+        },
+        "include_feedback": {
+            "type": "boolean",
+            "description": "Include recent_feedback on each hit (default: true).",
+            "default": True,
+        },
     },
     "required": ["query"],
     "additionalProperties": False,
@@ -88,6 +103,21 @@ _GET_CHUNK_INPUT_SCHEMA: dict[str, Any] = {
         "chunk_id": {
             "type": "integer",
             "description": "Primary key of the chunk to retrieve.",
+        },
+        "include_labels": {
+            "type": "boolean",
+            "description": "Include labels on the chunk (default: true).",
+            "default": True,
+        },
+        "include_description": {
+            "type": "boolean",
+            "description": "Include description on the chunk (default: true).",
+            "default": True,
+        },
+        "include_feedback": {
+            "type": "boolean",
+            "description": "Include recent_feedback on the chunk (default: true).",
+            "default": True,
         },
     },
     "required": ["chunk_id"],
@@ -208,7 +238,7 @@ _ADD_FEEDBACK_INPUT_SCHEMA: dict[str, Any] = {
         },
         "entity_id": {"type": "integer"},
         "kind": {"type": "string"},
-        "rating": {"type": "integer"},
+        "rating": {"type": ["integer", "null"]},
         "text": {"type": "string"},
         "metadata": {"type": "object"},
         "dry_run": {"type": "boolean"},
@@ -219,6 +249,31 @@ _ADD_FEEDBACK_INPUT_SCHEMA: dict[str, Any] = {
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
+
+
+def _labels_to_wire(raw_labels: list[Any]) -> list[dict[str, Any]]:
+    """Convert label values to the pinned wire format.
+
+    ``hydrate_hit_metadata`` stores labels as ``(namespace, value)`` tuples.
+    The wire format is ``{"namespace": str, "value": str, "source": str,
+    "confidence": float | None}``.
+    """
+    out: list[dict[str, Any]] = []
+    for item in raw_labels:
+        if isinstance(item, dict):
+            out.append(
+                {
+                    "namespace": item.get("namespace", ""),
+                    "value": item.get("value", ""),
+                    "source": item.get("source", "user"),
+                    "confidence": item.get("confidence"),
+                }
+            )
+        else:
+            # Tuple form: (namespace, value)
+            ns, val = item[0], item[1]
+            out.append({"namespace": ns, "value": val, "source": "user", "confidence": None})
+    return out
 
 
 def _hit_to_dict(hit: Any) -> dict[str, Any]:
@@ -429,6 +484,9 @@ def build_server(
         alpha = float(arguments.get("alpha", 0.5))
         rerank = bool(arguments.get("rerank", False))
         rerank_top_n = int(arguments.get("rerank_top_n", 50))
+        include_labels = bool(arguments.get("include_labels", True))
+        include_description = bool(arguments.get("include_description", True))
+        include_feedback = bool(arguments.get("include_feedback", True))
 
         retriever = _get_retriever()
 
@@ -455,10 +513,82 @@ def build_server(
         )
 
         hits = retriever.search(query, options)
-        return {"hits": [_hit_to_dict(h) for h in hits]}
+
+        # Enrichment: hydrate labels / description / feedback when the backend
+        # exposes hydrate_hit_metadata.  One bulk call for chunk hits + one bulk
+        # call for parent documents — never per-hit (no N+1).
+        enrichment_wanted = include_labels or include_description or include_feedback
+        backend = getattr(retriever, "backend", None)
+        hydrated_by_chunk_id: dict[int, dict[str, Any]] = {}
+        parent_enrichment_by_doc_id: dict[int, dict[str, Any]] = {}
+
+        if enrichment_wanted and backend is not None and hits:
+            hydrate_fn = getattr(backend, "hydrate_hit_metadata", None)
+            if hydrate_fn is not None:
+                # Call 1: bulk-hydrate all chunk hits (one call regardless of count).
+                hydrated_list = hydrate_fn(hits)
+                for hd in hydrated_list:
+                    raw_cid = hd.get("chunk_id") if isinstance(hd, dict) else hd.chunk_id
+                    if raw_cid is not None:
+                        hydrated_by_chunk_id[int(raw_cid)] = hd if isinstance(hd, dict) else {}
+
+            # Call 2 (at most): bulk-hydrate parent documents for chunk hits.
+            # Collect unique document_ids from the hit set.
+            parent_ids: list[int] = []
+            seen_parent_ids: set[int] = set()
+            for h in hits:
+                doc_id = getattr(h, "document_id", None)
+                if doc_id is not None and doc_id not in seen_parent_ids:
+                    seen_parent_ids.add(doc_id)
+                    parent_ids.append(doc_id)
+
+            if parent_ids:
+                hydrate_doc_fn = getattr(backend, "hydrate_document_metadata", None)
+                if hydrate_doc_fn is not None:
+                    doc_hydrated_list = hydrate_doc_fn(parent_ids)
+                    for dh in doc_hydrated_list:
+                        doc_id = dh.get("document_id") if isinstance(dh, dict) else None
+                        if doc_id is not None:
+                            parent_enrichment_by_doc_id[doc_id] = dh
+
+        # Serialize hits applying enrichment flags.
+        wire_hits: list[dict[str, Any]] = []
+        for h in hits:
+            hd = _hit_to_dict(h)
+            enriched = hydrated_by_chunk_id.get(h.chunk_id, {})
+
+            if include_labels:
+                raw_labels = enriched.get("labels", [])
+                hd["labels"] = _labels_to_wire(raw_labels)
+            if include_description:
+                hd["description"] = enriched.get("description")
+            if include_feedback:
+                hd["recent_feedback"] = enriched.get("recent_feedback", [])
+
+            # Parent rollup for chunk hits (document_id present).
+            if enrichment_wanted:
+                doc_id = getattr(h, "document_id", None)
+                if doc_id is not None:
+                    parent_data = parent_enrichment_by_doc_id.get(doc_id, {})
+                    parent_dict: dict[str, Any] = {}
+                    if include_labels:
+                        parent_dict["labels"] = _labels_to_wire(parent_data.get("labels", []))
+                    if include_description:
+                        parent_dict["description"] = parent_data.get("description")
+                    if include_feedback:
+                        parent_dict["recent_feedback"] = parent_data.get("recent_feedback", [])
+                    hd["parent"] = parent_dict
+
+            wire_hits.append(hd)
+
+        return {"hits": wire_hits}
 
     async def _dispatch_get_chunk(arguments: dict[str, Any]) -> Any:
         chunk_id = int(arguments["chunk_id"])
+        include_labels = bool(arguments.get("include_labels", True))
+        include_description = bool(arguments.get("include_description", True))
+        include_feedback = bool(arguments.get("include_feedback", True))
+
         retriever = _get_retriever()
         backend = getattr(retriever, "backend", None)
         if backend is None:
@@ -467,7 +597,53 @@ def build_server(
         if chunk is None:
             return _error_result(f"chunk_id={chunk_id} not found")
         # Normalize: backend.get_chunk may return a Mapping; ensure JSON-safe.
-        return dict(chunk)
+        result: dict[str, Any] = dict(chunk)
+
+        # Enrichment via hydrate_hit_metadata (single-element bulk call).
+        enrichment_wanted = include_labels or include_description or include_feedback
+        if enrichment_wanted:
+            hydrate_fn = getattr(backend, "hydrate_hit_metadata", None)
+            if hydrate_fn is not None:
+                from corpus_forge.retrieval.types import Hit as _Hit
+
+                synthetic_hit = _Hit(
+                    chunk_id=chunk_id,
+                    score=0.0,
+                    text=result.get("text", ""),
+                    document_id=result.get("document_id"),
+                    source_uri=result.get("source_uri"),
+                    title=result.get("title"),
+                    dataset_id=result.get("dataset_id") or 0,
+                    metadata=result.get("metadata") or {},
+                    source="lexical",
+                )
+                hydrated_list = hydrate_fn([synthetic_hit])
+                if hydrated_list:
+                    enriched = hydrated_list[0] if isinstance(hydrated_list[0], dict) else {}
+                    if include_labels:
+                        result["labels"] = _labels_to_wire(enriched.get("labels", []))
+                    if include_description:
+                        result["description"] = enriched.get("description")
+                    if include_feedback:
+                        result["recent_feedback"] = enriched.get("recent_feedback", [])
+
+                # Parent rollup for chunk hits (document_id present).
+                doc_id = result.get("document_id")
+                if doc_id is not None:
+                    hydrate_doc_fn = getattr(backend, "hydrate_document_metadata", None)
+                    if hydrate_doc_fn is not None:
+                        doc_hydrated_list = hydrate_doc_fn([doc_id])
+                        parent_data = doc_hydrated_list[0] if doc_hydrated_list else {}
+                        parent_dict: dict[str, Any] = {}
+                        if include_labels:
+                            parent_dict["labels"] = _labels_to_wire(parent_data.get("labels", []))
+                        if include_description:
+                            parent_dict["description"] = parent_data.get("description")
+                        if include_feedback:
+                            parent_dict["recent_feedback"] = parent_data.get("recent_feedback", [])
+                        result["parent"] = parent_dict
+
+        return result
 
     async def _dispatch_list_datasets(_arguments: dict[str, Any]) -> dict[str, Any]:
         retriever = _get_retriever()
