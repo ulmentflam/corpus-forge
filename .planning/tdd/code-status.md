@@ -419,3 +419,19 @@ This was uncovered because R3-08 is the FIRST test that exercises the full eval-
 - Diff scope: within surface — yes (`corpus_forge/alembic/versions/0003_views.py` only)
 - DDL drift: none. SQL copied verbatim from `schema/002_views.sql` using `CREATE OR REPLACE VIEW`. SQLite branch is a no-op (no `schema/sqlite/002_views.sql` exists; views are Postgres-only). The parity test for Postgres queries only `table_type = 'BASE TABLE'`, so views don't appear in the schema diff — parity test passes because Alembic and legacy both produce identical base-table schemas; the views themselves are Postgres-only and not compared.
 - Status: green — handed off to tdd-qa
+
+## phase-d/D-05
+- Source files: `corpus_forge/alembic/versions/0004_sync.py` (new)
+- Gates:
+  - format: pass (`ruff format --check corpus_forge tests` — 184 files already formatted after auto-fix)
+  - lint: pass (`ruff check corpus_forge tests` — All checks passed)
+  - typecheck: pass (`pyrefly check corpus_forge` — 8 errors, all pre-existing optional-dep gaps: sqlite_vec, mcp, openai; no new errors from 0004_sync file; confirmed identical count to D-04 baseline)
+  - test: pass (parity PG head=0001_core: pass; parity PG head=0002_chunk_content_hash: pass; parity PG head=0003_views: pass; parity PG head=0004_sync: pass; parity SQLite head=0001_core: pass; parity SQLite head=0002_chunk_content_hash: pass; parity SQLite head=0003_views: pass; parity SQLite head=0004_sync: pass; backfill: 3/3 passed; chain: 4/4 passed; unit suite: 1779 passed, 16 skipped, 1 xfailed, 2 failed — the 2 failures are pre-existing TestPinnedBaseline + TestCopyReusableEmbeddings)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (`corpus_forge/alembic/versions/0004_sync.py` only)
+- DDL drift found and fixed:
+  - SQLite `_upgrade_sqlite()` CREATE TABLE: wrote `INTEGER PRIMARY KEY` (no AUTOINCREMENT) to match legacy `SQLiteBackend._execute()` behavior, which strips AUTOINCREMENT before executing. The legacy `sqlite_master` stores `id integer primary key` (no AUTOINCREMENT); writing AUTOINCREMENT in the Alembic branch would cause a parity mismatch. Same pattern as 0001_core.py (documented in its _upgrade_sqlite comment).
+  - SQLite ALTER TABLE: stripped `IF NOT EXISTS` per established D-03 pattern (SQLAlchemy SQLite dialect rejects IF NOT EXISTS on ADD COLUMN).
+  - Postgres and SQLite branches both match their respective reference SQL files (minus AUTOINCREMENT on SQLite side).
+- FK ordering: CREATE TABLE document_revisions first, then ALTER documents, then ALTER sources. FK from sources.last_pulled_revision_id to document_revisions(id) is safe because the table already exists at that point.
+- Status: green — handed off to tdd-qa
