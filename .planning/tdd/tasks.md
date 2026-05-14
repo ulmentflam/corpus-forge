@@ -2398,3 +2398,24 @@ Coverage on `corpus_forge/schema/migrate.py`: 76% (unit-only run; integration co
 **Phase E pattern established**: Adding new Alembic revisions is now `op.execute("CREATE OR REPLACE VIEW ...")` in a new `0006_*.py` file under `corpus_forge/alembic/versions/`. The chain-integrity unit test (`test_revision_chain_is_well_formed`) will catch any orphan or duplicate revision automatically.
 
 **Pre-existing smoke failures** (not Phase D regressions): `test_mcp_stdio_smoke` and `test_skill_tools_match_mcp_server_tools` fail in the iCloud Drive working directory because the `corpus-forge` shell script uses `python3` as exec target, and that symlink fails to resolve `corpus_forge.cli` when invoked as a subprocess from the path-with-spaces tree. Both tests pass in CI (Linux, no iCloud path). Introduced in Phase R5 (`22af452`) and Phase CS (`788d267`).
+
+---
+
+# Phase E — Central Postgres topology: docs + smoke
+
+_Source plan: `/Users/evanowen/.claude/plans/let-s-begin-a-new-jiggly-salamander.md` § Phase E._
+
+AD-Sync P1 is already shipped (cross-host sync engine + CLI + revision tracking). Phase E ratifies the multi-host topology as a *documented, smoke-tested* deployment shape. No engine work, no schema migration.
+
+## Phase E tasks
+
+| id | title | depends_on | surface | risk | status | claimed_by | notes |
+|----|-------|------------|---------|------|--------|------------|-------|
+| E-01 | Satellite deployment doc + smoke rot-detector | — | `docs/deployment-satellite.md`, `tests/smoke/test_satellite_deployment_doc.py`, `README.md` | low | pending | — | Wave 0; required H2s (Prerequisites / Bootstrap Postgres / Configure host_id / Enable sync / Verify); rot-detector pattern mirrors `tests/unit/test_claude_integration_doc.py` |
+| E-02 | Two-ingester, one-MCP integration smoke | — | `tests/integration/test_two_ingester_one_mcp.py` | med | pending | — | Wave 0 (parallel with E-01; disjoint files); testcontainers PG; daemons ingest disjoint vaults; MCP `search` returns cross-host hits; pin `list_datasets` shows both hosts' sources |
+| E-03 | tdd-qa clean-room re-run + close-out summary | E-01, E-02 | `.planning/tdd/tasks.md` | low | pending | — | Wave 1; principal bookkeeping |
+
+## Phase E commit prefix
+
+Same convention: `[<role>] phase-e/<task-id>: <slice>`.
+
