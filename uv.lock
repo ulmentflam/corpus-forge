@@ -447,6 +447,9 @@ multi-format = [
     { name = "readability-lxml" },
     { name = "tabulate" },
 ]
+ocr = [
+    { name = "requests" },
+]
 openai = [
     { name = "openai" },
 ]
@@ -505,6 +508,7 @@ requires-dist = [
     { name = "pymupdf4llm", marker = "extra == 'multi-format'", specifier = ">=0.0.17" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "readability-lxml", marker = "extra == 'multi-format'", specifier = ">=0.8" },
+    { name = "requests", marker = "extra == 'ocr'", specifier = ">=2.32" },
     { name = "sentence-transformers", specifier = ">=3.0" },
     { name = "sentence-transformers", marker = "extra == 'rerank'", specifier = ">=3.0" },
     { name = "sqlite-vec", marker = "extra == 'sqlite'", specifier = ">=0.1" },
@@ -516,7 +520,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "watchdog", specifier = ">=4.0" },
 ]
-provides-extras = ["openai", "hf", "tokens", "sqlite", "retrieval", "eval", "rerank", "mcp", "code", "multi-format"]
+provides-extras = ["openai", "hf", "tokens", "sqlite", "retrieval", "eval", "rerank", "mcp", "code", "multi-format", "ocr"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -1,6 +1,7 @@
 """Configuration management for corpus-forge."""
 
 import os
+import re
 import socket
 from pathlib import Path
 from typing import Annotated, Literal
@@ -9,7 +10,7 @@ try:
     import tomllib  # Python 3.11+
 except ImportError:
     import tomli as tomllib  # type: ignore[import-not-found]
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
 from pydantic.functional_validators import AfterValidator
 
 
@@ -195,6 +196,58 @@ class RetrievalConfig(BaseModel):
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
 
 
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+class VLMConfig(BaseModel):
+    """Phase D / Wave 4 (E-04) — VLM (vision-language model) backend config.
+
+    Drives :func:`corpus_forge.vlm.get_active_vlm`. Default ``backend = "none"``
+    means the existing markdown_vault / claude_code / opencode flows are
+    untouched — no OCR layer is constructed.
+
+    Fields:
+
+    - ``backend``: ``"ollama" | "mistral" | "none"``. Required to opt in to OCR.
+    - ``ollama_model``: tag on the local Ollama daemon; default
+      ``qwen2.5vl:7b`` (Apache-2.0, ~5 GB, DocVQA 95.7).
+    - ``ollama_url``: base URL of the daemon (``/api/generate`` is
+      appended by the backend).
+    - ``mistral_model``: model id for the Mistral OCR endpoint.
+    - ``mistral_base_url``: API base; the backend appends ``/ocr``.
+    - ``mistral_api_key_env``: name of the env var holding the key
+      (read from ``secrets.env``). Validated as a POSIX identifier.
+    - ``timeout_s``: per-request budget for both backends.
+    """
+
+    backend: Literal["ollama", "mistral", "none"] = "none"
+    ollama_model: str = "qwen2.5vl:7b"
+    ollama_url: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
+    mistral_model: str = "mistral-ocr-2503"
+    mistral_base_url: AnyHttpUrl = AnyHttpUrl("https://api.mistral.ai/v1")
+    mistral_api_key_env: str = "MISTRAL_API_KEY"
+    timeout_s: float = Field(120.0, gt=0)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_mistral_env_var_name(self) -> "VLMConfig":
+        """Reject ``mistral_api_key_env`` values that aren't valid
+        POSIX environment variable names.
+
+        Catches typos (``"MY KEY"`` with a space, ``"123KEY"`` starting
+        with a digit, ``"MY-KEY"`` with a dash) at config-load time
+        instead of silently producing ``None`` at runtime.
+        """
+        if not _ENV_VAR_NAME_RE.match(self.mistral_api_key_env):
+            raise ValueError(
+                f"mistral_api_key_env={self.mistral_api_key_env!r} is not a valid "
+                "POSIX environment variable name (ASCII letters / digits / "
+                "underscore; cannot start with a digit)."
+            )
+        return self
+
+
 class Config(BaseModel):
     """Main configuration for corpus-forge."""
 
@@ -203,6 +256,9 @@ class Config(BaseModel):
     datasets: list[DatasetConfig]
     embedders: list[EmbedderConfig]
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
+    # Phase D / Wave 4 (E-04) — VLM backend selector. Default Noop so
+    # adding the field doesn't change behaviour for existing configs.
+    vlm: VLMConfig = Field(default_factory=VLMConfig)
 
     model_config = ConfigDict(
         str_strip_whitespace=True,
@@ -229,6 +285,16 @@ class Config(BaseModel):
                 "Set sync_enabled = false or switch backend.kind to 'postgres'."
             )
         return self
+
+    def resolve_mistral_api_key(self) -> str | None:
+        """Read the Mistral API key from the configured env var.
+
+        Returns ``None`` when the env var is unset. The caller (typically
+        :func:`corpus_forge.vlm.get_active_vlm`) decides whether the
+        absence is fatal — when ``vlm.backend == "mistral"`` it is, when
+        ``"none"`` / ``"ollama"`` it isn't.
+        """
+        return os.environ.get(self.vlm.mistral_api_key_env)
 
     def host_id(self) -> str:
         if self.daemon.host_id:

@@ -100,6 +100,16 @@ multi-format = [
   "pandas>=2.2",
   "tabulate>=0.9",
 ]
+# Phase D / Wave 4 (E-02, E-03): VLM (vision-language model) backends.
+#
+# Wave 4 only adds `requests` (HTTP client for Ollama + Mistral OCR).
+# Wave 5/6 will extend this extra with `pdf2image` + `pillow` for the
+# PDF rasterisation step. License posture: requests is Apache-2.0;
+# adding [ocr] does NOT widen the AGPL surface introduced by
+# [multi-format].
+ocr = [
+  "requests>=2.32",
+]
 
 [project.scripts]
 corpus-forge = "corpus_forge.cli:app"
