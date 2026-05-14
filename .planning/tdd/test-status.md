@@ -1688,3 +1688,30 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
 ### BR Wave 0 RED summary
 
 47 new tests added. Locally: 2 pre-existing passes (LICENSE pin already on disk; ci.yml workflow_call gate from CI-1), 1 conditional skip (banner.png), 44 errors/fails — exactly the expected RED shape before BR-01..BR-04 GREEN passes.
+
+---
+
+## Phase D
+
+## D-01 — Alembic dep + scaffold + revision-chain unit pin
+- Test files: `tests/unit/test_alembic_revision_chain.py`
+- Run command: `.venv/bin/python -m pytest tests/unit/test_alembic_revision_chain.py -v`
+- Edge case checklist:
+  - [x] happy path — `test_alembic_ini_exists_and_parses` (parses ini, asserts section + script_location + no sys.stdout); `test_alembic_env_module_imports` (imports env, asserts callables present); `test_versions_directory_exists` (asserts path is a directory); `test_revision_chain_is_well_formed` (well-formed linear chain when revisions exist)
+  - [x] boundaries — zero-revision branch in `test_revision_chain_is_well_formed` exits cleanly with no assertions; lexicographically-highest prefix pinning for head detection
+  - [x] type/format — `revision: str` type assertion; `down_revision: str | None` type assertion; no-duplicate check; exact-one-root / exact-one-head checks; no-orphan check
+  - [x] state — module cache purge before env import test (hermetic across reruns); `_SENTINEL` pattern to distinguish missing attribute from `None` value
+  - [ ] N/A — concurrency (pure file-inspection test, no shared mutable state)
+  - [x] failure paths — wrong `script_location` asserts with clear message; missing `run_migrations_online` or `run_migrations_offline` detected; `sys.stdout` routing in ini caught; orphan revision detected; branched chain (>1 head) detected; duplicate revision IDs detected
+  - [ ] N/A — locale/time (file and module attribute tests, no date logic)
+  - [x] production-realistic — alembic.command.heads() gated on alembic being importable; skips with descriptive reason if not yet installed (D-01 coder installs it)
+  - [ ] N/A — regression hooks (no prior bug — this is net-new scaffold detection)
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_alembic_revision_chain.py::test_versions_directory_exists
+  FAILED tests/unit/test_alembic_revision_chain.py::test_alembic_ini_exists_and_parses
+  FAILED tests/unit/test_alembic_revision_chain.py::test_alembic_env_module_imports
+  PASSED tests/unit/test_alembic_revision_chain.py::test_revision_chain_is_well_formed
+  ========================= 3 failed, 1 passed in 0.17s ==========================
+  ```
+- Status: red — handed off to tdd-coder
