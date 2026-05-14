@@ -102,3 +102,20 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
   - The iCloud Drive `.pth` hidden-flag issue: `uv run pytest` fails if `chflags nohidden` has not been run on the editable install `.pth` file since `uv sync`. `make ci-local` and `make install` run `_unhide-pth` automatically, but `make ci` calls `uv run pytest` which re-hides the flag. Workaround: use `.venv/bin/python -m pytest` directly or run `make ci-local`. Pre-existing — not Phase F's introduction.
 - Verdict: **rework** — 2 integration tests regressed by Phase F need a follow-up fix before Phase F is fully clean
 - Notes: Phase F milestone goal is functionally met (MCP write surface + read-side enrichment + self-distillation loop closed). The 2 failing tests are test-assertion bookkeeping, not production regressions. Phase G may proceed; the fix is a 2-line patch to `test_apply_migrations_uses_alembic.py`.
+
+---
+
+## Phase G — G-06 (close-out QA)
+
+- Suite: unit 1897 passed, 3 skipped, 1 xfailed (45.65s); integration 361 passed, 0 failed (64.21s); smoke 30 passed, 0 failed (15.41s)
+- Phase G surface (11 test files): 188 passed, 0 failed, 0 skipped (7.59s)
+- Coverage: 85.41% overall (threshold 85%) — PASS
+- Smoke (CLI): `python -m corpus_forge export chat --help` — PASS; shows --template, --dataset, --out, --format, --push. Note: shell entrypoint `corpus-forge` fails in iCloud Drive path (spaces in path break sh exec shebang); `python -m corpus_forge` works correctly.
+- Smoke (template builtins): all 6 builtins (chatml, llama3, alpaca, vicuna, gemma, qwen) render via `templates.render()` — PASS
+- Smoke (MCP tool counts): read-only server 5 tools; writes-enabled server 14 tools — confirmed by test_skill_tool_contract.py 3/3 PASS
+- Smoke (Phase F invariant): `test_append_conversation_cross_host_visible` 3 consecutive runs — 3/3 GREEN
+- Alembic chain: 7 revisions (0001..0007), head=0007_chat_templates; chain tests 4/4 PASS; apply_migrations tests 3/3 PASS
+- Regression sweep: full integration suite 361/0 (up from 328/2 in F-06; the 2 F-06 regressions in test_apply_migrations_uses_alembic were fixed in G-01); all smoke 30/0; no new skips vs F-06 baseline
+- Issues: none blocking; shell entrypoint path-with-spaces issue is pre-existing iCloud limitation (not Phase G's introduction); `corpus_forge.templates.tools` 0% coverage (9 lines, all defensive — noted by prior tester, gate still met at 85.41%)
+- Verdict: **approved**
+- Notes: Phase G milestone goal fully met — dynamic chat templating accessible via MCP retrieval (render_conversation + list_chat_templates) AND CLI export (corpus-forge export chat), with custom template registration round-tripping through both paths via shared resolve_template(). 5 read tools / 14 write-enabled tools match skill contract.

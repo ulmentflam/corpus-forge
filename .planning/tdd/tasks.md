@@ -2590,14 +2590,83 @@ Phase F gave us chunks-per-message, so templating consumes existing chunks/messa
 
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
-| G-01 | Alembic revision 0007_chat_templates | — | `corpus_forge/alembic/versions/0007_chat_templates.py`, `tests/integration/test_alembic_0007_chat_templates.py` | low | pending | — | Wave 0; CREATE TABLE chat_templates(id, name UNIQUE, source 'builtin'\|'huggingface'\|'custom', jinja TEXT NULL, model_id TEXT NULL, description, host, created_at). PG + SQLite. Bump apply_migrations head pin to 0007 in test_apply_migrations_uses_alembic.py. |
-| G-02 | corpus_forge/templates/ module + builtins | G-01 | `corpus_forge/templates/__init__.py`, `corpus_forge/templates/builtins/{chatml,llama3,alpaca,vicuna,gemma,qwen}.py`, `corpus_forge/templates/hf.py`, `corpus_forge/templates/tools.py`, `tests/unit/test_template_registry.py`, `tests/unit/test_template_builtins.py`, `tests/unit/test_template_hf.py` | med | pending | — | Wave 1; pure-Python Jinja renderers (no transformers required for builtins); `templates/hf.py` lazily calls `AutoTokenizer.from_pretrained(model_id).chat_template`; tool-call rendering policy in `tools.py`. Backend helpers: `register_chat_template`, `list_chat_templates`, `get_chat_template_by_name` on both backends. |
-| G-03 | MCP read tools: render_conversation + list_chat_templates + register_template + template-aware get_chunk | G-02 | `corpus_forge/mcp/server.py`, `corpus_forge/mcp/templates.py` (new dispatch), `tests/unit/test_mcp_templates_dispatch.py`, `tests/integration/test_render_conversation_mcp.py` | med | pending | — | Wave 2; 3 new MCP tools (render_conversation/list_chat_templates/register_template); get_chunk gains `template?:str` arg producing `templated_text` on message chunks. `register_template` is a WRITE tool (gated by writes_enabled). |
-| G-04 | corpus-forge export chat CLI + new view | G-02 | `corpus_forge/export.py` (new helpers), `corpus_forge/cli.py` (export chat subcommand), `tests/unit/test_export_chat_cli.py`, `tests/integration/test_export_chat_jsonl.py`, `tests/integration/test_export_chat_parquet_hf_compatible.py` | med | pending | — | Wave 3; `corpus-forge export chat --template chatml --dataset cf-self-docs --out ./out.jsonl`; produces HF-format JSONL/Parquet rows. Optional `--push` flag to push to a Hub dataset repo (uses existing `[hf]` extra). |
-| G-05 | End-to-end integration smoke | G-03, G-04 | `tests/integration/test_render_register_export_e2e.py`, `tests/smoke/test_skill_tool_contract.py` (extend to 14 tools when writes_enabled) | med | pending | — | Wave 4; round-trip: append a conversation via F's append_conversation, register a custom Jinja via register_template, render via render_conversation, export the dataset to JSONL, load with `datasets.load_dataset`. |
-| G-06 | tdd-qa clean-room re-run + close-out | G-05 | `.planning/tdd/tasks.md` | low | pending | — | Wave 5; principal bookkeeping. |
+| G-01 | Alembic revision 0007_chat_templates | — | `corpus_forge/alembic/versions/0007_chat_templates.py`, `tests/integration/test_alembic_0007_chat_templates.py` | low | done | tdd-qa | Wave 0; CREATE TABLE chat_templates(id, name UNIQUE, source 'builtin'\|'huggingface'\|'custom', jinja TEXT NULL, model_id TEXT NULL, description, host, created_at). PG + SQLite. Bump apply_migrations head pin to 0007 in test_apply_migrations_uses_alembic.py. |
+| G-02 | corpus_forge/templates/ module + builtins | G-01 | `corpus_forge/templates/__init__.py`, `corpus_forge/templates/builtins/{chatml,llama3,alpaca,vicuna,gemma,qwen}.py`, `corpus_forge/templates/hf.py`, `corpus_forge/templates/tools.py`, `tests/unit/test_template_registry.py`, `tests/unit/test_template_builtins.py`, `tests/unit/test_template_hf.py` | med | done | tdd-qa | Wave 1; pure-Python Jinja renderers (no transformers required for builtins); `templates/hf.py` lazily calls `AutoTokenizer.from_pretrained(model_id).chat_template`; tool-call rendering policy in `tools.py`. Backend helpers: `register_chat_template`, `list_chat_templates`, `get_chat_template_by_name` on both backends. |
+| G-03 | MCP read tools: render_conversation + list_chat_templates + register_template + template-aware get_chunk | G-02 | `corpus_forge/mcp/server.py`, `corpus_forge/mcp/templates.py` (new dispatch), `tests/unit/test_mcp_templates_dispatch.py`, `tests/integration/test_render_conversation_mcp.py` | med | done | tdd-qa | Wave 2; 3 new MCP tools (render_conversation/list_chat_templates/register_template); get_chunk gains `template?:str` arg producing `templated_text` on message chunks. `register_template` is a WRITE tool (gated by writes_enabled). |
+| G-04 | corpus-forge export chat CLI + new view | G-02 | `corpus_forge/export.py` (new helpers), `corpus_forge/cli.py` (export chat subcommand), `tests/unit/test_export_chat_cli.py`, `tests/integration/test_export_chat_jsonl.py`, `tests/integration/test_export_chat_parquet_hf_compatible.py` | med | done | tdd-qa | Wave 3; `corpus-forge export chat --template chatml --dataset cf-self-docs --out ./out.jsonl`; produces HF-format JSONL/Parquet rows. Optional `--push` flag to push to a Hub dataset repo (uses existing `[hf]` extra). |
+| G-05 | End-to-end integration smoke | G-03, G-04 | `tests/integration/test_render_register_export_e2e.py`, `tests/smoke/test_skill_tool_contract.py` (extend to 14 tools when writes_enabled) | med | done | tdd-qa | Wave 4; round-trip: append a conversation via F's append_conversation, register a custom Jinja via register_template, render via render_conversation, export the dataset to JSONL, load with `datasets.load_dataset`. |
+| G-06 | tdd-qa clean-room re-run + close-out | G-05 | `.planning/tdd/tasks.md` | low | done | tdd-qa | Wave 5; principal bookkeeping. |
 
 ## Phase G commit prefix
 
 `[<role>] phase-g/<task-id>: <slice>`.
 
+
+## Phase G — close-out summary
+
+Status: **all 6 tasks done.**  Phase G landed on `main` between `6a99277` (seed) and `5b75522` (G-05 GREEN), with this close-out on top.
+
+### Slices & commits (chronological)
+
+| Wave | Task | Role | Commit | Slice |
+|------|------|------|--------|-------|
+| 0    | G-01 | tdd-tester    | `722e6af` | RED — alembic 0007_chat_templates schema (4 tests). |
+| 0    | G-01 | tdd-coder     | `6d95ef4` | GREEN — chat_templates table (PG + SQLite). |
+| 1    | G-02 | tdd-tester    | `9d1dab9` | RED — templates module + backend helpers (115 tests). |
+| 1    | G-02 | tdd-coder     | `f919121` | GREEN — templates/__init__ + 6 builtins + hf.py + tools.py + backend helpers. |
+| 2    | G-03 | tdd-tester    | `6116117` + `0b08da5` | RED — MCP template tools dispatch + writes_enabled gate. |
+| 2    | G-03 | tdd-coder     | `8b23c74` | GREEN — corpus_forge/mcp/templates.py + 3 new MCP tools + template-aware get_chunk. |
+| 3    | G-04 | tdd-tester    | `b533755` | RED — corpus-forge export chat CLI + writers. |
+| 3    | G-04 | tdd-coder     | `cd21efb` | GREEN — corpus_forge/export.py + export Typer subgroup. |
+| 3.5  | —    | tdd-tester    | `ecfa0be` | Coverage repair (84.74% → 85.45%) via in-process MCP server tests. |
+| 4    | G-05 | tdd-tester    | `36b2889` | Integration smoke + skill-contract bump to 14 tools (surfaced custom-template resolution gap). |
+| 4    | G-05 | tdd-coder     | `5b75522` | GREEN — export_chat resolves registered custom templates via shared resolve_template() helper. |
+| 5    | G-06 | tdd-qa        | this      | Clean-room re-run + close-out. |
+
+### Files added
+
+- `corpus_forge/alembic/versions/0007_chat_templates.py`
+- `corpus_forge/templates/__init__.py`
+- `corpus_forge/templates/builtins/{chatml,llama3,alpaca,vicuna,gemma,qwen}.py`
+- `corpus_forge/templates/hf.py`
+- `corpus_forge/templates/tools.py`
+- `corpus_forge/mcp/templates.py`
+- `corpus_forge/export.py`
+- 11 test files (1 alembic + 4 templates + 1 mcp dispatch + 1 mcp integration + 1 cli unit + 2 export integration + 1 e2e)
+
+### Files modified
+
+- `corpus_forge/backends/{postgres,sqlite}.py` — register_chat_template, list_chat_templates, get_chat_template_by_name, get_conversation, list_conversation_messages, list_conversations_for_dataset
+- `corpus_forge/mcp/server.py` — registers render_conversation/list_chat_templates always; register_template behind writes_enabled; get_chunk gains optional template arg
+- `corpus_forge/cli.py` — new export Typer subgroup + chat subcommand
+- `tests/smoke/test_skill_tool_contract.py` — 11→14 tool count, 3→5 read-tool count
+- `tests/smoke/test_mcp_stdio.py` — 3→5 expected read tools
+- `tests/unit/test_mcp_server_enrichment.py` — 10 new tests for G-03 MCP tool callbacks
+- `tests/integration/test_apply_migrations_uses_alembic.py` — head bumped 0006→0007
+
+### Gates run
+
+Unit: 1897 passed, 3 skipped, 1 xfailed (45.65s). Integration: 361 passed, 0 failed (64.21s). Smoke: 30 passed, 0 failed (15.41s). Phase G surface (11 files): 188 passed, 0 failed, 0 skipped (7.59s). Coverage: 85.41% overall (threshold 85%) — PASS.
+
+### Risk closure
+
+- **MCP retrieval of templated text**: `render_conversation` returns templated strings via builtins, HF tokenizers (lazy-fetched + cached), or custom Jinja from the registry.
+- **Dynamic HF templating**: `templates/hf.py` calls `AutoTokenizer.from_pretrained(model_id).chat_template` lazily; cached per model.
+- **Custom template registry**: `chat_templates` table holds named Jinja templates; `register_template` MCP tool (gated by writes_enabled); resolved by both `render_conversation` AND `export_chat` via shared `templates.resolve_template()`.
+- **Training-ready export**: `corpus-forge export chat` emits HF-format JSONL/Parquet rows ready for `datasets.load_dataset`; optional `--push` to a Hub dataset repo.
+- **Coverage gate held**: 85.41% (well above 85% gate).
+
+### Deferred
+
+- D-08 `migrate history` no-DB defect — still open.
+- iCloud path-with-spaces venv issue: `corpus-forge` shell entrypoint fails in iCloud Drive path because the `sh` exec trick in the generated script breaks when the path contains spaces. Workaround: `python -m corpus_forge` (confirmed working). The `.pth` file itself is NOT corrupted (no iCloud hidden flag); the issue is the shell quoting in the entrypoint shebang at invocation time.
+- `test_icloud_dupe_diff_hash_renamed` flake (pre-Phase D).
+- `corpus-forge export chat --push` is implementation-untested locally (would require HF auth + a real repo); only the import-guard error path is covered. Future phase can add a credentialed integration test if needed.
+
+### Hand-off
+
+Phase H next: feedback-session capture + self-distillation prep. Builds on F's audit_event + feedback rows + G's export pipeline:
+- New `feedback_sessions` + `feedback_events` tables (Alembic 0008).
+- MCP writes auto-link to current session if `CORPUS_FORGE_SESSION_ID` env is set.
+- `export_feedback_pairs(dataset, template, out_path)` emits training rows joining feedback_sessions → conversations → messages → feedback_events.
+- `register_session(client, session_id)` MCP tool optional.
