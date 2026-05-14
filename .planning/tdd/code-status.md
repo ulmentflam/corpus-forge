@@ -392,3 +392,18 @@ The smoke test surfaced a real bug in `SQLiteBackend.search_lexical`: the bundle
 Fix landed in `corpus_forge/backends/sqlite.py:search_lexical`: tokenise the query to alnum runs (>=2 chars), OR-join with the FTS5 OR operator. Empty after tokenisation → return `[]` (short-circuits the FTS5 round-trip). PostgresBackend is unaffected because `websearch_to_tsquery` already handles natural-language queries.
 
 This was uncovered because R3-08 is the FIRST test that exercises the full eval-CLI → HybridRetriever → SQLite FTS5 path with real natural-language gold queries. R1/R2 integration tests used hand-crafted alnum-only query strings.
+
+## phase-d/D-03
+- Source files: `corpus_forge/alembic/versions/0002_chunk_content_hash.py` (new)
+- Gates:
+  - format: pass (`ruff format --check corpus_forge tests` — 182 files already formatted after auto-fix)
+  - lint: pass (`ruff check corpus_forge tests` — All checks passed after auto-fix of UP035/UP007 in revision file)
+  - typecheck: pass (`pyrefly check corpus_forge` — 8 errors, all pre-existing optional-dep gaps: sqlite_vec, mcp, openai; no new errors from 0002 file)
+  - test: pass (backfill: 3/3 passed; parity PG head=0001_core: pass; parity PG head=0002_chunk_content_hash: pass; parity SQLite head=0001_core: pass; parity SQLite head=0002_chunk_content_hash: pass; chain: 4/4 passed; unit suite: 1779 passed, 16 skipped, 1 xfailed, 2 failed — the 2 failures are pre-existing TestPinnedBaseline + TestCopyReusableEmbeddings)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (`corpus_forge/alembic/versions/0002_chunk_content_hash.py` only)
+- DDL drift found and fixed:
+  - SQLite `_upgrade_sqlite()`: SQLAlchemy's SQLite dialect rejects `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` (raises OperationalError "near EXISTS: syntax error") even though SQLite >= 3.37 supports it natively. The Alembic `op.execute()` path goes through SQLAlchemy's DDL layer which intercepts the ALTER and does not forward `IF NOT EXISTS` for ADD COLUMN. Fix: drop `IF NOT EXISTS` from the SQLite ALTER TABLE only; the Alembic revision tracker guarantees single execution. `CREATE INDEX IF NOT EXISTS` passes through fine on both dialects.
+  - Postgres DDL: no drift; `ALTER TABLE corpus.chunks ADD COLUMN IF NOT EXISTS content_hash TEXT` and `CREATE INDEX IF NOT EXISTS chunks_content_hash_idx ON corpus.chunks(content_hash)` match schema/002_chunk_content_hash.sql exactly.
+  - Postgres backfill: `UPDATE corpus.chunks SET content_hash = encode(sha256(text::bytea), 'hex') WHERE content_hash IS NULL` matches migrate.py:79-83 exactly.
+- Status: green — handed off to tdd-qa
