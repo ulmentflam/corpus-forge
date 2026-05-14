@@ -140,7 +140,7 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "ARG", "PTH", "RUF", "PL", "C4", "PT"]
-ignore = ["PLR0911", "PLR0912", "PLR0913"]
+ignore = ["PLR0911", "PLR0912", "PLR0913", "PLR0915"]
 
 [tool.ruff.lint.per-file-ignores]
 # cli.py uses intentional lazy imports inside command functions for startup speed

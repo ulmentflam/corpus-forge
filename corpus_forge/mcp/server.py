@@ -102,6 +102,122 @@ _LIST_DATASETS_INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+# ── JSON schemas for the eight write tools ────────────────────────────────
+
+_ADD_LABEL_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "entity_type": {"type": "string", "enum": ["chunk", "document", "conversation"]},
+        "entity_id": {"type": "integer"},
+        "namespace": {"type": "string"},
+        "value": {"type": "string"},
+        "confidence": {"type": "number"},
+        "dry_run": {"type": "boolean"},
+    },
+    "required": ["entity_type", "entity_id", "namespace", "value"],
+    "additionalProperties": False,
+}
+
+_REMOVE_LABEL_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "entity_type": {"type": "string", "enum": ["chunk", "document", "conversation"]},
+        "entity_id": {"type": "integer"},
+        "namespace": {"type": "string"},
+        "value": {"type": "string"},
+        "dry_run": {"type": "boolean"},
+    },
+    "required": ["entity_type", "entity_id", "namespace", "value"],
+    "additionalProperties": False,
+}
+
+_SET_METADATA_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "entity_type": {"type": "string", "enum": ["chunk", "document", "conversation"]},
+        "entity_id": {"type": "integer"},
+        "key": {"type": "string"},
+        "value": {},
+        "dry_run": {"type": "boolean"},
+    },
+    "required": ["entity_type", "entity_id", "key", "value"],
+    "additionalProperties": False,
+}
+
+_SET_DESCRIPTION_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "entity_type": {"type": "string", "enum": ["chunk", "document", "conversation"]},
+        "entity_id": {"type": "integer"},
+        "text": {"type": ["string", "null"]},
+        "dry_run": {"type": "boolean"},
+    },
+    "required": ["entity_type", "entity_id", "text"],
+    "additionalProperties": False,
+}
+
+_LIST_LABELS_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "entity_type": {
+            "type": "string",
+            "enum": ["chunk", "document", "conversation"],
+        },
+        "namespace": {"type": "string"},
+    },
+    "additionalProperties": False,
+}
+
+_APPEND_CONVERSATION_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "dataset": {"type": "string"},
+        "title": {"type": "string"},
+        "messages": {"type": "array", "items": {"type": "object"}},
+        "started_at": {"type": "string"},
+        "metadata": {"type": "object"},
+        "labels": {"type": "array"},
+        "dry_run": {"type": "boolean"},
+    },
+    "required": ["dataset", "title", "messages"],
+    "additionalProperties": False,
+}
+
+_APPEND_MESSAGE_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "conversation_id": {"type": "integer"},
+        "role": {"type": "string"},
+        "content": {"type": "string"},
+        "tool_calls": {"type": "array"},
+        "tool_results": {"type": "array"},
+        "ts": {"type": "string"},
+        "metadata": {"type": "object"},
+        "dry_run": {"type": "boolean"},
+    },
+    "required": ["conversation_id", "role", "content"],
+    "additionalProperties": False,
+}
+
+_ADD_FEEDBACK_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "entity_type": {
+            "type": "string",
+            "enum": ["chunk", "document", "conversation", "message"],
+        },
+        "entity_id": {"type": "integer"},
+        "kind": {"type": "string"},
+        "rating": {"type": "integer"},
+        "text": {"type": "string"},
+        "metadata": {"type": "object"},
+        "dry_run": {"type": "boolean"},
+    },
+    "required": ["entity_type", "entity_id", "kind"],
+    "additionalProperties": False,
+}
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
@@ -145,6 +261,7 @@ def build_server(
     retriever_builder: Callable[[], Any],
     reranker_builder: Callable[[], Any] | None = None,
     default_dataset: str | None = None,
+    writes_enabled: bool = False,
 ) -> Server[Any]:
     """Construct a fully-configured MCP server.
 
@@ -160,10 +277,17 @@ def build_server(
         default_dataset: optional default dataset name.  When the caller
             does not supply ``dataset`` in a ``search`` call, this value
             is used.  ``None`` = no default filter.
+        writes_enabled: when ``True``, the 8 write tools (add_label,
+            remove_label, set_metadata, set_description, list_labels,
+            append_conversation, append_message, add_feedback) are
+            registered alongside the 3 read tools.  Defaults to
+            ``False`` (production-safe: write tools are never exposed
+            unless explicitly opted in).
 
     Returns:
         ``mcp.server.Server`` instance with name ``"corpus-forge"`` and
-        ``search`` / ``get_chunk`` / ``list_datasets`` tools registered.
+        ``search`` / ``get_chunk`` / ``list_datasets`` tools registered
+        (plus 8 write tools when ``writes_enabled=True``).
     """
     from mcp import types as mt
     from mcp.server import Server
@@ -192,7 +316,7 @@ def build_server(
 
     @server.list_tools()
     async def _list_tools() -> list[mt.Tool]:
-        return [
+        tools = [
             mt.Tool(
                 name="search",
                 description=(
@@ -219,6 +343,52 @@ def build_server(
                 inputSchema=_LIST_DATASETS_INPUT_SCHEMA,
             ),
         ]
+        if writes_enabled:
+            tools += [
+                mt.Tool(
+                    name="add_label",
+                    description="Attach a label to an entity (chunk, document, or conversation).",
+                    inputSchema=_ADD_LABEL_INPUT_SCHEMA,
+                ),
+                mt.Tool(
+                    name="remove_label",
+                    description="Remove a label from an entity.",
+                    inputSchema=_REMOVE_LABEL_INPUT_SCHEMA,
+                ),
+                mt.Tool(
+                    name="set_metadata",
+                    description="Merge a single key into an entity's metadata JSON.",
+                    inputSchema=_SET_METADATA_INPUT_SCHEMA,
+                ),
+                mt.Tool(
+                    name="set_description",
+                    description="Set or clear the description of an entity.",
+                    inputSchema=_SET_DESCRIPTION_INPUT_SCHEMA,
+                ),
+                mt.Tool(
+                    name="list_labels",
+                    description=(
+                        "List applied labels with optional entity_type / namespace filters."
+                    ),
+                    inputSchema=_LIST_LABELS_INPUT_SCHEMA,
+                ),
+                mt.Tool(
+                    name="append_conversation",
+                    description="Create a new conversation with messages in the named dataset.",
+                    inputSchema=_APPEND_CONVERSATION_INPUT_SCHEMA,
+                ),
+                mt.Tool(
+                    name="append_message",
+                    description="Append a single message to an existing conversation.",
+                    inputSchema=_APPEND_MESSAGE_INPUT_SCHEMA,
+                ),
+                mt.Tool(
+                    name="add_feedback",
+                    description="Record user feedback (rating or text) on an entity.",
+                    inputSchema=_ADD_FEEDBACK_INPUT_SCHEMA,
+                ),
+            ]
+        return tools
 
     @server.call_tool(validate_input=True)
     async def _call_tool(name: str, arguments: dict[str, Any]) -> Any:
@@ -228,6 +398,23 @@ def build_server(
             return await _dispatch_get_chunk(arguments)
         if name == "list_datasets":
             return await _dispatch_list_datasets(arguments)
+        if writes_enabled:
+            if name == "add_label":
+                return await _dispatch_add_label(arguments)
+            if name == "remove_label":
+                return await _dispatch_remove_label(arguments)
+            if name == "set_metadata":
+                return await _dispatch_set_metadata(arguments)
+            if name == "set_description":
+                return await _dispatch_set_description(arguments)
+            if name == "list_labels":
+                return await _dispatch_list_labels(arguments)
+            if name == "append_conversation":
+                return await _dispatch_append_conversation(arguments)
+            if name == "append_message":
+                return await _dispatch_append_message(arguments)
+            if name == "add_feedback":
+                return await _dispatch_add_feedback(arguments)
         return _error_result(f"unknown tool: {name!r}")
 
     # ── dispatchers (closures share `_get_retriever` / `_get_reranker`)
@@ -289,6 +476,165 @@ def build_server(
             return {"datasets": []}
         catalogue = backend.list_datasets()
         return {"datasets": [dict(d) for d in catalogue]}
+
+    # ── write dispatchers (only reached when writes_enabled=True) ────────
+
+    def _make_write_ctx() -> Any:
+        """Build a minimal WriteContext from a placeholder host identity."""
+        from corpus_forge.mcp.writes import WriteContext
+
+        return WriteContext(host="mcp-server", client=None, session_id=None)
+
+    def _get_write_backend() -> Any:
+        retriever = _get_retriever()
+        return getattr(retriever, "backend", None)
+
+    async def _dispatch_add_label(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp import writes
+
+        backend = _get_write_backend()
+        if backend is None:
+            return _error_result("retriever has no backend; cannot write labels")
+        ctx = _make_write_ctx()
+        result = writes.add_label(
+            backend,
+            ctx,
+            arguments["entity_type"],
+            int(arguments["entity_id"]),
+            arguments["namespace"],
+            arguments["value"],
+            confidence=arguments.get("confidence"),
+            dry_run=bool(arguments.get("dry_run", False)),
+        )
+        return result
+
+    async def _dispatch_remove_label(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp import writes
+
+        backend = _get_write_backend()
+        if backend is None:
+            return _error_result("retriever has no backend; cannot remove labels")
+        ctx = _make_write_ctx()
+        result = writes.remove_label(
+            backend,
+            ctx,
+            arguments["entity_type"],
+            int(arguments["entity_id"]),
+            arguments["namespace"],
+            arguments["value"],
+            dry_run=bool(arguments.get("dry_run", False)),
+        )
+        return result
+
+    async def _dispatch_set_metadata(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp import writes
+
+        backend = _get_write_backend()
+        if backend is None:
+            return _error_result("retriever has no backend; cannot set metadata")
+        ctx = _make_write_ctx()
+        result = writes.set_metadata(
+            backend,
+            ctx,
+            arguments["entity_type"],
+            int(arguments["entity_id"]),
+            arguments["key"],
+            arguments["value"],
+            dry_run=bool(arguments.get("dry_run", False)),
+        )
+        return result
+
+    async def _dispatch_set_description(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp import writes
+
+        backend = _get_write_backend()
+        if backend is None:
+            return _error_result("retriever has no backend; cannot set description")
+        ctx = _make_write_ctx()
+        result = writes.set_description(
+            backend,
+            ctx,
+            arguments["entity_type"],
+            int(arguments["entity_id"]),
+            arguments.get("text"),
+            dry_run=bool(arguments.get("dry_run", False)),
+        )
+        return result
+
+    async def _dispatch_list_labels(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp import writes
+
+        backend = _get_write_backend()
+        if backend is None:
+            return {"labels": []}
+        ctx = _make_write_ctx()
+        return writes.list_labels(
+            backend,
+            ctx,
+            entity_type=arguments.get("entity_type"),
+            namespace=arguments.get("namespace"),
+        )
+
+    async def _dispatch_append_conversation(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp import writes
+
+        backend = _get_write_backend()
+        if backend is None:
+            return _error_result("retriever has no backend; cannot append conversation")
+        ctx = _make_write_ctx()
+        result = writes.append_conversation(
+            backend,
+            ctx,
+            dataset=arguments["dataset"],
+            title=arguments["title"],
+            messages=arguments["messages"],
+            started_at=arguments.get("started_at"),
+            metadata=arguments.get("metadata"),
+            labels=arguments.get("labels"),
+            dry_run=bool(arguments.get("dry_run", False)),
+        )
+        return result
+
+    async def _dispatch_append_message(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp import writes
+
+        backend = _get_write_backend()
+        if backend is None:
+            return _error_result("retriever has no backend; cannot append message")
+        ctx = _make_write_ctx()
+        result = writes.append_message(
+            backend,
+            ctx,
+            int(arguments["conversation_id"]),
+            arguments["role"],
+            arguments["content"],
+            tool_calls=arguments.get("tool_calls"),
+            tool_results=arguments.get("tool_results"),
+            ts=arguments.get("ts"),
+            metadata=arguments.get("metadata"),
+            dry_run=bool(arguments.get("dry_run", False)),
+        )
+        return result
+
+    async def _dispatch_add_feedback(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp import writes
+
+        backend = _get_write_backend()
+        if backend is None:
+            return _error_result("retriever has no backend; cannot add feedback")
+        ctx = _make_write_ctx()
+        result = writes.add_feedback(
+            backend,
+            ctx,
+            arguments["entity_type"],
+            int(arguments["entity_id"]),
+            arguments["kind"],
+            rating=arguments.get("rating"),
+            text=arguments.get("text"),
+            metadata=arguments.get("metadata"),
+            dry_run=bool(arguments.get("dry_run", False)),
+        )
+        return result
 
     return server
 

@@ -36,6 +36,7 @@ Record of implementations written by tdd-coder.
 | B-01 | green | sqlite-vec loader + pyproject sqlite extra. 21/21 B-01 tests pass (0 skipped, 0 failed). Full unit suite: 689 passed, 8 skipped (pre-existing openai skips), 0 failed (B-02 pre-existing red tests not caused by B-01). Integration: 101/102 (1 pre-existing flaky timing test). All 4 gates clean. |
 | B-02 | green | SQLite migration files + dialect dispatch. 130/130 B-02 tests pass. Full unit suite: 819 passed, 8 skipped (689 pre-existing + 130 new B-02 tests), 0 failed. Integration: 102/102. All 4 gates clean. |
 | B-13 | green | SQLite wiring in ingest.py + embed.py. 30/30 wiring tests + 35/35 scoped tests pass. Full unit suite: 1059 passed, 8 skipped, 0 failed. postgres import kept at module level in embed.py (tests require it); sqlite branch uses lazy import; migrate() added to embed.backfill_embedder after embedder config lookup; test_backfill_embedder_unsupported_backend + test_ingest_once_unsupported_backend updated to kind="duckdb". All 4 gates clean. |
+| phase-f/F-03 | green | 47/47 F-03 tests pass. Full unit suite: 1688 passed, 3 skipped, 1 xfailed. |
 
 ## B-01
 - Source files: `corpus_forge/backends/sqlite_vec_loader.py` (new), `pyproject.toml`, `uv.lock`

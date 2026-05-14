@@ -1566,6 +1566,52 @@ class PostgresBackend(StorageBackend):
         )
         return result[0]["id"]
 
+    def list_labels(
+        self,
+        *,
+        entity_type: str | None = None,
+        namespace: str | None = None,
+    ) -> dict:
+        """Return applied labels with optional filters.
+
+        Returns ``{"labels": [{"entity_type": str, "namespace": str,
+        "value": str, "count": int}, ...]}``.
+
+        When ``entity_type`` is given, only labels applied to that entity type
+        are returned.  When ``namespace`` is given, only labels in that
+        namespace are returned.  Both filters may be combined.
+        """
+        parts: list[str] = []
+        params: list[object] = []
+
+        for et, (jt, _fk) in _LABEL_TABLE_MAP.items():
+            if entity_type is not None and et != entity_type:
+                continue
+            parts.append(
+                f"SELECT '{et}' AS entity_type, l.namespace, l.value, COUNT(*) AS count"
+                f" FROM {jt} j JOIN corpus.labels l ON l.id = j.label_id"
+                + (" WHERE l.namespace = %s" if namespace is not None else "")
+                + " GROUP BY l.namespace, l.value"
+            )
+            if namespace is not None:
+                params.append(namespace)
+
+        if not parts:
+            return {"labels": []}
+
+        union_sql = " UNION ALL ".join(parts)
+        rows = self._execute(union_sql, tuple(params))
+        labels = [
+            {
+                "entity_type": r["entity_type"],
+                "namespace": r["namespace"],
+                "value": r["value"],
+                "count": r["count"],
+            }
+            for r in rows
+        ]
+        return {"labels": labels}
+
     def hydrate_hit_metadata(self, hits: "list[Hit]") -> list[dict]:
         """Bulk-load labels, description, and recent_feedback for a list of hits.
 
