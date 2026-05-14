@@ -78,7 +78,9 @@ class WatchedSource(ABC):
 
     def scan(self) -> Iterator[RawDocument | RawConversation]:
         for path in self.discover():
-            yield self.parse(path)
+            result = self.parse(path)
+            if result is not None:
+                yield result
 
     def watch(self, on_event) -> None:  # noqa: B027
         """Set up watchdog observer with debounce. Override in subclasses."""
@@ -100,5 +102,5 @@ class WatchedSource(ABC):
         """Yield paths to process."""
 
     @abstractmethod
-    def parse(self, path: Path) -> RawDocument | RawConversation:
-        """Parse a single file into RawDocument or RawConversation."""
+    def parse(self, path: Path) -> RawDocument | RawConversation | None:
+        """Parse a single file into RawDocument or RawConversation, or None to skip."""
