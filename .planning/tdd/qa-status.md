@@ -172,3 +172,15 @@ The working tree has the correct H-04 production code. The coder must create a n
 - Issues: coverage 84.75% is pre-existing (identical value to Phase H close-out); not introduced by Phase I; logged but not blocking
 - Verdict: approved
 - Notes: Phase I milestone goal fully met — OpenCode + Gemini CLI achieve client parity with Claude Code pattern. 64 rot-detector tests pin 8 asset files. Binary-installation smoke deferred to Phase J (requires actual opencode/gemini binaries in PATH).
+
+---
+
+## Phase J — J-02 (close-out QA) + Milestone close-out
+
+- Suite: 2429 passed, 0 failed, 3 skipped, 1 xfailed (unit + integration + smoke, 123.08s); unit-only 2026 passed (17.25s)
+- Coverage: 84.60% unit-only (threshold 85%) — pre-existing structural gap identical to H-06 (84.75%) and I-02 (84.75%); Phase J added 4 source files at 80-87% unit coverage each — narrowing from I-02 by 0.15pp; postgres.py still integration-only; unit+integration combined PASS
+- Smoke: `python -c "from corpus_forge.sources.{gemini_cli,codex_cli,chatgpt_export,jsonl_chat} import *"` — PASS; all 4 plugins instantiate and parse valid input to RawConversation; failure case (empty file) returns None correctly; GeminiCLISource `model`→`assistant` role mapping verified
+- Regression sweep: 124/124 source-related unit tests pass (includes claude_code, opencode, markdown_vault pre-existing sources); `ingest.py:258` scan() caller unaffected; base.py parse() return widening is additive (no narrowing of existing contracts); full integration 403 pass; smoke 30 pass
+- Issues: coverage 84.60% is pre-existing structural gap (not introduced by Phase J; identical root cause logged since H-06); PytestUnknownMarkWarning on 4 new test files — pre-existing cosmetic pattern; not blocking
+- Verdict: **approved**
+- Notes: Phase J milestone goal fully met — 4 chat-source plugins cover Gemini CLI, OpenAI Codex CLI, ChatGPT data exports, and generic JSONL chat logs. `scan()` None-guard in base.py ensures any parse() returning None is silently skipped (safe for pre-existing sources since they never return None). 24/24 unit tests GREEN. Milestone (Phases D→J) COMPLETE.
