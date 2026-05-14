@@ -1860,3 +1860,37 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   - The _dump_sqlite_schema helper in test_alembic_parity_sqlite.py compares schema objects (tables, indexes, triggers, views) from sqlite_master — NOT data rows. So the legacy migrator's backfill_lexical_index() call (which writes data into chunks_fts) does not affect parity, because both sides start with an empty chunks table and the FTS shadow table has no data rows to compare. Parity is schema-only.
   - PG parity test at head=0005_fts is collected (5 items) but requires Docker testcontainer to execute. It will fire CommandError the same way when Docker is present.
   - Wave gate: ruff format + ruff check both clean after auto-format pass.
+
+## D-07
+- Test files: `tests/integration/test_apply_migrations_uses_alembic.py`
+- Survey file: `.planning/tdd/d07-legacy-test-survey.md`
+- Run command: `.venv/bin/python -m pytest tests/integration/test_apply_migrations_uses_alembic.py -v`
+- Edge case checklist:
+  - [x] happy — alembic_version row == "0005_fts" after upgrade
+  - [x] boundaries — bogus schema_dir path proves parameter is ignored
+  - [x] type/format — version_num exact string match "0005_fts"
+  - [x] state — fresh schema reset before each test; container reused
+  - [ ] N/A — concurrency (sequential migration runner; no parallel upgrade paths)
+  - [x] failure paths — schema_dir ignored (not FileNotFoundError, clean AssertionError)
+  - [ ] N/A — locale/time (no timestamps in alembic_version)
+  - [x] production-realistic data — uses real testcontainers PG + real SQLite path
+  - [ ] N/A — regression hooks (no prior bug reference for D-07)
+  - [x] full-schema probe — test 3 asserts documents/chunks/document_revisions all present
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_apply_migrations_uses_alembic.py::test_apply_migrations_produces_full_schema_pg
+  FAILED tests/integration/test_apply_migrations_uses_alembic.py::test_apply_migrations_creates_alembic_version_table_pg
+  FAILED tests/integration/test_apply_migrations_uses_alembic.py::test_apply_migrations_creates_alembic_version_table_sqlite
+  AssertionError: corpus.alembic_version table does not exist after apply_migrations.
+    Legacy apply_migrations reads schema_dir/*.sql and never writes alembic_version — this is the RED state.
+  AssertionError: alembic_version table does not exist in the SQLite database.
+    Legacy apply_migrations reads schema_dir/sqlite/*.sql — this is the RED state.
+  AssertionError: Tables missing from corpus schema after apply_migrations: {'documents', 'chunks', 'document_revisions'}. Tables present: [].
+    Legacy apply_migrations with a bogus schema_dir finds no SQL files — this is the RED state.
+  3 failed in 1.68s
+  ```
+- Status: red — handed off to tdd-coder
+- Notes:
+  - Hidden call-site: SQLiteBackend.migrate() calls _migrate_module.apply_migrations(self, schema_dir=..., dialect="sqlite"). After D-07 rewire, schema_dir will be ignored — no call-site breakage expected.
+  - Wave gate: ruff format + ruff check both clean after auto-fix pass.
+  - Survey: 8 WILL-FAIL, 3 PROBABLY-OK, 2 AMBIGUOUS (see d07-legacy-test-survey.md for method-level detail).
