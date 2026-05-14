@@ -764,3 +764,22 @@ This was uncovered because R3-08 is the FIRST test that exercises the full eval-
 - Test files modified: NONE (verified)
 - Diff scope: within surface — yes (disjoint from Claude assets and OpenCode files)
 - Status: green — handed off to tdd-qa
+
+## phase-i/I1
+- Source files:
+  - `examples/mcp-config/opencode-client.mcp.json`
+  - `.opencode/agent/corpus-forge-researcher.md`
+  - `.opencode/command/corpus-forge-search.md`
+  - `docs/opencode-integration.md`
+  - `tests/unit/test_opencode_integration_doc.py`
+  - `tests/unit/test_opencode_agent_frontmatter.py`
+  - `tests/unit/test_opencode_command_frontmatter.py`
+  - `tests/unit/test_mcp_config_opencode.py`
+- Gates:
+  - format: ✓ (`ruff format --check` clean on all 4 test files)
+  - lint: ✓ (`ruff check` 0 errors)
+  - typecheck: ✓ (`pyrefly check corpus_forge` 0 errors)
+  - test: ✓ (`pytest` 30 new sub-tests passed, 0 failed; full suite 2420 passed, 3 skipped, 1 xfailed)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (new files only, no Claude or Gemini assets touched)
+- Status: green — handed off to tdd-qa
