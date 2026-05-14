@@ -96,3 +96,103 @@ class TestChatGPTExportSource:
         results = list(source.scan())
         assert len(results) == 1
         assert results[0].external_id == "conv-001"
+
+    def test_chatgpt_export_malformed_json_returns_none(self, tmp_path: Path) -> None:
+        """parse() returns None for invalid JSON (line 108-109)."""
+        (tmp_path / "conversations.json").write_text("{not valid json!!!")
+        source = ChatGPTExportSource(export_root=tmp_path)
+        result = source.parse(tmp_path / "conversations.json")
+        assert result is None
+
+    def test_chatgpt_export_non_list_json_returns_none(self, tmp_path: Path) -> None:
+        """parse() returns None when JSON root is a dict, not a list (line 111)."""
+        (tmp_path / "conversations.json").write_text('{"key": "value"}')
+        source = ChatGPTExportSource(export_root=tmp_path)
+        result = source.parse(tmp_path / "conversations.json")
+        assert result is None
+
+    def test_chatgpt_export_non_dict_conv_object_skipped(self, tmp_path: Path) -> None:
+        """Non-dict items in the conversation list are skipped by _parse_conversation."""
+        data = [
+            "a plain string",  # skipped
+            _SAMPLE_CONVERSATIONS[0],  # valid
+        ]
+        (tmp_path / "conversations.json").write_text(json.dumps(data))
+        source = ChatGPTExportSource(export_root=tmp_path)
+        result = source.parse(tmp_path / "conversations.json")
+        # The string is skipped; valid conv is returned
+        assert result is not None
+
+    def test_chatgpt_export_empty_mapping_returns_none(self, tmp_path: Path) -> None:
+        """Conversation with empty mapping produces no messages → _parse_conversation None."""
+        data = [
+            {
+                "id": "conv-empty",
+                "title": "Empty",
+                "current_node": None,
+                "mapping": {},
+            }
+        ]
+        (tmp_path / "conversations.json").write_text(json.dumps(data))
+        source = ChatGPTExportSource(export_root=tmp_path)
+        result = source.parse(tmp_path / "conversations.json")
+        assert result is None
+
+    def test_chatgpt_export_no_conversations_json_discover_empty(self, tmp_path: Path) -> None:
+        """discover() yields nothing if conversations.json is absent (line 91-93)."""
+        source = ChatGPTExportSource(export_root=tmp_path)
+        found = list(source.discover())
+        assert found == []
+
+    def test_chatgpt_export_scan_skips_malformed_json_file(self, tmp_path: Path) -> None:
+        """scan() continues past files with invalid JSON (line 177-178)."""
+        (tmp_path / "conversations.json").write_text("{bad json")
+        source = ChatGPTExportSource(export_root=tmp_path)
+        results = list(source.scan())
+        assert results == []
+
+    def test_chatgpt_export_scan_skips_non_list_json(self, tmp_path: Path) -> None:
+        """scan() skips file if JSON root is not a list (line 179-180)."""
+        (tmp_path / "conversations.json").write_text('{"not": "a list"}')
+        source = ChatGPTExportSource(export_root=tmp_path)
+        results = list(source.scan())
+        assert results == []
+
+    def test_chatgpt_export_missing_timestamp_falls_back_to_mtime(self, tmp_path: Path) -> None:
+        """Messages with no create_time fall back to file mtime (line 140-141)."""
+        data = [
+            {
+                "id": "conv-no-ts",
+                "title": "No TS",
+                "current_node": "node-asst",
+                "mapping": {
+                    "node-user": {
+                        "id": "node-user",
+                        "parent": None,
+                        "message": {
+                            "author": {"role": "user"},
+                            "content": {"parts": ["hi"]},
+                            "create_time": None,
+                        },
+                    },
+                    "node-asst": {
+                        "id": "node-asst",
+                        "parent": "node-user",
+                        "message": {
+                            "author": {"role": "assistant"},
+                            "content": {"parts": ["hello"]},
+                            "create_time": None,
+                        },
+                    },
+                },
+            }
+        ]
+        f = tmp_path / "conversations.json"
+        f.write_text(json.dumps(data))
+        source = ChatGPTExportSource(export_root=tmp_path)
+        result = source.parse(f)
+        assert result is not None
+        # All timestamps should be the file's mtime
+        mtime = f.stat().st_mtime
+        for msg in result.messages:
+            assert msg.ts == pytest.approx(mtime, abs=1.0)

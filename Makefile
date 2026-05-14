@@ -45,12 +45,7 @@ typecheck: ## pyrefly strict
 test: test-unit test-integration test-fuzz test-smoke ## All four test categories
 
 test-unit: ## Fast, parallel, no Docker, coverage-gated
-	uv run pytest tests/unit -v -n auto --timeout=60 --cov=corpus_forge --cov-report=term-missing --cov-fail-under=84
-# NOTE: Unit-coverage gate lowered from 85 → 84 at milestone Phase D→J close-out.
-# Structural gap: corpus_forge/backends/postgres.py is ~45% unit-covered because
-# its F-02/G-02/H-02 helpers are tested via testcontainers PG, not in-memory mocks.
-# Full-suite coverage (unit + integration) is 92%+. To restore 85% gate: add
-# unit tests for PG branches in postgres.py via psycopg mocks.
+	uv run pytest tests/unit -v -n auto --timeout=60 --cov=corpus_forge --cov-report=term-missing --cov-fail-under=85
 
 test-integration: ## Requires Docker (testcontainers pgvector)
 	uv run pytest tests/integration -v

@@ -78,3 +78,37 @@ class TestCodexCLISource:
         conv = source.parse(session)
         assert conv is not None
         assert len(conv.messages) == 2
+
+    def test_codex_cli_skips_non_dict_json_lines(self, tmp_path: Path) -> None:
+        """Lines that parse as non-dict JSON (array, string, number) are skipped (line 57-58)."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        session = sessions_dir / "nondicts.jsonl"
+        session.write_text('["an", "array"]\n' + json.dumps({"role": "user", "content": "valid"}))
+        source = CodexCLISource(sessions_root=sessions_dir)
+        conv = source.parse(session)
+        assert conv is not None
+        assert len(conv.messages) == 1
+        assert conv.messages[0].content == "valid"
+
+    def test_codex_cli_timestamp_field_fallback(self, tmp_path: Path) -> None:
+        """Entry with 'timestamp' (not 'ts') is parsed correctly (line 61)."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        session = sessions_dir / "ts_alt.jsonl"
+        session.write_text(json.dumps({"role": "user", "content": "Hi", "timestamp": 1700000000}))
+        source = CodexCLISource(sessions_root=sessions_dir)
+        conv = source.parse(session)
+        assert conv is not None
+        assert conv.messages[0].ts == pytest.approx(1700000000.0)
+
+    def test_codex_cli_missing_timestamp_falls_back_to_mtime(self, tmp_path: Path) -> None:
+        """Entry with neither 'ts' nor 'timestamp' falls back to file mtime (line 62-63)."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        session = sessions_dir / "notimestamp.jsonl"
+        session.write_text(json.dumps({"role": "user", "content": "no ts"}))
+        source = CodexCLISource(sessions_root=sessions_dir)
+        conv = source.parse(session)
+        assert conv is not None
+        assert conv.messages[0].ts == pytest.approx(session.stat().st_mtime, abs=1.0)

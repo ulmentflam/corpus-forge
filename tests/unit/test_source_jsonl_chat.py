@@ -78,3 +78,59 @@ class TestJSONLChatSource:
         found = list(source.discover())
         assert len(found) == 1
         assert found[0] == chat
+
+    def test_jsonl_chat_skips_blank_lines(self, tmp_path: Path) -> None:
+        """Blank lines in the JSONL file are ignored (line 54)."""
+        chat = tmp_path / "blanks.jsonl"
+        chat.write_text(
+            "\n"
+            + json.dumps({"role": "user", "content": "Hello"})
+            + "\n\n"
+            + json.dumps({"role": "assistant", "content": "Hi"})
+            + "\n"
+        )
+        source = JSONLChatSource(path=tmp_path)
+        conv = source.parse(chat)
+        assert conv is not None
+        assert len(conv.messages) == 2
+
+    def test_jsonl_chat_skips_malformed_json_lines(self, tmp_path: Path) -> None:
+        """Malformed JSON lines are silently skipped (line 57-58)."""
+        chat = tmp_path / "broken.jsonl"
+        chat.write_text(
+            json.dumps({"role": "user", "content": "Good"})
+            + "\nnot-json!!!\n"
+            + json.dumps({"role": "assistant", "content": "Also good"})
+        )
+        source = JSONLChatSource(path=tmp_path)
+        conv = source.parse(chat)
+        assert conv is not None
+        assert len(conv.messages) == 2
+
+    def test_jsonl_chat_skips_non_dict_json_lines(self, tmp_path: Path) -> None:
+        """Lines whose JSON is not a dict are skipped (line 59-60)."""
+        chat = tmp_path / "nondicts.jsonl"
+        chat.write_text('["an", "array"]\n' + json.dumps({"role": "user", "content": "valid"}))
+        source = JSONLChatSource(path=tmp_path)
+        conv = source.parse(chat)
+        assert conv is not None
+        assert len(conv.messages) == 1
+        assert conv.messages[0].content == "valid"
+
+    def test_jsonl_chat_timestamp_field_fallback(self, tmp_path: Path) -> None:
+        """'timestamp' key is accepted as an alternative to 'ts' (line 63)."""
+        chat = tmp_path / "ts_alt.jsonl"
+        chat.write_text(json.dumps({"role": "user", "content": "Hi", "timestamp": 1700000000}))
+        source = JSONLChatSource(path=tmp_path)
+        conv = source.parse(chat)
+        assert conv is not None
+        assert conv.messages[0].ts == pytest.approx(1700000000.0)
+
+    def test_jsonl_chat_missing_timestamp_falls_back_to_mtime(self, tmp_path: Path) -> None:
+        """No ts/timestamp → falls back to file mtime (line 64-65)."""
+        chat = tmp_path / "nomtime.jsonl"
+        chat.write_text(json.dumps({"role": "user", "content": "no ts"}))
+        source = JSONLChatSource(path=tmp_path)
+        conv = source.parse(chat)
+        assert conv is not None
+        assert conv.messages[0].ts == pytest.approx(chat.stat().st_mtime, abs=1.0)
