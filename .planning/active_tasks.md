@@ -128,6 +128,25 @@
 - [ ] Revision compaction (latest + last-30d + checkpoints)
 - [ ] Content-addressed `chunk_texts` table (Design B refactor)
 
+### Phase D — Multi-Format Corpus (plan: .planning/tdd/multi_format.md)
+
+Lift corpus-forge from "markdown vault + chat history" to a universal text
+corpus: PDFs (digital + OCR), HTML, EPUB, Office, notebooks, structured
+data, subtitles, and every human-readable code file via tree-sitter.
+
+#### P0 — Text & code extractors (no model required)
+- [ ] D-01..D-06 Wave 0 — `Extractor` protocol, `CodeChunker`, leaf extractors, `ChunkerDispatcher`, `ExtractionConfig`
+- [ ] D-07..D-13 Wave 1 — PDF (digital), HTML, EPUB, Office, Notebook, CSV, Code extractors
+- [ ] D-14..D-16 Wave 2 — `FilesystemSource`, ingest wiring, `config.example.toml`
+- [ ] D-17..D-19 Wave 3 — fixture corpus, E2E integration test, pyproject extras + docs
+- [ ] D-20 — **P0 gate**: `make ci` green at ≥85% coverage
+
+#### P1 — Vision/OCR (local Ollama qwen2.5vl:7b + Mistral OCR fallback)
+- [ ] E-01..E-04 Wave 4 — `VLMBackend` protocol, `OllamaVLM`, `MistralOCR`, `VLMConfig`
+- [ ] E-05..E-06 Wave 5 — PDF escalation upgrade, `ImageExtractor`
+- [ ] E-07..E-09 Wave 6 — OCR E2E tests, Makefile, docs
+- [ ] E-10 — **P1 gate**: manual cross-backend smoke
+
 ## Verification Criteria for Phase A Completion:
 - [ ] Daemon running on both Macs
 - [ ] corpus.chunks and corpus.embeddings_qwen3_8b populated
