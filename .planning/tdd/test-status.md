@@ -2140,3 +2140,32 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   2 errors during collection
   ```
 - Status: red — handed off to tdd-coder
+
+## F-04 — MCP read-side enrichment
+- Test files: `tests/integration/test_mcp_read_enrichment.py`
+- Run command: `.venv/bin/python -m pytest tests/integration/test_mcp_read_enrichment.py -v`
+- Edge case checklist:
+  - [x] happy path — search hit and get_chunk both return labels/description/recent_feedback
+  - [x] boundaries — recent_feedback bounded to 5 (test with 7 rows); empty feedback list when no rows
+  - [x] type/format — label is a dict {namespace, value, source, confidence}; feedback entries are dicts
+  - [x] state — enrichment reflects write-tool mutations within same in-process backend
+  - [ ] N/A — concurrency (serial in-process MCP calls)
+  - [x] failure paths — toggle include_labels/include_description/include_feedback=False omits respective keys
+  - [ ] N/A — locale/time (no locale-sensitive paths; ts field present but not asserted on format)
+  - [x] production-realistic — SQLite in-memory backend with real migration stack; uses same _call_tool harness as E-02 cross-host smoke
+  - [x] regression hooks — test_search_no_n_plus_one patches hydrate_hit_metadata to assert call_count >= 1 and <= 2 (catches both missing wiring AND per-hit N+1)
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_mcp_read_enrichment.py::test_search_hit_includes_labels
+  FAILED tests/integration/test_mcp_read_enrichment.py::test_search_hit_recent_feedback_bounded_to_5
+  FAILED tests/integration/test_mcp_read_enrichment.py::test_search_include_feedback_false_omits_recent_feedback
+  FAILED tests/integration/test_mcp_read_enrichment.py::test_search_hit_includes_recent_feedback
+  FAILED tests/integration/test_mcp_read_enrichment.py::test_search_hit_includes_description
+  FAILED tests/integration/test_mcp_read_enrichment.py::test_search_chunk_hit_includes_parent_rollup
+  FAILED tests/integration/test_mcp_read_enrichment.py::test_get_chunk_includes_enrichment
+  FAILED tests/integration/test_mcp_read_enrichment.py::test_search_no_n_plus_one
+  FAILED tests/integration/test_mcp_read_enrichment.py::test_search_include_description_false_omits_description
+  FAILED tests/integration/test_mcp_read_enrichment.py::test_search_include_labels_false_omits_labels
+  10 failed in 0.62s
+  ```
+- Status: red — handed off to tdd-coder
