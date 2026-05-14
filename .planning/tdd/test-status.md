@@ -2030,3 +2030,36 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
     dispatching tool calls. Dispatch goes through server.request_handlers[CallToolRequest].
   - list_datasets backend API returns per-dataset rows (not per-host). Multi-host presence is
     verified via a direct SQL query on corpus.sources, which is the correct assertion surface.
+
+## F-01
+- Test files: `tests/integration/test_alembic_0006_writes_and_feedback.py`
+- Run command: `.venv/bin/python -m pytest tests/integration/test_alembic_0006_writes_and_feedback.py -v`
+- Edge case checklist:
+  - [x] happy path — 3 tests assert the full post-0006 schema shape (columns, types, nullability, defaults, indexes)
+  - [x] boundaries — column set checked as an exact set (no extra, no missing columns asserted for both tables)
+  - [x] type/format — data_type values checked exactly ('text', 'bigint', 'boolean', 'jsonb', 'timestamp with time zone', 'integer')
+  - [x] state — _reset_schema() in each test for isolation; fresh Alembic upgrade from scratch per test
+  - [ ] N/A — concurrency (DDL test; single connection per test)
+  - [x] failure paths — CommandError is the expected RED failure; table-absent case caught by empty cols dict assertion
+  - [ ] N/A — locale/time (schema DDL test; no locale-sensitive behavior)
+  - [x] production-realistic — uses information_schema.columns + pg_indexes (same queries a DBA would run to verify a migration)
+  - [ ] N/A — regression hooks (no prior bug; this is a new table)
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_alembic_0006_writes_and_feedback.py::test_mcp_audit_table_shape
+  FAILED tests/integration/test_alembic_0006_writes_and_feedback.py::test_description_columns_added
+  FAILED tests/integration/test_alembic_0006_writes_and_feedback.py::test_feedback_table_shape
+  alembic.util.exc.CommandError: Can't locate revision identified by '0006_writes_and_feedback'
+  3 failed, 3 warnings in 1.91s
+  ```
+- Status: red — handed off to tdd-coder
+- Notes:
+  - column_default normalization: Postgres returns 'now()' (lowercase) for TIMESTAMPTZ DEFAULT NOW();
+    test checks `.lower()` contains 'now' — robust to either case.
+  - metadata default: Postgres stores "'{}'::jsonb" literally; test checks both '{}' and 'jsonb'
+    appear in the lowercased default string — avoids fragility on exact quoting.
+  - dry_run default: Postgres returns 'false' (lowercase); test lowercases before checking — robust.
+  - index-naming: index names are deterministic from the DDL (mcp_audit_entity_idx, etc.);
+    no surprise — the plan names match what pg_indexes will expose.
+  - SQLite parity is intentionally OUT OF SCOPE for this file (column type info unreliable in
+    sqlite_master). The F-01 coder adds a SQLite branch in the revision itself.
