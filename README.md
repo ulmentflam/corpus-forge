@@ -1,5 +1,5 @@
 <p align="center">
-  <img alt="corpus-forge — forge a HuggingFace-format training corpus from your notes and chat history" src="assets/banner.png" width="100%">
+  <img alt="corpus-forge — forge a HuggingFace-format training corpus from your notes and chat history" src="assets/banner.svg" width="100%">
 </p>
 
 # corpus-forge
