@@ -80,20 +80,22 @@ class TestMigrate:
     """Tests for migrate method."""
 
     def test_migrate_executes_statements(self):
-        backend = MagicMock()
-        backend._execute = MagicMock()
-        # Replace _execute on the instance
-        backend._execute = MagicMock()
-
-        # We need to test via the real class but mock _execute
-        with patch.object(PostgresBackend, "__init__", lambda self, dsn, schema="corpus": None):
+        """migrate() runs inline DDL statements via _execute (core schema bootstrap)."""
+        with (
+            patch.object(PostgresBackend, "__init__", lambda self, dsn, schema="corpus": None),
+            patch("corpus_forge.schema.migrate.apply_migrations"),
+        ):
             real_backend = PostgresBackend.__new__(PostgresBackend)
             real_backend._execute = MagicMock()
             real_backend.migrate()
             assert real_backend._execute.call_count > 0
 
     def test_migrate_creates_vector_extension(self):
-        with patch.object(PostgresBackend, "__init__", lambda self, dsn, schema="corpus": None):
+        """migrate() includes CREATE EXTENSION vector in its inline DDL."""
+        with (
+            patch.object(PostgresBackend, "__init__", lambda self, dsn, schema="corpus": None),
+            patch("corpus_forge.schema.migrate.apply_migrations"),
+        ):
             backend = PostgresBackend.__new__(PostgresBackend)
             backend._execute = MagicMock()
             backend.migrate()

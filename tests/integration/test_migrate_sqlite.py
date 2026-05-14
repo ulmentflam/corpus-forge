@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 
 from corpus_forge.backends.sqlite import SQLiteBackend
-from corpus_forge.schema.migrate import apply_migrations, get_migration_files
 
 # ---------------------------------------------------------------------------
 # No pytestmark = pytest.mark.integration — these run on any machine with
@@ -26,11 +25,6 @@ from corpus_forge.schema.migrate import apply_migrations, get_migration_files
 # Docker is absent, so we rely on Docker being present in CI.  Locally
 # the tests can also be run as: PYTHONPATH=. uv run pytest <this file> -v
 # ---------------------------------------------------------------------------
-
-# The schema root (parent of the sqlite/ subdir).
-# get_migration_files(schema_dir, dialect="sqlite") appends "/sqlite" internally,
-# so pass the parent here — NOT the sqlite/ subdir directly.
-_SQLITE_SCHEMA_DIR = Path(__file__).resolve().parents[2] / "corpus_forge" / "schema"
 
 
 def _make_backend(db_path: Path) -> SQLiteBackend:
@@ -383,16 +377,6 @@ class TestMigrateSQLiteIdempotency:
         assert "documents" in tables
         assert "chunks" in tables
 
-    @pytest.mark.skip(
-        reason="legacy migration test — pins pre-Alembic file-globbing; deleted in D-10"
-    )
-    def test_apply_migrations_explicitly_idempotent(self, tmp_path: Path) -> None:
-        """apply_migrations() called directly twice is also idempotent."""
-        db_path = tmp_path / "corpus.db"
-        backend = SQLiteBackend(path=str(db_path))
-        apply_migrations(backend, _SQLITE_SCHEMA_DIR, dialect="sqlite")
-        apply_migrations(backend, _SQLITE_SCHEMA_DIR, dialect="sqlite")  # no error
-
 
 # ---------------------------------------------------------------------------
 # TestMigrateSQLiteFileOrder — migration files applied 001 → 002 → 003
@@ -401,28 +385,6 @@ class TestMigrateSQLiteIdempotency:
 
 class TestMigrateSQLiteFileOrder:
     """Migration runner loads files in numeric order."""
-
-    @pytest.mark.skip(
-        reason="legacy migration test — pins pre-Alembic file-globbing; deleted in D-10"
-    )
-    def test_get_migration_files_includes_all_three(self) -> None:
-        # Pass the schema root + dialect="sqlite"; the function appends "/sqlite" internally.
-        files = get_migration_files(_SQLITE_SCHEMA_DIR, dialect="sqlite")
-        names = [f.name for f in files]
-        assert "001_core.sql" in names
-        assert "002_chunk_content_hash.sql" in names
-        assert "003_sync.sql" in names
-
-    @pytest.mark.skip(
-        reason="legacy migration test — pins pre-Alembic file-globbing; deleted in D-10"
-    )
-    def test_migration_files_numeric_order(self) -> None:
-        files = get_migration_files(_SQLITE_SCHEMA_DIR, dialect="sqlite")
-        names = [f.name for f in files]
-        idx_001 = names.index("001_core.sql")
-        idx_002 = names.index("002_chunk_content_hash.sql")
-        idx_003 = names.index("003_sync.sql")
-        assert idx_001 < idx_002 < idx_003
 
     def test_002_columns_present_from_second_file(self, tmp_path: Path) -> None:
         """content_hash column (added by 002) is present after full migrate."""

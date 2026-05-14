@@ -62,12 +62,25 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode (with an Engine/Connection)."""
-    connectable = engine_from_config(
-        context.config.get_section(context.config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-        url=_get_url() or None,
-    )
+    creator = context.config.attributes.get("creator")
+    if creator is not None:
+        # In-memory SQLite: use the backend's shared-cache factory so Alembic
+        # operates on the same in-memory database as the SQLiteBackend instance.
+        connectable = engine_from_config(
+            {},
+            prefix="sqlalchemy.",
+            poolclass=pool.NullPool,
+            creator=creator,
+            # SQLite dialect is inferred from the creator connection.
+            url="sqlite+pysqlite://",
+        )
+    else:
+        connectable = engine_from_config(
+            context.config.get_section(context.config.config_ini_section, {}),
+            prefix="sqlalchemy.",
+            poolclass=pool.NullPool,
+            url=_get_url() or None,
+        )
 
     with connectable.connect() as connection:
         dialect_name: str = connection.dialect.name

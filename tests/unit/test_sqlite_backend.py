@@ -210,6 +210,9 @@ class TestSchemaTablePresence:
             "chunks_fts_data",
             "chunks_fts_docsize",
             "chunks_fts_idx",
+            # Alembic tracking table added by Alembic in D-10 (was not present
+            # with the legacy SQL-file migrator).
+            "alembic_version",
         ]
     )
 
@@ -471,28 +474,34 @@ class TestFailureModes:
     """Failure paths: directory path, missing parent."""
 
     def test_path_is_directory_raises_operational_error(self, tmp_path):
-        """Opening a directory as a DB file raises sqlite3.OperationalError."""
-        # tmp_path itself is a directory
+        """Opening a directory as a DB file raises an OperationalError variant."""
+        # tmp_path itself is a directory.  Post-D10 Alembic wraps the
+        # sqlite3.OperationalError in sqlalchemy.exc.OperationalError; accept both.
+        import sqlalchemy.exc as _sa_exc
+
         backend = SQLiteBackend(path=tmp_path)
-        with pytest.raises(sqlite3.OperationalError):
+        with pytest.raises((sqlite3.OperationalError, _sa_exc.OperationalError)):
             # Connection is lazy; migrate() (or explicit _get_connection) triggers it
             backend.migrate()
 
     def test_path_is_directory_error_is_raised_on_connection(self, tmp_path):
         """Constructor itself does NOT raise — only _get_connection() raises."""
-        # This verifies the lazy-connect contract
+        import sqlalchemy.exc as _sa_exc
+
         dir_path = tmp_path  # a directory
         # __init__ must not raise
         backend = SQLiteBackend(path=dir_path)
-        # But migrate() (which calls _get_connection) must raise
-        with pytest.raises(sqlite3.OperationalError):
+        # But migrate() (which calls Alembic / _get_connection) must raise
+        with pytest.raises((sqlite3.OperationalError, _sa_exc.OperationalError)):
             backend.migrate()
 
     def test_missing_parent_directory_raises(self, tmp_path):
-        """Path whose parent does not exist raises sqlite3.OperationalError."""
+        """Path whose parent does not exist raises an OperationalError variant."""
+        import sqlalchemy.exc as _sa_exc
+
         nonexistent_parent = tmp_path / "nonexistent_subdir" / "corpus.db"
         backend = SQLiteBackend(path=nonexistent_parent)
-        with pytest.raises(sqlite3.OperationalError):
+        with pytest.raises((sqlite3.OperationalError, _sa_exc.OperationalError)):
             backend.migrate()
 
     def test_missing_parent_constructor_does_not_raise(self, tmp_path):

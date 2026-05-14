@@ -519,3 +519,32 @@ This was uncovered because R3-08 is the FIRST test that exercises the full eval-
   - Fresh-DB boot: for the fresh-DB test the server runs `apply_migrations` during `backend.migrate()` on first retriever build, after the initialize response is already sent.
   - 6/6 smoke assertions green: stdout has exactly one JSON object, no migration log markers, stderr is non-empty.
 - Status: green — handed off to tdd-qa
+
+## D-10
+- Source files:
+  - `corpus_forge/schema/migrate.py` (collapse to Alembic-only; retire `get_migration_files` + legacy branch)
+  - `corpus_forge/alembic/env.py` (add `creator` attribute support for in-memory SQLite)
+  - `tests/integration/test_migrate_002.py` (remove legacy backfill-rerun method)
+  - `tests/integration/test_migrate_003.py` (remove 2 file-globbing skip methods)
+  - `tests/integration/test_migrate_sqlite.py` (remove 3 file-globbing skip methods + dead imports)
+  - `tests/unit/test_sqlite_backend.py` (add alembic_version to EXPECTED_TABLES; accept SA exc in failure modes)
+  - `tests/unit/test_postgres_backend.py` (replace _execute-spy migrate tests with apply_migrations-mock tests)
+  - Deleted (git rm): 9 raw SQL files, 8 quarantined unit test files, 2 parity test files, 1 fts_triggers unit test
+- Gates:
+  - format: ✓ (`ruff format --check` — 178 files clean)
+  - lint: ✓ (`ruff check` — All checks passed)
+  - typecheck: ✓ (`pyrefly check corpus_forge` — 0 errors, 17 suppressed, 27 warnings)
+  - test: ✓ (`pytest tests/unit tests/integration tests/smoke` — 1921 passed, 2 failed pre-existing, 2 skipped, 1 xfailed)
+- Test files modified: test_migrate_002.py, test_migrate_003.py, test_migrate_sqlite.py, test_sqlite_backend.py, test_postgres_backend.py — all non-phase-D callers adjusted per Part 5 directive; Tester's alembic-suite files (test_alembic_revision_chain.py, test_cli_migrate.py, test_alembic_backfill_content_hash.py, test_alembic_backfill_fts_sqlite.py, test_apply_migrations_uses_alembic.py, test_mcp_serve_boots_with_alembic.py) — NOT modified
+- Diff scope: within surface — yes
+- Deleted files (21 total):
+  - SQL: corpus_forge/schema/001_core.sql, 002_chunk_content_hash.sql, 002_views.sql, 003_sync.sql, 004_fts.sql, sqlite/001_core.sql, sqlite/002_chunk_content_hash.sql, sqlite/003_sync.sql, sqlite/004_fts.sql
+  - Unit tests: test_migration_002.py, test_migration_003.py, test_migration_004_postgres.py, test_migration_004_sqlite.py, test_migration_sqlite_001.py, test_migration_sqlite_002.py, test_migration_sqlite_003.py, test_sqlite_migration_loader.py, test_sqlite_fts_triggers.py
+  - Integration parity: test_alembic_parity_postgres.py, test_alembic_parity_sqlite.py
+- Parity test deletion note: parity tests deleted because their purpose was to prove Alembic == legacy; the legacy is gone; remaining alembic-suite (chain + backfill x2 + smoke + apply_migrations-uses-alembic) provides ongoing correctness coverage
+- Surprises:
+  - test_sqlite_fts_triggers.py not in D-07 survey but pinned deleted sqlite/004_fts.sql directly → added to deletion list
+  - In-memory SQLite (path=":memory:") required new Alembic creator-factory path in env.py so Alembic connects to the same shared-cache URI as SQLiteBackend._get_connection()
+  - test_migrate_002.py::test_backfill_populates_content_hash pinned legacy re-migration backfill behavior (Alembic is idempotent) → removed that method; kept schema-state methods
+  - Pre-seeded /tmp/corpus-forge-test.db had alembic_version=0001_core but full schema → updated to 0005_fts so eval smoke tests pass
+- Status: green — handed off to tdd-qa
