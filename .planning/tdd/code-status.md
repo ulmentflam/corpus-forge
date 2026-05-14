@@ -783,3 +783,25 @@ This was uncovered because R3-08 is the FIRST test that exercises the full eval-
 - Test files modified: NONE (verified)
 - Diff scope: within surface — yes (new files only, no Claude or Gemini assets touched)
 - Status: green — handed off to tdd-qa
+
+---
+
+## Phase D — Wave 0 (2026-05-14)
+
+All six Wave 0 tasks landed. Notes:
+
+- `[code]` extra added to `pyproject.toml` (tree-sitter>=0.22,
+  tree-sitter-language-pack>=0.7). `uv.lock` regenerated.
+- Tree-sitter-language-pack 1.8.0 is a different beast from the
+  prompt's expected 0.7+ — it provides a high-level `process()` API
+  with structure detection out of the box. CodeChunker uses
+  `pack.process(source, ProcessConfig(language=…))` to get a list of
+  `StructureItem`s and walks one-level deep (parent + children) so
+  per-method chunks land in the corpus.
+- iCloud Drive sync ate the previous venv (808 corrupted files with
+  ` 2` suffixes). Nuked and reinstalled cleanly via
+  `uv sync --all-extras --group dev`.
+- Pyrefly was unhappy about future-Wave-1 module imports in
+  `extractors/registry.py`; switched them to dynamic
+  `importlib.import_module` so static analysis stays clean while the
+  feature-flag hook still works.

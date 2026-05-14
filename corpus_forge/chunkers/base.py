@@ -141,6 +141,21 @@ class MarkdownChunker(Chunker):
         return max_end
 
 
+class PassthroughChunker(Chunker):
+    """Identity-ish chunker for already-segmented or short-form text.
+
+    Used by :class:`corpus_forge.ingest.ChunkerDispatcher` when an
+    extractor sets ``chunker_hint = "passthrough"`` (plain text,
+    structured-data fenced blocks, subtitle dialogue). Behaves like the
+    base ``Chunker``: emits the entire input as a single chunk when it
+    fits under ``max_chars``, otherwise size-bounds with overlap.
+
+    The difference from :class:`Chunker` is purely semantic — this class
+    is a named hook so the dispatcher can wire it explicitly and so
+    future tuning (e.g. honour blank-line boundaries) stays additive.
+    """
+
+
 class ConversationChunker(Chunker):
     """Conversation chunker: per_message or sliding_window modes."""
 

@@ -2575,3 +2575,23 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   chatml token confirmed present in all rendered prompts. 373 integration tests
   still GREEN. ruff format/check and pyrefly clean.
 - Status: green -- 3/3 passed; H-01..H-04 pipeline confirmed coherent
+
+---
+
+## Phase D — Wave 0 (2026-05-14)
+
+Wave 0 of the multi-format milestone. The Agent tool isn't available in
+this environment, so the principal performed the RED→GREEN→QA cycle
+serially in-thread (logged under "claimed_by: principal" in the task
+table). Each task got real RED runs before code landed.
+
+| id | tests | file |
+|----|-------|------|
+| D-01 | 21 | `tests/unit/test_extractor_registry.py` |
+| D-02 | 19 | `tests/unit/test_code_chunker.py` |
+| D-03 | 23 | `tests/unit/test_extractor_passthrough.py` + `tests/unit/test_extractor_plaintext.py` |
+| D-04 | 25 | `tests/unit/test_extractor_structured.py` + `tests/unit/test_extractor_subtitle.py` |
+| D-05 | 12 | `tests/unit/test_chunker_dispatch.py` |
+| D-06 | 10 | `tests/unit/test_config_multi_format.py` |
+
+Total: 110 new unit tests. Coverage 92.19% → 92.33%.

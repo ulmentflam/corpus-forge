@@ -2,15 +2,83 @@
 
 import logging
 import socket
+from typing import Any
 
 from .backends.base import StorageBackend
-from .chunkers.base import Chunker
+from .chunkers.base import Chunker, PassthroughChunker
 from .config import Config
 from .embedders.base import Embedder
 from .embedders.registry import registry
 from .sources.base import RawConversation, RawDocument, Source
 
 logger = logging.getLogger(__name__)
+
+
+class ChunkerDispatcher:
+    """Phase D — per-document chunker dispatch.
+
+    Selects a :class:`Chunker` from the ``chunker_hint`` value carried in
+    ``RawDocument.metadata``. The supported hints are:
+
+    - ``"markdown"``    → :class:`corpus_forge.chunkers.markdown.MarkdownChunker`
+    - ``"conversation"`` → :class:`corpus_forge.chunkers.conversation.ConversationChunker`
+    - ``"passthrough"`` → :class:`corpus_forge.chunkers.base.PassthroughChunker`
+    - ``"code"``        → :class:`corpus_forge.chunkers.code.CodeChunker` (lazy)
+
+    Backwards-compatible: when no hint is present, :meth:`dispatch_for`
+    returns the caller's existing per-source ``fallback`` chunker so
+    sources that pre-date this layer (markdown_vault, claude_code,
+    opencode) keep working unchanged.
+
+    The dispatcher is intentionally cheap to construct. Chunkers are
+    instantiated on demand and memoised per dispatcher instance so the
+    hot path doesn't re-import on every document.
+    """
+
+    def __init__(self, code_chunker_config: dict[str, Any] | None = None):
+        self._code_chunker_config = code_chunker_config or {}
+        self._cache: dict[str, Chunker] = {}
+
+    def for_hint(self, hint: str) -> Chunker:
+        """Return a (cached) :class:`Chunker` for the given hint string."""
+        cached = self._cache.get(hint)
+        if cached is not None:
+            return cached
+
+        if hint == "markdown":
+            # Import here to avoid circular dependencies and keep startup cheap.
+            from .chunkers.markdown import MarkdownChunker  # noqa: PLC0415
+
+            chunker: Chunker = MarkdownChunker()
+        elif hint == "conversation":
+            from .chunkers.conversation import ConversationChunker  # noqa: PLC0415
+
+            chunker = ConversationChunker()
+        elif hint == "passthrough":
+            chunker = PassthroughChunker()
+        elif hint == "code":
+            # Lazy import: tree-sitter is an optional [code] extra.
+            from .chunkers.code import CodeChunker  # noqa: PLC0415
+
+            chunker = CodeChunker(**self._code_chunker_config)
+        else:
+            raise ValueError(f"Unknown chunker hint: {hint!r}")
+
+        self._cache[hint] = chunker
+        return chunker
+
+    def dispatch_for(self, raw: Any, fallback: Chunker) -> Chunker:
+        """Resolve the chunker for ``raw``.
+
+        If ``raw.metadata['chunker_hint']`` is set and non-empty, dispatch on
+        it via :meth:`for_hint`. Otherwise return ``fallback`` — preserving
+        the pre-Phase-D source-level chunker resolution semantics.
+        """
+        metadata = getattr(raw, "metadata", None) or {}
+        hint = metadata.get("chunker_hint") if isinstance(metadata, dict) else None
+        if not hint:
+            return fallback
+        return self.for_hint(hint)
 
 
 def get_chunker_for_source(source: Source, config: Config) -> Chunker:

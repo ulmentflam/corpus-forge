@@ -54,6 +54,32 @@ class DaemonConfig(BaseModel):
     sync_use_listen_notify: bool = False
 
 
+class ExtractionConfig(BaseModel):
+    """Phase D — per-source extractor feature flags.
+
+    Attached optionally to :class:`DatasetSourceConfig` so a heterogeneous
+    `filesystem` source can disable expensive extractor families without
+    rebuilding the whole pipeline. Defaults to *every flag on* — the
+    common case is "ingest everything I have a parser for".
+
+    P1 (VLM/OCR) fields are intentionally absent — they will be added in
+    Wave 4 alongside the OCR extractor escalation.
+    """
+
+    enable_pdf: bool = True
+    enable_office: bool = True
+    enable_code: bool = True
+    enable_html: bool = True
+    enable_epub: bool = True
+    enable_notebook: bool = True
+    enable_csv: bool = True
+    code_chunker_config: dict = Field(
+        default_factory=lambda: {"max_chars": 1500, "min_chars": 100, "overlap": 100}
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class DatasetSourceConfig(BaseModel):
     """Configuration for a dataset source."""
 
@@ -69,6 +95,9 @@ class DatasetSourceConfig(BaseModel):
     # Chunker configuration
     chunker: str = Field(pattern="^(markdown|conversation)$")
     chunker_config: dict = Field(default_factory=dict)
+    # Phase D — multi-format extractor feature flags. Optional; legacy
+    # markdown_vault / chat sources leave this None.
+    extraction: ExtractionConfig | None = None
 
 
 class DatasetConfig(BaseModel):

@@ -184,3 +184,24 @@ The working tree has the correct H-04 production code. The coder must create a n
 - Issues: coverage 84.60% is pre-existing structural gap (not introduced by Phase J; identical root cause logged since H-06); PytestUnknownMarkWarning on 4 new test files — pre-existing cosmetic pattern; not blocking
 - Verdict: **approved**
 - Notes: Phase J milestone goal fully met — 4 chat-source plugins cover Gemini CLI, OpenAI Codex CLI, ChatGPT data exports, and generic JSONL chat logs. `scan()` None-guard in base.py ensures any parse() returning None is silently skipped (safe for pre-existing sources since they never return None). 24/24 unit tests GREEN. Milestone (Phases D→J) COMPLETE.
+
+---
+
+## Phase D — Wave 0 (2026-05-14) — verdict: approved
+
+Gates (all green):
+- `make lint`: All checks passed!
+- `make format-check`: 265 files already formatted
+- `make typecheck`: 0 errors (23 suppressed, 40 warnings)
+- `make test-unit`: 2322 passed, 2 skipped, 1 xfailed; coverage 92.33% (90% gate)
+
+Per-task verdicts:
+- D-01: approved (21 tests, registry behaviour fully covered)
+- D-02: approved (19 tests; oversize sub-split, undersize coalesce,
+  long-tail fallback, AST metadata all exercised)
+- D-03: approved (23 tests)
+- D-04: approved (25 tests; YAML pretty-print falls back gracefully
+  without PyYAML)
+- D-05: approved (12 tests; backwards-compat fallback path proven
+  with empty / None metadata)
+- D-06: approved (10 tests; existing config suite still 101 green)
