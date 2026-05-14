@@ -44,6 +44,7 @@ Record of implementations written by tdd-coder.
 | phase-g/G-03 | green | 44/44 target tests pass (33 unit + 11 integration). Full suite: 2266 passed, 3 skipped, 1 xfailed, 0 failed. All 4 gates clean. |
 | phase-g/G-04 | green | 24/24 target tests pass (9 unit + 15 integration). Full suite: 25 total failures (all pre-existing — same 6 unit + 19 integration failures existed before G-04). All 4 gates clean. |
 | phase-g/G-05 | green | 3/3 integration tests pass; 44/44 dispatch+render_conversation tests pass; 3/3 smoke pass. Full suite: 2288 passed, 3 skipped, 1 xfailed, 0 failed. Coverage: 93.06% (gate: 85%). All 4 gates clean. |
+| phase-h/H-01 | green | 7/7 targeted tests pass (4 integration 0008 + 3 apply_migrations); 4/4 chain tests pass (head=0008_feedback_sessions). Unit suite: 1912 passed, 3 skipped, 1 xfailed, 0 failed. Integration suite: 365 passed, 0 failed. All 4 gates clean. |
 
 ## phase-g/G-03
 - Source files:

@@ -218,6 +218,9 @@ class TestSchemaTablePresence:
             "feedback",
             # G-01 (0007_chat_templates) adds the chat_templates table.
             "chat_templates",
+            # H-01 (0008_feedback_sessions) adds feedback_sessions and feedback_events.
+            "feedback_sessions",
+            "feedback_events",
         ]
     )
 
