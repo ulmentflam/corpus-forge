@@ -42,6 +42,40 @@ Record of test suites written by tdd-tester.
 | B-03-fix | green | Narrowed `test_no_postgres_backfill_sql_executed` assertion (Option 1: strip `--` comments). 29/29 tests pass. |
 | B-04    | red    | 18 tests written for register_embedder; all failing with AttributeError (method not yet implemented). 848 existing tests still pass. |
 | D-03    | red    | backfill test (3 tests) + parity ext to 0002_chunk_content_hash — all fail CommandError; 0001_core parity GREEN. |
+| G-05    | red (2/3 fail) | Integration smoke written. 2 tests fail: export_chat does not resolve custom templates from DB (production gap). 1 test passes (builtin chatml render). Skill contract rename: 4 GREEN. |
+
+## Phase G — G-05 Integration Smoke
+
+## G-05 — End-to-end integration smoke + skill-contract bump to 14 tools
+- Test files:
+  - `tests/integration/test_render_register_export_e2e.py` (new — 3 tests)
+  - `tests/smoke/test_skill_tool_contract.py` (updated — renamed _ALL_11_TOOLS → _ALL_14_TOOLS, test function names updated)
+- Run command: `.venv/bin/python -m pytest tests/integration/test_render_register_export_e2e.py tests/smoke/test_skill_tool_contract.py -v`
+- Edge case checklist:
+  - [x] happy — `test_append_then_render_with_builtin` (chatml, 3 messages, sentinel check)
+  - [x] boundaries — 2-message and 4-message conversations in `test_register_then_export_uses_custom_template`
+  - [x] type/format — custom Jinja template (non-builtin name, `{{ messages|length }}`) exercises DB-lookup path
+  - [x] state — MCP register then export (two-phase state: register first, then export reads DB)
+  - [ ] N/A — concurrency (sequential in-process, no shared mutable state across tests)
+  - [x] failure paths — `export_chat` raises `KeyError` for unknown template name (pins that DB resolution is missing)
+  - [ ] N/A — locale/time (no date/time fields exercised in these tests)
+  - [x] production-realistic — uses real SQLite backend + real MCP server in-process (no mocks)
+  - [x] regression hooks — pins the full round-trip; any regression in append/register/render/export chain fails loudly
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_render_register_export_e2e.py::test_register_then_export_uses_custom_template
+  FAILED tests/integration/test_render_register_export_e2e.py::test_full_round_trip_append_register_render_export_load_via_datasets
+
+  corpus_forge/templates/__init__.py:54: KeyError
+  E   KeyError: "unknown template: 'g05-roles-tmpl'; builtins=['chatml', 'llama3', 'alpaca', 'vicuna', 'gemma', 'qwen']"
+
+  2 failed, 4 passed (3 smoke + 1 integration)
+  ```
+- Production bug noted: `export.export_chat` calls `templates.render()` which has no DB lookup path.
+  The `render_conversation` MCP tool resolves custom templates via `backend.get_chat_template_by_name()`.
+  `export_chat` must be updated to pass `backend` into `templates.render` (or accept a `backend` param
+  and resolve custom templates before calling render). This is the Coder's fix target.
+- Status: red — 2/3 integration tests failing for right reason; handed off to tdd-coder
 
 ## Phase B — SQLite Backend
 
