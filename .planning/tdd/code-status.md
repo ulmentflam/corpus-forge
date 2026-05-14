@@ -577,3 +577,21 @@ This was uncovered because R3-08 is the FIRST test that exercises the full eval-
 - SQLite type conversions: BIGSERIAL→INTEGER PRIMARY KEY, TIMESTAMPTZ→TEXT DEFAULT (datetime('now')), JSONB→TEXT, BOOLEAN→INTEGER DEFAULT 0; `DEFAULT '{}'` for metadata TEXT; no corpus. prefix; no IF NOT EXISTS on ALTER TABLE ADD COLUMN statements
 - DDL drift: none — plan DDL matched verbatim on PG branch; no FKs on mcp_audit or feedback (intentional)
 - Status: green — handed off to tdd-qa
+
+## phase-f/F-02
+- Source files: `corpus_forge/backends/sqlite.py`, `corpus_forge/backends/postgres.py`
+- Gates:
+  - format: ✓ (`ruff format` clean — 183 files formatted)
+  - lint: ✓ (`ruff check` all checks passed)
+  - typecheck: ✓ (`pyrefly check` 0 errors, 20 suppressed pre-existing)
+  - test: ✓ (`pytest tests/unit/test_backend_write_helpers.py` 43 passed, 0 failed, 1 skipped; full suite 1950 passed, 2 pre-existing failures in test_apply_migrations_uses_alembic.py)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (sqlite.py + postgres.py only; retrieval/types.py not extended)
+- PG-vs-SQLite semantic splits:
+  - `hydrate_hit_metadata` returns `list[dict]` (not `list[Hit]`) on both backends because `Hit` is frozen=True with a pinned field set enforced by `test_hit_has_exact_field_set`. The F-02 test suite explicitly handles both object and dict form via `hasattr`/`isinstance` guards.
+  - `patch_metadata` SQLite uses `json_patch(metadata, ?)`. PG uses JSONB merge operator `||` with `jsonb_build_object`. Both produce the same semantics: value_json is `json.dumps(value)` — so Python `42` → JSON `42`, not `"42"`.
+  - `append_message` concurrency: SQLite uses `threading.Lock` (instance `_write_lock`) to serialize intra-process concurrent calls. PG uses `SELECT ... FOR UPDATE` on `corpus.messages` inside one transaction.
+  - `add_feedback` metadata: SQLite passes `json.dumps({})` when `metadata=None` (schema has NOT NULL DEFAULT '{}'); PG passes `Json({})` always.
+  - `audit_event` dry_run: SQLite stores as 0/1 integer; PG stores as BOOLEAN. Tests normalize accordingly.
+- Code not shared between backends: all 9 helpers use dialect-native SQL (`?`/`%s`, table prefixes, JSONB operators). No shared helper function extracted — the SQL differences are substantive enough that a shared layer would obfuscate more than it simplifies.
+- Status: green — handed off to tdd-qa

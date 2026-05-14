@@ -15,7 +15,7 @@ from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..identity import chunk_content_hash
 from ..schema import migrate as _migrate_module
@@ -25,7 +25,29 @@ from .sqlite_vec_loader import SQLITE_VEC_AVAILABLE, load_sqlite_vec
 if TYPE_CHECKING:
     import numpy as np
 
+    from ..retrieval.types import Hit
     from ..sources.base import RawConversation
+
+# Valid entity types for labels and feedback helpers.
+_LABEL_ENTITY_TYPES: tuple[str, ...] = ("chunk", "document", "conversation")
+_FEEDBACK_ENTITY_TYPES: tuple[str, ...] = (*_LABEL_ENTITY_TYPES, "message")
+
+# Maps entity_type -> (table_name, fk_column_name)
+_LABEL_TABLE_MAP: dict[str, tuple[str, str]] = {
+    "chunk": ("chunk_labels", "chunk_id"),
+    "document": ("document_labels", "document_id"),
+    "conversation": ("conversation_labels", "conversation_id"),
+}
+
+# Maps entity_type -> table_name for patch_metadata / set_description
+_ENTITY_TABLE_MAP: dict[str, str] = {
+    "chunk": "chunks",
+    "document": "documents",
+    "conversation": "conversations",
+}
+
+# Maximum number of recent feedback rows returned per entity by hydrate_hit_metadata.
+_RECENT_FEEDBACK_LIMIT: int = 5
 
 
 class _NoCommitConn:
@@ -1638,3 +1660,482 @@ class SQLiteBackend:
             """,
         )
         return rows
+
+    # ── F-02 write helpers ────────────────────────────────────────────────────
+
+    def apply_label(
+        self,
+        entity_type: str,
+        entity_id: int,
+        namespace: str,
+        value: str,
+        *,
+        confidence: float | None = None,
+        source: str = "user",
+    ) -> tuple[int, bool]:
+        """Upsert a label and attach it to an entity via the junction table.
+
+        Returns ``(label_id, created)`` where ``created`` is ``True`` on the
+        first application of this (namespace, value) pair to this entity.
+        """
+        if entity_type not in _LABEL_ENTITY_TYPES:
+            raise ValueError(
+                f"entity_type {entity_type!r} is not valid for labels; "
+                f"must be one of {_LABEL_ENTITY_TYPES}"
+            )
+
+        junction_table, fk_col = _LABEL_TABLE_MAP[entity_type]
+
+        with self._get_connection() as conn:
+            # Upsert the canonical label row, ignoring if it already exists.
+            conn.execute(
+                "INSERT OR IGNORE INTO labels (namespace, value) VALUES (?, ?)",
+                (namespace, value),
+            )
+            label_row = conn.execute(
+                "SELECT id FROM labels WHERE namespace = ? AND value = ?",
+                (namespace, value),
+            ).fetchone()
+            label_id: int = label_row["id"]
+
+            # Check whether the junction row already exists.
+            existing = conn.execute(
+                f"SELECT 1 FROM {junction_table}"
+                f" WHERE {fk_col} = ? AND label_id = ? AND source = ?",
+                (entity_id, label_id, source),
+            ).fetchone()
+            created = existing is None
+
+            if created:
+                if entity_type == "chunk":
+                    conn.execute(
+                        f"INSERT OR IGNORE INTO {junction_table}"
+                        f" ({fk_col}, label_id, confidence, source)"
+                        f" VALUES (?, ?, ?, ?)",
+                        (entity_id, label_id, confidence, source),
+                    )
+                else:
+                    conn.execute(
+                        f"INSERT OR IGNORE INTO {junction_table}"
+                        f" ({fk_col}, label_id, source)"
+                        f" VALUES (?, ?, ?)",
+                        (entity_id, label_id, source),
+                    )
+
+            conn.commit()
+
+        return label_id, created
+
+    def revoke_label(
+        self,
+        entity_type: str,
+        entity_id: int,
+        namespace: str,
+        value: str,
+    ) -> bool:
+        """Remove all junction rows for this entity / label pair.
+
+        Returns ``True`` if at least one row was deleted, ``False`` if the
+        label was not applied (idempotent).
+        """
+        if entity_type not in _LABEL_ENTITY_TYPES:
+            raise ValueError(
+                f"entity_type {entity_type!r} is not valid for labels; "
+                f"must be one of {_LABEL_ENTITY_TYPES}"
+            )
+
+        junction_table, fk_col = _LABEL_TABLE_MAP[entity_type]
+
+        with self._get_connection() as conn:
+            label_row = conn.execute(
+                "SELECT id FROM labels WHERE namespace = ? AND value = ?",
+                (namespace, value),
+            ).fetchone()
+            if label_row is None:
+                return False
+
+            label_id = label_row["id"]
+            cursor = conn.execute(
+                f"DELETE FROM {junction_table} WHERE {fk_col} = ? AND label_id = ?",
+                (entity_id, label_id),
+            )
+            deleted = cursor.rowcount > 0
+            conn.commit()
+
+        return deleted
+
+    def patch_metadata(
+        self,
+        entity_type: str,
+        entity_id: int,
+        key: str,
+        value: Any,
+    ) -> tuple[dict, dict]:
+        """Merge a single ``key: value`` pair into the entity's metadata JSON.
+
+        Returns ``(before, after)`` as Python dicts.  Uses SQLite's
+        ``json_patch`` function (available since 3.38, which we require).
+        """
+        if entity_type not in _LABEL_ENTITY_TYPES:
+            raise ValueError(
+                f"entity_type {entity_type!r} not valid; must be one of {_LABEL_ENTITY_TYPES}"
+            )
+
+        table = _ENTITY_TABLE_MAP[entity_type]
+
+        with self._get_connection() as conn:
+            row = conn.execute(
+                f"SELECT metadata FROM {table} WHERE id = ?", (entity_id,)
+            ).fetchone()
+            before: dict = json.loads(row["metadata"]) if row and row["metadata"] else {}
+
+            patch_json = json.dumps({key: value})
+            conn.execute(
+                f"UPDATE {table} SET metadata = json_patch(metadata, ?) WHERE id = ?",
+                (patch_json, entity_id),
+            )
+            conn.commit()
+
+            after_row = conn.execute(
+                f"SELECT metadata FROM {table} WHERE id = ?", (entity_id,)
+            ).fetchone()
+            after: dict = (
+                json.loads(after_row["metadata"]) if after_row and after_row["metadata"] else {}
+            )
+
+        return before, after
+
+    def set_description(
+        self,
+        entity_type: str,
+        entity_id: int,
+        text: str | None,
+    ) -> tuple[str | None, str | None]:
+        """Set (or clear) the ``description`` column on an entity row.
+
+        Returns ``(before, after)`` where each is either a string or ``None``.
+        """
+        if entity_type not in _LABEL_ENTITY_TYPES:
+            raise ValueError(
+                f"entity_type {entity_type!r} not valid; must be one of {_LABEL_ENTITY_TYPES}"
+            )
+
+        table = _ENTITY_TABLE_MAP[entity_type]
+
+        with self._get_connection() as conn:
+            row = conn.execute(
+                f"SELECT description FROM {table} WHERE id = ?", (entity_id,)
+            ).fetchone()
+            before: str | None = row["description"] if row else None
+
+            conn.execute(
+                f"UPDATE {table} SET description = ? WHERE id = ?",
+                (text, entity_id),
+            )
+            conn.commit()
+
+        return before, text
+
+    def append_conversation(
+        self,
+        dataset_id: int,
+        title: str,
+        started_at: "datetime | None",
+        messages: list[dict],
+        metadata: dict | None = None,
+        labels: list[tuple[str, str]] | None = None,
+    ) -> tuple[int, int]:
+        """Insert a new conversation row with its messages.
+
+        Returns ``(conversation_id, message_count)``.
+        """
+        meta_json = json.dumps(metadata or {})
+        started_str: str | None = None
+        if started_at is not None:
+            started_str = started_at.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+
+        # Generate a unique source_uri and content_hash for this new conversation.
+        import hashlib  # noqa: PLC0415
+        import uuid as _uuid  # noqa: PLC0415
+
+        source_uri = f"append://{_uuid.uuid4()}"
+        content_hash = hashlib.sha256(source_uri.encode()).hexdigest()
+
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO conversations
+                  (dataset_id, source_uri, content_hash, title, started_at,
+                   message_count, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
+                """,
+                (
+                    dataset_id,
+                    source_uri,
+                    content_hash,
+                    title,
+                    started_str,
+                    len(messages),
+                    meta_json,
+                ),
+            ).fetchone()
+            conv_id: int = row[0]
+
+            for i, msg in enumerate(messages):
+                tool_calls = msg.get("tool_calls")
+                tool_results = msg.get("tool_results")
+                ts_val = msg.get("ts")
+                msg_meta = msg.get("metadata", {})
+                conn.execute(
+                    """
+                    INSERT INTO messages
+                      (conversation_id, turn_index, role, content,
+                       tool_calls, tool_results, ts, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        conv_id,
+                        i,
+                        msg["role"],
+                        msg["content"],
+                        json.dumps(tool_calls) if tool_calls is not None else None,
+                        json.dumps(tool_results) if tool_results is not None else None,
+                        ts_val,
+                        json.dumps(msg_meta),
+                    ),
+                )
+
+            conn.commit()
+
+        if labels:
+            for ns, val in labels:
+                self.apply_label("conversation", conv_id, ns, val)
+
+        return conv_id, len(messages)
+
+    def append_message(
+        self,
+        conversation_id: int,
+        role: str,
+        content: str,
+        *,
+        tool_calls: list | None = None,
+        tool_results: list | None = None,
+        ts: "datetime | None" = None,
+        metadata: dict | None = None,
+    ) -> tuple[int, int]:
+        """Append a single message to an existing conversation.
+
+        Computes ``turn_index`` as ``MAX(turn_index) + 1`` under a write lock
+        so concurrent callers get distinct indexes.
+
+        Returns ``(message_id, turn_index)``.
+        """
+        ts_str: str | None = None
+        if ts is not None:
+            ts_str = ts.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+        meta_json = json.dumps(metadata or {})
+        tc_json = json.dumps(tool_calls) if tool_calls is not None else None
+        tr_json = json.dumps(tool_results) if tool_results is not None else None
+
+        # Serialise concurrent append_message calls within the same process
+        # using the instance-level threading.Lock (same pattern as lock_source).
+        # This avoids "database table is locked" from SQLite when two threads
+        # both attempt BEGIN IMMEDIATE on the shared-cache in-memory DB.
+        if not hasattr(self, "_write_lock"):
+            object.__setattr__(self, "_write_lock", threading.Lock())
+
+        with self._write_lock, self._get_connection() as conn:
+            max_row = conn.execute(
+                "SELECT COALESCE(MAX(turn_index), -1) AS m FROM messages WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            turn_index: int = int(max_row["m"]) + 1
+
+            cursor = conn.execute(
+                """
+                    INSERT INTO messages
+                      (conversation_id, turn_index, role, content,
+                       tool_calls, tool_results, ts, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id
+                    """,
+                (
+                    conversation_id,
+                    turn_index,
+                    role,
+                    content,
+                    tc_json,
+                    tr_json,
+                    ts_str,
+                    meta_json,
+                ),
+            )
+            msg_row = cursor.fetchone()
+            message_id: int = msg_row[0]
+            conn.commit()
+
+        return message_id, turn_index
+
+    def add_feedback(
+        self,
+        entity_type: str,
+        entity_id: int,
+        kind: str,
+        *,
+        rating: int | None = None,
+        text: str | None = None,
+        metadata: dict | None = None,
+    ) -> int:
+        """Insert a feedback row and return its ``id``."""
+        if entity_type not in _FEEDBACK_ENTITY_TYPES:
+            raise ValueError(
+                f"entity_type {entity_type!r} not valid; must be one of {_FEEDBACK_ENTITY_TYPES}"
+            )
+
+        import socket  # noqa: PLC0415
+
+        host = socket.gethostname()
+        # feedback.metadata has NOT NULL DEFAULT '{}' — always pass a JSON string.
+        meta_json = json.dumps(metadata if metadata is not None else {})
+
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO feedback
+                  (host, entity_type, entity_id, kind, rating, text, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
+                """,
+                (host, entity_type, entity_id, kind, rating, text, meta_json),
+            ).fetchone()
+            fb_id: int = row[0]
+            conn.commit()
+
+        return fb_id
+
+    def audit_event(
+        self,
+        host: str,
+        client: str | None,
+        session_id: str | None,
+        tool: str,
+        entity_type: str,
+        entity_id: int,
+        before: Any,
+        after: Any,
+        dry_run: bool,
+    ) -> int:
+        """Insert an MCP audit log row and return its ``id``.
+
+        ``before`` and ``after`` are serialised to JSON text.  Either may be
+        ``None`` (stored as SQL NULL).
+        """
+        before_json: str | None = json.dumps(before) if before is not None else None
+        after_json: str | None = json.dumps(after) if after is not None else None
+
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO mcp_audit
+                  (host, client, session_id, tool, entity_type, entity_id,
+                   before, after, dry_run)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
+                """,
+                (
+                    host,
+                    client,
+                    session_id,
+                    tool,
+                    entity_type,
+                    entity_id,
+                    before_json,
+                    after_json,
+                    1 if dry_run else 0,
+                ),
+            ).fetchone()
+            audit_id: int = row[0]
+            conn.commit()
+
+        return audit_id
+
+    def hydrate_hit_metadata(self, hits: "list[Hit]") -> list[dict]:
+        """Bulk-load labels, description, and recent_feedback for a list of hits.
+
+        Returns a new list of dicts that include all Hit fields plus three
+        enrichment keys: ``labels``, ``description``, and ``recent_feedback``.
+        ``Hit`` is frozen=True and has a pinned field set, so we return dicts
+        rather than new Hit objects.  The F-02 contract explicitly allows either
+        form; callers use ``hasattr``/``isinstance`` guards to handle both.
+
+        Each entity-type bucket issues at most 3 queries regardless of hit count
+        — no N+1.
+        """
+        import dataclasses  # noqa: PLC0415
+
+        if not hits:
+            return []
+
+        # Collect chunk_ids (the primary entity type for retrieval hits).
+        chunk_ids = [h.chunk_id for h in hits]
+
+        # --- bulk-fetch labels for all chunk_ids ---
+        placeholders = ",".join("?" * len(chunk_ids))
+
+        label_rows = self._execute(
+            f"""
+            SELECT cl.chunk_id, l.namespace, l.value
+            FROM chunk_labels cl
+            JOIN labels l ON l.id = cl.label_id
+            WHERE cl.chunk_id IN ({placeholders})
+            """,
+            tuple(chunk_ids),
+        )
+        labels_by_chunk: dict[int, list[tuple[str, str]]] = {cid: [] for cid in chunk_ids}
+        for lr in label_rows:
+            labels_by_chunk[lr["chunk_id"]].append((lr["namespace"], lr["value"]))
+
+        # --- bulk-fetch descriptions for all chunk_ids ---
+        desc_rows = self._execute(
+            f"SELECT id, description FROM chunks WHERE id IN ({placeholders})",
+            tuple(chunk_ids),
+        )
+        desc_by_chunk: dict[int, str | None] = dict.fromkeys(chunk_ids)
+        for dr in desc_rows:
+            desc_by_chunk[dr["id"]] = dr["description"]
+
+        # --- bulk-fetch up to _RECENT_FEEDBACK_LIMIT most-recent feedback per chunk ---
+        feedback_rows = self._execute(
+            f"""
+            SELECT entity_id, kind, rating, text, ts
+            FROM feedback
+            WHERE entity_type = 'chunk' AND entity_id IN ({placeholders})
+            ORDER BY entity_id, id DESC
+            """,
+            tuple(chunk_ids),
+        )
+        feedback_by_chunk: dict[int, list[dict]] = {cid: [] for cid in chunk_ids}
+        for fr in feedback_rows:
+            eid = fr["entity_id"]
+            if len(feedback_by_chunk[eid]) < _RECENT_FEEDBACK_LIMIT:
+                feedback_by_chunk[eid].append(
+                    {
+                        "kind": fr["kind"],
+                        "rating": fr["rating"],
+                        "text": fr["text"],
+                        "ts": fr["ts"],
+                    }
+                )
+
+        # Return dicts: Hit fields + 3 enrichment keys.
+        result: list[dict] = []
+        for hit in hits:
+            hit_dict = dataclasses.asdict(hit)
+            hit_dict["labels"] = labels_by_chunk.get(hit.chunk_id, [])
+            hit_dict["description"] = desc_by_chunk.get(hit.chunk_id)
+            hit_dict["recent_feedback"] = feedback_by_chunk.get(hit.chunk_id, [])
+            result.append(hit_dict)
+
+        return result

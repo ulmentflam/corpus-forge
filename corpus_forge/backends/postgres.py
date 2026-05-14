@@ -1,10 +1,13 @@
 """PostgreSQL storage backend implementation for corpus-forge."""
 
+import json
 import os
+import socket
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import psycopg
@@ -16,6 +19,27 @@ from .base import StorageBackend
 
 if TYPE_CHECKING:
     from corpus_forge.sources.base import RawConversation, RawDocument
+
+    from ..retrieval.types import Hit
+
+# Valid entity types for labels and feedback helpers (mirrors sqlite.py constants).
+_LABEL_ENTITY_TYPES: tuple[str, ...] = ("chunk", "document", "conversation")
+_FEEDBACK_ENTITY_TYPES: tuple[str, ...] = (*_LABEL_ENTITY_TYPES, "message")
+
+_LABEL_TABLE_MAP: dict[str, tuple[str, str]] = {
+    "chunk": ("corpus.chunk_labels", "chunk_id"),
+    "document": ("corpus.document_labels", "document_id"),
+    "conversation": ("corpus.conversation_labels", "conversation_id"),
+}
+
+_ENTITY_TABLE_MAP: dict[str, str] = {
+    "chunk": "corpus.chunks",
+    "document": "corpus.documents",
+    "conversation": "corpus.conversations",
+}
+
+# Maximum number of recent feedback rows returned per entity by hydrate_hit_metadata.
+_RECENT_FEEDBACK_LIMIT: int = 5
 
 
 class PostgresBackend(StorageBackend):
@@ -1186,3 +1210,433 @@ class PostgresBackend(StorageBackend):
         ``ADD COLUMN``.  Returns ``0`` to satisfy the protocol contract.
         """
         return 0
+
+    # ── F-02 write helpers ────────────────────────────────────────────────────
+
+    def apply_label(
+        self,
+        entity_type: str,
+        entity_id: int,
+        namespace: str,
+        value: str,
+        *,
+        confidence: float | None = None,
+        source: str = "user",
+    ) -> tuple[int, bool]:
+        """Upsert a label and attach it to an entity via the junction table.
+
+        Returns ``(label_id, created)`` where ``created`` is ``True`` on the
+        first application of this (namespace, value) pair to this entity.
+        """
+        if entity_type not in _LABEL_ENTITY_TYPES:
+            raise ValueError(
+                f"entity_type {entity_type!r} is not valid for labels; "
+                f"must be one of {_LABEL_ENTITY_TYPES}"
+            )
+
+        junction_table, fk_col = _LABEL_TABLE_MAP[entity_type]
+
+        # Upsert the canonical label row.
+        self._execute(
+            "INSERT INTO corpus.labels (namespace, value) VALUES (%s, %s)"
+            " ON CONFLICT (namespace, value) DO NOTHING",
+            (namespace, value),
+        )
+        label_rows = self._execute(
+            "SELECT id FROM corpus.labels WHERE namespace = %s AND value = %s",
+            (namespace, value),
+        )
+        label_id: int = label_rows[0]["id"]
+
+        # Check whether the junction row already exists.
+        existing = self._execute(
+            f"SELECT 1 FROM {junction_table} WHERE {fk_col} = %s AND label_id = %s AND source = %s",
+            (entity_id, label_id, source),
+        )
+        created = len(existing) == 0
+
+        if created:
+            if entity_type == "chunk":
+                self._execute(
+                    f"INSERT INTO {junction_table} ({fk_col}, label_id, confidence, source)"
+                    f" VALUES (%s, %s, %s, %s)"
+                    f" ON CONFLICT DO NOTHING",
+                    (entity_id, label_id, confidence, source),
+                )
+            else:
+                self._execute(
+                    f"INSERT INTO {junction_table} ({fk_col}, label_id, source)"
+                    f" VALUES (%s, %s, %s)"
+                    f" ON CONFLICT DO NOTHING",
+                    (entity_id, label_id, source),
+                )
+
+        return label_id, created
+
+    def revoke_label(
+        self,
+        entity_type: str,
+        entity_id: int,
+        namespace: str,
+        value: str,
+    ) -> bool:
+        """Remove all junction rows for this entity / label pair.
+
+        Returns ``True`` if at least one row was deleted, ``False`` if the
+        label was not applied (idempotent).
+        """
+        if entity_type not in _LABEL_ENTITY_TYPES:
+            raise ValueError(
+                f"entity_type {entity_type!r} is not valid for labels; "
+                f"must be one of {_LABEL_ENTITY_TYPES}"
+            )
+
+        junction_table, fk_col = _LABEL_TABLE_MAP[entity_type]
+
+        label_rows = self._execute(
+            "SELECT id FROM corpus.labels WHERE namespace = %s AND value = %s",
+            (namespace, value),
+        )
+        if not label_rows:
+            return False
+
+        label_id = label_rows[0]["id"]
+        with self._get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"DELETE FROM {junction_table} WHERE {fk_col} = %s AND label_id = %s",  # pyrefly: ignore[bad-argument-type]  # f-string with whitelisted table/column names; no user input
+                (entity_id, label_id),
+            )
+            deleted = (cur.rowcount or 0) > 0
+            conn.commit()
+
+        return deleted
+
+    def patch_metadata(
+        self,
+        entity_type: str,
+        entity_id: int,
+        key: str,
+        value: Any,
+    ) -> tuple[dict, dict]:
+        """Merge a single ``key: value`` pair into the entity's JSONB metadata.
+
+        Returns ``(before, after)`` as Python dicts.  Uses PG JSONB merge
+        operator (``metadata || jsonb_build_object(key, value::jsonb)``).
+        PG semantics: NULL metadata stays NULL after merge; we default to {}
+        to match SQLite semantics (SQLite always has '{}' as default).
+        """
+        if entity_type not in _LABEL_ENTITY_TYPES:
+            raise ValueError(
+                f"entity_type {entity_type!r} not valid; must be one of {_LABEL_ENTITY_TYPES}"
+            )
+
+        table = _ENTITY_TABLE_MAP[entity_type]
+
+        rows = self._execute(f"SELECT metadata FROM {table} WHERE id = %s", (entity_id,))
+        before: dict = rows[0]["metadata"] if rows and rows[0]["metadata"] else {}
+
+        value_json = json.dumps(value)
+        self._execute(
+            f"UPDATE {table}"
+            f" SET metadata = COALESCE(metadata, '{{}}'::jsonb)"
+            f"   || jsonb_build_object(%s, %s::jsonb)"
+            f" WHERE id = %s",
+            (key, value_json, entity_id),
+        )
+
+        after_rows = self._execute(f"SELECT metadata FROM {table} WHERE id = %s", (entity_id,))
+        after: dict = after_rows[0]["metadata"] if after_rows and after_rows[0]["metadata"] else {}
+
+        return before, after
+
+    def set_description(
+        self,
+        entity_type: str,
+        entity_id: int,
+        text: str | None,
+    ) -> tuple[str | None, str | None]:
+        """Set (or clear) the ``description`` column on an entity row.
+
+        Returns ``(before, after)`` where each is either a string or ``None``.
+        """
+        if entity_type not in _LABEL_ENTITY_TYPES:
+            raise ValueError(
+                f"entity_type {entity_type!r} not valid; must be one of {_LABEL_ENTITY_TYPES}"
+            )
+
+        table = _ENTITY_TABLE_MAP[entity_type]
+
+        rows = self._execute(f"SELECT description FROM {table} WHERE id = %s", (entity_id,))
+        before: str | None = rows[0]["description"] if rows else None
+
+        self._execute(f"UPDATE {table} SET description = %s WHERE id = %s", (text, entity_id))
+
+        return before, text
+
+    def append_conversation(
+        self,
+        dataset_id: int,
+        title: str,
+        started_at: "datetime | None",
+        messages: list[dict],
+        metadata: dict | None = None,
+        labels: list[tuple[str, str]] | None = None,
+    ) -> tuple[int, int]:
+        """Insert a new conversation row with its messages.
+
+        Returns ``(conversation_id, message_count)``.
+        """
+        source_uri = f"append://{uuid.uuid4()}"
+        content_hash = source_uri  # unique per call
+        meta_json = psycopg.types.json.Json(metadata or {})
+
+        result = self._execute(
+            """
+            INSERT INTO corpus.conversations
+              (dataset_id, source_uri, content_hash, title, started_at,
+               message_count, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                dataset_id,
+                source_uri,
+                content_hash,
+                title,
+                started_at,
+                len(messages),
+                meta_json,
+            ),
+        )
+        conv_id: int = result[0]["id"]
+
+        for i, msg in enumerate(messages):
+            tool_calls = msg.get("tool_calls")
+            tool_results = msg.get("tool_results")
+            ts_val = msg.get("ts")
+            msg_meta = msg.get("metadata", {})
+            self._execute(
+                """
+                INSERT INTO corpus.messages
+                  (conversation_id, turn_index, role, content,
+                   tool_calls, tool_results, ts, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    conv_id,
+                    i,
+                    msg["role"],
+                    msg["content"],
+                    psycopg.types.json.Json(tool_calls) if tool_calls is not None else None,
+                    psycopg.types.json.Json(tool_results) if tool_results is not None else None,
+                    ts_val,
+                    psycopg.types.json.Json(msg_meta),
+                ),
+            )
+
+        if labels:
+            for ns, val in labels:
+                self.apply_label("conversation", conv_id, ns, val)
+
+        return conv_id, len(messages)
+
+    def append_message(
+        self,
+        conversation_id: int,
+        role: str,
+        content: str,
+        *,
+        tool_calls: list | None = None,
+        tool_results: list | None = None,
+        ts: "datetime | None" = None,
+        metadata: dict | None = None,
+    ) -> tuple[int, int]:
+        """Append a single message to an existing conversation.
+
+        Uses ``SELECT MAX(turn_index) + 1 ... FOR UPDATE`` to serialise
+        concurrent appends within Postgres.
+
+        Returns ``(message_id, turn_index)``.
+        """
+        with self._get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT COALESCE(MAX(turn_index), -1) AS m FROM corpus.messages"
+                " WHERE conversation_id = %s FOR UPDATE",
+                (conversation_id,),
+            )
+            max_row = cur.fetchone()
+            turn_index: int = int(max_row["m"]) + 1  # type: ignore[index]
+
+            cur.execute(
+                """
+                INSERT INTO corpus.messages
+                  (conversation_id, turn_index, role, content,
+                   tool_calls, tool_results, ts, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    conversation_id,
+                    turn_index,
+                    role,
+                    content,
+                    psycopg.types.json.Json(tool_calls) if tool_calls is not None else None,
+                    psycopg.types.json.Json(tool_results) if tool_results is not None else None,
+                    ts,
+                    psycopg.types.json.Json(metadata or {}),
+                ),
+            )
+            row = cur.fetchone()
+            message_id: int = row["id"]  # type: ignore[index]
+            conn.commit()
+
+        return message_id, turn_index
+
+    def add_feedback(
+        self,
+        entity_type: str,
+        entity_id: int,
+        kind: str,
+        *,
+        rating: int | None = None,
+        text: str | None = None,
+        metadata: dict | None = None,
+    ) -> int:
+        """Insert a feedback row and return its ``id``."""
+        if entity_type not in _FEEDBACK_ENTITY_TYPES:
+            raise ValueError(
+                f"entity_type {entity_type!r} not valid; must be one of {_FEEDBACK_ENTITY_TYPES}"
+            )
+
+        host = socket.gethostname()
+        result = self._execute(
+            """
+            INSERT INTO corpus.feedback
+              (host, entity_type, entity_id, kind, rating, text, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                host,
+                entity_type,
+                entity_id,
+                kind,
+                rating,
+                text,
+                psycopg.types.json.Json(metadata if metadata is not None else {}),
+            ),
+        )
+        return result[0]["id"]
+
+    def audit_event(
+        self,
+        host: str,
+        client: str | None,
+        session_id: str | None,
+        tool: str,
+        entity_type: str,
+        entity_id: int,
+        before: Any,
+        after: Any,
+        dry_run: bool,
+    ) -> int:
+        """Insert an MCP audit log row and return its ``id``.
+
+        ``before`` and ``after`` are stored as JSONB (NULL when None).
+        """
+        result = self._execute(
+            """
+            INSERT INTO corpus.mcp_audit
+              (host, client, session_id, tool, entity_type, entity_id,
+               before, after, dry_run)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                host,
+                client,
+                session_id,
+                tool,
+                entity_type,
+                entity_id,
+                psycopg.types.json.Json(before) if before is not None else None,
+                psycopg.types.json.Json(after) if after is not None else None,
+                dry_run,
+            ),
+        )
+        return result[0]["id"]
+
+    def hydrate_hit_metadata(self, hits: "list[Hit]") -> list[dict]:
+        """Bulk-load labels, description, and recent_feedback for a list of hits.
+
+        Returns a new list of dicts that include all Hit fields plus three
+        enrichment keys: ``labels``, ``description``, and ``recent_feedback``.
+        ``Hit`` is frozen=True and has a pinned field set, so we return dicts
+        rather than new Hit objects.  The F-02 contract explicitly allows either
+        form; callers use ``hasattr``/``isinstance`` guards to handle both.
+
+        No N+1: each field is fetched with a single query regardless of hit count.
+        """
+        import dataclasses  # noqa: PLC0415
+
+        if not hits:
+            return []
+
+        chunk_ids = [h.chunk_id for h in hits]
+
+        # --- bulk-fetch labels ---
+        label_rows = self._execute(
+            """
+            SELECT cl.chunk_id, l.namespace, l.value
+            FROM corpus.chunk_labels cl
+            JOIN corpus.labels l ON l.id = cl.label_id
+            WHERE cl.chunk_id = ANY(%s)
+            """,
+            (chunk_ids,),
+        )
+        labels_by_chunk: dict[int, list[tuple[str, str]]] = {cid: [] for cid in chunk_ids}
+        for lr in label_rows:
+            labels_by_chunk[lr["chunk_id"]].append((lr["namespace"], lr["value"]))
+
+        # --- bulk-fetch descriptions ---
+        desc_rows = self._execute(
+            "SELECT id, description FROM corpus.chunks WHERE id = ANY(%s)",
+            (chunk_ids,),
+        )
+        desc_by_chunk: dict[int, str | None] = dict.fromkeys(chunk_ids)
+        for dr in desc_rows:
+            desc_by_chunk[dr["id"]] = dr["description"]
+
+        # --- bulk-fetch up to _RECENT_FEEDBACK_LIMIT most-recent feedback per chunk ---
+        feedback_rows = self._execute(
+            """
+            SELECT entity_id, kind, rating, text, ts
+            FROM corpus.feedback
+            WHERE entity_type = 'chunk' AND entity_id = ANY(%s)
+            ORDER BY entity_id, id DESC
+            """,
+            (chunk_ids,),
+        )
+        feedback_by_chunk: dict[int, list[dict]] = {cid: [] for cid in chunk_ids}
+        for fr in feedback_rows:
+            eid = fr["entity_id"]
+            if len(feedback_by_chunk[eid]) < _RECENT_FEEDBACK_LIMIT:
+                feedback_by_chunk[eid].append(
+                    {
+                        "kind": fr["kind"],
+                        "rating": fr["rating"],
+                        "text": fr["text"],
+                        "ts": fr["ts"],
+                    }
+                )
+
+        # Return dicts: Hit fields + 3 enrichment keys.
+        result: list[dict] = []
+        for hit in hits:
+            hit_dict = dataclasses.asdict(hit)
+            hit_dict["labels"] = labels_by_chunk.get(hit.chunk_id, [])
+            hit_dict["description"] = desc_by_chunk.get(hit.chunk_id)
+            hit_dict["recent_feedback"] = feedback_by_chunk.get(hit.chunk_id, [])
+            result.append(hit_dict)
+
+        return result
