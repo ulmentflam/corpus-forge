@@ -2544,3 +2544,34 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   7 failed, 2 collection errors — 9 total RED
   ```
 - Status: red — handed off to tdd-coder
+
+## H-05
+- Test files: `tests/integration/test_feedback_loop_e2e.py`
+- Run command: `.venv/bin/python -m pytest tests/integration/test_feedback_loop_e2e.py -v`
+- Edge case checklist:
+  - [x] happy — full e2e loop (append_conversation + add_label + add_feedback → link → export)
+  - [x] boundaries — NULL conversation_id asserted before link, populated after
+  - [x] state — feedback_events row count checked at each write step (0→1→2→3)
+  - [x] failure paths — unlinked session events absent from export (0 rows)
+  - [x] production-realistic data — chatml token `<|im_start|>` asserted in every prompt
+  - [ ] N/A — type/format (pure pipeline flow; no string parsing or encoding variation)
+  - [ ] N/A — concurrency (single-process in-process backend, no async or threading)
+  - [ ] N/A — locale/time (timestamps are system-generated; no locale-sensitive paths)
+  - [ ] N/A — regression hooks (no specific bug referenced in task)
+- Red output (tail):
+  ```
+  All 3 tests PASSED GREEN on first run — as predicted by the task brief.
+  H-01..H-04 were fully wired; H-05 is a load-bearing pin, not a RED->GREEN cycle.
+
+  collected 3 items
+  tests/integration/test_feedback_loop_e2e.py::test_export_skips_unlinked_session_events PASSED
+  tests/integration/test_feedback_loop_e2e.py::test_session_writes_create_feedback_events PASSED
+  tests/integration/test_feedback_loop_e2e.py::test_full_self_distillation_loop PASSED
+  3 passed in 0.90s
+  ```
+- Notes: No production gap found. Session_id propagation works correctly via
+  WriteContext passed explicitly -- no env-var ambiguity. export_feedback_pairs
+  correctly filters on conversation_id IS NOT NULL in the backend join.
+  chatml token confirmed present in all rendered prompts. 373 integration tests
+  still GREEN. ruff format/check and pyrefly clean.
+- Status: green -- 3/3 passed; H-01..H-04 pipeline confirmed coherent
