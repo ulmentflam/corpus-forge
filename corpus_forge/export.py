@@ -45,6 +45,14 @@ def export_chat(
     # 2. Fetch all conversations for the dataset.
     conversations = backend.list_conversations_for_dataset(dataset_id)
 
+    # Resolve template name to (model_id, custom_jinja) once before the loop.
+    resolved_model_id, resolved_custom_jinja = _tpl.resolve_template(
+        template,
+        backend=backend,
+        model_id=model_id,
+        custom_jinja=custom_jinja,
+    )
+
     rows: list[dict] = []
     for conv in conversations:
         messages = backend.list_conversation_messages(conv["id"])
@@ -53,8 +61,8 @@ def export_chat(
         text = _tpl.render(
             template,
             [{"role": m["role"], "content": m["content"]} for m in messages],
-            model_id=model_id,
-            custom_jinja=custom_jinja,
+            model_id=resolved_model_id,
+            custom_jinja=resolved_custom_jinja,
         )
         rows.append(
             {

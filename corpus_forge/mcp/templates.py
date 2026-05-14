@@ -99,21 +99,12 @@ def render_conversation(
 
     # 4. Resolve template source.
     #    Priority: custom_jinja > model_id > DB name lookup > builtin name.
-    resolved_model_id = model_id
-    resolved_custom_jinja = custom_jinja
-
-    if resolved_custom_jinja is None and resolved_model_id is None:
-        # DB lookup by name.
-        row = backend.get_chat_template_by_name(template)
-        if row is not None:
-            source = row["source"]
-            if source == "huggingface":
-                # HF rows store jinja=NULL; the model_id column holds the repo id.
-                resolved_model_id = row["model_id"]
-            elif source == "custom":
-                # Stored Jinja string.
-                resolved_custom_jinja = row["jinja"]
-            # source='builtin' falls through to the bundled template lookup.
+    resolved_model_id, resolved_custom_jinja = _tpl.resolve_template(
+        template,
+        backend=backend,
+        model_id=model_id,
+        custom_jinja=custom_jinja,
+    )
 
     # 5. Render.
     text = _tpl.render(

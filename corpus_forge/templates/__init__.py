@@ -24,6 +24,38 @@ def list_builtins() -> list[str]:
     return list(_BUILTINS.keys())
 
 
+def resolve_template(
+    template_name: str,
+    *,
+    backend: Any = None,
+    model_id: str | None = None,
+    custom_jinja: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Resolve a template name + optional overrides to (model_id, custom_jinja).
+
+    Priority: custom_jinja > model_id > backend.get_chat_template_by_name(name).
+    If a registered row is found:
+      - source='huggingface' -> model_id from the row
+      - source='custom' -> custom_jinja from the row
+      - source='builtin' -> falls through (caller dispatches to bundled)
+
+    Returns (resolved_model_id, resolved_custom_jinja) — either may stay None,
+    in which case caller uses bundled builtin by template_name.
+    """
+    if custom_jinja is not None or model_id is not None:
+        return (model_id, custom_jinja)
+    if backend is None:
+        return (None, None)
+    row = backend.get_chat_template_by_name(template_name)
+    if row is None:
+        return (None, None)
+    if row.get("source") == "huggingface":
+        return (row.get("model_id"), None)
+    if row.get("source") == "custom":
+        return (None, row.get("jinja"))
+    return (None, None)
+
+
 def render(
     template_name: str,
     messages: list[dict[str, Any]],
