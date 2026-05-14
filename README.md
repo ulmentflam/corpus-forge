@@ -1,8 +1,6 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="assets/banner.svg">
-  <img alt="corpus-forge — forge a HuggingFace-format training corpus" src="assets/banner.svg">
-</picture>
+<p align="center">
+  <img alt="corpus-forge — forge a HuggingFace-format training corpus from your notes and chat history" src="assets/banner.png" width="100%">
+</p>
 
 # corpus-forge
 
