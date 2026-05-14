@@ -1,4 +1,4 @@
-"""CS-05 — Skill <-> MCP server tool-name contract test (rot-detector).
+"""CS-05 / F-05 — Skill <-> MCP server tool-name contract test (rot-detector).
 
 This test pins the contract between two artefacts that ship together:
 
@@ -13,6 +13,22 @@ SKILL.md (or vice versa), this test fails loudly.
 
 Pattern follows :mod:`tests.smoke.test_mcp_stdio` — same subprocess
 launch, same seed-corpus skip, same env-var plumbing.
+
+--- F-05 additions ---
+
+``test_server_exposes_11_tools_when_writes_enabled`` — in-process
+``build_server(writes_enabled=True)`` must advertise all 11 tools
+(3 read + 8 write).  This is a load-bearing pin that does NOT require
+Docker or a seed corpus; it exercises only the server registration code.
+
+``test_skill_tools_match_mcp_server_tools`` — relaxed in F-05 to a
+SUBSET check (``server_tools ⊇ skill_tools``).  The SKILL.md currently
+declares 3 tools (CS-05 era); the server now exposes 11 when
+``writes_enabled=True``.  Phase I will update the skill assets to list
+all 11.  Until then we assert the skill doesn't declare anything the
+server lacks (rot detector), NOT that the server matches the skill
+exactly.  The server may legally expose MORE tools than the skill
+declares.  This is the "phase-gated" relaxation.
 """
 
 from __future__ import annotations
@@ -23,6 +39,7 @@ import re
 import sqlite3
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -33,6 +50,20 @@ from mcp import ClientSession  # noqa: E402
 from mcp.client.stdio import StdioServerParameters, stdio_client  # noqa: E402
 
 pytestmark = pytest.mark.smoke
+
+# ── Expected write tool names (F-03 / F-05) ──────────────────────────────────
+_WRITE_TOOLS = {
+    "add_label",
+    "remove_label",
+    "set_metadata",
+    "set_description",
+    "list_labels",
+    "append_conversation",
+    "append_message",
+    "add_feedback",
+}
+_READ_TOOLS = {"search", "get_chunk", "list_datasets"}
+_ALL_11_TOOLS = _READ_TOOLS | _WRITE_TOOLS
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -116,6 +147,41 @@ async def _list_server_tools(server_params: StdioServerParameters) -> list[str]:
         return [t.name for t in tools_response.tools]
 
 
+def _list_in_process_server_tools(writes_enabled: bool) -> set[str]:
+    """Build an in-process MCP server and return its registered tool names.
+
+    Uses an SQLite in-memory backend + LexicalRetriever stub so no Docker
+    or seed corpus is required.
+    """
+    from corpus_forge.backends.sqlite import SQLiteBackend
+    from corpus_forge.mcp.server import build_server
+
+    backend = SQLiteBackend(path=":memory:")
+    backend.migrate()
+
+    class _StubRetriever:
+        def __init__(self) -> None:
+            self.backend = backend
+
+        def search(self, query: str, options: Any) -> list:
+            return []
+
+    retriever = _StubRetriever()
+    server = build_server(retriever_builder=lambda: retriever, writes_enabled=writes_enabled)
+
+    async def _run() -> list[str]:
+        from mcp.types import ListToolsRequest
+
+        handler = server.request_handlers.get(ListToolsRequest)
+        assert handler is not None, "ListToolsRequest handler not registered"
+        request = ListToolsRequest(method="tools/list")
+        result = await handler(request)
+        root = result.root if hasattr(result, "root") else result
+        return [t.name for t in root.tools]
+
+    return set(asyncio.run(_run()))
+
+
 def _skill_allowed_tools() -> list[str]:
     """Parse SKILL.md frontmatter, return the raw ``allowed-tools`` list."""
     raw = SKILL_PATH.read_text(encoding="utf-8")
@@ -127,7 +193,43 @@ def _skill_allowed_tools() -> list[str]:
     return tools
 
 
-# ── Contract test ────────────────────────────────────────────────────────
+# ── F-05 in-process contract test (no Docker / seed corpus needed) ────────
+
+
+def test_server_exposes_11_tools_when_writes_enabled() -> None:
+    """build_server(writes_enabled=True) must advertise exactly 11 tools.
+
+    F-05 load-bearing pin.  Does NOT require Docker or a seed corpus —
+    only the in-process MCP server registration is exercised.
+
+    Expected: 3 read tools + 8 write tools = 11 total.
+    """
+    tools = _list_in_process_server_tools(writes_enabled=True)
+    missing = _ALL_11_TOOLS - tools
+    extra = tools - _ALL_11_TOOLS
+    assert not missing, (
+        f"Server with writes_enabled=True is missing expected tools: {sorted(missing)}. "
+        f"Registered tools: {sorted(tools)}"
+    )
+    assert not extra, (
+        f"Server with writes_enabled=True registered unexpected extra tools: {sorted(extra)}. "
+        f"Expected exactly: {sorted(_ALL_11_TOOLS)}"
+    )
+
+
+def test_server_exposes_only_3_tools_when_writes_disabled() -> None:
+    """build_server(writes_enabled=False) must advertise exactly 3 read tools.
+
+    F-05 complementary pin to the 11-tool assertion above.
+    """
+    tools = _list_in_process_server_tools(writes_enabled=False)
+    assert tools == _READ_TOOLS, (
+        f"Server with writes_enabled=False must expose only {sorted(_READ_TOOLS)}; "
+        f"got: {sorted(tools)}"
+    )
+
+
+# ── CS-05 subprocess contract test ────────────────────────────────────────
 
 
 def test_skill_tools_match_mcp_server_tools(tmp_path: Path) -> None:
@@ -175,10 +277,32 @@ def test_skill_tools_match_mcp_server_tools(tmp_path: Path) -> None:
         )
         expected_bare_names.add(entry[len(_TOOL_PREFIX) :])
 
-    # ── 3) Cross-check ──
+    # ── 3) Cross-check (phase-gated subset relaxation) ──
+    #
+    # F-05 relaxation: assert skill_tools ⊆ server_tools (NOT strict equality).
+    # The SKILL.md currently lists only 3 tools (CS-05 era).  The server now
+    # exposes 11 when writes_enabled=True.  Phase I will update the skill
+    # assets to declare all 11.  Until then we only check that the skill
+    # doesn't declare tools the server lacks (rot detector).  The server is
+    # legally allowed to expose MORE tools than the skill declares.
+    #
+    # NOTE: the subprocess server is launched without writes_enabled=True
+    # (default=False), so it will expose 3 tools — matching the skill.  When
+    # Phase I updates the skill to 11 tools AND wires writes_enabled=True into
+    # the CLI default, this check will catch any mismatch between the two.
     missing = expected_bare_names - server_tools
     assert not missing, (
         f"Skill declares MCP tools the server does not advertise (rot detector): "
         f"missing={sorted(missing)}; server_tools={sorted(server_tools)}; "
         f"skill_entries={sorted(declared)}"
     )
+    # Document the intentional gap for Phase I trackers.
+    not_in_skill = server_tools - expected_bare_names
+    if not_in_skill:
+        import warnings
+
+        warnings.warn(
+            f"Phase I gap: server exposes {len(not_in_skill)} tools not yet declared "
+            f"in SKILL.md: {sorted(not_in_skill)}. Update SKILL.md in Phase I.",
+            stacklevel=2,
+        )

@@ -2169,3 +2169,44 @@ ERROR tests/integration/test_dsn_fixture.py::TestPgDsnLiveConnect::test_connect_
   10 failed in 0.62s
   ```
 - Status: red — handed off to tdd-coder
+
+## phase-f/F-05
+- Test files:
+  - `tests/integration/test_mcp_writes_postgres.py` (10 tests)
+  - `tests/integration/test_append_conversation_e2e.py` (2 tests)
+  - `tests/smoke/test_skill_tool_contract.py` (3 tests: 2 new + 1 updated/relaxed)
+- Run command: `.venv/bin/python -m pytest tests/integration/test_mcp_writes_postgres.py tests/integration/test_append_conversation_e2e.py tests/smoke/test_skill_tool_contract.py -v`
+- Edge case checklist:
+  - [x] happy — add_label/set_description/set_metadata/remove_label/add_feedback/append_conversation/append_message round-trips
+  - [x] boundaries — dry_run=True no entity mutations; turn indices 0..4; 3-msg vs 6-msg conversations; 0-count audit baseline
+  - [ ] N/A — type/format (entity_type validation covered in unit tests)
+  - [x] state — fresh PG schema per test (pg_dsn drops+recreates corpus schema); dirty state (add then remove label); post-remove label list is empty
+  - [ ] N/A — concurrency (PG advisory locking tested in existing backend unit tests)
+  - [x] failure paths — dry_run sentinel ids; isError cascade from ? placeholder bug surfaced RED for set_description/set_metadata/append_message
+  - [ ] N/A — locale/time
+  - [x] production-realistic data — 6-message conversation with realistic content; unique phrase anchor for cross-host test
+  - [x] regression hooks — placeholder mismatch bug (writes.py ? vs PG %s) encoded as 4 RED tests
+  - [x] cross-host visibility — explicit pin: Host A writes, Host B (separate backend instance) reads; hits must be visible
+  - [x] audit rows — count before vs after each write; dry_run also emits audit row
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_append_conversation_e2e.py::test_live_chat_round_trip
+  FAILED tests/integration/test_append_conversation_e2e.py::test_append_conversation_cross_host_visible
+  FAILED tests/integration/test_mcp_writes_postgres.py::test_set_description_round_trip_pg
+  FAILED tests/integration/test_mcp_writes_postgres.py::test_audit_event_emitted_for_every_write_pg
+  FAILED tests/integration/test_mcp_writes_postgres.py::test_set_metadata_round_trip_pg
+  FAILED tests/integration/test_mcp_writes_postgres.py::test_append_message_extends_existing_pg
+  6 failed, 9 passed in 5.09s
+  ```
+- Status: red — handed off to tdd-coder
+- Notes (bugs surfaced, do NOT fix in this commit):
+  1. BUG A — `corpus_forge/mcp/writes.py`: `_read_metadata`, `_read_description`, and
+     `_count_messages` use SQLite-style `?` placeholders. psycopg rejects `?`; error is
+     "the query has 0 placeholders but 1 parameters were passed". Affects set_description,
+     set_metadata, append_message (always calls _count_messages), and the audit cascade.
+     Fix: replace `?` with `%s` in those three helpers, OR dispatch through the backend.
+  2. BUG B — `append_conversation` writes to `corpus.messages` only, NOT `corpus.chunks`.
+     `search_lexical` queries the `text_tsv` GIN index on `corpus.chunks` only. Appended
+     messages are never indexed, so live-chat round-trip and cross-host visibility tests
+     return 0 hits. Fix: insert per-message chunk rows into corpus.chunks on append, so
+     the FTS index covers conversation content.
