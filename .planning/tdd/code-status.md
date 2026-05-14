@@ -358,6 +358,20 @@ Cross-link: board lives at `.planning/tdd/sqlite_backend.md`. Task ids `B-01..B-
 - pyproject `[tool.hatch.build.targets.wheel.force-include]` adds both files so they ship in the wheel (verified by inspecting the built wheel under `/tmp/r3-wheel/`).
 - 7 new tests in `test_eval_bundled_dataset.py` all pass.  Full unit 1582 passed; coverage clean.
 
+---
+
+## phase-d/D-01
+- Source files: `pyproject.toml`, `uv.lock`, `alembic.ini`, `corpus_forge/alembic/__init__.py`, `corpus_forge/alembic/env.py`, `corpus_forge/alembic/script.py.mako`, `corpus_forge/alembic/versions/.gitkeep`
+- Gates:
+  - format: pass (`ruff format --check corpus_forge tests` — 177 files already formatted)
+  - lint: pass (`ruff check corpus_forge tests` — All checks passed)
+  - typecheck: pass (`pyrefly check corpus_forge` — 8 errors, all pre-existing optional-dep gaps: sqlite_vec, mcp, openai; baseline confirmed identical with/without D-01 changes)
+  - test: pass (`pytest tests/unit/test_alembic_revision_chain.py` — 4 passed, 0 failed; `pytest tests/unit/` — 1779 passed, 16 skipped, 1 xfailed, 2 failed; the 2 failures are pre-existing: test_sqlite_backend.py::TestCopyReusableEmbeddings::test_returns_reused_embedder_ids_subset and test_eval_runner.py::TestPinnedBaseline::test_breaking_retriever_drops_below_floor, confirmed by git-stash baseline run)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (new alembic/ tree + pyproject.toml)
+- Design note: env.py module body guards the `context.is_offline_mode()` call in a try/except so plain `import corpus_forge.alembic.env` (used by test 2) doesn't raise when not running under an Alembic migration context.
+- Status: green — handed off to tdd-qa
+
 ### Side-fix uncovered by R3-08: SQLite FTS5 query sanitisation
 
 The smoke test surfaced a real bug in `SQLiteBackend.search_lexical`: the bundled gold set's first question (with a trailing `?`) crashed FTS5's MATCH parser. Bare punctuation OR bare tokens that collide with column names (`host`, `k`, etc.) all break the FTS5 search-syntax parse.
