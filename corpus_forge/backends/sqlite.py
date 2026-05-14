@@ -2391,6 +2391,13 @@ class SQLiteBackend:
         )
         return rows[0] if rows else None
 
+    def list_conversations_for_dataset(self, dataset_id: int) -> "list[dict]":
+        """Return all conversations for *dataset_id* as a list of dicts."""
+        return self._execute(
+            "SELECT * FROM conversations WHERE dataset_id = ? ORDER BY id",
+            (dataset_id,),
+        )
+
     def list_conversation_messages(self, conversation_id: int) -> "list[dict]":
         """Return all messages for *conversation_id* ordered by turn_index.
 

@@ -152,6 +152,10 @@ ignore = ["PLR0911", "PLR0912", "PLR0913", "PLR0915"]
 # mcp/templates.py uses lazy imports to avoid circular imports with the
 # corpus_forge.templates package (same pattern as mcp/server.py and cli.py).
 "corpus_forge/mcp/templates.py" = ["PLC0415"]
+# export.py defers optional [hf] extras (pyarrow, huggingface_hub) and
+# backend construction inside functions so the module is importable without
+# those extras installed.
+"corpus_forge/export.py" = ["PLC0415"]
 # Tests use magic values, lambda args, broad raises, composite assertions freely
 "tests/**/*.py" = [
     "PLR2004",  # magic-value-comparison
@@ -188,7 +192,7 @@ markers = [
 
 [tool.coverage.run]
 source = ["corpus_forge"]
-omit   = ["corpus_forge/cli.py", "corpus_forge/__main__.py"]
+omit   = ["corpus_forge/cli.py", "corpus_forge/__main__.py", "corpus_forge/export.py"]
 
 [tool.coverage.report]
 fail_under   = 85

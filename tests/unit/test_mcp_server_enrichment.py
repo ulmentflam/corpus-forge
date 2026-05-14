@@ -249,9 +249,7 @@ class TestWritesEnabledGate:
             "list_datasets",
             "render_conversation",
             "list_chat_templates",
-        }, (
-            f"Expected exactly 5 read tools; got: {sorted(tools)}"
-        )
+        }, f"Expected exactly 5 read tools; got: {sorted(tools)}"
 
     def test_writes_enabled_exposes_all_11_tools(
         self, backend: SQLiteBackend, seeded: dict

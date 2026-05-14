@@ -92,6 +92,51 @@ def version():
     typer.echo(f"corpus-forge version {__version__}")
 
 
+# ── export subcommand group ──────────────────────────────────────────────
+
+export_app = typer.Typer(
+    name="export",
+    help="Export corpus data in various formats.",
+    add_completion=False,
+)
+app.add_typer(export_app, name="export")
+
+
+@export_app.command("chat")
+def export_chat_cmd(
+    dataset: Annotated[str, typer.Option("--dataset", "-d", help="Dataset name to export.")],
+    out: Annotated[Path, typer.Option("--out", "-o", help="Output file path.")],
+    template: Annotated[
+        str, typer.Option("--template", "-t", help="Chat template name.")
+    ] = "chatml",
+    format: Annotated[
+        str, typer.Option("--format", "-f", help="Output format: jsonl or parquet.")
+    ] = "jsonl",
+    model_id: Annotated[
+        str | None, typer.Option("--model-id", help="HF model_id (overrides --template).")
+    ] = None,
+    custom_jinja: Annotated[
+        str | None, typer.Option("--custom-jinja", help="Inline Jinja override.")
+    ] = None,
+    push: Annotated[
+        str | None, typer.Option("--push", help="HF dataset repo to push to after writing.")
+    ] = None,
+) -> None:
+    """Export a dataset's chat conversations as templated HF-format rows."""
+    from corpus_forge.export import export_chat
+
+    export_chat(
+        dataset=dataset,
+        template=template,
+        out_path=out,
+        format=format,
+        model_id=model_id,
+        custom_jinja=custom_jinja,
+        push=push,
+    )
+    typer.echo(f"exported to {out}", err=True)
+
+
 # ── sync subcommand group ────────────────────────────────────────────────
 
 
