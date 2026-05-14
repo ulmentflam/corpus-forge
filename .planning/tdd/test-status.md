@@ -72,6 +72,38 @@ Record of test suites written by tdd-tester.
   2 failed, 4 passed (3 smoke + 1 integration)
   ```
 - Production bug noted: `export.export_chat` calls `templates.render()` which has no DB lookup path.
+
+## Phase H — H-01 Schema test: 0008_feedback_sessions
+
+## H-01 — alembic 0008_feedback_sessions schema (feedback_sessions + feedback_events)
+- Test files:
+  - `tests/integration/test_alembic_0008_feedback_sessions.py` (new — 4 tests)
+  - `tests/integration/test_apply_migrations_uses_alembic.py` (updated — 2 head assertions bumped 0007→0008)
+- Run command: `.venv/bin/python -m pytest tests/integration/test_alembic_0008_feedback_sessions.py tests/integration/test_apply_migrations_uses_alembic.py -v`
+- Edge case checklist:
+  - [x] happy — all 4 schema tests assert full column sets + constraints on a fresh DB after upgrade
+  - [x] boundaries — nullable vs NOT NULL asserted per-column; UNIQUE multi-column constraint (client, session_id) verified
+  - [x] type/format — PG: bigint / text / timestamp with time zone asserted; SQLite: INTEGER / TEXT / datetime('now') convention
+  - [x] state — fresh schema per test (PG: _reset_schema; SQLite: tmp_path fresh db); no cross-test contamination
+  - [ ] N/A — concurrency (pure DDL, sequential upgrade, no shared mutable state)
+  - [x] failure paths — all 4 tests fail with CommandError (revision missing); head assertions fail (0008 not yet head)
+  - [ ] N/A — locale/time (ts DEFAULT NOW() is database-side, no locale-sensitive assertions)
+  - [x] production-realistic — column shapes drawn directly from Phase H plan DDL
+  - [x] regression hooks — bumped head assertions pin that apply_migrations must reach 0008_feedback_sessions
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_apply_migrations_uses_alembic.py::test_apply_migrations_creates_alembic_version_table_pg
+  FAILED tests/integration/test_apply_migrations_uses_alembic.py::test_apply_migrations_creates_alembic_version_table_sqlite
+  FAILED tests/integration/test_alembic_0008_feedback_sessions.py::test_feedback_sessions_table_shape_pg
+  FAILED tests/integration/test_alembic_0008_feedback_sessions.py::test_feedback_events_table_shape_sqlite
+  FAILED tests/integration/test_alembic_0008_feedback_sessions.py::test_feedback_events_table_shape_pg
+  FAILED tests/integration/test_alembic_0008_feedback_sessions.py::test_feedback_sessions_table_shape_sqlite
+
+  E  alembic.util.exc.CommandError: Can't locate revision identified by '0008_feedback_sessions'
+
+  6 failed, 1 passed in 2.09s
+  ```
+- Status: red — handed off to tdd-coder
   The `render_conversation` MCP tool resolves custom templates via `backend.get_chat_template_by_name()`.
   `export_chat` must be updated to pass `backend` into `templates.render` (or accept a `backend` param
   and resolve custom templates before calling render). This is the Coder's fix target.

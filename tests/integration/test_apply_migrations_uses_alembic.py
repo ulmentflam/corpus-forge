@@ -11,6 +11,9 @@ These three tests assert that after the D-07 rewire:
 At RED time all three tests FAIL with AssertionError because the legacy
 apply_migrations reads schema/*.sql files directly and never touches
 alembic_version.
+
+Phase H / H-01 bump: version_num assertions updated 0007_chat_templates →
+0008_feedback_sessions to reflect the new alembic head.
 """
 
 from __future__ import annotations
@@ -78,7 +81,7 @@ def test_apply_migrations_creates_alembic_version_table_pg(
 ) -> None:
     """apply_migrations(backend, schema_dir=bogus_path, dialect='postgres') must:
     - Ignore schema_dir entirely (bogus path proves it).
-    - Write corpus.alembic_version with version_num == '0007_chat_templates'.
+    - Write corpus.alembic_version with version_num == '0008_feedback_sessions'.
 
     FAILS at RED: legacy apply_migrations reads schema_dir/*.sql and never
     touches alembic_version at all.
@@ -121,14 +124,14 @@ def test_apply_migrations_creates_alembic_version_table_pg(
 
     assert len(rows) == 1, f"Expected exactly 1 row in corpus.alembic_version, got {len(rows)}. "
     version_num = rows[0][0]
-    assert version_num == "0007_chat_templates", (
-        f"Expected version_num='0007_chat_templates', got {version_num!r}. "
+    assert version_num == "0008_feedback_sessions", (
+        f"Expected version_num='0008_feedback_sessions', got {version_num!r}. "
         "The rewired apply_migrations must call command.upgrade('head')."
     )
 
 
 # ---------------------------------------------------------------------------
-# Test 2 — SQLite: alembic_version populated with head=0007_chat_templates
+# Test 2 — SQLite: alembic_version populated with head=0008_feedback_sessions
 # ---------------------------------------------------------------------------
 
 
@@ -137,9 +140,9 @@ def test_apply_migrations_creates_alembic_version_table_sqlite(
 ) -> None:
     """apply_migrations(backend, schema_dir=bogus_path, dialect='sqlite') must:
     - Ignore schema_dir entirely.
-    - Write the alembic_version table with version_num == '0007_chat_templates'.
+    - Write the alembic_version table with version_num == '0008_feedback_sessions'.
 
-    FAILS at RED: head is now '0007_chat_templates' but revision file does not
+    FAILS at RED: head is now '0008_feedback_sessions' but revision file does not
     exist yet — CommandError from alembic.
     """
     from corpus_forge.backends.sqlite import SQLiteBackend
@@ -171,8 +174,8 @@ def test_apply_migrations_creates_alembic_version_table_sqlite(
 
     assert len(rows) == 1, f"Expected exactly 1 row in alembic_version, got {len(rows)}."
     version_num = rows[0][0]
-    assert version_num == "0007_chat_templates", (
-        f"Expected version_num='0007_chat_templates', got {version_num!r}. "
+    assert version_num == "0008_feedback_sessions", (
+        f"Expected version_num='0008_feedback_sessions', got {version_num!r}. "
         "The rewired apply_migrations must call command.upgrade('head')."
     )
 
