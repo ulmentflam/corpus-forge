@@ -2333,3 +2333,50 @@ class SQLiteBackend:
             }
             for did in document_ids
         ]
+
+    # ── G-02 chat-template helpers ────────────────────────────────────────────
+
+    def register_chat_template(
+        self,
+        name: str,
+        source: str,
+        *,
+        jinja: str | None = None,
+        model_id: str | None = None,
+        description: str | None = None,
+        host: str,
+    ) -> tuple[int, bool]:
+        """Upsert a chat_templates row and return (template_id, created).
+
+        Uses INSERT OR IGNORE so that a duplicate name is silently ignored.
+        Returns ``created=True`` when a new row was inserted, ``False`` when
+        the name already existed (existing id is returned in both cases).
+        """
+        with self._get_connection() as conn:
+            existing = conn.execute(
+                "SELECT id FROM chat_templates WHERE name = ?", (name,)
+            ).fetchone()
+            if existing is not None:
+                return int(existing["id"]), False
+
+            cursor = conn.execute(
+                """
+                INSERT INTO chat_templates (name, source, jinja, model_id, description, host)
+                VALUES (?, ?, ?, ?, ?, ?)
+                RETURNING id
+                """,
+                (name, source, jinja, model_id, description, host),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+
+        return int(row["id"]), True
+
+    def list_chat_templates(self) -> list[dict]:
+        """Return all rows from chat_templates as a list of dicts."""
+        return self._execute("SELECT * FROM chat_templates ORDER BY id")
+
+    def get_chat_template_by_name(self, name: str) -> dict | None:
+        """Return the chat_templates row for *name*, or None if absent."""
+        rows = self._execute("SELECT * FROM chat_templates WHERE name = ? LIMIT 1", (name,))
+        return rows[0] if rows else None

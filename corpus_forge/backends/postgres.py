@@ -1793,3 +1793,50 @@ class PostgresBackend(StorageBackend):
             result.append(hit_dict)
 
         return result
+
+    # ── G-02 chat-template helpers ────────────────────────────────────────────
+
+    def register_chat_template(
+        self,
+        name: str,
+        source: str,
+        *,
+        jinja: str | None = None,
+        model_id: str | None = None,
+        description: str | None = None,
+        host: str,
+    ) -> tuple[int, bool]:
+        """Upsert a chat_templates row and return (template_id, created).
+
+        Uses ON CONFLICT(name) DO NOTHING.  Returns ``created=True`` when a
+        new row was inserted, ``False`` when the name already existed.
+        """
+        existing = self._execute("SELECT id FROM corpus.chat_templates WHERE name = %s", (name,))
+        if existing:
+            return int(existing[0]["id"]), False
+
+        result = self._execute(
+            """
+            INSERT INTO corpus.chat_templates
+                (name, source, jinja, model_id, description, host)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT(name) DO NOTHING
+            RETURNING id
+            """,
+            (name, source, jinja, model_id, description, host),
+        )
+        if result:
+            return int(result[0]["id"]), True
+
+        # Race condition: another writer inserted between our SELECT and INSERT.
+        row = self._execute("SELECT id FROM corpus.chat_templates WHERE name = %s", (name,))
+        return int(row[0]["id"]), False
+
+    def list_chat_templates(self) -> list[dict]:
+        """Return all rows from corpus.chat_templates as a list of dicts."""
+        return self._execute("SELECT * FROM corpus.chat_templates ORDER BY id")
+
+    def get_chat_template_by_name(self, name: str) -> dict | None:
+        """Return the corpus.chat_templates row for *name*, or None if absent."""
+        rows = self._execute("SELECT * FROM corpus.chat_templates WHERE name = %s LIMIT 1", (name,))
+        return rows[0] if rows else None

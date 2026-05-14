@@ -40,6 +40,7 @@ Record of implementations written by tdd-coder.
 | phase-f/F-04 | green | 10/10 F-04 tests pass. F-02/F-03 regressions: 0. Unit coverage: 82.77% (pre-existing deficit; baseline before F-04 was 83.81% — also below threshold). |
 | phase-f/F-05 | green | 15/15 F-05 tests pass (12 integration + 3 smoke). F-02 unit suite: 43 passed/1 skipped/0 failed. Unit coverage: 85.47% (above 85% gate). |
 | phase-g/G-01 | green | 5/5 targeted integration tests pass; 4/4 chain tests pass; full suite 2107 passed, 3 skipped, 1 xfailed, 0 failed. All 4 gates clean. |
+| phase-g/G-02 | green | 115/115 target tests pass. Full unit suite: 1845 passed, 3 skipped, 1 xfailed, 0 failed. Coverage: 85.26% (gate: 85%). All 4 gates clean. |
 
 ## phase-f/F-04
 - Source files: `corpus_forge/backends/sqlite.py`, `corpus_forge/mcp/server.py`
