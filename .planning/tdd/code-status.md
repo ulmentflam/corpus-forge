@@ -745,3 +745,22 @@ This was uncovered because R3-08 is the FIRST test that exercises the full eval-
   - `audit_event` dry_run: SQLite stores as 0/1 integer; PG stores as BOOLEAN. Tests normalize accordingly.
 - Code not shared between backends: all 9 helpers use dialect-native SQL (`?`/`%s`, table prefixes, JSONB operators). No shared helper function extracted — the SQL differences are substantive enough that a shared layer would obfuscate more than it simplifies.
 - Status: green — handed off to tdd-qa
+
+## phase-i/I2
+- Source files:
+  - `examples/mcp-config/gemini-cli.mcp.json`
+  - `examples/gemini-extension/gemini-extension.json`
+  - `examples/gemini-extension/GEMINI.md`
+  - `docs/gemini-integration.md`
+  - `tests/unit/test_mcp_config_gemini.py`
+  - `tests/unit/test_gemini_extension_manifest.py`
+  - `tests/unit/test_gemini_md_content.py`
+  - `tests/unit/test_gemini_integration_doc.py`
+- Gates:
+  - format: ✓ (`ruff format --check` clean on Python files)
+  - lint: ✓ (`ruff check` 0 errors)
+  - typecheck: ✓ (`pyrefly check corpus_forge` 0 errors)
+  - test: ✓ (`pytest tests/unit/` 2002 passed, 3 skipped, 1 xfailed, 0 failed; target 34 tests all green)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (disjoint from Claude assets and OpenCode files)
+- Status: green — handed off to tdd-qa
