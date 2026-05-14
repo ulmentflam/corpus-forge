@@ -548,3 +548,19 @@ This was uncovered because R3-08 is the FIRST test that exercises the full eval-
   - test_migrate_002.py::test_backfill_populates_content_hash pinned legacy re-migration backfill behavior (Alembic is idempotent) → removed that method; kept schema-state methods
   - Pre-seeded /tmp/corpus-forge-test.db had alembic_version=0001_core but full schema → updated to 0005_fts so eval smoke tests pass
 - Status: green — handed off to tdd-qa
+
+## phase-e/E-01
+- Source files: docs/deployment-satellite.md, README.md
+- Gates:
+  - format: ✓ (`ruff format --check` clean — markdown not checked by ruff)
+  - lint: ✓ (`ruff check` clean)
+  - typecheck: ✓ (`pyrefly check` 0 errors)
+  - test: ✓ (`pytest tests/unit tests/smoke` 1626 passed, 2 skipped, 1 xfailed, 0 failed)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (new doc + README link only)
+- Facts verified in codebase:
+  - sync_poll_interval_s default is 5.0 (config.py:53)
+  - host_id persisted to ~/.config/corpus-forge/host_id (config.py:193)
+  - sync_enabled is DatasetConfig field, not DatasetSourceConfig — corrected doc from task brief
+  - BackendConfig schema default is "corpus" (config.py:40)
+- Status: green — handed off to tdd-qa

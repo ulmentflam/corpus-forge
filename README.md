@@ -270,6 +270,12 @@ Drop-in MCP config snippets live under `examples/mcp-config/`:
 }
 ```
 
+### Multi-host deployment
+
+Run ingester daemons on multiple machines against a single central Postgres.
+See [`docs/deployment-satellite.md`](docs/deployment-satellite.md) for the
+step-by-step satellite setup guide.
+
 ### First-class Claude assets
 
 - **Project-scoped skill** — `.claude/skills/corpus-forge-search/SKILL.md` — instructs Claude Code on when to invoke the MCP tools and how to cite results.
