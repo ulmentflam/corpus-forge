@@ -2634,3 +2634,9 @@ Test patterns of note:
   `corpus_forge/extractors/pdf.py` as source and asserts the
   `from pymupdf4llm.helpers.pymupdf_rag import to_markdown` line is
   present — pins the memory `project_phase_d_pymupdf4llm_rag_helper`.
+
+
+---
+
+# Phase E P1 — Wave 3 dispatch
+

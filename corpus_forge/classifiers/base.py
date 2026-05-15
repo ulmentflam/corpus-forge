@@ -22,6 +22,65 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 # ---------------------------------------------------------------------------
+# Exception hierarchy — Phase E / Wave 3 (C-10/11).
+# ---------------------------------------------------------------------------
+#
+# Transport-layer failures from the LLM classifier (and any future
+# remote-model classifier) raise these exceptions; callers in
+# ``corpus_forge/cli.py::classify`` already wrap the whole chain walk
+# in a try/except so an unreachable LLM downgrades gracefully to the
+# next classifier instead of crashing the run.
+#
+# Output-validation failures (model returned an invalid ``class`` value
+# or unparseable inner JSON) do NOT raise — the LLM classifier falls
+# back to ``ClassLabel(value="other", confidence=0.2, rationale=...)``
+# so the chain can keep moving. See :class:`LLMClassifier`.
+
+
+class ClassifierError(Exception):
+    """Base for every classifier-layer operational failure.
+
+    Callers can ``except ClassifierError`` to swallow all classifier
+    failures uniformly. Each subclass carves out a discriminable
+    failure mode so smarter callers can decide whether to retry,
+    degrade, or surface a hard error.
+    """
+
+
+class ClassifierUnavailableError(ClassifierError):
+    """The classifier backend cannot be reached or is not configured.
+
+    Raised by:
+
+    - :class:`~corpus_forge.classifiers.llm.LLMClassifier` when the
+      Ollama daemon (or remote LLM endpoint) is down or unreachable.
+    """
+
+
+class ClassifierTimeoutError(ClassifierError):
+    """The classifier was reachable but exceeded the configured timeout.
+
+    Distinct from :class:`ClassifierUnavailableError` so callers can
+    implement bounded retry/back-off (raising the timeout, falling back
+    to a different classifier in the chain) without giving up entirely.
+    """
+
+
+class ClassifierResponseError(ClassifierError):
+    """The classifier returned a malformed or error response.
+
+    Covers non-2xx HTTP, missing keys in the JSON body, invalid outer
+    JSON, etc. The response body (truncated to a few hundred chars) is
+    preserved in the message so log lines stay useful for debugging.
+
+    Note: invalid *inner* JSON from the model itself (the LLM's own
+    output) is NOT a response error — it's a graceful fallback to
+    ``class=other`` with a 0.2 confidence. Only transport / envelope
+    failures land here.
+    """
+
+
+# ---------------------------------------------------------------------------
 # Allowed class values — single source of truth.
 # ---------------------------------------------------------------------------
 

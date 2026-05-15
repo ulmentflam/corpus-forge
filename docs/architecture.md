@@ -199,3 +199,124 @@ Robust by construction — failures degrade, they do not poison the ingest:
 Live OCR tests carry the `requires_ollama` or `requires_mistral_api` pytest markers (registered in `pyproject.toml`). `tests/integration/conftest.py` auto-skips them at collection time when the dependency is absent — the Ollama path probes `GET /api/tags`, the Mistral path checks `MISTRAL_API_KEY`. `make test-ocr` runs both suites; `make test-ocr-local` is the common-case Ollama-only variant.
 
 For the wave-by-wave history of how this layer was built, see [`.planning/tdd/multi_format.md`](../.planning/tdd/multi_format.md).
+
+## Document classification
+
+Phase E sits between the extract/chunk pipeline and the export/training
+surface. After ingest writes a document, the classifier walks
+`corpus.documents`, reads body + format labels + path, and writes a
+`namespace='class', value=<one-of-9>` strong label via
+`backend.apply_label(...)`. The label is **post-ingest** and idempotent —
+documents that already carry a `classifier:*`-sourced class label are
+skipped unless `--reclassify` is set.
+
+```
+                          ┌──────────────────────────────────┐
+                          │      corpus.documents (rows)      │
+                          │  + corpus.document_labels (rows) │
+                          └────────────────┬─────────────────┘
+                                           │
+                  iter_documents_for_classification(...)
+                                           │
+                                           ▼
+                          ┌──────────────────────────────────┐
+                          │       ClassifierRegistry         │
+                          │     (ordered: rule → llm)        │
+                          └────────────────┬─────────────────┘
+                                           │
+              ┌────────────────────────────┴───────────────────────────┐
+              │                                                        │
+              ▼                                                        ▼
+   ┌──────────────────────┐                              ┌──────────────────────┐
+   │  RuleBasedClassifier │                              │     LLMClassifier    │
+   │  (stdlib, μs/doc)    │                              │ (Ollama, ~5-10s/doc) │
+   │                      │                              │                      │
+   │  format-label fast   │   conf >= threshold:         │  POST /api/generate  │
+   │  path / file ext /   │   short-circuit             │  format=json, head+  │
+   │  body heuristics     │ ───────────────────►         │  tail excerpt, 9-    │
+   │                      │   conf <  threshold:         │  enum constraint     │
+   │  always emits a      │   escalate                  │                      │
+   │  ClassLabel          │ ───────────────────────────► │  invalid output ⇒    │
+   └──────────────────────┘                              │  class=other 0.2     │
+                                                        └──────────┬─────────┘
+                                                                   │
+                                  (winner_name, ClassLabel)        │
+                                                                   ▼
+                                          ┌──────────────────────────────────┐
+                                          │    apply_label(                  │
+                                          │      "document", doc_id,         │
+                                          │      "class", value,             │
+                                          │      source=f"classifier:{name}",│
+                                          │      confidence=...,             │
+                                          │    )                             │
+                                          └──────────────────────────────────┘
+```
+
+### Class taxonomy
+
+| value | what it covers |
+|---|---|
+| `code` | source code, scripts, build files (Makefile, Dockerfile), config-as-code (`.nix`, `.tf`) |
+| `chat` | conversation transcripts — Claude Code, OpenCode, generic dialogue |
+| `book` | long-form non-pedagogical — fiction, memoir, popular non-fiction, biography |
+| `textbook` | long-form pedagogical — academic textbooks, course notes, learning material with exercises |
+| `paper` | research / academic papers (PDF with abstract+citations pattern) |
+| `article` | blog posts, magazine articles, news, opinion writing |
+| `reference` | API docs, schema specs, manifests, machine-readable data (JSON/YAML/TOML/CSV) |
+| `note` | personal notes — Obsidian vault, markdown jottings, journals |
+| `other` | fallback when no signal is strong enough to commit |
+
+### Chain composition
+
+Configured under `[classifier]` in `config.toml`. Default is
+`chain = ["rule", "llm"]` with `escalation_threshold = 0.4`. Each name in
+`chain` must be a known classifier in
+`corpus_forge.classifiers._CLASSIFIER_REGISTRY`:
+
+| name | class | module |
+|---|---|---|
+| `rule` | `RuleBasedClassifier` | `corpus_forge.classifiers.rule_based` |
+| `llm` | `LLMClassifier` | `corpus_forge.classifiers.llm` |
+
+`register_default_classifiers(config)` walks `chain` and lazy-imports each
+submodule, forwarding LLM-relevant config fields to `LLMClassifier(...)`
+(model, URL, timeout, temperature, excerpt budget).
+
+### Escalation policy
+
+`ClassifierRegistry.classify(doc, threshold)` walks classifiers in
+registration order:
+
+1. Each yields `None` (skip) or a `ClassLabel`.
+2. The first non-`None` result whose `confidence >= threshold` wins
+   outright and the walk short-circuits.
+3. If every label is below threshold, the **last** non-`None` label is
+   returned so the caller still gets something to act on.
+4. If every classifier returns `None`, dispatch returns `None`.
+
+The result is `tuple[str, ClassLabel] | None` — the first element is the
+classifier name that produced the label. The CLI uses it to write the
+correct `source = "classifier:<winner>"` value on `document_labels`.
+
+The LLM classifier (`LLMClassifier`) follows the documented graceful-
+fallback contract: a hallucinating model that returns a `class` outside
+the 9-enum, or unparseable inner JSON, is mapped to
+`ClassLabel(value="other", confidence=0.2, rationale="invalid LLM output: …")`
+with a WARNING log. Transport failures (timeout, connection refused,
+4xx/5xx) raise typed exceptions from `corpus_forge.classifiers.base`
+(`ClassifierTimeoutError`, `ClassifierUnavailableError`,
+`ClassifierResponseError`).
+
+### Local vs remote model endpoints
+
+Every model client in corpus-forge — the VLM (`vlm.ollama_url`), the
+classifier LLM (`classifier.llm_url`), and any future remote-model
+plug-in — accepts an arbitrary HTTP URL via config. The default is
+`http://localhost:11434` (a local Ollama daemon); the same backends work
+against any Ollama-compatible endpoint by swapping the URL — no code
+change. Useful when classification or OCR should run on a beefier host
+than the laptop doing ingest, or when a fleet of machines shares a
+single hosted model endpoint.
+
+For the wave-by-wave history, see
+[`.planning/tdd/phase_e_classification.md`](../.planning/tdd/phase_e_classification.md).

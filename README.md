@@ -222,6 +222,66 @@ path talks to your Ollama daemon (e.g. `qwen2.5vl:7b`, pulled separately via
 (`MISTRAL_API_KEY` in `secrets.env`). Adding `[ocr]` does not widen the AGPL
 surface introduced by `[multi-format]`.
 
+### Model endpoints (local vs remote)
+
+Every model client in corpus-forge accepts an arbitrary HTTP URL via config.
+The default is `http://localhost:11434` (a local Ollama daemon) but the same
+backends work against any Ollama-compatible endpoint — hosted Ollama, vLLM, or
+an OpenAI-shape proxy speaking the same `/api/generate` shape. Two clients
+follow this rule today:
+
+- **VLM (OCR)** — `vlm.ollama_url` in `config.toml`. Used by the PDF Tier 2
+  escalation path and the `ImageExtractor`.
+- **Document classifier (LLM)** — `classifier.llm_url` in `config.toml`.
+  Used by the LLM half of the rule → LLM classification chain.
+
+The local default keeps every ingest run self-contained; pointing at a remote
+URL is a one-line config change with no code edit required. Useful when
+classification or OCR should run on a beefier host than the laptop doing the
+ingest.
+
+## Document classification
+
+Phase E (`corpus-forge classify`) walks every ingested document and attaches
+a **content-class** strong label from a nine-value enum — `code`, `chat`,
+`book`, `textbook`, `paper`, `article`, `reference`, `note`, `other`. The
+label powers subset selection at training time ("give me all chat docs",
+"hold out textbook for eval") and is persisted on `corpus.document_labels`
+with `source = 'classifier:rule' | 'classifier:llm' | 'user'`.
+
+| value | what it covers |
+|---|---|
+| `code` | source code, scripts, build files (Makefile, Dockerfile), config-as-code |
+| `chat` | conversation transcripts (Claude Code, OpenCode, generic dialogue) |
+| `book` | long-form non-pedagogical — fiction, memoir, popular non-fiction |
+| `textbook` | long-form pedagogical — academic textbook, course notes, exercises |
+| `paper` | research / academic papers (PDFs with abstract + citations) |
+| `article` | blog posts, magazine articles, news, opinion writing |
+| `reference` | API docs, schema specs, manifests, JSON/YAML/TOML/CSV |
+| `note` | personal notes — Obsidian vault, markdown jottings, journals |
+| `other` | fallback when no signal is strong enough to commit |
+
+The default chain is `["rule", "llm"]`: a stdlib rule classifier
+(microseconds/doc) short-circuits high-confidence documents, and the LLM
+classifier (Ollama `qwen2.5:7b-instruct` by default; ~5–10 s/doc on M-series)
+picks up the weak / ambiguous cases. The escalation threshold defaults to
+`0.4` — rule confidences below that bar trigger the LLM call.
+
+The LLM classifier follows the **local-or-remote** principle described
+above: `classifier.llm_url` defaults to `http://localhost:11434` and accepts
+any Ollama-compatible URL. Tune the chain, threshold, and endpoint in the
+`[classifier]` block of `config.toml`.
+
+```bash
+corpus-forge classify --dry-run --json    # preview the plan, one JSON line per doc
+corpus-forge classify                     # apply labels
+corpus-forge classify --classifier rule   # bypass the LLM (rule classifier only)
+```
+
+The CLI prints a cost-guard preflight with a worst-case LLM-call estimate
+before the run starts; `--limit N` and `--dataset NAME` are available for
+quick smoke tests.
+
 ## Architecture
 
 ```

@@ -53,9 +53,10 @@ dimension = 1
 
 
 class TestClassifierConfigDefaults:
-    def test_default_chain_is_rule_only(self) -> None:
+    def test_default_chain_is_rule_then_llm(self) -> None:
+        """Phase E P1: chain default flipped to ``["rule", "llm"]``."""
         c = ClassifierConfig()
-        assert c.chain == ["rule"]
+        assert c.chain == ["rule", "llm"]
 
     def test_default_threshold_is_0_4(self) -> None:
         c = ClassifierConfig()
@@ -65,12 +66,15 @@ class TestClassifierConfigDefaults:
         """P0 declares the LLM fields with defaults so P1 lands cleanly."""
         c = ClassifierConfig()
         assert c.llm_model == "qwen2.5:7b-instruct"
-        # We accept either the bare host string or any string — keep the
-        # assertion loose on shape so pydantic AnyUrl coercion can change
-        # later without breaking tests.
+        # The default URL embeds 11434 (the Ollama port).
         assert "11434" in str(c.llm_url)
         assert c.llm_timeout_s == pytest.approx(60.0)
         assert c.llm_excerpt_chars == 2000
+
+    def test_default_llm_temperature_is_zero(self) -> None:
+        """P1 adds ``llm_temperature`` — defaults to 0.0 (deterministic)."""
+        c = ClassifierConfig()
+        assert c.llm_temperature == pytest.approx(0.0)
 
 
 class TestClassifierConfigValidation:
@@ -103,16 +107,51 @@ class TestClassifierConfigValidation:
         with pytest.raises(ValidationError):
             ClassifierConfig(llm_excerpt_chars=0)
 
+    def test_llm_temperature_bounds_accepted(self) -> None:
+        """Temperature is bounded ``[0.0, 2.0]`` (mirrors Ollama's range)."""
+        ClassifierConfig(llm_temperature=0.0)
+        ClassifierConfig(llm_temperature=2.0)
+
+    def test_llm_temperature_below_zero_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            ClassifierConfig(llm_temperature=-0.1)
+
+    def test_llm_temperature_above_two_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            ClassifierConfig(llm_temperature=2.1)
+
+    def test_llm_url_accepts_non_default_remote_url(self) -> None:
+        """The cross-cutting local-or-remote rule: any HTTP/HTTPS URL is valid."""
+        c = ClassifierConfig(llm_url="https://hosted.example.com")  # type: ignore[arg-type]
+        assert "hosted.example.com" in str(c.llm_url)
+
+    def test_llm_url_rejects_non_http(self) -> None:
+        """``AnyHttpUrl`` rejects non-HTTP schemes (e.g. file:// or ftp://)."""
+        with pytest.raises(ValidationError):
+            ClassifierConfig(llm_url="ftp://nope.example.com")  # type: ignore[arg-type]
+
 
 class TestConfigAttachment:
     def test_config_without_classifier_block_uses_defaults(self, tmp_path: Path) -> None:
         cfg = _load_config(_BASE_TOML, tmp_path)
         assert isinstance(cfg.classifier, ClassifierConfig)
-        assert cfg.classifier.chain == ["rule"]
+        # Phase E P1: default chain is rule → llm.
+        assert cfg.classifier.chain == ["rule", "llm"]
         assert cfg.classifier.escalation_threshold == pytest.approx(0.4)
 
     def test_config_with_empty_classifier_block_uses_defaults(self, tmp_path: Path) -> None:
         cfg = _load_config(_BASE_TOML + "\n[classifier]\n", tmp_path)
+        assert cfg.classifier.chain == ["rule", "llm"]
+
+    def test_p0_compatible_rule_only_chain_still_loads(self, tmp_path: Path) -> None:
+        """A P0 config with ``chain = ["rule"]`` keeps working under P1."""
+        body = _BASE_TOML + textwrap.dedent(
+            """
+                [classifier]
+                chain = ["rule"]
+                """
+        )
+        cfg = _load_config(body, tmp_path)
         assert cfg.classifier.chain == ["rule"]
 
     def test_config_with_explicit_chain(self, tmp_path: Path) -> None:

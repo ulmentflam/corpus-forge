@@ -39,6 +39,13 @@ class ClassifierRegistry:
     4. If every label is below threshold, the *last* non-``None`` label
        is returned (so the caller still gets a label to act on).
     5. If every classifier returns ``None``, dispatch returns ``None``.
+
+    Phase E / Wave 3 (C-10/11) **source-attribution fix**: :meth:`classify`
+    returns ``tuple[str, ClassLabel] | None``. The first element is the
+    name of the classifier whose label is being returned — the CLI uses
+    this to write the correct ``source = "classifier:<winner>"`` value
+    so the chain can distinguish ``classifier:rule`` from
+    ``classifier:llm`` in ``document_labels`` rows.
     """
 
     def __init__(self) -> None:
@@ -57,8 +64,10 @@ class ClassifierRegistry:
         self._classifiers = [c for c in self._classifiers if c.name != name]
         self._classifiers.append(classifier)
 
-    def classify(self, doc: ClassifiableDocument, threshold: float = 0.4) -> ClassLabel | None:
-        """Walk the chain and return the best :class:`ClassLabel` (or ``None``).
+    def classify(
+        self, doc: ClassifiableDocument, threshold: float = 0.4
+    ) -> tuple[str, ClassLabel] | None:
+        """Walk the chain and return ``(winner_name, label)`` or ``None``.
 
         Args:
             doc: The document to classify.
@@ -69,17 +78,19 @@ class ClassifierRegistry:
                 so a user can tune it without changing code.
 
         Returns:
-            The winning :class:`ClassLabel`, or ``None`` if every
-            classifier returned ``None``.
+            ``(winner_name, label)`` — the name of the classifier that
+            produced ``label`` plus the :class:`ClassLabel` itself.
+            Returns ``None`` only when every classifier in the chain
+            returned ``None``.
         """
-        last_seen: ClassLabel | None = None
+        last_seen: tuple[str, ClassLabel] | None = None
         for clf in self._classifiers:
             result = clf.classify(doc)
             if result is None:
                 continue
-            last_seen = result
+            last_seen = (clf.name, result)
             if result.confidence >= threshold:
-                return result
+                return last_seen
         # No classifier cleared the bar; return the last non-None
         # result so the caller can still write *something* to
         # ``document_labels``. The source field will still distinguish

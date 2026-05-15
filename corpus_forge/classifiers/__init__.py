@@ -42,8 +42,14 @@ _CLASSIFIER_REGISTRY: dict[str, tuple[str, str]] = {
 }
 
 
-def _load_classifier(name: str) -> Classifier:
-    """Lazy-import ``corpus_forge.classifiers.<submodule>.<class_name>``."""
+def _load_classifier(name: str, config: object | None = None) -> Classifier:
+    """Lazy-import ``corpus_forge.classifiers.<submodule>.<class_name>``.
+
+    Phase E P1 (C-10/11): when ``name == "llm"``, LLM-relevant fields
+    are forwarded from ``config`` to :class:`LLMClassifier`. Missing
+    fields fall back to the class's own defaults so duck-typed configs
+    (unit tests) still work.
+    """
     if name not in _CLASSIFIER_REGISTRY:
         raise ValueError(
             f"unknown classifier name: {name!r}. Known: {sorted(_CLASSIFIER_REGISTRY)}"
@@ -52,8 +58,6 @@ def _load_classifier(name: str) -> Classifier:
     try:
         module = importlib.import_module(f"corpus_forge.classifiers.{submodule}")
     except ImportError as exc:
-        # P0 ships only the rule classifier; ``llm`` lazy-import will
-        # fire here until P1 lands ``corpus_forge.classifiers.llm``.
         raise ValueError(
             f"unknown classifier name: {name!r} (module "
             f"corpus_forge.classifiers.{submodule} is not available: {exc})"
@@ -64,6 +68,29 @@ def _load_classifier(name: str) -> Classifier:
             f"unknown classifier name: {name!r} (class {class_name} not "
             f"found in corpus_forge.classifiers.{submodule})"
         )
+
+    # Forward LLM-relevant kwargs from config. The rule classifier
+    # takes no args; the LLM classifier reads model / url / timeout /
+    # temperature / excerpt_chars from the config block.
+    if name == "llm" and config is not None:
+        kwargs: dict[str, object] = {}
+        # Map ClassifierConfig field names → LLMClassifier constructor kwargs.
+        for cfg_attr, kwarg in (
+            ("llm_model", "model"),
+            ("llm_url", "llm_url"),
+            ("llm_timeout_s", "timeout_s"),
+            ("llm_temperature", "temperature"),
+            ("llm_excerpt_chars", "excerpt_chars"),
+        ):
+            if hasattr(config, cfg_attr):
+                value = getattr(config, cfg_attr)
+                # AnyHttpUrl is not a plain str — cast it so the
+                # backend's ``rstrip('/')`` works.
+                if kwarg == "llm_url":
+                    value = str(value)
+                kwargs[kwarg] = value
+        return cls(**kwargs)
+
     return cls()
 
 
@@ -87,7 +114,7 @@ def register_default_classifiers(config: object | None) -> ClassifierRegistry:
 
     reg = ClassifierRegistry()
     for name in chain:
-        reg.register(_load_classifier(name))
+        reg.register(_load_classifier(name, config))
     return reg
 
 

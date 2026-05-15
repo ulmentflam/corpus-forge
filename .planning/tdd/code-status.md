@@ -881,3 +881,9 @@ Implementation notes:
   (strict), `make test-unit` (2696 passed, coverage 92.35% ≥ 90%
   gate), `make test-integration` (378 passed, identical to Wave 4),
   `make test-smoke` (30 passed), `make ci` (full pipeline 0 exit).
+
+
+---
+
+# Phase E P1 — Wave 3 dispatch
+

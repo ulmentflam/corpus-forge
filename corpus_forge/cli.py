@@ -907,13 +907,23 @@ def classify(
 ) -> None:
     """Walk documents and assign content-class labels via the classifier chain.
 
-    Idempotent: by default, documents that already carry a
-    ``namespace='class'`` label with ``source LIKE 'classifier:%'`` are
-    skipped. Pass ``--reclassify`` to override the skip filter.
+    The default chain (``[classifier].chain = ["rule", "llm"]``) starts
+    with the stdlib rule classifier (microseconds/doc). When the rule
+    classifier's confidence falls below
+    ``[classifier].escalation_threshold`` (default 0.4), the LLM
+    classifier (Ollama qwen2.5:7b-instruct by default; ~5-10 s/doc on
+    M-series) takes over. High-confidence rule outputs short-circuit
+    the LLM call entirely — the cost-guard preflight prints a worst-
+    case estimate so you know what you're paying for before the run
+    starts.
 
-    The default chain is configured under ``[classifier]`` in
-    ``config.toml`` (P0 ships ``["rule"]`` — pure stdlib, microseconds
-    per document).
+    Idempotent: documents that already carry a ``namespace='class'``
+    label with ``source LIKE 'classifier:%'`` are skipped unless
+    ``--reclassify`` is set.
+
+    The ``source`` column distinguishes ``classifier:rule`` from
+    ``classifier:llm`` so downstream consumers can audit which
+    classifier produced each label.
     """
     import json as _json
 
@@ -945,7 +955,7 @@ def classify(
         if target is None:
             typer.echo(
                 f"--classifier {classifier!r} is not in the configured chain "
-                f"({registry.names()}). Available P0 classifiers: ['rule'].",
+                f"({registry.names()}). Available classifiers: ['rule', 'llm'].",
                 err=True,
             )
             raise typer.Exit(code=2)
@@ -978,10 +988,22 @@ def classify(
 
     chain_names = registry.names()
     typer.echo(
-        f"Classifying {total_to_process} document(s) via chain={chain_names}. "
-        f"Rule classifier is microseconds/doc.",
+        f"Classifying {total_to_process} document(s) via chain={chain_names}.",
         err=True,
     )
+    if "llm" in chain_names:
+        typer.echo(
+            f"Worst-case LLM cost: up to {total_to_process} LLM call(s) "
+            f"(~5-10 s/doc on qwen2.5:7b-instruct, M-series). "
+            f"Rule classifier short-circuits high-confidence docs "
+            f"(confidence >= {threshold:.2f}).",
+            err=True,
+        )
+    else:
+        typer.echo(
+            "Rule classifier only — microseconds per document.",
+            err=True,
+        )
 
     processed = 0
     applied = 0
@@ -989,18 +1011,13 @@ def classify(
         for doc in backend.iter_documents_for_classification(ds_id, include_classified=reclassify):
             if limit is not None and processed >= limit:
                 break
-            result = registry.classify(doc, threshold=threshold)
-            if result is None:
+            outcome = registry.classify(doc, threshold=threshold)
+            if outcome is None:
                 # Every classifier returned None — nothing to write.
                 processed += 1
                 continue
-
-            # Which classifier produced it? In the current P0 chain
-            # there is only one source, but P1 will distinguish rule vs
-            # llm — pick the *last* registered classifier's name as a
-            # safe upper bound for the source field.
-            classifier_name = chain_names[-1] if chain_names else "rule"
-            source = f"classifier:{classifier_name}"
+            winner_name, result = outcome
+            source = f"classifier:{winner_name}"
 
             write_now = not dry_run
             if write_now:
@@ -1022,13 +1039,14 @@ def classify(
                     "confidence": float(result.confidence),
                     "rationale": result.rationale,
                     "applied": bool(write_now),
+                    "classifier": winner_name,
                 }
                 typer.echo(_json.dumps(payload, ensure_ascii=False))
             else:
                 action = "would assign" if dry_run else "assigned"
                 typer.echo(
                     f"{doc.source_uri} -> {action} class={result.value} "
-                    f"({result.confidence:.2f}) [{result.rationale}]"
+                    f"({result.confidence:.2f}) [{winner_name}: {result.rationale}]"
                 )
             processed += 1
         if limit is not None and processed >= limit:

@@ -166,6 +166,10 @@ class TestClassifierProtocol:
 
 
 class TestClassifierRegistry:
+    """Registry.classify now returns ``tuple[str, ClassLabel] | None`` —
+    ``(winner_name, label)``. Phase E / Wave 3 (C-10/11) source-attribution fix.
+    """
+
     def test_empty_registry_returns_none(self) -> None:
         reg = ClassifierRegistry()
         assert reg.classify(_doc()) is None
@@ -175,7 +179,10 @@ class TestClassifierRegistry:
         target = ClassLabel(value="note", confidence=0.9, rationale="r")
         reg.register(_FixedClassifier("a", target))
         out = reg.classify(_doc())
-        assert out is target
+        assert out is not None
+        winner, label = out
+        assert winner == "a"
+        assert label is target
 
     def test_high_confidence_short_circuits(self) -> None:
         """First classifier passes the threshold; second is never consulted."""
@@ -190,7 +197,9 @@ class TestClassifierRegistry:
         reg.register(second)
         out = reg.classify(_doc(), threshold=0.5)
         assert out is not None
-        assert out.value == "code"
+        winner, label = out
+        assert winner == "first"
+        assert label.value == "code"
 
     def test_low_confidence_escalates_to_next(self) -> None:
         """First classifier's confidence is below threshold; chain walks on."""
@@ -205,18 +214,24 @@ class TestClassifierRegistry:
         reg.register(second)
         out = reg.classify(_doc(), threshold=0.5)
         assert out is not None
-        assert out.value == "article"
+        winner, label = out
+        assert winner == "second"
+        assert label.value == "article"
 
     def test_all_below_threshold_returns_last_non_none(self) -> None:
         """Nobody clears the bar — return the last non-None result so the
-        caller still gets something to act on (better than `None`)."""
+        caller still gets something to act on (better than `None`).
+
+        Winner name is the classifier that produced the last-seen label.
+        """
         reg = ClassifierRegistry()
         reg.register(_FixedClassifier("a", ClassLabel("note", 0.2, "r1")))
         reg.register(_FixedClassifier("b", ClassLabel("article", 0.3, "r2")))
         out = reg.classify(_doc(), threshold=0.9)
         assert out is not None
-        # Last non-None wins as fallback.
-        assert out.value == "article"
+        winner, label = out
+        assert winner == "b"
+        assert label.value == "article"
 
     def test_all_return_none(self) -> None:
         reg = ClassifierRegistry()
@@ -230,7 +245,35 @@ class TestClassifierRegistry:
         reg.register(_FixedClassifier("b", ClassLabel("note", 0.99, "r")))
         out = reg.classify(_doc())
         assert out is not None
-        assert out.value == "note"
+        winner, label = out
+        assert winner == "b"
+        assert label.value == "note"
+
+    def test_winner_name_for_rule_above_threshold(self) -> None:
+        """Explicit rule-vs-llm winner-name assertion (Phase E P1).
+
+        Rule classifier returns 0.99; chain short-circuits before
+        the LLM is consulted — winner_name == "rule".
+        """
+        reg = ClassifierRegistry()
+        reg.register(_FixedClassifier("rule", ClassLabel("code", 0.99, "fast")))
+        reg.register(_FixedClassifier("llm", ClassLabel("other", 0.5, "never seen")))
+        out = reg.classify(_doc(), threshold=0.4)
+        assert out is not None
+        winner, label = out
+        assert winner == "rule"
+        assert label.value == "code"
+
+    def test_winner_name_for_llm_after_rule_low_confidence(self) -> None:
+        """Rule returned a weak signal; LLM clears threshold; winner == llm."""
+        reg = ClassifierRegistry()
+        reg.register(_FixedClassifier("rule", ClassLabel("other", 0.3, "uncertain")))
+        reg.register(_FixedClassifier("llm", ClassLabel("article", 0.8, "blog post")))
+        out = reg.classify(_doc(), threshold=0.4)
+        assert out is not None
+        winner, label = out
+        assert winner == "llm"
+        assert label.value == "article"
 
     def test_register_last_write_wins_on_name(self) -> None:
         reg = ClassifierRegistry()
@@ -240,7 +283,9 @@ class TestClassifierRegistry:
         assert reg.names().count("dup") == 1
         out = reg.classify(_doc())
         assert out is not None
-        assert out.value == "article"
+        winner, label = out
+        assert winner == "dup"
+        assert label.value == "article"
 
     def test_names_reflect_registration_order(self) -> None:
         reg = ClassifierRegistry()
@@ -256,9 +301,9 @@ class TestClassifierRegistry:
 
 class TestRegisterDefaultClassifiers:
     def test_none_config_yields_rule_only(self) -> None:
+        """Calling with ``config=None`` (no config object at all) still
+        yields the rule-only chain for ad-hoc / scripted use."""
         reg = register_default_classifiers(None)
-        assert "rule" in reg.names()
-        # P0 chain is rule-only by default.
         assert reg.names() == ["rule"]
 
     def test_explicit_rule_chain(self) -> None:
@@ -270,6 +315,15 @@ class TestRegisterDefaultClassifiers:
         reg = register_default_classifiers(_Cfg())
         assert reg.names() == ["rule"]
 
+    def test_rule_then_llm_chain(self) -> None:
+        """The P1 default chain (``[rule, llm]``) loads both classifiers."""
+
+        class _Cfg:
+            chain: ClassVar[list[str]] = ["rule", "llm"]
+
+        reg = register_default_classifiers(_Cfg())
+        assert reg.names() == ["rule", "llm"]
+
     def test_unknown_classifier_name_raises(self) -> None:
         class _Cfg:
             chain: ClassVar[list[str]] = ["definitely-not-a-classifier"]
@@ -277,11 +331,18 @@ class TestRegisterDefaultClassifiers:
         with pytest.raises(ValueError, match="unknown classifier"):
             register_default_classifiers(_Cfg())
 
-    def test_llm_classifier_lazy_load_returns_none_or_raises_p0(self) -> None:
-        """P0 only knows ``"rule"``. ``"llm"`` raises until P1 lands the module."""
+    def test_llm_classifier_loads_with_default_fields(self) -> None:
+        """P1: ``"llm"`` resolves to a constructed :class:`LLMClassifier`
+        even when the config object only exposes ``chain`` (legacy
+        callers / tests duck-type the config). The loader falls back to
+        the LLMClassifier's own defaults for missing fields.
+        """
 
         class _Cfg:
             chain: ClassVar[list[str]] = ["llm"]
 
-        with pytest.raises(ValueError):
-            register_default_classifiers(_Cfg())
+        reg = register_default_classifiers(_Cfg())
+        assert reg.names() == ["llm"]
+        llm = reg.get("llm")
+        assert llm is not None
+        assert llm.name == "llm"

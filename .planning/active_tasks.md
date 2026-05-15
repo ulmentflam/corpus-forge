@@ -161,9 +161,9 @@ new `confidence REAL` column.
 - [x] C-08..C-09 Wave 2 — E2E integration test against fixture corpus → **P0 gate** (`make ci` green at ≥90% coverage)
 
 #### P1 — LLMClassifier (Ollama qwen2.5:7b-instruct default)
-- [ ] C-10..C-11 Wave 3 — `LLMClassifier` (mocked HTTP unit tests), `ClassifierConfig` LLM fields, chain composition default `["rule","llm"]`
-- [ ] C-12..C-13 Wave 4 — live `requires_ollama_text` E2E, README + architecture docs + cost-guard CLI text
-- [ ] C-14 — **P1 gate**: manual cross-model smoke (qwen2.5:7b on 10 ambiguous fixtures)
+- [x] C-10..C-11 Wave 3 — `LLMClassifier` (mocked HTTP, 23 unit tests), exception hierarchy, registry tuple-return, `ClassifierConfig` LLM fields + `AnyHttpUrl` + `llm_temperature`, chain composition default `["rule","llm"]`, `config.example.toml` rich-docs audit on `[vlm]` + `[classifier]` blocks
+- [x] C-12..C-13 Wave 4 — live `requires_ollama_text` E2E (4/4 PASS in 8.76s on qwen2.5:7b-instruct), README + `docs/architecture.md` "Document classification" sections + local-vs-remote endpoint subsection, CLI help + cost-guard breakdown
+- [x] C-14 — **P1 gate** closed: manual cross-model smoke on 8 ambiguous fixtures, rationales captured in `phase_e_classification.md`, graceful-fallback verified live
 
 ### Backlog (queued after Phase E, in declared order)
 - **Phase F** — true content-defined chunking (FastCDC). Class label informs strategy: `code` keeps tree-sitter; prose switches to CDC.

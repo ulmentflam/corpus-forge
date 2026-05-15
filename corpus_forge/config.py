@@ -270,34 +270,48 @@ class VLMConfig(BaseModel):
 
 
 class ClassifierConfig(BaseModel):
-    """Phase E (C-03) — document-classification chain config.
+    """Phase E — document-classification chain config.
 
     Drives :func:`corpus_forge.classifiers.register_default_classifiers`.
 
-    P0 ships a stdlib rule-based classifier; the LLM classifier and its
-    fields land with P1 (C-10/C-11). The LLM fields are declared *here
-    at P0* so existing TOML configs with a forward-looking
-    ``chain = ["rule", "llm"]`` and ``llm_*`` keys still validate when
-    P1 lands — keeping the schema stable across the P0/P1 boundary.
+    P0 shipped a stdlib rule-based classifier. P1 (C-10/C-11) wires in
+    the LLM classifier and flips the default chain to
+    ``["rule", "llm"]`` — the rule classifier short-circuits high-
+    confidence documents (microseconds/doc) and the LLM picks up the
+    weak / ambiguous cases.
+
+    **Cross-cutting: local-or-remote URL.** ``llm_url`` is the base
+    URL of any Ollama-compatible endpoint. Default
+    ``http://localhost:11434`` (local). Swap to a remote URL to point
+    at a hosted Ollama / vLLM / OpenAI-shape proxy without changing
+    code. Same principle as :attr:`VLMConfig.ollama_url`.
 
     Fields:
 
     - ``chain``: ordered list of classifier names. Each name must be a
       key in :data:`corpus_forge.classifiers._CLASSIFIER_REGISTRY`.
-      P0 only knows ``"rule"``; P1 adds ``"llm"``.
+      Default ``["rule", "llm"]``.
     - ``escalation_threshold``: confidence floor used by
       :meth:`ClassifierRegistry.classify`. Below this, the chain walks
-      to the next classifier (so the rule classifier can defer to the
-      LLM on weak signals once P1 lands).
-    - ``llm_*``: P1 LLM-backend tunables. Declared but unused at P0.
+      to the next classifier.
+    - ``llm_model``: Ollama tag.
+    - ``llm_url``: base URL of the Ollama-compatible endpoint
+      (``/api/generate`` is appended by the backend). Local-or-remote.
+    - ``llm_timeout_s``: per-request HTTP budget.
+    - ``llm_temperature``: sampling temperature (``[0.0, 2.0]``).
+    - ``llm_excerpt_chars``: total head+tail budget passed to the model.
     """
 
-    chain: list[str] = Field(default_factory=lambda: ["rule"])
+    chain: list[str] = Field(default_factory=lambda: ["rule", "llm"])
     escalation_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
-    # ── P1 LLM fields (declared at P0 so the schema is stable) ────────
+    # ── LLM fields ────────────────────────────────────────────────────
     llm_model: str = "qwen2.5:7b-instruct"
-    llm_url: str = "http://localhost:11434"
+    # Pydantic v2 quirk: ``AnyHttpUrl`` defaults must be wrapped in the
+    # class (not bare strings). Mirrors the proven pattern from
+    # :attr:`VLMConfig.ollama_url`.
+    llm_url: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
     llm_timeout_s: float = Field(default=60.0, gt=0)
+    llm_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     llm_excerpt_chars: int = Field(default=2000, gt=0)
 
     model_config = ConfigDict(extra="forbid")

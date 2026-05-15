@@ -252,6 +252,7 @@ markers = [
   "requires_unix: marks tests that only run on POSIX platforms (Linux / macOS)",
   "requires_docker: marks tests that require a working Docker daemon",
   "requires_ollama: requires a running ollama daemon with qwen2.5vl:7b pulled",
+  "requires_ollama_text: requires a running ollama daemon with a qwen2.5:*-instruct text model pulled",
   "requires_mistral_api: requires MISTRAL_API_KEY environment variable",
 ]
 

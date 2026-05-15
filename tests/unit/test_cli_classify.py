@@ -228,6 +228,9 @@ class TestClassifyCLI:
         assert len(lines) == 3
         for line in lines:
             obj = _json.loads(line)
+            # Phase E P1 (C-10/11): JSON output gains a ``classifier``
+            # field carrying the registry's winner name so callers can
+            # tell which classifier in the chain produced the label.
             assert set(obj.keys()) >= {
                 "doc_id",
                 "source_uri",
@@ -235,9 +238,13 @@ class TestClassifyCLI:
                 "confidence",
                 "rationale",
                 "applied",
+                "classifier",
             }
             # dry-run → applied=False
             assert obj["applied"] is False
+            # The P0 fixture corpus only hits the rule classifier
+            # (chain = ["rule"] in the test config).
+            assert obj["classifier"] == "rule"
 
     def test_limit_stops_after_n(self, runner: CliRunner, cfg_path: Path, tmp_path: Path) -> None:
         _seed_corpus(tmp_path, cfg_path)

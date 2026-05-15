@@ -255,3 +255,9 @@ Regression sweep:
 No production regressions. Wave 5 closed. Ready for Wave 6 dispatch
 (E-07 live-Ollama e2e + E-08 live-Mistral e2e + E-09 Makefile/docs +
 E-10 P1 gate).
+
+
+---
+
+# Phase E P1 — Wave 3 dispatch
+
