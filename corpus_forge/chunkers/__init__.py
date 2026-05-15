@@ -9,6 +9,7 @@ importing this package does not require the optional ``[code]`` extra.
 from .base import Chunker, ConversationChunker, MarkdownChunker, PassthroughChunker, TextChunk
 
 __all__ = [
+    "CDCChunker",
     "Chunker",
     "CodeChunker",
     "ConversationChunker",
@@ -19,9 +20,20 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    """Lazy export of CodeChunker — avoids importing tree-sitter at package import time."""
+    """Lazy exports — keep optional-extra dependencies out of import time.
+
+    ``CodeChunker`` lazy-imports tree-sitter (Phase D ``[code]`` extra).
+    ``CDCChunker`` lazy-imports the ``fastcdc`` Python package (Phase F
+    ``[multi-format]`` extra). Surfacing them via ``__getattr__`` lets
+    ``from corpus_forge.chunkers import CDCChunker`` resolve only when the
+    caller actually needs CDC chunking.
+    """
     if name == "CodeChunker":
         from .code import CodeChunker  # noqa: PLC0415
 
         return CodeChunker
+    if name == "CDCChunker":
+        from .cdc import CDCChunker  # noqa: PLC0415
+
+        return CDCChunker
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -136,3 +136,105 @@ def test_get_chunker_for_source_unchanged_surface():
     from corpus_forge.ingest import get_chunker_for_source
 
     assert callable(get_chunker_for_source)
+
+
+# ── Phase F (F-02): class-aware routing ──────────────────────────────────
+
+
+def test_dispatcher_for_class_code_returns_code_chunker():
+    """class=code → CodeChunker (same as Phase D 'code' hint)."""
+    from corpus_forge.chunkers.code import CodeChunker
+
+    d = ChunkerDispatcher()
+    chunker = d.for_class("code")
+    assert isinstance(chunker, CodeChunker)
+
+
+def test_dispatcher_for_class_chat_returns_conversation_chunker():
+    d = ChunkerDispatcher()
+    chunker = d.for_class("chat")
+    assert isinstance(chunker, ConversationChunker)
+
+
+def test_dispatcher_for_class_reference_returns_passthrough_chunker():
+    from corpus_forge.chunkers.base import PassthroughChunker
+
+    d = ChunkerDispatcher()
+    chunker = d.for_class("reference")
+    assert isinstance(chunker, PassthroughChunker)
+
+
+@pytest.mark.parametrize("class_value", ["book", "textbook", "paper", "article", "note", "other"])
+def test_dispatcher_for_class_prose_routes_to_cdc(class_value: str):
+    """Every prose class lands on the new CDCChunker (F-01)."""
+    from corpus_forge.chunkers.cdc import CDCChunker
+
+    d = ChunkerDispatcher()
+    chunker = d.for_class(class_value)
+    assert isinstance(chunker, CDCChunker)
+
+
+def test_dispatcher_for_class_unknown_raises():
+    d = ChunkerDispatcher()
+    with pytest.raises(ValueError):
+        d.for_class("not-a-class")
+
+
+# ── Phase F: dispatch_for resolution order (class_hint > chunker_hint > fallback) ─
+
+
+def test_dispatch_for_class_hint_wins_over_chunker_hint():
+    """When both ``class_hint`` and ``chunker_hint`` are present,
+    ``class_hint`` takes precedence — it's the post-classification
+    signal, more authoritative than the source-emitted format hint."""
+    from corpus_forge.chunkers.cdc import CDCChunker
+
+    d = ChunkerDispatcher()
+    fallback = MarkdownChunker()  # never used here
+    # class=book → CDC; chunker_hint="passthrough" would lose.
+    raw = _FakeRaw(metadata={"class_hint": "book", "chunker_hint": "passthrough"})
+    chunker = d.dispatch_for(raw, fallback=fallback)
+    assert isinstance(chunker, CDCChunker)
+
+
+def test_dispatch_for_class_hint_routes_chat_to_conversation():
+    d = ChunkerDispatcher()
+    fallback = MarkdownChunker()
+    raw = _FakeRaw(metadata={"class_hint": "chat"})
+    chunker = d.dispatch_for(raw, fallback=fallback)
+    assert isinstance(chunker, ConversationChunker)
+
+
+def test_dispatch_for_empty_class_hint_falls_through_to_chunker_hint():
+    """Empty-string class_hint mirrors empty-string chunker_hint
+    semantics — treat as absent, not unknown."""
+    d = ChunkerDispatcher()
+    fallback = MarkdownChunker()
+    raw = _FakeRaw(metadata={"class_hint": "", "chunker_hint": "passthrough"})
+    chunker = d.dispatch_for(raw, fallback=fallback)
+    # Passthrough hint wins because class_hint is empty.
+    from corpus_forge.chunkers.base import PassthroughChunker
+
+    assert isinstance(chunker, PassthroughChunker)
+
+
+def test_dispatch_for_chunker_hint_still_works_without_class_hint():
+    """Backwards-compat: pre-Phase-F ingest sets only ``chunker_hint``,
+    no ``class_hint`` yet — must keep behaving as before."""
+    d = ChunkerDispatcher()
+    fallback = MarkdownChunker()
+    raw = _FakeRaw(metadata={"chunker_hint": "passthrough"})
+    chunker = d.dispatch_for(raw, fallback=fallback)
+    from corpus_forge.chunkers.base import PassthroughChunker
+
+    assert isinstance(chunker, PassthroughChunker)
+
+
+def test_dispatch_for_caches_for_class_lookups():
+    """``for_class`` reuses the same chunker instance across calls
+    — important so we don't reinstantiate (e.g. CodeChunker, which pulls
+    tree-sitter) for every prose document."""
+    d = ChunkerDispatcher()
+    a = d.for_class("book")
+    b = d.for_class("book")
+    assert a is b

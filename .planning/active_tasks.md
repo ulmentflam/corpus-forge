@@ -165,8 +165,21 @@ new `confidence REAL` column.
 - [x] C-12..C-13 Wave 4 — live `requires_ollama_text` E2E (4/4 PASS in 8.76s on qwen2.5:7b-instruct), README + `docs/architecture.md` "Document classification" sections + local-vs-remote endpoint subsection, CLI help + cost-guard breakdown
 - [x] C-14 — **P1 gate** closed: manual cross-model smoke on 8 ambiguous fixtures, rationales captured in `phase_e_classification.md`, graceful-fallback verified live
 
-### Backlog (queued after Phase E, in declared order)
-- **Phase F** — true content-defined chunking (FastCDC). Class label informs strategy: `code` keeps tree-sitter; prose switches to CDC.
+### Phase F — True Content-Defined Chunking (FastCDC) (plan: .planning/tdd/phase_f_cdc_chunking.md)
+
+Replace positional `MarkdownChunker` / `PassthroughChunker` slicing
+for prose classes with FastCDC rolling-hash boundaries. Mid-document
+edits no longer shift every downstream chunk; the Phase C
+`chunks.content_hash` embedding-reuse path achieves its design potential.
+
+#### P0 — `CDCChunker` + dispatcher routing + `rechunk` CLI
+- [x] F-01..F-02 — `CDCChunker` (FastCDC), `ChunkerDispatcher.for_class` + `class_hint`-first resolution
+- [x] F-03..F-04 — `class_hint` plumbing at rechunk time, `corpus-forge rechunk` CLI (`--dataset` / `--limit` / `--dry-run` / `--json`), `StorageBackend.replace_document_chunks` (content-hash-aware chunk swap that preserves embeddings), `get_document_chunk_texts` + `get_document_chunk_metadatas` (idempotency check signals)
+- [x] F-05 — `fastcdc>=1.6` added to `[multi-format]` extra, `uv.lock` synced
+- [x] F-06 — hypothesis-driven stability invariants (append prefix-stable, mid-edit reuse-floor)
+- [x] F-07 — **P0 gate** closed: `make ci` exit 0 @ 90.53% coverage; 2886 unit + 396 integration + 15 fuzz + 30 smoke tests pass
+
+### Backlog (queued after Phase F, in declared order)
 - **Phase G** — multi-modal embeddings + Whisper transcription. New audio/video extractors; class label disambiguates transcript-class from chat-class.
 - **Phase H** — **Qwen3.6-35B-A3B** code-LLM enrichment for code chunks (docstring synthesis, semantic summaries). MoE: 35B / ~3B active, fits 64 GB unified memory on M-series. Gated to `class=code` docs only.
 

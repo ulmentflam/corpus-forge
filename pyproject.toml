@@ -99,6 +99,12 @@ multi-format = [
   "jupytext>=1.16",
   "pandas>=2.2",
   "tabulate>=0.9",
+  # Phase F (F-05): True content-defined chunking via FastCDC rolling
+  # hash. Pure-Python (MIT). The `CDCChunker` (F-01) is the new default
+  # for prose classes (book/textbook/paper/article/note/other) once the
+  # user has run `corpus-forge classify`. Pre-classification ingest
+  # still uses the source-level fallback chunker — additive only.
+  "fastcdc>=1.6",
 ]
 # Phase D / Wave 4–5 (E-02, E-03, E-05, E-06): VLM (vision-language
 # model) backends + PDF rasterisation for the OCR escalation path.

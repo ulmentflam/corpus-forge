@@ -14,16 +14,50 @@ from .sources.base import RawConversation, RawDocument, Source
 logger = logging.getLogger(__name__)
 
 
-class ChunkerDispatcher:
-    """Phase D — per-document chunker dispatch.
+#: Maps each class-label value (from ``ALLOWED_CLASS_VALUES``) to the
+#: ``chunker_hint`` string handled by :meth:`ChunkerDispatcher.for_hint`.
+#: Centralised here so the resolution table is single-sourced — the
+#: ``rechunk`` CLI (F-04) re-uses it via :meth:`ChunkerDispatcher.for_class`.
+#:
+#: ``code``      → tree-sitter-aware ``CodeChunker``.
+#: ``chat``      → ``ConversationChunker``.
+#: ``reference`` → ``PassthroughChunker`` (structured data, fenced blocks).
+#: prose values  → ``CDCChunker`` (Phase F: FastCDC rolling-hash boundaries).
+_CLASS_TO_HINT: dict[str, str] = {
+    "code": "code",
+    "chat": "conversation",
+    "reference": "passthrough",
+    "book": "cdc",
+    "textbook": "cdc",
+    "paper": "cdc",
+    "article": "cdc",
+    "note": "cdc",
+    "other": "cdc",
+}
 
-    Selects a :class:`Chunker` from the ``chunker_hint`` value carried in
-    ``RawDocument.metadata``. The supported hints are:
+
+class ChunkerDispatcher:
+    """Phase D — per-document chunker dispatch (extended in Phase F).
+
+    Selects a :class:`Chunker` from the metadata hint carried in
+    ``RawDocument.metadata``. The supported hints (via :meth:`for_hint`) are:
 
     - ``"markdown"``    → :class:`corpus_forge.chunkers.markdown.MarkdownChunker`
     - ``"conversation"`` → :class:`corpus_forge.chunkers.conversation.ConversationChunker`
     - ``"passthrough"`` → :class:`corpus_forge.chunkers.base.PassthroughChunker`
     - ``"code"``        → :class:`corpus_forge.chunkers.code.CodeChunker` (lazy)
+    - ``"cdc"``         → :class:`corpus_forge.chunkers.cdc.CDCChunker` (Phase F, lazy)
+
+    Phase F additions:
+
+    - :meth:`for_class` resolves a content-class label (one of
+      ``code`` / ``chat`` / ``reference`` / ``book`` / ``textbook`` /
+      ``paper`` / ``article`` / ``note`` / ``other``) to the appropriate
+      chunker via :data:`_CLASS_TO_HINT`.
+    - :meth:`dispatch_for` now consults
+      ``raw.metadata['class_hint']`` BEFORE ``chunker_hint`` —
+      classification output is more authoritative than source-level
+      format hints.
 
     Backwards-compatible: when no hint is present, :meth:`dispatch_for`
     returns the caller's existing per-source ``fallback`` chunker so
@@ -61,21 +95,60 @@ class ChunkerDispatcher:
             from .chunkers.code import CodeChunker  # noqa: PLC0415
 
             chunker = CodeChunker(**self._code_chunker_config)
+        elif hint == "cdc":
+            # Phase F (F-01): FastCDC content-defined chunker. Lazy-imports
+            # the `fastcdc` package (added to the [multi-format] extra in
+            # F-05) on first use so callers without the extra installed
+            # see a clean ImportError only when CDC actually fires.
+            from .chunkers.cdc import CDCChunker  # noqa: PLC0415
+
+            chunker = CDCChunker()
         else:
             raise ValueError(f"Unknown chunker hint: {hint!r}")
 
         self._cache[hint] = chunker
         return chunker
 
+    def for_class(self, class_value: str) -> Chunker:
+        """Resolve a content-class label to its mapped :class:`Chunker`.
+
+        ``class_value`` is the value of a ``namespace='class'`` label
+        (one of :data:`corpus_forge.classifiers.base.ALLOWED_CLASS_VALUES`).
+        Raises :class:`ValueError` for unknown classes — the caller (the
+        ``rechunk`` CLI, F-04) is expected to skip documents that don't
+        carry a recognised class label.
+        """
+        hint = _CLASS_TO_HINT.get(class_value)
+        if hint is None:
+            raise ValueError(
+                f"Unknown class value {class_value!r}; expected one of {sorted(_CLASS_TO_HINT)}"
+            )
+        return self.for_hint(hint)
+
     def dispatch_for(self, raw: Any, fallback: Chunker) -> Chunker:
         """Resolve the chunker for ``raw``.
 
-        If ``raw.metadata['chunker_hint']`` is set and non-empty, dispatch on
-        it via :meth:`for_hint`. Otherwise return ``fallback`` — preserving
-        the pre-Phase-D source-level chunker resolution semantics.
+        Resolution order (Phase F):
+
+        1. ``raw.metadata['class_hint']`` (if set + non-empty) →
+           :meth:`for_class`. Populated by the ``rechunk`` CLI (F-04)
+           after the user has classified their corpus.
+        2. ``raw.metadata['chunker_hint']`` (if set + non-empty) →
+           :meth:`for_hint`. Source-level format hint (Phase D HK-1).
+        3. ``fallback`` — pre-Phase-D source-level chunker.
+
+        Empty-string values at either layer are treated as "absent",
+        not as "unknown" — mirrors the existing ``chunker_hint`` semantics.
         """
         metadata = getattr(raw, "metadata", None) or {}
-        hint = metadata.get("chunker_hint") if isinstance(metadata, dict) else None
+        if not isinstance(metadata, dict):
+            return fallback
+
+        class_hint = metadata.get("class_hint")
+        if class_hint:
+            return self.for_class(class_hint)
+
+        hint = metadata.get("chunker_hint")
         if not hint:
             return fallback
         return self.for_hint(hint)

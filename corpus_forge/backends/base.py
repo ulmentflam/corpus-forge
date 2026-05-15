@@ -134,6 +134,43 @@ class StorageBackend(Protocol):
 
     def get_chunk_by_content_hash(self, content_hash: str) -> "dict | None": ...
 
+    def get_document_chunk_texts(self, document_id: int) -> "list[str]":
+        """Return the texts of all chunks attached to ``document_id`` in order.
+
+        Phase F (F-04): used by ``corpus-forge rechunk`` to compare the
+        prospective new chunk-text list against the stored chunk-text
+        list and skip the upsert when they match (idempotency check).
+
+        Returns an empty list when the document has no chunks.
+        """
+        ...
+
+    def get_document_chunk_metadatas(self, document_id: int) -> "list[dict]":
+        """Return the metadata dicts of all chunks attached to ``document_id``.
+
+        Phase F (F-04): used by the ``rechunk`` CLI idempotency check to
+        detect when stored chunks lack the expected chunker signature
+        (e.g. ``cdc_fingerprint`` for prose classes), in which case the
+        rechunk pass runs even if the chunk text happens to match.
+        """
+        ...
+
+    def replace_document_chunks(
+        self,
+        document_id: int,
+        chunks: list[Any],
+        embedder_ids: "list[int] | None" = None,
+    ) -> int:
+        """Replace the chunks of a document with ``chunks``, content-hash-aware.
+
+        Phase F (F-04): used by the ``rechunk`` CLI. Mirrors the
+        ``content_hash`` chunk-reuse path inside :meth:`upsert_document`
+        WITHOUT touching the document row. Embedding rows for chunks
+        whose ``content_hash`` survives the rechunk are preserved
+        in-place (Phase C BUG-3).
+        """
+        ...
+
     def list_datasets(self) -> "list[dict]": ...
 
     def backfill_lexical_index(self) -> int: ...

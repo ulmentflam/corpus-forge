@@ -1265,6 +1265,137 @@ class PostgresBackend(StorageBackend):
         )
         return rows[0] if rows else None
 
+    def replace_document_chunks(
+        self,
+        document_id: int,
+        chunks: "list[TextChunk]",
+        embedder_ids: list[int] | None = None,
+    ) -> int:
+        """Replace the chunks of a document with the given list, content-hash-aware.
+
+        Phase F (F-04): used by the ``rechunk`` CLI. Mirrors the
+        ``content_hash`` chunk-reuse path inside :meth:`upsert_document`
+        WITHOUT touching the document row (no text/title/metadata
+        changes — only the chunk decomposition changes). Embedding
+        rows for chunks whose ``content_hash`` survives the rechunk
+        are preserved in-place (Phase C BUG-3).
+
+        Returns the count of chunks now attached to the document.
+        """
+        norm_chunks: list[TextChunk] = [_coerce_to_textchunk(c) for c in chunks]
+
+        prior_rows = self._execute(
+            "SELECT id, chunk_index, content_hash, heading"
+            " FROM corpus.chunks WHERE document_id = %s ORDER BY chunk_index",
+            (document_id,),
+        )
+        prior_by_hash: dict[str, int] = {}
+        for pr in prior_rows:
+            if pr["content_hash"]:
+                prior_by_hash.setdefault(pr["content_hash"], pr["id"])
+
+        new_chunk_hashes = {chunk_content_hash(c.text) for c in norm_chunks}
+
+        reusable: dict[str, int] = {}
+        for ph, pid in prior_by_hash.items():
+            if ph in new_chunk_hashes:
+                reusable[ph] = pid
+
+        # Delete prior chunks that will NOT be reused.
+        for pr in prior_rows:
+            if pr["content_hash"] not in new_chunk_hashes:
+                self._execute("DELETE FROM corpus.chunks WHERE id = %s", (pr["id"],))
+
+        used_prior_ids: set[int] = set()
+        cache: dict[tuple[str, int], int] = {}
+
+        for i, chunk in enumerate(norm_chunks):
+            chunk_hash = chunk_content_hash(chunk.text)
+            meta = psycopg.types.json.Json(chunk.metadata or {})
+            prior_id = reusable.get(chunk_hash)
+            if prior_id is not None and prior_id not in used_prior_ids:
+                self._execute(
+                    """
+                    UPDATE corpus.chunks
+                    SET chunk_index = %s, heading = %s, text = %s,
+                        metadata = %s, role = %s, token_count = %s
+                    WHERE id = %s
+                    """,
+                    (
+                        i,
+                        chunk.heading,
+                        chunk.text,
+                        meta,
+                        chunk.role,
+                        chunk.token_count,
+                        prior_id,
+                    ),
+                )
+                used_prior_ids.add(prior_id)
+            else:
+                row = self._execute(
+                    """
+                    INSERT INTO corpus.chunks
+                    (document_id, chunk_index, heading, text, metadata,
+                     role, token_count, content_hash)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        document_id,
+                        i,
+                        chunk.heading,
+                        chunk.text,
+                        meta,
+                        chunk.role,
+                        chunk.token_count,
+                        chunk_hash,
+                    ),
+                )
+                if embedder_ids is not None:
+                    self._copy_reusable_embeddings(row[0]["id"], chunk_hash, embedder_ids, cache)
+
+        return len(norm_chunks)
+
+    def get_document_chunk_texts(self, document_id: int) -> "list[str]":
+        """Return the texts of all chunks attached to ``document_id`` in order.
+
+        Phase F (F-04): the ``rechunk`` CLI uses this to compare the
+        prospective new chunk-text list against the stored chunk-text list
+        and skip the upsert when they match — the pragmatic idempotency
+        check called out in the planning doc.
+
+        Returns ``[]`` when the document has no chunks (or doesn't exist).
+        """
+        rows = self._execute(
+            "SELECT text FROM corpus.chunks WHERE document_id = %s ORDER BY chunk_index",
+            (document_id,),
+        )
+        return [r["text"] for r in rows]
+
+    def get_document_chunk_metadatas(self, document_id: int) -> "list[dict]":
+        """Return the metadata dicts of all chunks attached to ``document_id``.
+
+        Phase F (F-04): the ``rechunk`` CLI uses this to detect when the
+        document's existing chunks lack the expected chunker signature
+        (e.g. ``cdc_fingerprint`` for prose classes), in which case the
+        rechunk must run even if the chunk text happens to match.
+        """
+        rows = self._execute(
+            "SELECT metadata FROM corpus.chunks WHERE document_id = %s ORDER BY chunk_index",
+            (document_id,),
+        )
+        out: list[dict] = []
+        for r in rows:
+            md = r["metadata"]
+            if isinstance(md, str):
+                try:
+                    md = json.loads(md)
+                except (TypeError, ValueError):
+                    md = {}
+            out.append(md if isinstance(md, dict) else {})
+        return out
+
     def get_chunk_by_content_hash(self, content_hash: str) -> "dict | None":
         """Return the chunk row with the given ``content_hash``, joined to its document.
 

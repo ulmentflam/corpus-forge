@@ -1058,5 +1058,279 @@ def classify(
     )
 
 
+# ── rechunk command (Phase F / F-04) ────────────────────────────────────
+
+
+#: Expected metadata-key signature for each class-mapped chunker. When
+#: this key is missing from ALL chunks of a document, the rechunk CLI
+#: knows the document is still on the pre-Phase-F chunker output and
+#: must be rechunked — even if the chunk text happens to match (small
+#: documents that fit in a single chunk hit this case).
+#:
+#: ``None`` means "no required signature — text-equality is sufficient
+#: for idempotency".
+_CLASS_METADATA_SIGNATURE: dict[str, str | None] = {
+    "code": "byte_range",  # CodeChunker stamps byte_range (also 'kind'/'name' when AST hits)
+    "chat": None,
+    "reference": None,
+    "book": "cdc_fingerprint",
+    "textbook": "cdc_fingerprint",
+    "paper": "cdc_fingerprint",
+    "article": "cdc_fingerprint",
+    "note": "cdc_fingerprint",
+    "other": "cdc_fingerprint",
+}
+
+
+def _expected_metadata_signature(class_value: str) -> str | None:
+    """Return the required metadata key for the given class, or None."""
+    return _CLASS_METADATA_SIGNATURE.get(class_value)
+
+
+def _all_prior_chunks_have_key(backend, document_id: int, key: str) -> bool:
+    """Return True iff every stored chunk of ``document_id`` has ``key``
+    set in its metadata. Used by the rechunk idempotency check.
+
+    Uses ``get_document_chunk_metadatas`` if the backend exposes it,
+    otherwise falls back to a defensive ``False`` so the rechunk pass
+    always runs (correctness > efficiency on the fallback path).
+    """
+    if not hasattr(backend, "get_document_chunk_metadatas"):
+        return False
+    metadatas = backend.get_document_chunk_metadatas(document_id)
+    if not metadatas:
+        return False
+    return all(bool((md or {}).get(key)) for md in metadatas)
+
+
+def _class_from_format_labels(labels: "list[tuple[str, str]]") -> str | None:
+    """Return the ``class=<value>`` label's value, or ``None`` if absent.
+
+    Tied-break: a document may carry multiple ``class=*`` labels (e.g.
+    one from ``classifier:rule`` and one from ``classifier:llm``). We
+    take the last one — ``apply_label`` is INSERT-order-stable and the
+    ``classify`` CLI runs the LLM AFTER the rule classifier when both
+    are in the chain, so the last entry reflects the final winning
+    decision in the most common workflow.
+    """
+    candidates = [v for ns, v in labels if ns == "class"]
+    if not candidates:
+        return None
+    return candidates[-1]
+
+
+@app.command("rechunk")
+def rechunk(
+    dataset: list[str] = typer.Option(
+        None,
+        "--dataset",
+        "-d",
+        help="Restrict to one or more datasets (repeatable).",
+    ),
+    limit: int = typer.Option(
+        None,
+        "--limit",
+        help="Stop after processing N documents.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the plan without writing any chunks.",
+    ),
+    json_out: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit one JSON object per processed document.",
+    ),
+) -> None:
+    """Re-chunk classified documents using the class-mapped chunker (Phase F).
+
+    Walks every document that carries a ``namespace='class'`` label
+    (Phase E classifier output) and re-runs the chunker pass using the
+    chunker mapped to that class:
+
+    - ``class=code`` → :class:`CodeChunker` (tree-sitter or byte-line fallback)
+    - ``class=chat`` → :class:`ConversationChunker`
+    - ``class=reference`` → :class:`PassthroughChunker`
+    - ``class=book`` / ``textbook`` / ``paper`` / ``article`` / ``note`` /
+      ``other`` → :class:`CDCChunker` (FastCDC rolling hash)
+
+    The Phase C BUG-3 ``content_hash`` chunk-reuse path inside
+    :meth:`StorageBackend.upsert_document` preserves embeddings for any
+    chunks that come out byte-identical to their pre-rechunk peers.
+
+    Idempotent: when the prospective new chunk-text list matches the
+    stored chunk-text list exactly, the upsert is skipped entirely (no
+    DB writes).
+
+    Pre-requisite: run ``corpus-forge classify`` first so documents
+    have ``class=*`` labels. Unclassified documents are skipped.
+    """
+    import json as _json
+
+    from corpus_forge.config import Config
+    from corpus_forge.ingest import ChunkerDispatcher
+
+    try:
+        config = Config.load()
+    except FileNotFoundError:
+        typer.echo(
+            "No configuration found; run 'corpus-forge migrate' to initialise.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from None
+
+    backend = _build_backend_from_config(config)
+    dispatcher = ChunkerDispatcher()
+
+    # Resolve dataset filter(s). When --dataset is not supplied, iterate
+    # every dataset by passing ``None``.
+    if dataset:
+        dataset_ids: list[int | None] = []
+        for name in dataset:
+            ds_id = backend.find_dataset_id_by_name(name)
+            if ds_id is None:
+                typer.echo(f"Dataset not found: {name}", err=True)
+                raise typer.Exit(code=2)
+            dataset_ids.append(ds_id)
+    else:
+        dataset_ids = [None]
+
+    processed = 0
+    applied = 0
+    skipped_noop = 0
+    skipped_unclassified = 0
+
+    for ds_id in dataset_ids:
+        for doc in backend.iter_documents_for_classification(ds_id, include_classified=True):
+            if limit is not None and processed >= limit:
+                break
+
+            class_value = _class_from_format_labels(doc.format_labels)
+            if class_value is None:
+                # Defensive — iter helper yields every document when
+                # include_classified=True. Skip docs without a class.
+                skipped_unclassified += 1
+                continue
+
+            # Resolve the chunker for this class. Unknown classes raise
+            # ValueError — surface as a warning and skip rather than fail
+            # the whole run.
+            try:
+                chunker = dispatcher.for_class(class_value)
+            except ValueError as exc:
+                typer.echo(
+                    f"Skipping {doc.source_uri}: {exc}",
+                    err=True,
+                )
+                continue
+
+            # Run the chunker. We feed ``doc.text`` directly; the chunker
+            # contract is ``chunk(text: str) -> list[TextChunk]`` for all
+            # prose-flavoured chunkers. CodeChunker also accepts that
+            # surface (it just lacks language/relative_path metadata —
+            # the byte-line fallback still produces valid chunks).
+            try:
+                new_chunks = chunker.chunk(doc.text)
+            except Exception as exc:  # pragma: no cover — defensive
+                typer.echo(
+                    f"Chunker error on {doc.source_uri}: {exc}; skipping.",
+                    err=True,
+                )
+                continue
+
+            # Idempotency check: skip the upsert when the stored chunks
+            # already match the prospective new chunks — both in text
+            # AND in chunker signature.
+            #
+            # Text-only comparison is insufficient: a small markdown
+            # doc whose entire body fits in a single positional chunk
+            # is also a single CDC chunk (same text) — but the chunk
+            # metadata differs (CDC stamps ``cdc_fingerprint`` /
+            # ``byte_range``; markdown stamps nothing). Skipping based
+            # on text alone would leave the chunk metadata stuck in
+            # the old shape.
+            prior_texts = backend.get_document_chunk_texts(doc.document_id)
+            new_texts = [c.text for c in new_chunks]
+            # Expected metadata-key signature for the class:
+            # - CDC chunks → ``cdc_fingerprint``
+            # - code chunks → ``kind`` (tree-sitter) or ``byte_range`` (byte fallback)
+            # - everything else has no required signature → text-only check.
+            expected_key = _expected_metadata_signature(class_value)
+            new_has_signature = expected_key is None or all(
+                (c.metadata or {}).get(expected_key) for c in new_chunks
+            )
+            prior_has_signature = expected_key is None or _all_prior_chunks_have_key(
+                backend, doc.document_id, expected_key
+            )
+            if prior_texts == new_texts and (
+                expected_key is None or (new_has_signature and prior_has_signature)
+            ):
+                skipped_noop += 1
+                processed += 1
+                if json_out:
+                    typer.echo(
+                        _json.dumps(
+                            {
+                                "doc_id": doc.document_id,
+                                "source_uri": doc.source_uri,
+                                "class": class_value,
+                                "applied": False,
+                                "reason": "noop-identical-chunks",
+                                "chunk_count": len(new_texts),
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                else:
+                    typer.echo(
+                        f"{doc.source_uri} -> noop ({len(new_texts)} chunks unchanged) "
+                        f"[class={class_value}]"
+                    )
+                continue
+
+            if not dry_run:
+                # Use the dedicated chunk-replacement helper. It mirrors
+                # the Phase C BUG-3 ``content_hash`` chunk-reuse path
+                # inside :meth:`upsert_document` (embeddings survive
+                # where chunks come out byte-identical) without touching
+                # the document row — we only want to swap the chunk
+                # decomposition, not modify text / title / metadata.
+                backend.replace_document_chunks(
+                    document_id=doc.document_id,
+                    chunks=new_chunks,
+                )
+                applied += 1
+
+            if json_out:
+                typer.echo(
+                    _json.dumps(
+                        {
+                            "doc_id": doc.document_id,
+                            "source_uri": doc.source_uri,
+                            "class": class_value,
+                            "applied": not dry_run,
+                            "chunk_count": len(new_texts),
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            else:
+                action = "would rechunk" if dry_run else "rechunked"
+                typer.echo(
+                    f"{doc.source_uri} -> {action} into {len(new_texts)} chunks "
+                    f"[class={class_value}]"
+                )
+            processed += 1
+        if limit is not None and processed >= limit:
+            break
+
+    typer.echo(
+        f"Processed {processed} document(s); applied {applied}; "
+        f"noop {skipped_noop}; unclassified {skipped_unclassified}.",
+        err=True,
+    )
+
+
 if __name__ == "__main__":
     app()
