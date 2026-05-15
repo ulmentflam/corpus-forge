@@ -147,6 +147,29 @@ data, subtitles, and every human-readable code file via tree-sitter.
 - [x] E-07..E-09 Wave 6 — OCR E2E tests (`test_ocr_local_e2e.py`, `test_ocr_remote_e2e.py`), Makefile (`test-ocr`, `test-ocr-local`), docs (architecture Vision/OCR section + README `[ocr]` extra note + secrets.env `MISTRAL_API_KEY=`)
 - [x] E-10 — **P1 gate** closed: `make ci` green @ 92.35% coverage, `make test-ocr-local` 4/4 pass in 38 s on M-series with qwen2.5vl:7b
 
+### Phase E — Document Classification & Strong Labels (plan: .planning/tdd/phase_e_classification.md)
+
+Walk every ingested document, assign one `class=<value>` strong label
+from a 9-value taxonomy (`code` · `chat` · `book` · `textbook` ·
+`paper` · `article` · `reference` · `note` · `other`). Powers subset
+selection at training time. Persisted on `document_labels` with the
+new `confidence REAL` column.
+
+#### P0 — RuleBasedClassifier + CLI + persistence (no model required)
+- [ ] C-01..C-04 Wave 0 — `Classifier` protocol + `ClassifierRegistry`, `RuleBasedClassifier`, `ClassifierConfig`, schema migration adding `document_labels.confidence`
+- [ ] C-05..C-07 Wave 1 — `corpus-forge classify` CLI, backend helpers (`iter_documents_for_classification` + confidence plumbing), `config.example.toml` block
+- [ ] C-08..C-09 Wave 2 — E2E integration test against fixture corpus → **P0 gate** (`make ci` green at ≥90% coverage)
+
+#### P1 — LLMClassifier (Ollama qwen2.5:7b-instruct default)
+- [ ] C-10..C-11 Wave 3 — `LLMClassifier` (mocked HTTP unit tests), `ClassifierConfig` LLM fields, chain composition default `["rule","llm"]`
+- [ ] C-12..C-13 Wave 4 — live `requires_ollama_text` E2E, README + architecture docs + cost-guard CLI text
+- [ ] C-14 — **P1 gate**: manual cross-model smoke (qwen2.5:7b on 10 ambiguous fixtures)
+
+### Backlog (queued after Phase E, in declared order)
+- **Phase F** — true content-defined chunking (FastCDC). Class label informs strategy: `code` keeps tree-sitter; prose switches to CDC.
+- **Phase G** — multi-modal embeddings + Whisper transcription. New audio/video extractors; class label disambiguates transcript-class from chat-class.
+- **Phase H** — **Qwen3.6-35B-A3B** code-LLM enrichment for code chunks (docstring synthesis, semantic summaries). MoE: 35B / ~3B active, fits 64 GB unified memory on M-series. Gated to `class=code` docs only.
+
 ## Verification Criteria for Phase A Completion:
 - [ ] Daemon running on both Macs
 - [ ] corpus.chunks and corpus.embeddings_qwen3_8b populated
