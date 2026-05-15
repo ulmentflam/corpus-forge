@@ -220,20 +220,30 @@ def build_pdfs() -> None:
 
 
 def _strip_pdf_timestamps(pdf_bytes: bytes) -> bytes:
-    """Replace reportlab's per-run /CreationDate and /ModDate with epoch.
+    """Strip reportlab's non-deterministic per-run metadata.
 
-    reportlab embeds the current wall-clock in the document info dict
-    even when the caller doesn't ask for it. The fields look like::
+    reportlab embeds three pieces of wall-clock-bound state in every PDF:
 
-        /CreationDate (D:20260514153000-04'00')
+    * ``/CreationDate (D:20260514153000-04'00')`` — current time.
+    * ``/ModDate (D:...)`` — current time.
+    * ``/ID [<32-hex><32-hex>]`` — per-build random document id.
 
-    We rewrite both to the fixture epoch so byte output is reproducible.
-    The substitution is byte-level on a tightly-bounded regex.
+    For byte-stable fixtures we rewrite all three to fixed values. The
+    substitutions are byte-level on tightly-bounded regexes.
     """
     import re  # noqa: PLC0415
 
-    pattern = re.compile(rb"/(CreationDate|ModDate) \(D:[^)]*\)")
-    return pattern.sub(rb"/\1 (D:20000101000000+00'00')", pdf_bytes)
+    out = re.compile(rb"/(CreationDate|ModDate) \(D:[^)]*\)").sub(
+        rb"/\1 (D:20000101000000+00'00')", pdf_bytes
+    )
+    # ``/ID`` field is two hex strings inside angle brackets, e.g.
+    # ``/ID \n[<deadbeef...><deadbeef...>]``. Pin to a fixed pair so
+    # repeat builds emit identical bytes.
+    fixed_id = b"00000000000000000000000000000000"
+    out = re.compile(rb"/ID\s*\[<[0-9a-fA-F]{32}><[0-9a-fA-F]{32}>\]").sub(
+        b"/ID \n[<" + fixed_id + b"><" + fixed_id + b">]", out
+    )
+    return out
 
 
 # ── HTML family (readability happy path + nav/ads stripping) ────────────
@@ -355,7 +365,9 @@ def build_epub() -> None:
 
     out = io.BytesIO()
     epub.write_epub(out, book, {})
-    _write_bytes("epub/small-book.epub", out.getvalue())
+    # ebooklib writes a fresh dcterms:modified timestamp into content.opf
+    # on every build — pipe through _zip_normalise to scrub it.
+    _write_bytes("epub/small-book.epub", _zip_normalise(out.getvalue()))
 
 
 # ── Office (Docling extracts; we author with python-docx/-pptx, openpyxl) ─
@@ -414,15 +426,36 @@ def build_office() -> None:
 
 
 def _zip_normalise(zip_bytes: bytes) -> bytes:
-    """Repack a zip archive with sorted entries and pinned mtime.
+    """Repack a zip archive with sorted entries, pinned mtime, and scrubbed
+    XML timestamps inside ``core.xml`` / ``content.opf``-style payloads.
 
-    Office files (.docx / .pptx / .xlsx) are zip containers. python-docx /
-    -pptx / openpyxl write entries in dict-iteration order — Python 3.7+
-    is insertion-ordered, but inside the libraries the insertion order is
-    not deterministic across versions. We re-pack with sorted entry names
-    + epoch mtime so the produced bytes are stable across machines and
-    library upgrades.
+    Office files (.docx / .pptx / .xlsx) and EPUBs are zip containers
+    whose entries embed wall-clock timestamps in metadata XML. We can't
+    rely on per-library setters alone (openpyxl, python-docx, ebooklib
+    all phrase the field differently), so we scrub at the bytes layer
+    using tightly-bounded regex substitutions:
+
+    * ``<dcterms:created ...>2026-05-15T02:49:17Z</dcterms:created>``
+    * ``<dcterms:modified ...>...</dcterms:modified>``
+    * ``<meta property="dcterms:modified">...</meta>`` (EPUB content.opf)
     """
+    import re  # noqa: PLC0415
+
+    fixed = "2000-01-01T00:00:00Z"
+    dcterms_open_close = re.compile(
+        rb"(<dcterms:(?:created|modified)\b[^>]*>)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z(</dcterms:\w+>)"
+    )
+    epub_meta_modified = re.compile(
+        rb'(<meta\s+property="dcterms:modified"[^>]*>)'
+        rb"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
+        rb"(</meta>)"
+    )
+
+    def _scrub(data: bytes) -> bytes:
+        data = dcterms_open_close.sub(rb"\g<1>" + fixed.encode() + rb"\g<2>", data)
+        data = epub_meta_modified.sub(rb"\g<1>" + fixed.encode() + rb"\g<2>", data)
+        return data
+
     in_buf = io.BytesIO(zip_bytes)
     out_buf = io.BytesIO()
     with zipfile.ZipFile(in_buf, "r") as zin, zipfile.ZipFile(
@@ -430,6 +463,10 @@ def _zip_normalise(zip_bytes: bytes) -> bytes:
     ) as zout:
         for name in sorted(zin.namelist()):
             data = zin.read(name)
+            # Only XML/OPF payloads need timestamp scrubbing — images,
+            # binary metadata, etc. stay untouched.
+            if name.endswith((".xml", ".opf")):
+                data = _scrub(data)
             info = zipfile.ZipInfo(filename=name, date_time=_EPOCH_TUPLE)
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o644 << 16
