@@ -160,52 +160,48 @@ def test_extract_falls_back_for_unknown_extension(tmp_path: Path):
     assert doc.text.strip()
 
 
-def _force_grammar_unavailable(monkeypatch, language: str) -> None:
-    """Pretend ``language`` is not currently in the pack so the fetch
-    path is exercised even if a prior test pre-fetched it."""
-    import tree_sitter_language_pack as pack
+def _reset_grammar_cache(language: str) -> None:
+    """Wipe the per-process attempt cache for ``language``.
 
+    ``pack.available_languages()`` reports what the pack KNOWS how to
+    download, not what is currently cached locally — so every supported
+    language goes through ``pack.download([...])`` once per process.
+    """
     import corpus_forge.extractors.code as code_module
 
-    real_available = pack.available_languages
-
-    def filtered_available() -> set[str]:
-        return {lang for lang in real_available() if lang != language}
-
-    monkeypatch.setattr(pack, "available_languages", filtered_available)
-    # Always wipe the per-test cache so the first call hits the fetch
-    # path rather than the cached short-circuit.
     code_module._GRAMMAR_FETCH_CACHE.pop(language, None)
 
 
 def test_extract_lazy_fetch_warns_on_failure(tmp_path: Path, caplog, monkeypatch):
-    """If the grammar fetch raises, the extractor must still produce a
-    document — and log a WARNING."""
+    """If the grammar download raises, the extractor must still produce
+    a document — and log a WARNING. Uses a supported language (python)
+    so the download path is exercised; simulate the network failure on
+    ``_download_grammar``."""
     import corpus_forge.extractors.code as code_module
 
-    _force_grammar_unavailable(monkeypatch, "zig")
+    _reset_grammar_cache("python")
 
     def boom(language: str) -> int:
         raise RuntimeError("simulated network failure")
 
     monkeypatch.setattr(code_module, "_download_grammar", boom)
 
-    src = 'const std = @import("std");\n'
-    p = tmp_path / "x.zig"
+    src = "x = 1\n"
+    p = tmp_path / "x.py"
     p.write_text(src, encoding="utf-8")
     with caplog.at_level("WARNING", logger="corpus_forge.extractors.code"):
         doc = CodeExtractor().extract(p)
     assert doc.chunker_hint == "code"
     assert doc.text == src  # source still passes through verbatim
-    assert any("zig" in rec.message.lower() for rec in caplog.records)
+    assert any("python" in rec.message.lower() for rec in caplog.records)
 
 
 def test_extract_lazy_fetch_only_once_per_language(tmp_path: Path, monkeypatch):
-    """Repeated extracts of the same language should fetch only once —
-    first-encounter optimisation guarded by ``_GRAMMAR_FETCH_CACHE``."""
+    """Repeated extracts of the same language should download only once —
+    idempotency guarded by ``_GRAMMAR_FETCH_CACHE``."""
     import corpus_forge.extractors.code as code_module
 
-    _force_grammar_unavailable(monkeypatch, "zig")
+    _reset_grammar_cache("python")
 
     call_count = {"n": 0}
 
@@ -216,16 +212,29 @@ def test_extract_lazy_fetch_only_once_per_language(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(code_module, "_download_grammar", fake_download)
 
     ex = CodeExtractor()
-    for name in ("a.zig", "b.zig", "c.zig"):
+    for name in ("a.py", "b.py", "c.py"):
         p = tmp_path / name
-        p.write_text("// zig\n", encoding="utf-8")
+        p.write_text("x = 1\n", encoding="utf-8")
         ex.extract(p)
     assert call_count["n"] == 1
 
 
-def test_extract_known_grammar_does_not_fetch(tmp_path: Path, monkeypatch):
-    """When the grammar is already available, no download is attempted."""
+def test_extract_unsupported_language_skips_download(tmp_path: Path, monkeypatch):
+    """When the pack doesn't list a language, no download is attempted —
+    we fall through to the byte-line chunker silently."""
+    import tree_sitter_language_pack as pack
+
     import corpus_forge.extractors.code as code_module
+
+    # Force ``zig`` out of the supported set so we exercise the "not
+    # downloadable" path without depending on what the pack actually has.
+    real_available = pack.available_languages
+
+    def filtered_available() -> set[str]:
+        return {lang for lang in real_available() if lang != "zig"}
+
+    monkeypatch.setattr(pack, "available_languages", filtered_available)
+    code_module._GRAMMAR_FETCH_CACHE.pop("zig", None)
 
     called = {"n": 0}
 
@@ -234,12 +243,11 @@ def test_extract_known_grammar_does_not_fetch(tmp_path: Path, monkeypatch):
         return 1
 
     monkeypatch.setattr(code_module, "_download_grammar", fake_download)
-    code_module._GRAMMAR_FETCH_CACHE.clear()
 
-    p = tmp_path / "x.py"
-    p.write_text("x = 1\n", encoding="utf-8")
+    p = tmp_path / "x.zig"
+    p.write_text("// zig\n", encoding="utf-8")
     CodeExtractor().extract(p)
-    # Python grammar ships with the pack — no download needed.
+    # Language is not in available_languages → download is skipped.
     assert called["n"] == 0
 
 

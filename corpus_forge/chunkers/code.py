@@ -123,6 +123,15 @@ class CodeChunker(Chunker):
         language: str,
         relative_path: str | None,
     ) -> list[TextChunk]:
+        # Defensive lazy-fetch: tree-sitter-language-pack only pre-bundles a
+        # subset of grammars per platform (Python is bundled in the macOS
+        # wheel but NOT the Linux wheel as of 1.8.x). Calling pack.process
+        # without ensuring the grammar is downloaded yields items with
+        # kind=None/name=None on the missing-grammar platforms. This call is
+        # idempotent — first invocation downloads, later invocations are
+        # in-process cache hits.
+        _ensure_grammar_for_chunker(language)
+
         import tree_sitter_language_pack as pack  # noqa: PLC0415
 
         cfg = pack.ProcessConfig(
@@ -397,6 +406,50 @@ def _make_textchunk(
     else:
         text = body
     return TextChunk(text=text, metadata=dict(metadata))
+
+
+# ── Lazy-fetch helper (mirror of the extractor's policy) ─────────────────
+#
+# Shared state with :mod:`corpus_forge.extractors.code._ensure_grammar`:
+# both touch the same on-disk pack cache and the same in-process attempt
+# cache. Keeping a thin local copy here means a direct ``CodeChunker(...).
+# chunk(text, language="python")`` call works on Linux too — not just the
+# extractor-mediated path.
+
+_CHUNKER_FETCH_CACHE: dict[str, bool] = {}
+
+
+def _ensure_grammar_for_chunker(language: str) -> None:
+    """Idempotent grammar download — see ``extractors.code._ensure_grammar``."""
+    if language in _CHUNKER_FETCH_CACHE:
+        return
+    try:
+        import tree_sitter_language_pack as pack  # noqa: PLC0415
+    except ImportError:  # pragma: no cover — only when [code] missing
+        _CHUNKER_FETCH_CACHE[language] = False
+        return
+
+    try:
+        supported = language in pack.available_languages()
+    except Exception:  # pragma: no cover — defensive
+        supported = False
+
+    if not supported:
+        _CHUNKER_FETCH_CACHE[language] = False
+        return
+
+    try:
+        logger.info("Ensuring tree-sitter grammar is cached: %s", language)
+        pack.download([language])
+        _CHUNKER_FETCH_CACHE[language] = True
+    except Exception as exc:
+        logger.warning(
+            "Lazy-fetch of tree-sitter grammar %r failed (%s); "
+            "CodeChunker byte-line fallback will be used.",
+            language,
+            exc,
+        )
+        _CHUNKER_FETCH_CACHE[language] = False
 
 
 def __getattr__(name: str) -> Any:  # pragma: no cover — convenience

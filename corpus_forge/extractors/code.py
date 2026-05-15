@@ -149,11 +149,18 @@ def _download_grammar(language: str) -> int:
 
 
 def _ensure_grammar(language: str) -> None:
-    """Best-effort: make sure ``language``'s grammar is available locally.
+    """Best-effort: make sure ``language``'s grammar is downloaded locally.
 
     Honours :data:`_GRAMMAR_FETCH_CACHE`: a second call for the same
     language is a no-op. On failure (network down, grammar missing) we
     log a WARNING and move on — CodeChunker has a byte-line fallback.
+
+    Note: ``pack.available_languages()`` lists every language the pack
+    *knows how to download*, not what is currently cached locally. So we
+    must actually call ``pack.download(...)`` (idempotent — fast no-op on
+    repeat) rather than treating "in available_languages" as "ready".
+    Otherwise on platforms where the wheel doesn't pre-bundle the grammar
+    (Linux), ``pack.process`` returns items with ``kind=None``/``name=None``.
     """
     if language in _GRAMMAR_FETCH_CACHE:
         return
@@ -161,14 +168,18 @@ def _ensure_grammar(language: str) -> None:
     import tree_sitter_language_pack as pack  # noqa: PLC0415
 
     try:
-        if language in pack.available_languages():
-            _GRAMMAR_FETCH_CACHE[language] = True
-            return
+        supported = language in pack.available_languages()
     except Exception:  # pragma: no cover — defensive
-        pass
+        supported = False
+
+    if not supported:
+        # Not a language the pack can produce a grammar for; skip the
+        # download attempt entirely so we don't waste a network round-trip.
+        _GRAMMAR_FETCH_CACHE[language] = False
+        return
 
     try:
-        logger.info("Lazy-fetching tree-sitter grammar: %s", language)
+        logger.info("Ensuring tree-sitter grammar is cached: %s", language)
         _download_grammar(language)
         _GRAMMAR_FETCH_CACHE[language] = True
     except Exception as exc:
@@ -206,8 +217,13 @@ class CodeExtractor:
         text = path.read_text(encoding="utf-8")
         language = _detect_language(path)
 
-        # Best-effort lazy fetch — never fatal.
-        if language is not None and language != "python":
+        # Best-effort lazy fetch — never fatal. Every supported language
+        # goes through ``_ensure_grammar`` once per process; the helper is
+        # idempotent and downstream callers (CodeChunker) tolerate failure
+        # via the byte-line fallback. Python is NOT special-cased here —
+        # tree-sitter-language-pack only pre-bundles the Python grammar
+        # on macOS wheels, NOT on Linux wheels.
+        if language is not None:
             _ensure_grammar(language)
 
         labels = [("format", "code")]
