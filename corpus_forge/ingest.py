@@ -308,7 +308,7 @@ def ingest_once(config: Config) -> None:
             logger.info(f"Processing source: {source_config.plugin}")
 
             # Instantiate source
-            source = _instantiate_source(source_config)
+            source = _instantiate_source(source_config, config=config)
 
             # Register source in the DB (idempotent) so the sources table
             # tracks which plugin/identity/host contributed to this dataset.
@@ -341,8 +341,16 @@ def _get_or_create_dataset(backend: StorageBackend, dataset_config) -> int:
     )
 
 
-def _instantiate_source(source_config):
-    """Instantiate a source plugin from config."""
+def _instantiate_source(source_config, *, config: Config | None = None):
+    """Instantiate a source plugin from config.
+
+    ``config`` is the enclosing :class:`Config` (Wave 5 addition, E-05).
+    When supplied, the ``filesystem`` source resolves the active VLM
+    via :func:`corpus_forge.vlm.registry.get_active_vlm` and threads it
+    into the extractor registry so the PDF Tier 2 escalation + the
+    ImageExtractor light up. ``config=None`` (the legacy call shape)
+    preserves the pre-Wave-5 digital-only behaviour exactly.
+    """
     if source_config.plugin == "markdown_vault":
         # Import here to avoid circular dependencies
         from .sources.markdown_vault import MarkdownVaultSource  # noqa: PLC0415
@@ -372,14 +380,40 @@ def _instantiate_source(source_config):
         # registry. ``ExtractionConfig`` is optional in config but the
         # source needs a real instance (defaults: all flags True, 50 MB
         # max_bytes).
+        #
+        # Wave 5 (E-05): when the caller passes a ``Config`` (full
+        # top-level model) we resolve the VLM via ``get_active_vlm`` and
+        # thread it through. The legacy direct ``DatasetSourceConfig``
+        # path (no enclosing Config) gets ``vlm=None`` and degrades to
+        # the pre-Wave-5 digital-only behaviour, preserving every
+        # existing caller.
         from .config import ExtractionConfig  # noqa: PLC0415
         from .sources.filesystem import FilesystemSource  # noqa: PLC0415
 
         extraction = source_config.extraction or ExtractionConfig()
+        vlm = None
+        if config is not None:
+            try:
+                from .vlm.registry import get_active_vlm  # noqa: PLC0415
+
+                vlm = get_active_vlm(config)
+            except Exception as exc:
+                # VLM resolution failures should never block ingest of
+                # the non-OCR paths — log + degrade gracefully. The
+                # broad except is deliberate: any backend exception (a
+                # mistyped Ollama URL, a missing Mistral API key, an
+                # ImportError on the [ocr] extra) is recoverable.
+                logger.warning(
+                    "VLM resolution failed (%s) — falling back to "
+                    "digital-only ingest for the filesystem source.",
+                    exc,
+                )
+                vlm = None
         return FilesystemSource(
             root=source_config.root,
             exclude_globs=source_config.exclude_globs or [],
             extraction=extraction,
+            vlm=vlm,
             debounce=2.0,
         )
     else:

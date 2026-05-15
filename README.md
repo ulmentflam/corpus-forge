@@ -182,7 +182,7 @@ installed copy depends on which extras you pull in:
 | `pip install corpus-forge` | **Apache-2.0** | Pure core. Markdown vault + chat history sources only; no PDF / EPUB / Office ingest. |
 | `pip install corpus-forge[code]` | **Apache-2.0 + MIT** | Adds the `CodeChunker` and the `CodeExtractor`. Dependencies (`tree-sitter`, `tree-sitter-language-pack`) are Apache-2.0 / MIT — no copyleft contamination. |
 | `pip install 'corpus-forge[multi-format]'` | **AGPL-3.0** (effective) | Pulls in `pymupdf4llm` (AGPL-3.0) for digital PDF extraction and `ebooklib` (AGPL-3.0) for EPUBs. AGPL's network-use clause binds your application if you redistribute or expose it as a service. |
-| (P1, Wave 5–6) `pip install 'corpus-forge[ocr]'` | Apache-2.0 + permissive HTTP clients | Will add `pdf2image` (MIT) + the Ollama / Mistral OCR HTTP clients. No further copyleft entanglement on top of `[multi-format]`. |
+| `pip install 'corpus-forge[ocr]'` | Apache-2.0 + permissive HTTP clients | Adds the Ollama / Mistral OCR HTTP clients (`requests`, Apache-2.0), the rasterisation step (`pdf2image`, MIT) and `pillow` (HPND). No further copyleft entanglement on top of `[multi-format]`. **Requires a system `poppler-utils` install** — see "System requirements for `[ocr]`" below. |
 
 **Practical guidance.** If you plan to redistribute corpus-forge or a derived
 application, stay on pure-core or pure-core + `[code]` — both are
@@ -195,6 +195,24 @@ quality-of-extraction story competitive (Docling for Office, `pymupdf4llm` for
 PDFs with text layers, `ebooklib` for EPUBs). The alternatives that would have
 kept the install Apache-2.0 — `marker-pdf`, `MinerU` — are themselves GPL/AGPL,
 so the trade-off is not avoidable today.
+
+### System requirements for `[ocr]`
+
+The `[ocr]` extra adds a single non-Python system dependency:
+[`poppler-utils`](https://poppler.freedesktop.org/) (BSD-licensed), used by
+`pdf2image` to rasterise PDF pages for the VLM OCR escalation path. Install it
+once per machine:
+
+| Platform | Command |
+|---|---|
+| macOS (Homebrew) | `brew install poppler` |
+| Debian / Ubuntu | `sudo apt-get install -y poppler-utils` |
+| Fedora / RHEL | `sudo dnf install -y poppler-utils` |
+| Windows | Download a build from the [GnuWin32 page](https://blog.alivate.com.au/poppler-windows/) and add it to `PATH`. |
+
+When `poppler-utils` is missing the PDF extractor degrades gracefully back to
+the digital-only Tier 1 path with an `ERROR`-level log entry pointing here —
+ingest does not break.
 
 ## Architecture
 

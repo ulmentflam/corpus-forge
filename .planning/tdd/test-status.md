@@ -2595,3 +2595,42 @@ table). Each task got real RED runs before code landed.
 | D-06 | 10 | `tests/unit/test_config_multi_format.py` |
 
 Total: 110 new unit tests. Coverage 92.19% → 92.33%.
+
+---
+
+## Phase D — Wave 5 (2026-05-14)
+
+Wave 5 of the multi-format milestone. Agent tool unavailable; principal
+performed RED→GREEN→QA in-thread, same pattern as Wave 4 (logged under
+`claimed_by: principal (no Agent tool)`).
+
+| id | tests | file |
+|----|-------|------|
+| E-05 | 17 | `tests/unit/test_pdf_extractor_escalation.py` |
+| E-06 | 17 | `tests/unit/test_extractor_image.py` |
+
+Total: 34 new unit tests. Coverage 92.48% → 92.35% (delta within Wave 4
+noise; the small dip is the defensive `pdf2image-not-installed` /
+`pdf2image-error` catch-all branches in `extractors/pdf.py` which fire
+only when the [ocr] extra is missing — un-hit on the CI's fully-installed
+venv).
+
+RED runs verified for both E-05 (ModuleNotFoundError on
+`corpus_forge.extractors.image` and AttributeError on missing
+`PdfDigitalExtractor.vlm`) and E-06 (ModuleNotFoundError) before GREEN
+code landed.
+
+Test patterns of note:
+- `pdf2image` is stubbed via `monkeypatch.setattr("corpus_forge.extractors.pdf.pdf2image", types.ModuleType(...))`
+  so the lazy-import inside `_escalate()` resolves to the stub. The stub
+  ships a `convert_from_path` MagicMock + an `exceptions` submodule with
+  a sentinel `PDFInfoNotInstalledError` class.
+- `VLMBackend` is mocked via `unittest.mock.Mock(spec=VLMBackend)` so
+  signature drift in the Protocol fails the test loudly.
+- Per-page side-effects (`extract_returns=[...]` / `extract_raises=[...]`)
+  let one test exercise both successful pages and per-page failure modes
+  (the VLMTimeoutError-on-middle-page case).
+- The regression guard `test_rag_helper_import_path_preserved` reads
+  `corpus_forge/extractors/pdf.py` as source and asserts the
+  `from pymupdf4llm.helpers.pymupdf_rag import to_markdown` line is
+  present — pins the memory `project_phase_d_pymupdf4llm_rag_helper`.

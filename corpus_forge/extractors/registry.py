@@ -27,6 +27,8 @@ from .base import Extractor
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from collections.abc import Iterable
 
+    from corpus_forge.vlm.base import VLMBackend
+
 logger = logging.getLogger(__name__)
 
 
@@ -117,7 +119,10 @@ class ExtractorRegistry:
         return list(self._by_filename.keys())
 
 
-def register_default_extractors(config: object | None) -> ExtractorRegistry:
+def register_default_extractors(
+    config: object | None,
+    vlm: VLMBackend | None = None,
+) -> ExtractorRegistry:
     """Construct a fully-wired :class:`ExtractorRegistry` from ``config``.
 
     ``config`` is duck-typed against the ``enable_*`` flags exposed by
@@ -126,6 +131,16 @@ def register_default_extractors(config: object | None) -> ExtractorRegistry:
     family is disabled, its concrete extractor module is **never
     imported** — heavy optional deps stay out of the import graph.
 
+    ``vlm`` is Wave 5's optional second argument (E-05). When supplied:
+
+    - :class:`~corpus_forge.extractors.pdf.PdfDigitalExtractor` is
+      constructed with the VLM injected so its Tier 2 escalation path
+      is active.
+    - :class:`~corpus_forge.extractors.image.ImageExtractor` is
+      registered for ``.png`` / ``.jpg`` / ... files, but ONLY when the
+      backend is a real one (i.e. not :class:`NoopVLM`) AND
+      ``ocr_enabled`` is ``True`` AND ``enable_image`` is ``True``.
+
     The default registry is populated incrementally as later Wave 0/1
     tasks land:
 
@@ -133,6 +148,7 @@ def register_default_extractors(config: object | None) -> ExtractorRegistry:
     - Wave 0 (D-04): structured / subtitle.
     - Wave 1 (D-07..D-13): pdf / html / epub / office / notebook / csv /
       code.
+    - Wave 5 (E-06): image (when a real VLM is wired in).
 
     For tasks that have not landed yet, the corresponding ``enable_*``
     flag is honoured by silently skipping registration — callers should
@@ -177,7 +193,22 @@ def register_default_extractors(config: object | None) -> ExtractorRegistry:
     if _flag("enable_pdf"):
         cls = _try_load("pdf", "PdfDigitalExtractor")
         if cls is not None:
-            reg.register(cls())
+            # E-05 (Wave 5): inject the VLM + OCR knobs so the Tier 2
+            # escalation path is available when configured. When
+            # ``vlm is None`` the extractor still works (D-07 contract
+            # preserved — Tier 1 only).
+            ocr_kwargs: dict = {}
+            if config is not None:
+                ocr_enabled_cfg = getattr(config, "ocr_enabled", None)
+                if ocr_enabled_cfg is not None:
+                    ocr_kwargs["ocr_enabled"] = bool(ocr_enabled_cfg)
+                min_chars = getattr(config, "ocr_min_chars_per_page", None)
+                if min_chars is not None:
+                    ocr_kwargs["min_chars_per_page"] = int(min_chars)
+                dpi = getattr(config, "ocr_dpi", None)
+                if dpi is not None:
+                    ocr_kwargs["ocr_dpi"] = int(dpi)
+            reg.register(cls(vlm=vlm, **ocr_kwargs))
 
     if _flag("enable_html"):
         cls = _try_load("html", "HtmlExtractor")
@@ -219,4 +250,30 @@ def register_default_extractors(config: object | None) -> ExtractorRegistry:
             else:
                 reg.register(cls())
 
+    # ── Wave 5 (E-06) — VLM-backed image extractor (gated) ──
+    # Registered only when (a) a real VLM is wired in (NoopVLM is treated
+    # as "no VLM configured" so users who installed [multi-format] but
+    # didn't configure a VLM aren't surprised by image files becoming
+    # ingest-eligible), (b) ``ocr_enabled`` is True, and (c)
+    # ``enable_image`` is True.
+    if vlm is not None and _flag("enable_image") and _flag("ocr_enabled") and not _is_noop_vlm(vlm):
+        cls = _try_load("image", "ImageExtractor")
+        if cls is not None:
+            reg.register(cls(vlm=vlm))
+
     return reg
+
+
+def _is_noop_vlm(vlm: object) -> bool:
+    """Return True if ``vlm`` is a :class:`NoopVLM` instance.
+
+    ``corpus_forge.vlm.base`` is dependency-free (the heavy backends
+    lazy-import ``requests`` inside their methods), so importing
+    :class:`NoopVLM` here is safe even on a no-``[ocr]`` install.
+    """
+    # Defer the import to call-time so a circular-import accident in
+    # downstream code surfaces at the function boundary rather than at
+    # module load.
+    from corpus_forge.vlm.base import NoopVLM  # noqa: PLC0415
+
+    return isinstance(vlm, NoopVLM)

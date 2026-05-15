@@ -24,10 +24,14 @@ import fnmatch
 import logging
 from collections.abc import Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from corpus_forge.config import ExtractionConfig
 from corpus_forge.extractors.registry import ExtractorRegistry, register_default_extractors
 from corpus_forge.sources.base import RawDocument, WatchedSource
+
+if TYPE_CHECKING:  # pragma: no cover — typing only
+    from corpus_forge.vlm.base import VLMBackend
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +48,7 @@ _FAMILY_FLAGS: dict[str, str] = {
     "EpubExtractor": "enable_epub",
     "NotebookExtractor": "enable_notebook",
     "CsvExtractor": "enable_csv",
+    "ImageExtractor": "enable_image",
 }
 
 
@@ -92,15 +97,17 @@ class FilesystemSource(WatchedSource):
         *,
         exclude_globs: list[str] | None = None,
         extraction: ExtractionConfig | None = None,
+        vlm: VLMBackend | None = None,
         debounce: float = 2.0,
     ):
         super().__init__(Path(root), debounce=debounce)
         self.exclude_globs: list[str] = list(exclude_globs) if exclude_globs else []
         self.extraction: ExtractionConfig = extraction or ExtractionConfig()
+        self.vlm = vlm
         # Registry baked with the user's tunables (csv_max_rows,
-        # code_chunker_config) at construction time so the hot path
-        # never re-reads config.
-        self._registry: ExtractorRegistry = register_default_extractors(self.extraction)
+        # code_chunker_config, OCR knobs, VLM injection) at construction
+        # time so the hot path never re-reads config.
+        self._registry: ExtractorRegistry = register_default_extractors(self.extraction, vlm=vlm)
 
     # ── Discovery ──────────────────────────────────────────────────────
 

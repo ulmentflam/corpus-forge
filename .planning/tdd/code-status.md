@@ -805,3 +805,79 @@ All six Wave 0 tasks landed. Notes:
   `extractors/registry.py`; switched them to dynamic
   `importlib.import_module` so static analysis stays clean while the
   feature-flag hook still works.
+
+---
+
+## Phase D — Wave 5 (2026-05-14)
+
+E-05 and E-06 landed together. Agent tool unavailable in this
+environment, so principal owned the GREEN slice. Tier 2 escalation +
+ImageExtractor are mocked-HTTP unit-tested only; live Ollama / Mistral
+smoke is Wave 6.
+
+E-05 cross-cutting surface:
+- `corpus_forge/extractors/pdf.py` — replaced the D-07 implementation
+  with a two-tier extractor. Tier 1 reuses the rag-helper import path
+  (regression-pinned in the new test). Tier 2 wraps
+  `pdf2image.convert_from_path` + `VLMBackend.extract_page` with the
+  full failure ladder spec'd in the dispatch: VLMUnavailableError /
+  VLMResponseError → graceful Tier 1 fallback (`ocr_escalation_attempted=True`,
+  `ocr_escalation_failed_reason=str(exc)`); VLMTimeoutError → per-page
+  `<!-- VLM timeout on page N -->` placeholder + continue;
+  PDFInfoNotInstalledError → ERROR log + Tier 1 fallback
+  (`reason="poppler-not-installed"`).
+- `corpus_forge/config.py::ExtractionConfig` — new fields
+  `ocr_enabled=True`, `ocr_min_chars_per_page=100`, `ocr_dpi=200`,
+  `enable_image=True`. The `_SPARSE_CHARS_PER_PAGE` constant the D-07
+  digital extractor used for the `sparse_text_layer` signal is replaced
+  by `ocr_min_chars_per_page` (the threshold is now a user knob).
+- `corpus_forge/extractors/registry.py::register_default_extractors` —
+  widened signature to `(config, vlm=None)`. PDF extractor now
+  constructed with `vlm` + OCR knobs from config. New `ImageExtractor`
+  registration block gated on `vlm is not None AND ocr_enabled AND
+  enable_image AND not isinstance(vlm, NoopVLM)`. `_is_noop_vlm`
+  helper added for the NoopVLM check.
+- `corpus_forge/sources/filesystem.py::FilesystemSource` — `__init__`
+  accepts `vlm: VLMBackend | None = None` and threads through to
+  `register_default_extractors`. `_FAMILY_FLAGS` gains the
+  `"ImageExtractor" → "enable_image"` entry so per-family disable still
+  works for images.
+- `corpus_forge/ingest.py::_instantiate_source` — now takes a keyword
+  `config: Config | None`. When supplied, calls
+  `get_active_vlm(config)` and passes the resulting backend to the
+  FilesystemSource constructor. The broad-except around VLM resolution
+  is deliberate per the user directive ("robust functionality") — a
+  mistyped Ollama URL must not block ingest of the non-OCR paths.
+- `pyproject.toml::[project.optional-dependencies].ocr` — added
+  `pdf2image>=1.17`, `pillow>=10.0`. Updated comment block to spell out
+  the BSD-licensed `poppler-utils` system requirement.
+- `README.md` — flipped the "(P1, Wave 5–6) Will add…" row of the
+  Distribution / licensing table to the current "Adds …" copy. Added a
+  new "System requirements for `[ocr]`" subsection with platform-by-
+  platform install commands for `poppler-utils`.
+
+E-06 surface:
+- `corpus_forge/extractors/image.py` — new file. ~50 LOC. Constructor
+  takes keyword-only `vlm: VLMBackend` (no positional misuse) +
+  optional `prompt: str | None`. `extract()` reads bytes,
+  `vlm.describe_image(image_bytes, prompt=self.prompt)`, returns an
+  ExtractedDocument with the standard metadata + labels shape.
+- HEIC handling: VLM is responsible. Docstring points users at
+  pillow-heif if their VLM can't decode HEIC bytes directly.
+- Multi-page TIFF: out of scope for Wave 5; single-image-per-file only.
+
+Implementation notes:
+- `pdf2image` is module-level-cached via `_resolve_pdf2image()`. First
+  call imports the real package and memoises it; subsequent calls hit
+  the cache. Test-time `monkeypatch.setattr("corpus_forge.extractors.pdf.pdf2image", stub)`
+  sets the module attribute directly, which `_resolve_pdf2image()`
+  reads via `global pdf2image` — the stub wins.
+- pyrefly initially flagged `_pdf2image.convert_from_path` and
+  `_pdf2image.exceptions.PDFInfoNotInstalledError` as missing
+  attributes because `_resolve_pdf2image()` returned `object | None`.
+  Annotated the return type as `typing.Any` to silence the dot-access
+  complaints without weakening the runtime contract.
+- All gates green: `make lint`, `make format-check`, `make typecheck`
+  (strict), `make test-unit` (2696 passed, coverage 92.35% ≥ 90%
+  gate), `make test-integration` (378 passed, identical to Wave 4),
+  `make test-smoke` (30 passed), `make ci` (full pipeline 0 exit).

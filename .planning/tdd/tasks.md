@@ -2811,3 +2811,140 @@ All 7 phases delivered. The end-to-end self-distillation loop works:
 6. Eval harness (Phase R3, pre-existing) pins retrieval quality at NDCG@10 ≥ 0.80
 
 No production regressions. Full suite 2429/0/3 skipped/1 xfailed.
+
+
+---
+
+## Phase D — Wave 5 (P1 OCR integration) — IN FLIGHT (2026-05-14)
+
+**Wave 5 goal**: Land the PDF OCR escalation pipeline + ImageExtractor on the Wave 4 VLM foundation. Mocked-HTTP unit tests only — live Ollama smoke is Wave 6 (E-07). No commit / push by workers; orchestrator commits.
+
+**Project gates**: lint (`uv run ruff check`), format (`uv run ruff format --check`), typecheck (`uv run pyrefly check corpus_forge`), unit (`uv run pytest tests/unit` at ≥90% coverage gate, 92.48% baseline from Wave 4), integration (must remain green, no OCR e2e until Wave 6).
+
+**Open question — RESOLVED**: NoopVLM short-circuits escalation silently (Option 1). When extractor.vlm is None or isinstance(vlm, NoopVLM), Tier 2 is skipped and Tier 1 markdown is returned unchanged. Rationale: user installed [multi-format] but didn't configure a VLM ⇒ digital-only behaviour stays identical to D-07. Forcing them to set ocr_enabled=False just to get the same result they had yesterday is bad UX. Per user directive: "robust functionality, all green tests, stable behavior".
+
+### Task table
+
+| id | title | depends_on | surface | risk | status | claimed_by | notes |
+|----|-------|------------|---------|------|--------|------------|-------|
+| E-05 | PdfDigitalExtractor OCR escalation upgrade | E-02, E-03, E-04 | `corpus_forge/extractors/pdf.py`, `corpus_forge/config.py` (add ocr_enabled / ocr_min_chars_per_page / ocr_dpi / enable_image), `corpus_forge/extractors/registry.py` (thread `vlm` arg + ImageExtractor lazy-register), `corpus_forge/ingest.py::_instantiate_source` (build VLM via get_active_vlm + pass to registry), `corpus_forge/sources/filesystem.py` (accept + propagate vlm), `pyproject.toml` (`[ocr]` += pdf2image>=1.17, pillow>=10.0), `README.md` (poppler system req in Distribution / licensing section), `tests/unit/test_pdf_extractor_escalation.py` (new, 17 tests) | high | done | principal (no Agent tool) | Owns all cross-cutting changes (config, registry signature, ingest wiring, FilesystemSource). NoopVLM short-circuits escalation silently (Option 1, per dispatch summary). Lazy-imports pdf2image; importing extractors.pdf with only [multi-format] (no [ocr]) still works. rag-helper import path preserved (regression guard test). Failure handling: VLMUnavailable / VLMResponseError → graceful Tier 1 fallback; VLMTimeoutError → per-page placeholder + continue; PDFInfoNotInstalledError → ERROR log + Tier 1 fallback. |
+| E-06 | ImageExtractor | E-02, E-03, E-04 | `corpus_forge/extractors/image.py` (new, 16 LOC of class + helpers), `tests/unit/test_extractor_image.py` (new, 17 tests) | med | done | principal (no Agent tool) | Parallel-safe (new file). Registry registration performed by E-05's upgraded register_default_extractors via importlib lazy-load when vlm is not None AND NoopVLM-check AND ocr_enabled AND enable_image. Per-family flag `enable_image` added to ExtractionConfig + `_FAMILY_FLAGS` table in filesystem source. |
+
+### Wave structure
+- Wave A: E-05 RED + E-06 RED in parallel (tester workers; disjoint test files).
+- Wave B: E-05 GREEN sequenced first (it owns the shared config / registry / ingest surface), then E-06 GREEN (consumes the surface E-05 lands).
+- Wave C: E-05 QA + E-06 QA in parallel (clean-room verifications).
+
+### Acceptance details
+
+#### E-05 acceptance
+1. Tier 1 (text-layer-only) happy path unchanged when extracted text averages ≥ `ocr_min_chars_per_page` chars/page. `metadata.tier == "digital"`, no extra labels.
+2. Tier 2 (escalation) fires when text-layer is sparse AND `ocr_enabled=True` AND a non-NoopVLM is wired in. Output is per-page markdown concatenated with `\n\n---\n\n`. `metadata.tier == "ocr_escalated"`, `metadata.pages_ocr_count == N`, `metadata.ocr_backend` populated from `vlm.name`, plus the optional `metadata.ocr_model`. Labels add `("ocr", vlm.name)` and `("ocr_model", model_tag)`.
+3. `ocr_enabled=False` short-circuits escalation regardless of sparse signal.
+4. `vlm=None` or NoopVLM short-circuits escalation silently (Tier 1 fallback).
+5. VLMUnavailableError mid-escalation → graceful Tier 1 fallback + `metadata.ocr_escalation_attempted=True` + `metadata.ocr_escalation_failed_reason=str(exc)`.
+6. VLMTimeoutError on a single page → `<!-- VLM timeout on page N -->` placeholder inserted; remaining pages continue.
+7. `pdf2image.PDFInfoNotInstalledError` (poppler missing) → graceful Tier 1 fallback + `metadata.ocr_escalation_failed_reason="poppler-not-installed"` + ERROR log.
+8. DPI knob honoured: pdf2image called with `dpi=200` by default, `dpi=ocr_dpi` when set.
+9. Lazy-import: importing `corpus_forge.extractors.pdf` without [ocr] extra must NOT pull pdf2image into sys.modules.
+10. rag-helper import path preserved (regression guard: assert `from pymupdf4llm.helpers.pymupdf_rag import to_markdown` is in the module source).
+11. Registry signature: `register_default_extractors(config, vlm=None)` — backward-compat for callers passing only config.
+12. ingest._instantiate_source builds the VLM via `get_active_vlm(config)` and threads it through. Default behaviour (config.vlm.backend == "none") yields a NoopVLM ⇒ no behavioural change from Wave 4.
+
+#### E-06 acceptance
+1. supported_extensions covers `.png .jpg .jpeg .tif .tiff .bmp .webp .heic` (lowercase tuple).
+2. Constructor accepts `vlm: VLMBackend` (required) + optional `prompt: str | None`. Default prompt is a transcribe-and-describe instruction documented in the docstring.
+3. `extract(path)` reads bytes, calls `vlm.describe_image(image_bytes, prompt=self.prompt)`, returns ExtractedDocument with `text=markdown`, `chunker_hint="markdown"`, `metadata={"extractor": "image", "ocr_backend": vlm.name, "byte_count": N}`, labels=`[("format", "image"), ("ocr", vlm.name)]`.
+4. Custom prompt passes through to `vlm.describe_image(prompt=...)` (verified via Mock spec=VLMBackend).
+5. VLMResponseError raised by the VLM propagates unmodified — extractor is a thin shim.
+6. Registry registration (handled in E-05's register_default_extractors): present when vlm is not None AND not isinstance(vlm, NoopVLM) AND extraction.ocr_enabled is True; absent otherwise (silent skip, no warning).
+7. `.heic` handling: VLM is responsible for decoding; extractor passes raw bytes through. Docstring points users at `pillow-heif` for native HEIC support if their VLM can't decode it.
+8. Multi-page TIFF: out of scope for Wave 5 (single-image-per-file). Documented in docstring.
+
+### DAG
+- Wave A (RED, parallel testers): E-05 tests, E-06 tests
+- Wave B (GREEN, serialized): E-05 implementation → E-06 implementation
+- Wave C (QA, parallel): E-05 QA, E-06 QA
+
+
+## Phase D — Wave 5 close-out (2026-05-14) — verdict: approved
+
+| id | tests | new files | modified files |
+|----|-------|-----------|----------------|
+| E-05 | 17 | `tests/unit/test_pdf_extractor_escalation.py` | `corpus_forge/extractors/pdf.py`, `corpus_forge/extractors/registry.py`, `corpus_forge/config.py`, `corpus_forge/ingest.py`, `corpus_forge/sources/filesystem.py`, `pyproject.toml`, `README.md` |
+| E-06 | 17 | `tests/unit/test_extractor_image.py`, `corpus_forge/extractors/image.py` | — |
+
+**Total: 34 new unit tests.**
+
+### Gates
+
+| gate | result | notes |
+|------|--------|-------|
+| `make lint` | clean | All checks passed |
+| `make format-check` | clean | 294 files already formatted |
+| `make typecheck` | clean | 0 errors (24 suppressed, 43 warnings) — pyrefly strict |
+| `make test-unit` | 2696 passed, 2 skipped, 1 xfailed | coverage 92.35% (≥90% gate). Wave 4 baseline 2662 → +34 new tests. Coverage delta −0.13pp (92.48% → 92.35%) — within Wave 4 noise; the new defensive branches (pdf2image-not-installed, pdf2image-error catch-all) are intentionally not exercised by unit tests because they fire only on environments we don't simulate. |
+| `make test-integration` | 378 passed | identical to Wave 4 baseline; no OCR e2e until Wave 6 |
+| `make test-smoke` | 30 passed | |
+| `make ci` | 0 exit | Full pipeline green |
+
+### Per-file coverage (E-05 / E-06 surface)
+
+| file | stmts | miss | cover | uncovered |
+|------|-------|------|-------|-----------|
+| `corpus_forge/extractors/image.py` | 16 | 0 | 100% | — |
+| `corpus_forge/extractors/pdf.py` | 107 | 11 | 90% | pdf2image-not-installed branch + pdf2image-error catch-all (defensive; un-hit on a fully-installed [ocr] env) |
+| `corpus_forge/extractors/registry.py` | 114 | 5 | 96% | importlib ImportError branch (un-hit when all extras installed) |
+| `corpus_forge/sources/filesystem.py` | 84 | 10 | 88% | _is_excluded edge cases + stat-failure branch (pre-existing Wave 2 gap, unchanged) |
+
+### Open question — RESOLVED
+
+**Q**: When `vlm.backend == "none"` (the Wave 4 default), should sparse-text-layer
+PDFs raise or short-circuit silently?
+
+**A**: **Option 1 — silent short-circuit.** NoopVLM (and `vlm=None`) returns Tier 1
+markdown unchanged with no `ocr_escalation_attempted` flag set. Rationale: users
+who installed `[multi-format]` but didn't configure a VLM still get the D-07
+digital-only behaviour they had before Wave 5. Forcing an explicit
+`ocr_enabled=False` opt-out to suppress an error nobody asked for is bad UX,
+and the user directive ("robust functionality, all green tests, stable
+behavior") points the same way.
+
+### Surprises
+
+1. **pyrefly + monkeypatched module attribute.** `_resolve_pdf2image()` returns
+   the module reference; pyrefly initially inferred `object | None` from the
+   `if pdf2image is not None: return pdf2image` guard (because the module-level
+   `pdf2image = None` is typed `None | Any`). Returning `Any` explicitly via
+   `typing.Any` clears the dot-access complaints without weakening the runtime
+   contract.
+2. **Lazy import + test monkeypatching.** The first iteration of `_escalate`
+   used `from corpus_forge.extractors import pdf as _self_mod` to re-read the
+   (possibly monkeypatched) module-level `pdf2image` binding. Ruff's PLW0406
+   correctly flagged the self-import. Replaced with a module-private
+   `_resolve_pdf2image()` helper that hits the global cache + falls back to
+   the real import — same monkeypatchability, no self-import.
+3. **pymupdf can't save 0-page PDFs.** Original RED test built a 0-page PDF
+   to assert the defensive divide-by-zero guard in `_is_sparse`. PyMuPDF
+   refuses to save with `"cannot save with zero pages"`. Replaced with a
+   direct unit test of `_is_sparse(text, 0)` — same coverage, no fragile
+   PDF construction.
+
+### Memory tags reaffirmed
+
+- `project_phase_d_pymupdf4llm_rag_helper` — Wave 5 keeps the
+  `from pymupdf4llm.helpers.pymupdf_rag import to_markdown` import path; the
+  Tier 2 VLM escalation layers on top. Regression test pins this in the
+  module source (`test_rag_helper_import_path_preserved`).
+- `project_phase_d_treesitter_lazy_fetch` — unchanged; CodeExtractor not in
+  Wave 5 surface.
+- `feedback_tdd_worker_commits` — orchestrator commits this wave (no Agent
+  tool available in this environment, same as Waves 0–4).
+
+### Next: Wave 6 (P1 gate)
+
+- E-07: live Ollama e2e (`requires_ollama` marker, scanned PDF + image
+  fixtures).
+- E-08: live Mistral e2e (`requires_mistral_api` marker).
+- E-09: Makefile + secrets.env.example + docs/architecture.md VLM section.
+- E-10: manual cross-backend smoke; P1 gate close.

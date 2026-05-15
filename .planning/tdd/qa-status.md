@@ -205,3 +205,53 @@ Per-task verdicts:
 - D-05: approved (12 tests; backwards-compat fallback path proven
   with empty / None metadata)
 - D-06: approved (10 tests; existing config suite still 101 green)
+
+---
+
+## Phase D — Wave 5 (2026-05-14) — verdict: approved
+
+Gates (all green):
+- `make lint`: All checks passed
+- `make format-check`: 294 files already formatted
+- `make typecheck`: 0 errors (pyrefly strict; 24 suppressed, 43 warnings)
+- `make test-unit`: 2696 passed, 2 skipped, 1 xfailed; coverage 92.35%
+  (≥90% gate; −0.13pp from Wave 4 baseline of 92.48% — within noise,
+  uncovered branches are defensive only-fires-without-[ocr]-extra paths)
+- `make test-integration`: 378 passed (identical to Wave 4 baseline)
+- `make test-smoke`: 30 passed
+- `make ci`: 0 exit
+
+Per-task verdicts:
+- E-05: approved (17 tests; Tier 1 / Tier 2 / failure ladder / DPI knob /
+  rag-helper regression guard / lazy-import regression guard / NoopVLM
+  short-circuit / ocr_enabled=False short-circuit all covered;
+  per-file coverage 90% on `extractors/pdf.py`).
+- E-06: approved (17 tests; constructor / metadata / labels / prompt
+  default + override / VLMResponseError propagation / extension matrix /
+  registry-gate variants all covered; per-file coverage 100% on
+  `extractors/image.py`).
+
+Open question — RESOLVED (Option 1): NoopVLM short-circuits escalation
+silently. Sparse-text-layer PDFs + no configured VLM return Tier 1
+markdown unchanged with no `ocr_escalation_attempted` marker — the
+short-circuit is truly silent so the "I installed [multi-format] but
+didn't configure a VLM" user gets the D-07 digital-only behaviour they
+had before Wave 5.
+
+Regression sweep:
+- Wave 1 D-07 `test_extractor_pdf_digital.py` (16 tests) — all GREEN.
+  The lazy-import-subprocess test still passes after the new `pdf2image`
+  module-level alias was added.
+- Wave 2 D-14 `test_filesystem_source.py` (36 tests) — all GREEN.
+  `FilesystemSource(vlm=None)` default preserves Wave 2 behaviour
+  exactly.
+- Wave 2 D-15 `test_ingest_filesystem.py` (8 tests) — all GREEN. The
+  legacy `_instantiate_source(source_config)` call shape (no `config`
+  kwarg) still works because `config` defaults to `None`.
+- Wave 0 D-06 `test_config_multi_format.py` (10 tests) — all GREEN.
+  The new fields default-on without breaking `extra="forbid"`.
+- Wave 4 E-04 `test_config_vlm.py` (34 tests) — all GREEN.
+
+No production regressions. Wave 5 closed. Ready for Wave 6 dispatch
+(E-07 live-Ollama e2e + E-08 live-Mistral e2e + E-09 Makefile/docs +
+E-10 P1 gate).

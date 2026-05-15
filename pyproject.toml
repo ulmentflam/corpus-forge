@@ -100,15 +100,23 @@ multi-format = [
   "pandas>=2.2",
   "tabulate>=0.9",
 ]
-# Phase D / Wave 4 (E-02, E-03): VLM (vision-language model) backends.
+# Phase D / Wave 4–5 (E-02, E-03, E-05, E-06): VLM (vision-language
+# model) backends + PDF rasterisation for the OCR escalation path.
 #
-# Wave 4 only adds `requests` (HTTP client for Ollama + Mistral OCR).
-# Wave 5/6 will extend this extra with `pdf2image` + `pillow` for the
-# PDF rasterisation step. License posture: requests is Apache-2.0;
-# adding [ocr] does NOT widen the AGPL surface introduced by
-# [multi-format].
+# License posture: requests (Apache-2.0), pdf2image (MIT), pillow
+# (HPND, permissive). Adding [ocr] does NOT widen the AGPL surface
+# introduced by [multi-format].
+#
+# System requirement: pdf2image wraps `poppler-utils` (BSD), which is
+# NOT a Python dep — users must install it via Homebrew (macOS),
+# apt-get / dnf (Linux), or the GnuWin32 build (Windows). README's
+# "Distribution / licensing" section documents the install steps.
+# When poppler is missing the PDF extractor degrades gracefully back
+# to Tier 1 (digital-only) markdown with an ERROR log.
 ocr = [
   "requests>=2.32",
+  "pdf2image>=1.17",
+  "pillow>=10.0",
 ]
 
 [project.scripts]

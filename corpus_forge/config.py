@@ -63,8 +63,24 @@ class ExtractionConfig(BaseModel):
     rebuilding the whole pipeline. Defaults to *every flag on* — the
     common case is "ingest everything I have a parser for".
 
-    P1 (VLM/OCR) fields are intentionally absent — they will be added in
-    Wave 4 alongside the OCR extractor escalation.
+    P1 (VLM/OCR) fields (Wave 5, E-05/E-06):
+
+    - ``ocr_enabled``: master switch for the PDF escalation path and
+      the ImageExtractor. ``True`` by default — when the user installed
+      ``[ocr]`` and configured a VLM, OCR is on. Setting ``False`` is
+      the hard-off switch (overrides the sparse-text-layer signal for
+      PDFs and prevents the ImageExtractor from being registered).
+    - ``ocr_min_chars_per_page``: average chars-per-page threshold
+      below which the PDF extractor escalates to Tier 2 OCR (default
+      100). Mirrors the ``_SPARSE_CHARS_PER_PAGE`` constant the D-07
+      digital extractor already uses for its ``sparse_text_layer``
+      signal — moved into config so users can tune it.
+    - ``ocr_dpi``: dots-per-inch passed to ``pdf2image.convert_from_path``
+      for the Tier 2 rasterisation pass. 200 is a good balance between
+      VLM context budget and recognition quality.
+    - ``enable_image``: gate for the ImageExtractor (``.png``, ``.jpg``,
+      etc.). When True (default) AND a real VLM is wired in AND
+      ``ocr_enabled`` is True, the registry registers the extractor.
     """
 
     enable_pdf: bool = True
@@ -74,6 +90,7 @@ class ExtractionConfig(BaseModel):
     enable_epub: bool = True
     enable_notebook: bool = True
     enable_csv: bool = True
+    enable_image: bool = True
     code_chunker_config: dict = Field(
         default_factory=lambda: {"max_chars": 1500, "min_chars": 100, "overlap": 100}
     )
@@ -87,6 +104,10 @@ class ExtractionConfig(BaseModel):
     # log entry — keeps a stray multi-GB log file from blowing up an
     # otherwise-healthy ingest. Default 50 MB.
     max_bytes: int = Field(default=50_000_000, gt=0)
+    # E-05 (Wave 5): OCR escalation tunables. See class docstring.
+    ocr_enabled: bool = True
+    ocr_min_chars_per_page: int = Field(default=100, gt=0)
+    ocr_dpi: int = Field(default=200, gt=0)
 
     model_config = ConfigDict(extra="forbid")
 
