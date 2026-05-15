@@ -22,7 +22,7 @@ dev: ## Install dev dependencies + pre-commit hook
 # which makes site.py silently skip every .pth file — breaking our editable
 # install (and therefore `import corpus_forge` from tests). Strip the flag
 # after each sync so the .pth gets honoured. No-op on non-darwin systems.
-.PHONY: _unhide-pth
+.PHONY: _unhide-pth _warmup-grammars
 _unhide-pth:
 ifeq ($(OS),Darwin)
 	@if [ -d .venv/lib ]; then \
@@ -44,8 +44,21 @@ typecheck: ## pyrefly strict
 
 test: test-unit test-integration test-fuzz test-smoke ## All four test categories
 
-test-unit: ## Fast, parallel, no Docker, coverage-gated
+test-unit: _warmup-grammars ## Fast, parallel, no Docker, coverage-gated
 	uv run pytest tests/unit -v -n auto --timeout=60 --cov=corpus_forge --cov-report=term-missing --cov-fail-under=90
+
+# Pre-warm the tree-sitter grammar cache in a single process so the
+# parallel pytest-xdist workers don't race on `pack.download()` writes.
+# Idempotent — fast no-op once the cache is populated. The set of
+# languages mirrors what the unit suite exercises in code chunker /
+# code extractor tests; expand as new languages are added to the corpus.
+_warmup-grammars:
+	@uv run python -c "import tree_sitter_language_pack as pack; \
+pack.download(['python', 'javascript', 'typescript', 'tsx', 'go', 'rust', \
+'java', 'kotlin', 'scala', 'ruby', 'elixir', 'erlang', 'haskell', 'ocaml', \
+'clojure', 'commonlisp', 'scheme', 'bash', 'sql', 'css', 'lua', 'zig', \
+'nim', 'crystal', 'r', 'julia', 'swift', 'dart', 'nix', 'c', 'cpp', \
+'make', 'dockerfile'])" 2>&1 | tail -3 || true
 
 test-integration: ## Requires Docker (testcontainers pgvector)
 	uv run pytest tests/integration -v
