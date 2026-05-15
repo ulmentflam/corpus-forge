@@ -142,10 +142,10 @@ data, subtitles, and every human-readable code file via tree-sitter.
 - [x] D-20 — **P0 gate**: `make ci` green at ≥85% coverage
 
 #### P1 — Vision/OCR (local Ollama qwen2.5vl:7b + Mistral OCR fallback)
-- [ ] E-01..E-04 Wave 4 — `VLMBackend` protocol, `OllamaVLM`, `MistralOCR`, `VLMConfig`
-- [ ] E-05..E-06 Wave 5 — PDF escalation upgrade, `ImageExtractor`
-- [ ] E-07..E-09 Wave 6 — OCR E2E tests, Makefile, docs
-- [ ] E-10 — **P1 gate**: manual cross-backend smoke
+- [x] E-01..E-04 Wave 4 — `VLMBackend` protocol, `OllamaVLM`, `MistralOCR`, `VLMConfig` (committed at `acdfa83`)
+- [x] E-05..E-06 Wave 5 — PDF escalation upgrade, `ImageExtractor` (committed at `0f0d102`)
+- [x] E-07..E-09 Wave 6 — OCR E2E tests (`test_ocr_local_e2e.py`, `test_ocr_remote_e2e.py`), Makefile (`test-ocr`, `test-ocr-local`), docs (architecture Vision/OCR section + README `[ocr]` extra note + secrets.env `MISTRAL_API_KEY=`)
+- [x] E-10 — **P1 gate** closed: `make ci` green @ 92.35% coverage, `make test-ocr-local` 4/4 pass in 38 s on M-series with qwen2.5vl:7b
 
 ## Verification Criteria for Phase A Completion:
 - [ ] Daemon running on both Macs

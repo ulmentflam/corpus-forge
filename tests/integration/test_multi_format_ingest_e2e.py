@@ -55,7 +55,21 @@ _FIXTURE_ROOT = Path(__file__).resolve().parent.parent / "fixtures" / "multi_for
 # Files in the fixture tree that the FilesystemSource will SKIP because
 # they have no extension match and no filename fallback. Used to compute
 # the expected ``corpus.documents`` row count off the on-disk shape.
-_UNINGESTABLE: frozenset[Path] = frozenset()
+#
+# Wave 6 / P1 added an ``images/`` subdirectory (screenshot.png,
+# photo-of-receipt.jpg, diagram.webp) that's intentionally only ingested
+# when a VLM is configured (``ocr_enabled=True`` + non-Noop backend).
+# This P0 e2e test uses the default ``ExtractionConfig()`` which has no
+# VLM, so ``ImageExtractor`` is never registered and those three files
+# are silently skipped — they must therefore be excluded from the
+# expected document count.
+_UNINGESTABLE: frozenset[Path] = frozenset(
+    {
+        Path("images/screenshot.png"),
+        Path("images/photo-of-receipt.jpg"),
+        Path("images/diagram.webp"),
+    }
+)
 
 # Fake embedder constants
 _FAKE_NAME = "fake_e2e_embedder"
@@ -208,15 +222,25 @@ def _document_metadata_rows(backend: PostgresBackend, dataset_id: int) -> list[d
 
 
 def _expected_file_count(root: Path) -> int:
-    """Count every file under ``root`` minus the fixture's own README.
+    """Count every file under ``root`` minus the no-VLM-uningestable set.
 
     The FilesystemSource has no extractor for unknown extensions, so the
-    counted set must mirror the extractor-registered surface. As of P0:
-    every file in the fixture tree has a registered extractor — the
-    README itself is markdown (.md → PassthroughMarkdownExtractor), so
-    it gets ingested too.
+    counted set must mirror the extractor-registered surface. The
+    fixture's own README is markdown (``.md`` → ``PassthroughMarkdownExtractor``),
+    so it counts. The Wave 6 image fixtures under ``images/`` are
+    excluded via ``_UNINGESTABLE`` because the P0 default
+    ``ExtractionConfig`` doesn't configure a VLM and therefore doesn't
+    register the ``ImageExtractor``.
     """
-    return sum(1 for p in root.rglob("*") if p.is_file())
+    total = 0
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(root)
+        if rel in _UNINGESTABLE:
+            continue
+        total += 1
+    return total
 
 
 # ---------------------------------------------------------------------------

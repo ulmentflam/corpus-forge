@@ -214,6 +214,14 @@ When `poppler-utils` is missing the PDF extractor degrades gracefully back to
 the digital-only Tier 1 path with an `ERROR`-level log entry pointing here —
 ingest does not break.
 
+The `[ocr]` extra is intentionally light — `requests` (Apache-2.0),
+`pdf2image` (MIT), `pillow` (HPND, permissive). It does **not** vendor or
+bundle any model weights. Both OCR backends communicate over HTTP: the local
+path talks to your Ollama daemon (e.g. `qwen2.5vl:7b`, pulled separately via
+`ollama pull`), and the remote path talks to the Mistral OCR API
+(`MISTRAL_API_KEY` in `secrets.env`). Adding `[ocr]` does not widen the AGPL
+surface introduced by `[multi-format]`.
+
 ## Architecture
 
 ```

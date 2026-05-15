@@ -144,8 +144,58 @@ This makes every concrete extractor a leaf plugin — adding a new format is one
 
 `CodeExtractor` also handles the extension-less long-tail (`Makefile`, `Dockerfile`, `.gitignore`, `.editorconfig`) via the registry's second-pass `supported_filenames` lookup. When a tree-sitter grammar is not available locally, the extractor calls `pack.download([language])` lazily on first encounter — failures fall back to `CodeChunker`'s byte-line splitter, so no document is ever dropped.
 
-### P1 / OCR layer (deferred to Wave 5–6)
+### Vision / OCR pipeline (P1)
 
-`PdfExtractor` will gain a text-density check; pages with sparse text layers escalate to a `VLMBackend` (`OllamaVLM` or `MistralOCR`). A separate `ImageExtractor` will run the same VLM against `.png` / `.jpg` / `.heic` / etc. Both paths are documented in the milestone plan and gated behind a future `[ocr]` extra.
+Phase D / P1 adds a vision-language-model (VLM) plug-in surface so PDFs with sparse text layers and standalone images are first-class corpus citizens. The pieces sit behind the optional `[ocr]` extra (`requests`, `pdf2image`, `pillow`) and are wired in lazily — installs that do not configure a backend keep the P0 digital-only behaviour unchanged.
+
+#### VLM protocol
+
+Every backend implements the same flat `Protocol` in `corpus_forge/vlm/base.py`:
+
+```python
+class VLMBackend(Protocol):
+    name: str
+    def describe_image(self, image: bytes, *, prompt: str | None = None) -> str: ...
+    def extract_page(self, image: bytes, *, page_number: int) -> str: ...
+    def warmup(self) -> None: ...
+```
+
+`describe_image` is the entry point for the image extractor (transcribe + describe). `extract_page` biases toward verbatim Markdown reproduction of a single PDF page raster. `warmup` is a cheap health check called once per process — it raises `VLMUnavailableError` early when the backend cannot serve traffic, so misconfiguration fails at boot rather than mid-ingest.
+
+#### Backend matrix
+
+| Backend | Module | Endpoint | Default model | Notes |
+|---|---|---|---|---|
+| Ollama | `corpus_forge.vlm.ollama.OllamaVLM` | `POST /api/generate` on `http://localhost:11434` | `qwen2.5vl:7b` (Apache-2.0, ~5 GB) | Local, default. `warmup()` GETs `/api/tags` and asserts the configured tag is installed. |
+| Mistral OCR | `corpus_forge.vlm.mistral.MistralOCR` | `POST /v1/ocr` on `https://api.mistral.ai/v1` | `mistral-ocr-2503` | Remote fallback. Read `MISTRAL_API_KEY` from `secrets.env`. `warmup()` is a no-op (no free health endpoint); the constructor validates that `api_key` is non-empty. |
+| Noop | `corpus_forge.vlm.base.NoopVLM` | n/a | n/a | Selected when `config.vlm.backend = "none"` (the default). Every operational method raises `VLMUnavailableError`. The PDF extractor treats a `NoopVLM` like `vlm=None` and short-circuits Tier 2. |
+
+The active backend is resolved by `corpus_forge.vlm.registry.get_active_vlm(config)` using importlib-driven lazy imports, so installing `[ocr]` is only required when `vlm.backend` is set to a non-`"none"` value.
+
+#### PDF Tier 1 → Tier 2 escalation
+
+`PdfDigitalExtractor` is the single PDF entry point and handles both tiers:
+
+1. **Tier 1 — `pymupdf4llm.helpers.pymupdf_rag.to_markdown`.** Reads the embedded text layer and emits Markdown. We deliberately bypass the top-level `pymupdf4llm.to_markdown` because it auto-routes to a Tesseract fallback in 1.27+, which would collide with our VLM-driven escalation.
+2. **Sparseness check.** If `len(tier1_text) / page_count < ocr_min_chars_per_page` (default 100), `metadata.sparse_text_layer = True` and the extractor decides whether to escalate.
+3. **Tier 2 — VLM OCR.** Only fires when `ocr_enabled=True`, a real VLM is wired in, and the text layer is sparse. The PDF is rasterised page-by-page via `pdf2image.convert_from_path` (poppler under the hood) at `ocr_dpi` (default 200), each PNG is sent to `vlm.extract_page(...)`, and the responses are joined with `\n\n---\n\n` so page boundaries survive. `metadata.tier = "ocr_escalated"`, `pages_ocr_count`, `ocr_backend`, and `ocr_model` are stamped onto the document, and `("ocr", backend.name)` / `("ocr_model", model_tag)` labels are added.
+
+#### Image extractor
+
+`corpus_forge/extractors/image.py::ImageExtractor` is a thin shim: `vlm.describe_image(file_bytes, prompt=...)` for `.png .jpg .jpeg .tif .tiff .bmp .webp .heic`. The default prompt biases toward verbatim transcription with description as a tiebreaker. `chunker_hint = "markdown"`. Registry registration in `register_default_extractors` is gated on a real (non-Noop) VLM plus `ocr_enabled` and `enable_image` — installs that didn't configure a VLM never see this extractor.
+
+#### Failure ladder
+
+Robust by construction — failures degrade, they do not poison the ingest:
+
+- `NoopVLM` short-circuit — escalation never fires, no error logged.
+- `VLMUnavailableError` / `VLMResponseError` (daemon down, 5xx, malformed JSON) — graceful Tier 1 fallback. `metadata.ocr_escalation_attempted = True`, `metadata.ocr_escalation_failed_reason = <exc>` records the reason. No `ocr` label is added.
+- `VLMTimeoutError` on a single page — that page is replaced with a `<!-- VLM timeout on page N -->` placeholder; the remaining pages continue. Escalation metadata still reports the page count.
+- `pdf2image.exceptions.PDFInfoNotInstalledError` (no poppler) — ERROR log + Tier 1 fallback with `ocr_escalation_failed_reason = "poppler-not-installed"`.
+- Missing `[ocr]` extra at runtime — `_resolve_pdf2image()` returns `None`, ERROR log + Tier 1 fallback.
+
+#### Marker convention
+
+Live OCR tests carry the `requires_ollama` or `requires_mistral_api` pytest markers (registered in `pyproject.toml`). `tests/integration/conftest.py` auto-skips them at collection time when the dependency is absent — the Ollama path probes `GET /api/tags`, the Mistral path checks `MISTRAL_API_KEY`. `make test-ocr` runs both suites; `make test-ocr-local` is the common-case Ollama-only variant.
 
 For the wave-by-wave history of how this layer was built, see [`.planning/tdd/multi_format.md`](../.planning/tdd/multi_format.md).

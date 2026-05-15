@@ -1,5 +1,5 @@
 .PHONY: help install dev lint format typecheck test test-unit test-integration test-fuzz test-smoke \
-        migrate ingest embed backfill daemon stop logs ci docs docs-serve clean
+        test-ocr test-ocr-local migrate ingest embed backfill daemon stop logs ci docs docs-serve clean
 
 # Cross-platform dispatch: `make stop` / `make logs` need to talk to launchd
 # on macOS and to systemd-user on Linux. Detect OS once at the top.
@@ -55,6 +55,17 @@ test-fuzz: ## Hypothesis-driven property tests (HYPOTHESIS_PROFILE=dev|ci|nightl
 
 test-smoke: ## End-to-end happy paths against fake embedder
 	uv run pytest tests/smoke -v
+
+# Phase D / Wave 6 (P1 gate): the live-OCR end-to-end tests are
+# marker-gated. They are *collected* as part of the regular integration
+# suite but auto-skip via tests/integration/conftest.py when their
+# dependency is absent (Ollama daemon down, MISTRAL_API_KEY unset). The
+# targets below force them to run by selecting the markers directly.
+test-ocr: ## Run both live OCR suites (requires_ollama or requires_mistral_api)
+	uv run pytest tests/integration -v -m "requires_ollama or requires_mistral_api"
+
+test-ocr-local: ## Run the live-Ollama OCR suite only (requires_ollama)
+	uv run pytest tests/integration -v -m requires_ollama
 
 migrate: ## Apply schema migrations
 	uv run corpus-forge migrate
