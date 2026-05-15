@@ -847,5 +847,198 @@ def search(
         typer.echo("")
 
 
+# ── classify command (Phase E / C-05) ───────────────────────────────────
+
+
+def _build_backend_from_config(config):
+    """Construct the configured backend (sqlite|postgres) and migrate.
+
+    Lazy-imports so a missing optional extra surfaces at call-time, not
+    at module-load time.
+    """
+    if config.backend.kind == "sqlite":
+        from corpus_forge.backends.sqlite import SQLiteBackend
+
+        backend = SQLiteBackend(path=config.backend.dsn, schema=config.backend.schema)
+    else:
+        from corpus_forge.backends.postgres import PostgresBackend
+
+        backend = PostgresBackend(dsn=config.backend.dsn, schema=config.backend.schema)
+    backend.migrate()
+    return backend
+
+
+@app.command("classify")
+def classify(
+    dataset: list[str] = typer.Option(
+        None,
+        "--dataset",
+        "-d",
+        help="Restrict to one or more datasets (repeatable).",
+    ),
+    reclassify: bool = typer.Option(
+        False,
+        "--reclassify",
+        help=(
+            "Force re-classification of all documents "
+            "(default: skip docs that already carry a classifier:* class label)."
+        ),
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the plan without writing any rows.",
+    ),
+    limit: int = typer.Option(
+        None,
+        "--limit",
+        help="Stop after processing N documents.",
+    ),
+    json_out: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit one JSON object per processed document.",
+    ),
+    classifier: str = typer.Option(
+        None,
+        "--classifier",
+        help="Force a single classifier (bypass the chain).",
+    ),
+) -> None:
+    """Walk documents and assign content-class labels via the classifier chain.
+
+    Idempotent: by default, documents that already carry a
+    ``namespace='class'`` label with ``source LIKE 'classifier:%'`` are
+    skipped. Pass ``--reclassify`` to override the skip filter.
+
+    The default chain is configured under ``[classifier]`` in
+    ``config.toml`` (P0 ships ``["rule"]`` — pure stdlib, microseconds
+    per document).
+    """
+    import json as _json
+
+    from corpus_forge.classifiers import register_default_classifiers
+    from corpus_forge.classifiers.registry import ClassifierRegistry
+    from corpus_forge.config import Config
+
+    try:
+        config = Config.load()
+    except FileNotFoundError:
+        typer.echo(
+            "No configuration found; run 'corpus-forge migrate' to initialise.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from None
+
+    # Build the chain. ``--classifier`` filters down to a single named
+    # classifier (helpful for debugging — e.g. force rule even when LLM
+    # is configured).
+    try:
+        registry: ClassifierRegistry = register_default_classifiers(config.classifier)
+    except ValueError as exc:
+        typer.echo(f"Classifier-config error: {exc}", err=True)
+        raise typer.Exit(code=2) from None
+
+    if classifier is not None:
+        filtered = ClassifierRegistry()
+        target = registry.get(classifier)
+        if target is None:
+            typer.echo(
+                f"--classifier {classifier!r} is not in the configured chain "
+                f"({registry.names()}). Available P0 classifiers: ['rule'].",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        filtered.register(target)
+        registry = filtered
+
+    threshold = config.classifier.escalation_threshold
+    backend = _build_backend_from_config(config)
+
+    # Resolve dataset filter(s). When --dataset is not supplied, iterate
+    # every dataset by passing ``None`` to the backend helper.
+    if dataset:
+        dataset_ids: list[int | None] = []
+        for name in dataset:
+            ds_id = backend.find_dataset_id_by_name(name)
+            if ds_id is None:
+                typer.echo(f"Dataset not found: {name}", err=True)
+                raise typer.Exit(code=2)
+            dataset_ids.append(ds_id)
+    else:
+        dataset_ids = [None]
+
+    # Cost-guard preflight — count what we're about to do.
+    total_to_process = 0
+    for ds_id in dataset_ids:
+        total_to_process += sum(
+            1
+            for _ in backend.iter_documents_for_classification(ds_id, include_classified=reclassify)
+        )
+
+    chain_names = registry.names()
+    typer.echo(
+        f"Classifying {total_to_process} document(s) via chain={chain_names}. "
+        f"Rule classifier is microseconds/doc.",
+        err=True,
+    )
+
+    processed = 0
+    applied = 0
+    for ds_id in dataset_ids:
+        for doc in backend.iter_documents_for_classification(ds_id, include_classified=reclassify):
+            if limit is not None and processed >= limit:
+                break
+            result = registry.classify(doc, threshold=threshold)
+            if result is None:
+                # Every classifier returned None — nothing to write.
+                processed += 1
+                continue
+
+            # Which classifier produced it? In the current P0 chain
+            # there is only one source, but P1 will distinguish rule vs
+            # llm — pick the *last* registered classifier's name as a
+            # safe upper bound for the source field.
+            classifier_name = chain_names[-1] if chain_names else "rule"
+            source = f"classifier:{classifier_name}"
+
+            write_now = not dry_run
+            if write_now:
+                backend.apply_label(
+                    "document",
+                    doc.document_id,
+                    "class",
+                    result.value,
+                    source=source,
+                    confidence=result.confidence,
+                )
+                applied += 1
+
+            if json_out:
+                payload = {
+                    "doc_id": doc.document_id,
+                    "source_uri": doc.source_uri,
+                    "class": result.value,
+                    "confidence": float(result.confidence),
+                    "rationale": result.rationale,
+                    "applied": bool(write_now),
+                }
+                typer.echo(_json.dumps(payload, ensure_ascii=False))
+            else:
+                action = "would assign" if dry_run else "assigned"
+                typer.echo(
+                    f"{doc.source_uri} -> {action} class={result.value} "
+                    f"({result.confidence:.2f}) [{result.rationale}]"
+                )
+            processed += 1
+        if limit is not None and processed >= limit:
+            break
+
+    typer.echo(
+        f"Processed {processed} document(s); applied {applied}.",
+        err=True,
+    )
+
+
 if __name__ == "__main__":
     app()

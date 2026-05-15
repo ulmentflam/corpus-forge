@@ -2995,3 +2995,367 @@ metadata):
   SELECT json_extract(metadata, '$.kind'), COUNT(*) FROM chunks GROUP BY 1`
   shows non-null `kind` rows after ingesting the corpus-forge source
   tree.
+
+---
+
+# Phase E — Document Classification & Strong Labels (P0 only)
+
+Plan: `.planning/tdd/phase_e_classification.md`. This dispatch covers
+**P0 only** (C-01..C-09). P1 (LLMClassifier + Waves 3/4) is deferred to
+a separate orchestrator call.
+
+Phase D housekeeping baseline: 92.32% coverage at tip `156b34b`.
+Target: `make ci` green at ≥90% coverage; no P1 surfaces touched.
+
+## Phase E project gates
+
+- lint: `uv run ruff check corpus_forge tests`
+- format: `uv run ruff format --check corpus_forge tests`
+- typecheck: `uv run pyrefly check corpus_forge`
+- test-unit: `uv run pytest tests/unit -v -n auto --timeout=60 --cov=corpus_forge --cov-report=term-missing --cov-fail-under=90`
+- test-integration: `uv run pytest tests/integration -v`
+- test-fuzz: `HYPOTHESIS_PROFILE=dev uv run pytest tests/fuzz -v`
+- test-smoke: `uv run pytest tests/smoke -v`
+- ci: `make ci` (= `format-check lint typecheck test`)
+- coverage-min: 90
+
+## Phase E reused primitives
+
+- `corpus_forge.backends.postgres.PostgresBackend.apply_label(entity_type, entity_id, namespace, value, *, confidence=None, source='user')` — already keyword-accepts `confidence`; column persisted today only on `chunk_labels`. C-04 adds the column to `document_labels`; C-06 extends both backends' insert path to forward the kwarg.
+- `corpus_forge.backends.sqlite.SQLiteBackend.apply_label` — same surface; mirrors postgres.
+- `corpus_forge.config.Config.load` — additive `classifier: ClassifierConfig` field; `model_config = ConfigDict(extra='forbid')` already in force.
+- `corpus_forge.extractors.{base,registry}` — Protocol + ordered registry template for C-01.
+- `corpus_forge.extractors.code._try_load` / `register_default_extractors` — lazy-load pattern for C-01's `register_default_classifiers`.
+- `corpus_forge.cli.sync_app` — most recent Typer subgroup-add pattern for C-05.
+- `alembic.command` already wired (see `corpus_forge.alembic.versions/0009_feedback_host_default.py` for dialect-dispatch template).
+
+## Phase E tasks (C-01..C-09 = P0)
+
+| id | title | depends_on | surface | risk | status | claimed_by | notes |
+|----|-------|------------|---------|------|--------|------------|-------|
+| C-01 | `Classifier` protocol + dataclasses + `ClassifierRegistry` | — | `corpus_forge/classifiers/{__init__,base,registry}.py`, `tests/unit/test_classifier_registry.py` | low | done | tdd-principal | 24/24 unit tests green |
+| C-02 | `RuleBasedClassifier` | — | `corpus_forge/classifiers/rule_based.py`, `tests/unit/test_rule_based_classifier.py` | med | done | tdd-principal | 34/34 unit tests green; all 9 class values emittable |
+| C-03 | `ClassifierConfig` pydantic | — | `corpus_forge/config.py`, `tests/unit/test_config_classifier.py` | low | done | tdd-principal | 14/14 unit tests green; default chain = `["rule"]`; LLM fields declared |
+| C-04 | Alembic revision: `document_labels.confidence REAL` | — | `corpus_forge/alembic/versions/0010_document_label_confidence.py`, `tests/integration/test_migrate_label_confidence.py` | low | done | tdd-principal | 6/6 integration tests green (3 PG + 3 SQLite); legacy rows preserved, new rows round-trip confidence |
+| C-05 | `corpus-forge classify` Typer command | C-01..C-04 | `corpus_forge/cli.py`, `tests/unit/test_cli_classify.py` | med | done | tdd-principal | 10/10 unit tests green; full flag surface incl. cost-guard preflight |
+| C-06 | Backend `iter_documents_for_classification` + confidence plumbing | C-04 | `corpus_forge/backends/{base,postgres,sqlite}.py`, `tests/unit/test_backend_classifier_helpers.py` | med | done | tdd-principal | 7/7 unit tests green; apply_label("document", ...) now persists confidence on both backends |
+| C-07 | `config.example.toml` `[classifier]` block | C-03 | `config.example.toml` | low | done | tdd-principal | block appended after embedders; parses OK |
+| C-08 | E2E integration test | C-05..C-07 | `tests/integration/test_classify_cli_e2e.py` | med | done | tdd-principal | 2/2 tests green; full per-class assertion table; idempotency + dry-run covered |
+| C-09 | **P0 gate** — `make ci` green at ≥90% | C-08 | (none — bookkeeping only) | gate | done | tdd-principal | `make ci` exit 0; unit 2798 passed/2 skipped/1 xfailed, coverage 91.83% (≥90%); integration 390 passed/3 skipped; fuzz 15 passed; smoke 30 passed |
+
+## Phase E DAG
+
+- **Wave 0** (parallel — disjoint files): C-01, C-02, C-03, C-04
+- **Wave 1** (parallel — `cli.py` vs backends vs toml; C-07 is doc-only):
+  C-05, C-06, C-07
+- **Wave 2** (serial): C-08 → C-09
+
+## Phase E acceptance details
+
+### C-01 — Classifier protocol + registry
+
+- `ClassifiableDocument` frozen dataclass: `document_id: int`,
+  `source_uri: str`, `title: str | None`, `text: str`,
+  `format_labels: list[tuple[str, str]]`, `metadata: dict`.
+- `ClassLabel` frozen dataclass: `value: str` (one of nine — assert in
+  `__post_init__` or validate at construction), `confidence: float`
+  (0.0–1.0 — clamp or reject in `__post_init__`),
+  `rationale: str`.
+- `@runtime_checkable class Classifier(Protocol): name: str; def classify(self, doc: ClassifiableDocument) -> ClassLabel | None: ...`.
+- `ClassifierRegistry`:
+  - `register(classifier: Classifier) -> None` appends to an ordered
+    list (last-write-wins for same `name`).
+  - `classify(doc: ClassifiableDocument, threshold: float = 0.4) -> ClassLabel | None` walks the chain, returns the first
+    classifier output where `result is not None and result.confidence >= threshold`;
+    if no classifier ever clears the bar, returns the last non-`None`
+    result (so callers still get *something* even at very low
+    confidence). Returns `None` only when every classifier returned
+    `None`.
+  - `names() -> list[str]`.
+- `register_default_classifiers(config: ClassifierConfig | None) -> ClassifierRegistry` — boot
+  hook in `corpus_forge.classifiers.__init__`. Iterates
+  `config.chain` (or `["rule"]` when `config is None`) and lazy-loads
+  each name via `importlib.import_module`. Unknown names raise
+  `ValueError("unknown classifier name: ...")`. P0 only knows `"rule"`;
+  `"llm"` lazy-load is wired but the module won't exist until P1.
+- Tests: empty registry returns `None`; single-classifier chain
+  returns the only result; high-confidence early-classifier short-circuits
+  later ones; threshold escalation (low-confidence first, fallback to
+  later); `register_default_classifiers(None)` returns a chain with
+  the rule classifier registered; unknown classifier name raises.
+
+### C-02 — RuleBasedClassifier
+
+- `name = "rule"`, `classify(doc)` returns a `ClassLabel` (never `None`
+  — fallback to `class=other` 0.3 ensures the rule always emits
+  something).
+- Rules in priority order:
+  1. Format-label fast path: `("format","code") in doc.format_labels`
+     → `code` (0.99). `source_uri` starts with `claude-code://`,
+     `opencode://`, `gemini-cli://`, OR
+     `("format","conversation") in doc.format_labels` →
+     `chat` (0.99). `("format","epub") in doc.format_labels` + pedagogy
+     regex hits on title+path → `textbook` (0.85), else `book` (0.7).
+  2. Path/filename heuristics on `source_uri`: `/papers/`, `/research/`,
+     filename starts with `arxiv-`, or `.bib` extension → `paper` (0.7).
+     `/notes/`, `/daily/`, `/journal/` → `note` (0.8). `/blog/`,
+     `/posts/`, `/articles/` → `article` (0.7). `/docs/`,
+     `/reference/`, `/api/` → `reference` (0.7).
+  3. Content heuristics: format labels in
+     `{("format","json"),("format","yaml"),("format","toml"),("format","csv"),("format","srt")}`
+     → `reference` (0.9). Chat markers
+     (`re.findall(r'^(User|Assistant|Human):', text, re.M)`) ≥ 3 per kB
+     of body → `chat` (0.85). PDF detect: `("format","pdf")` AND
+     `re.search(r'^Abstract\b', text, re.M)` AND
+     `re.search(r'\bReferences\b', text, re.M)` AND
+     `re.search(r'\[\d+\]', text)` → `paper` (0.75). PDF length
+     heuristic (pages from `doc.metadata.get("page_count")` if present,
+     else `max(1, len(text) // 3000)` as a proxy): ≥50 → `book` (0.55);
+     8–49 → `textbook` (0.45) if pedagogy hits, else `book` (0.45);
+     <8 → `article` (0.5).
+  4. Markdown-vault default: `("format","markdown") in doc.format_labels`
+     → `note` (0.5).
+  5. Fallback: `other` (0.3).
+- Pedagogy regex (compiled once at module load):
+  `re.compile(r"\b(textbook|primer|introduction to|course|handbook|cookbook|tutorial|exercises?|lectures?)\b", re.I)`.
+  Matched against `f"{doc.title or ''} {doc.source_uri}"` — not the
+  body (cost).
+- Tests: one positive case per class value (`code`, `chat`, `book`,
+  `textbook`, `paper`, `article`, `reference`, `note`, `other`); one
+  ambiguous case asserting the fallback; idempotency (same doc →
+  same label).
+
+### C-03 — ClassifierConfig
+
+- pydantic v2 BaseModel: `chain: list[str] = Field(default_factory=lambda: ["rule"])`,
+  `escalation_threshold: float = Field(default=0.4, ge=0.0, le=1.0)`,
+  plus LLM fields declared but unused at P0:
+  `llm_model: str = "qwen2.5:7b-instruct"`,
+  `llm_url: str = "http://localhost:11434"`,
+  `llm_timeout_s: float = Field(default=60.0, gt=0)`,
+  `llm_excerpt_chars: int = Field(default=2000, gt=0)`.
+  `model_config = ConfigDict(extra="forbid")`.
+- Attach to `Config` via
+  `classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)`.
+- Tests: empty `[classifier]` → defaults applied; legacy config without
+  `[classifier]` → defaults applied; chain validation (list of strings);
+  threshold bounds (0.0 / 1.0 accepted, -0.1 / 1.1 rejected); extra
+  field → ValidationError.
+
+### C-04 — `document_labels.confidence` migration
+
+- New revision file: `corpus_forge/alembic/versions/0010_document_label_confidence.py`.
+  Naming mirrors `0009_*`. Constants:
+  `revision = "0010_document_label_confidence"`,
+  `down_revision = "0009_feedback_host_default"`.
+- `upgrade()`: `op.add_column("document_labels", sa.Column("confidence", sa.REAL(), nullable=True))` on both dialects.
+  No backfill (existing rows remain NULL).
+- `downgrade()`: `op.drop_column("document_labels", "confidence")` —
+  but mirror `0009_*` style: pass on no-op is fine if SQLite can't drop.
+  (Refer to other revisions for the established style — most newer
+  revisions ship a real `downgrade`; if SQLite can't drop columns,
+  use batch-mode `op.batch_alter_table`.)
+- Integration test: testcontainers Postgres + tmpfile SQLite, run
+  `apply_migrations(backend, schema_dir)`, then introspect
+  `information_schema.columns` (PG) / `PRAGMA table_info` (SQLite),
+  assert `confidence` is present and nullable; insert a legacy row
+  (no confidence) and a new row (with confidence=0.7) and assert
+  both read back.
+
+### C-05 — `corpus-forge classify` CLI
+
+- Subcommand: `@app.command("classify")` on the top-level `app`.
+  Options: `--dataset` (`typer.Option(None, "-d", "--dataset", help="...")`,
+  list-of-str via `list[str] = typer.Option(...)` for repeatable);
+  `--reclassify` bool; `--dry-run` bool; `--limit int = None`;
+  `--json` bool flag; `--classifier str = None` (forces a specific
+  classifier, bypassing the chain).
+- Implementation:
+  1. Load `Config.load()`; build backend via dialect dispatch
+     (`config.backend.kind == "sqlite"` vs `"postgres"`).
+  2. Build registry via `register_default_classifiers(config.classifier)`.
+     If `--classifier` is set, filter the registry to only that name.
+  3. For each dataset name in `--dataset` (or all datasets when no
+     flag), look up `dataset_id` via
+     `backend.find_dataset_id_by_name(name)`.
+  4. Iterate `backend.iter_documents_for_classification(dataset_id, include_classified=reclassify)`
+     (when `dataset_id is None`, iterate all datasets — backend helper
+     accepts `None`).
+  5. For each doc: call `registry.classify(doc, threshold=config.classifier.escalation_threshold)`.
+     If `--dry-run`, print the plan and continue. Otherwise call
+     `backend.apply_label("document", doc.document_id, "class", result.value, source=f"classifier:{classifier_name}", confidence=result.confidence)`.
+  6. Print a per-doc line: `f"{doc.source_uri} -> {result.value} ({result.confidence:.2f}) [{result.rationale}]"`.
+     When `--json`, emit one JSON object per line with keys
+     `{doc_id, source_uri, class, confidence, rationale, applied: bool}`.
+  7. Honour `--limit N` by short-circuiting after N writes (or N
+     evaluations when `--dry-run`).
+  8. Print a cost-guard summary line up front:
+     `f"Classifying {N} document(s) via [{','.join(chain)}] — rule classifier is microseconds/doc."`
+- Idempotency: backend helper's
+  `include_classified=False` filter excludes any doc that already has
+  a `class`-namespace label sourced from `classifier:*`. User-attached
+  `class=*` labels (source NOT LIKE `classifier:%`) do not block —
+  reclassification simply attaches an additional `source='classifier:rule'`
+  row.
+- Tests: typer CliRunner; assert `--dry-run` writes no rows (mock
+  backend); assert `--json` emits one valid JSON object per line;
+  assert `--limit 2` stops after 2; assert `--classifier rule` bypasses
+  chain composition; assert missing config exits cleanly.
+
+### C-06 — Backend helper + confidence plumbing
+
+- Protocol addition in `corpus_forge.backends.base`:
+  `def iter_documents_for_classification(self, dataset_id: int | None = None, *, include_classified: bool = False) -> Iterator[ClassifiableDocument]: ...`
+- Postgres + SQLite implementations:
+  - SELECT `d.id, d.source_uri, d.title, d.text, d.metadata` FROM
+    documents (filtered by `dataset_id` when set).
+  - LEFT JOIN `document_labels` + `labels` to materialise
+    `format_labels: list[(namespace, value)]` per doc. Aggregate via a
+    Python pass (simpler than dialect-portable array_agg).
+  - When `include_classified=False`, exclude documents that already
+    have a `class`-namespace label whose `source LIKE 'classifier:%'`.
+  - Yield a `ClassifiableDocument`. Lazy import the dataclass
+    (`from corpus_forge.classifiers.base import ClassifiableDocument`)
+    to avoid widening the storage layer's import graph.
+- Extend `apply_label` insert path (both backends): when
+  `entity_type == "document"` and `confidence is not None`, INSERT
+  with `confidence` in the column list (the new column from C-04 is
+  now present). Mirror the `entity_type == "chunk"` branch exactly.
+  Existing chunk-confidence path stays unchanged.
+- Tests: in-memory SQLite (use existing pattern from
+  `tests/unit/test_backend_sqlite.py`) — seed a dataset + 3 documents
+  with mixed format labels, apply `class=note` via `apply_label` on
+  doc 1, run helper with `include_classified=False` and assert doc 1
+  is skipped; run with `include_classified=True` and assert doc 1
+  appears; assert `format_labels` are populated for each yielded doc.
+  Assert that `apply_label("document", id, "class", "note", source="classifier:rule", confidence=0.55)`
+  writes the confidence column on document_labels and is round-trippable.
+
+### C-07 — `config.example.toml` `[classifier]`
+
+- Block placed after `[vlm]`. Default chain `["rule"]` (P1's
+  `["rule","llm"]` lands with C-11). Show
+  `escalation_threshold = 0.4` and the LLM fields commented out (they
+  exist in the schema but are unused at P0). Comment block explains
+  P0 vs P1.
+
+### C-08 — E2E integration test
+
+- `tests/integration/test_classify_cli_e2e.py`. Marks:
+  `pytestmark = [pytest.mark.integration, pytest.mark.requires_docker]`.
+- Fixture: testcontainers Postgres (`pg_dsn`), ingest the multi-format
+  fixture corpus via the same path
+  `test_multi_format_ingest_e2e.py` already uses, then invoke the CLI
+  via typer's CliRunner (load Config from a temp toml that points at
+  the test DSN), then assert per-class counts on the resulting
+  `document_labels` rows.
+- Required assertions (read the fixture corpus, then anchor against
+  reality — diverge from the dispatch's a-priori guesses only with
+  a recorded note in `qa-status.md`):
+  - Every doc gets exactly one classifier-source `class=*` label.
+  - All `code/**` fixtures → `class=code`.
+  - `epub/small-book.epub` → `class=book` (title is "Small fixture
+    book" — pedagogy regex misses).
+  - `pdf/*.pdf` → either `class=book` (synthetic short PDFs) or
+    `class=article` (under 8 pages). Accept the union; record the
+    actual outcome in the qa report.
+  - JSON / YAML / TOML / CSV / SRT fixtures under `data/` →
+    `class=reference`.
+  - HTML fixtures → `class=article`.
+  - Notebook → `class=code` OR `class=reference` (acceptable range).
+  - Fixture `README.md` → `class=note` (if ingested — verify by reading
+    `_UNINGESTABLE` in the existing e2e file and inheriting that
+    exclusion list).
+
+### C-09 — P0 gate
+
+- Run `make ci`. All four phases (format-check / lint / typecheck /
+  test) must exit 0. Coverage ≥90%.
+- Flip the status header in
+  `.planning/tdd/phase_e_classification.md` from
+  `**Phase E** (this file): **pending kickoff**.` to
+  `**Phase E** (this file): **P0 complete; P1 pending kickoff**.`
+- Tick `.planning/active_tasks.md` Phase E P0 boxes for C-01..C-09.
+- DO NOT COMMIT (orchestrator-only).
+
+## Phase E P0 — Wave summary (2026-05-15)
+
+Gates (all green; `make ci` exit 0):
+- `make lint`: All checks passed
+- `make format-check`: 310 files already formatted
+- `make typecheck` (pyrefly strict): 0 errors (24 suppressed, 45 warnings)
+- `make test-unit`: 2798 passed, 2 skipped, 1 xfailed; coverage 91.83%
+  (≥90% gate; −0.49pp vs Phase D 92.32% baseline — within noise, new
+  surfaces add 6 modules with 88-95% per-file coverage)
+- `make test-integration`: 390 passed, 3 skipped (mistral creds)
+- `make test-fuzz`: 15 passed
+- `make test-smoke`: 30 passed
+- `make ci`: exit 0
+
+New surface (production):
+- `corpus_forge/classifiers/__init__.py` — registry boot hook (lazy)
+- `corpus_forge/classifiers/base.py` — `ClassifiableDocument` /
+  `ClassLabel` / `Classifier` Protocol
+- `corpus_forge/classifiers/registry.py` — ordered chain with
+  threshold-based dispatch + last-write-wins on name
+- `corpus_forge/classifiers/rule_based.py` — stdlib priority-ordered
+  rule classifier with extension-fallback pre-pass before catchall
+- `corpus_forge/alembic/versions/0010_document_label_confidence.py` —
+  optional REAL column mirroring `chunk_labels.confidence`
+- `corpus_forge/config.py` — `ClassifierConfig` pydantic, attached as
+  `Config.classifier` with `default_factory=ClassifierConfig`
+- `corpus_forge/cli.py` — `classify` Typer command (additive)
+- `corpus_forge/backends/{postgres,sqlite}.py` —
+  `iter_documents_for_classification` helper; `apply_label("document", ...)`
+  insert path now persists `confidence`
+- `corpus_forge/backends/base.py` — Protocol extension
+- `config.example.toml` — `[classifier]` block appended
+
+New surface (tests):
+- `tests/unit/test_classifier_registry.py` — 24 tests
+- `tests/unit/test_rule_based_classifier.py` — 34 tests
+- `tests/unit/test_config_classifier.py` — 14 tests
+- `tests/unit/test_backend_classifier_helpers.py` — 7 tests
+- `tests/unit/test_cli_classify.py` — 10 tests
+- `tests/integration/test_migrate_label_confidence.py` — 6 tests (3 PG + 3 SQLite)
+- `tests/integration/test_classify_cli_e2e.py` — 2 tests
+
+Deviations from dispatch / surprises:
+- The plan's "Markdown-vault default" rule relies on
+  `("format","markdown")` in `format_labels`, but none of the P0
+  extractors actually emit that label (passthrough markdown emits
+  only `chunker_hint='markdown'`). To recover the plan's intent for
+  every format whose extractor emits no label (markdown, plaintext,
+  structured-data, subtitle, notebook, office), the rule classifier
+  now runs an **extension-based fallback pre-pass** before the
+  `class=other` catchall: `.md/.markdown/.rst/.txt/.tex` → note (0.5);
+  `.json/.yaml/.yml/.toml/.csv/.tsv/.srt/.vtt` → reference (0.7);
+  `.ipynb/.docx/.pptx/.xlsx/.odt/.ods` → article (0.45). This keeps
+  the priority-ordered label-first path the plan describes while
+  closing the gap that would otherwise classify every markdown vault
+  note as `other`. Recorded for orchestrator review; P1's
+  LLMClassifier still escalates anything below 0.4 so the
+  plan-described escalation path is preserved.
+- `code/web/page.html` is in the fixture under `code/` but routes
+  through `HtmlExtractor` (`format=html`), not `CodeExtractor` — so
+  the C-08 test filters the "code/" assertion to actual code
+  extensions + build-file filenames. This matches reality (an HTML
+  file is HTML even if it lives in a `code/` folder).
+- The C-04 integration test bumped the alembic head expectation in
+  `tests/integration/test_apply_migrations_uses_alembic.py` from
+  `0009_feedback_host_default` to `0010_document_label_confidence`
+  (9 occurrences). Follows the same pattern as the Phase F→G regression
+  that QA noted at G-01.
+
+Open questions for the orchestrator:
+- The plan rule 1c said "epub + pedagogy regex → textbook (0.85)"
+  using `\b(textbook|primer|introduction to|course|handbook|cookbook|tutorial|exercises?|lectures?)\b`.
+  We anchored the regex to `title + source_uri` (NOT body) per the
+  dispatch's cost-guard note. The C-02 unit tests pin the
+  body-doesn't-trip behaviour.
+- The classifier currently writes `source = f"classifier:{chain_names[-1]}"`
+  — the *last* classifier in the chain. At P0 that's always `rule`.
+  When P1 lands `llm` and `rule` escalates downstream, the CLI will
+  need to track which classifier actually emitted the label
+  (not just the last one configured) so `source` reflects provenance.
+  Flagging for the C-10/C-11 dispatch.

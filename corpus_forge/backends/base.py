@@ -137,3 +137,29 @@ class StorageBackend(Protocol):
     def list_datasets(self) -> "list[dict]": ...
 
     def backfill_lexical_index(self) -> int: ...
+
+    # --- Classification surface (Phase E) ----------------------------------
+
+    def iter_documents_for_classification(
+        self,
+        dataset_id: "int | None" = None,
+        *,
+        include_classified: bool = False,
+    ) -> "Iterator[Any]":
+        """Yield :class:`ClassifiableDocument` rows for the classifier chain.
+
+        Read-only iterator joining ``documents`` to
+        ``document_labels`` / ``labels`` so the caller sees the
+        already-attached structural labels (``format``, ``language``,
+        ``extractor``).
+
+        Args:
+            dataset_id: Restrict to a single dataset. ``None`` iterates
+                every dataset.
+            include_classified: When ``False`` (default), skip documents
+                that already carry a ``namespace='class'`` label whose
+                ``source LIKE 'classifier:%'``. User-attached class
+                labels (``source='user'``) do NOT block iteration —
+                the classifier writes its own source-distinct row.
+        """
+        ...

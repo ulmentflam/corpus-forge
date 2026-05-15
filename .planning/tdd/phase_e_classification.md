@@ -9,7 +9,7 @@ Source plan (full prose, rationale, taxonomy debate): `/Users/evanowen/.claude/p
 **Phase A/C** (Active Directory Sync): complete.
 **Phase B** (SQLite backend): in flight at `.planning/tdd/sqlite_backend.md`.
 **Phase D** (Multi-Format Corpus): complete. P0 closed at `06285fb`, P1 closed at `1f21822`, housekeeping at `156b34b`.
-**Phase E** (this file): **pending kickoff**.
+**Phase E** (this file): **P0 complete; P1 pending kickoff**.
 
 ## Goal
 

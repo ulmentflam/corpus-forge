@@ -115,3 +115,25 @@ distance  = "cosine"
 active    = false  # enable when cloud redundancy is wanted
 api_key_env = "OPENAI_API_KEY"
 batch_size  = 256
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase E — Document classification (content-class labels)
+# ─────────────────────────────────────────────────────────────────────
+# Walks ingested documents and attaches a `class=<value>` strong label
+# from a 9-value enum (`code`, `chat`, `book`, `textbook`, `paper`,
+# `article`, `reference`, `note`, `other`). Run via:
+#
+#     corpus-forge classify             # apply rule classifier
+#     corpus-forge classify --dry-run   # preview without writing
+#     corpus-forge classify --json      # one JSON line per document
+#
+# P0 ships a stdlib rule classifier only. P1 adds `LLMClassifier`
+# (Ollama qwen2.5:7b-instruct by default) — when P1 lands, set
+# `chain = ["rule", "llm"]` and uncomment the llm_* fields below.
+[classifier]
+chain                = ["rule"]
+escalation_threshold = 0.4        # rule confidence below this escalates to the next classifier in P1
+# llm_model            = "qwen2.5:7b-instruct"
+# llm_url              = "http://localhost:11434"
+# llm_timeout_s        = 60.0
+# llm_excerpt_chars    = 2000      # head+tail budget passed to the LLM

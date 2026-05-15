@@ -269,6 +269,40 @@ class VLMConfig(BaseModel):
         return self
 
 
+class ClassifierConfig(BaseModel):
+    """Phase E (C-03) — document-classification chain config.
+
+    Drives :func:`corpus_forge.classifiers.register_default_classifiers`.
+
+    P0 ships a stdlib rule-based classifier; the LLM classifier and its
+    fields land with P1 (C-10/C-11). The LLM fields are declared *here
+    at P0* so existing TOML configs with a forward-looking
+    ``chain = ["rule", "llm"]`` and ``llm_*`` keys still validate when
+    P1 lands — keeping the schema stable across the P0/P1 boundary.
+
+    Fields:
+
+    - ``chain``: ordered list of classifier names. Each name must be a
+      key in :data:`corpus_forge.classifiers._CLASSIFIER_REGISTRY`.
+      P0 only knows ``"rule"``; P1 adds ``"llm"``.
+    - ``escalation_threshold``: confidence floor used by
+      :meth:`ClassifierRegistry.classify`. Below this, the chain walks
+      to the next classifier (so the rule classifier can defer to the
+      LLM on weak signals once P1 lands).
+    - ``llm_*``: P1 LLM-backend tunables. Declared but unused at P0.
+    """
+
+    chain: list[str] = Field(default_factory=lambda: ["rule"])
+    escalation_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
+    # ── P1 LLM fields (declared at P0 so the schema is stable) ────────
+    llm_model: str = "qwen2.5:7b-instruct"
+    llm_url: str = "http://localhost:11434"
+    llm_timeout_s: float = Field(default=60.0, gt=0)
+    llm_excerpt_chars: int = Field(default=2000, gt=0)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class Config(BaseModel):
     """Main configuration for corpus-forge."""
 
@@ -280,6 +314,10 @@ class Config(BaseModel):
     # Phase D / Wave 4 (E-04) — VLM backend selector. Default Noop so
     # adding the field doesn't change behaviour for existing configs.
     vlm: VLMConfig = Field(default_factory=VLMConfig)
+    # Phase E (C-03) — document-classification chain. Defaults to
+    # rule-only so existing configs without a ``[classifier]`` block
+    # opt in to the rule classifier transparently.
+    classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)
 
     model_config = ConfigDict(
         str_strip_whitespace=True,

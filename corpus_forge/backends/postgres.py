@@ -1424,7 +1424,13 @@ class PostgresBackend(StorageBackend):
         created = len(existing) == 0
 
         if created:
-            if entity_type == "chunk":
+            if entity_type in ("chunk", "document"):
+                # Phase E (C-04 + C-06): ``document_labels`` gained a
+                # nullable ``confidence`` column to mirror the existing
+                # ``chunk_labels.confidence``. The same INSERT shape now
+                # serves both entities; ``conversation_labels`` keeps
+                # the no-confidence shape since classifier output is
+                # document-scoped at P0.
                 self._execute(
                     f"INSERT INTO {junction_table} ({fk_col}, label_id, confidence, source)"
                     f" VALUES (%s, %s, %s, %s)"
@@ -2174,3 +2180,91 @@ class PostgresBackend(StorageBackend):
             "SELECT * FROM corpus.messages WHERE conversation_id = %s ORDER BY turn_index",
             (conversation_id,),
         )
+
+    # ── Classification surface (Phase E / C-06) ───────────────────────────
+
+    def iter_documents_for_classification(
+        self,
+        dataset_id: "int | None" = None,
+        *,
+        include_classified: bool = False,
+    ) -> "Iterator[Any]":
+        """Yield :class:`ClassifiableDocument` rows for the classifier chain.
+
+        See :meth:`StorageBackend.iter_documents_for_classification` for
+        the contract. Implementation joins ``documents`` to
+        ``document_labels`` + ``labels`` so the classifier sees the
+        already-attached structural labels.
+
+        The classifier-skip filter uses ``NOT EXISTS`` against a
+        subquery selecting any ``class``-namespace label with
+        ``source LIKE 'classifier:%'``.
+        """
+        from corpus_forge.classifiers.base import (  # noqa: PLC0415
+            ClassifiableDocument,
+        )
+
+        params: tuple[Any, ...]
+        where_clauses: list[str] = []
+        if dataset_id is not None:
+            where_clauses.append("d.dataset_id = %s")
+            params = (dataset_id,)
+        else:
+            params = ()
+
+        if not include_classified:
+            where_clauses.append(
+                "NOT EXISTS ("
+                "  SELECT 1 FROM corpus.document_labels dl2"
+                "  JOIN corpus.labels l2 ON l2.id = dl2.label_id"
+                "  WHERE dl2.document_id = d.id"
+                "    AND l2.namespace = 'class'"
+                "    AND dl2.source LIKE 'classifier:%%'"
+                ")"
+            )
+
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+        doc_rows = self._execute(
+            f"""
+            SELECT d.id AS document_id, d.source_uri, d.title, d.text, d.metadata
+            FROM corpus.documents d
+            {where_sql}
+            ORDER BY d.id
+            """,
+            params,
+        )
+        if not doc_rows:
+            return
+
+        # Bulk-fetch labels in a single query — N+1 guard.
+        ids = [int(r["document_id"]) for r in doc_rows]
+        placeholders = ",".join(["%s"] * len(ids))
+        label_rows = self._execute(
+            f"""
+            SELECT dl.document_id, l.namespace, l.value
+            FROM corpus.document_labels dl
+            JOIN corpus.labels l ON l.id = dl.label_id
+            WHERE dl.document_id IN ({placeholders})
+            """,
+            tuple(ids),
+        )
+        labels_by_doc: dict[int, list[tuple[str, str]]] = {i: [] for i in ids}
+        for lr in label_rows:
+            labels_by_doc[int(lr["document_id"])].append((lr["namespace"], lr["value"]))
+
+        for row in doc_rows:
+            doc_id = int(row["document_id"])
+            md = row["metadata"] or {}
+            if isinstance(md, str):
+                try:
+                    md = json.loads(md)
+                except (TypeError, ValueError):
+                    md = {}
+            yield ClassifiableDocument(
+                document_id=doc_id,
+                source_uri=row["source_uri"],
+                title=row.get("title"),
+                text=row.get("text") or "",
+                format_labels=labels_by_doc.get(doc_id, []),
+                metadata=md if isinstance(md, dict) else {},
+            )

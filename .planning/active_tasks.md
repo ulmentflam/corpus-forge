@@ -156,9 +156,9 @@ selection at training time. Persisted on `document_labels` with the
 new `confidence REAL` column.
 
 #### P0 — RuleBasedClassifier + CLI + persistence (no model required)
-- [ ] C-01..C-04 Wave 0 — `Classifier` protocol + `ClassifierRegistry`, `RuleBasedClassifier`, `ClassifierConfig`, schema migration adding `document_labels.confidence`
-- [ ] C-05..C-07 Wave 1 — `corpus-forge classify` CLI, backend helpers (`iter_documents_for_classification` + confidence plumbing), `config.example.toml` block
-- [ ] C-08..C-09 Wave 2 — E2E integration test against fixture corpus → **P0 gate** (`make ci` green at ≥90% coverage)
+- [x] C-01..C-04 Wave 0 — `Classifier` protocol + `ClassifierRegistry`, `RuleBasedClassifier`, `ClassifierConfig`, schema migration adding `document_labels.confidence`
+- [x] C-05..C-07 Wave 1 — `corpus-forge classify` CLI, backend helpers (`iter_documents_for_classification` + confidence plumbing), `config.example.toml` block
+- [x] C-08..C-09 Wave 2 — E2E integration test against fixture corpus → **P0 gate** (`make ci` green at ≥90% coverage)
 
 #### P1 — LLMClassifier (Ollama qwen2.5:7b-instruct default)
 - [ ] C-10..C-11 Wave 3 — `LLMClassifier` (mocked HTTP unit tests), `ClassifierConfig` LLM fields, chain composition default `["rule","llm"]`

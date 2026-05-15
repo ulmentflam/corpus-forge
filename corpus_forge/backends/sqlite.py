@@ -1863,7 +1863,11 @@ class SQLiteBackend:
             created = existing is None
 
             if created:
-                if entity_type == "chunk":
+                if entity_type in ("chunk", "document"):
+                    # Phase E (C-04 + C-06): ``document_labels`` gained
+                    # an optional ``confidence REAL`` column mirroring
+                    # ``chunk_labels.confidence``. The same INSERT shape
+                    # now covers both entities.
                     conn.execute(
                         f"INSERT OR IGNORE INTO {junction_table}"
                         f" ({fk_col}, label_id, confidence, source)"
@@ -2717,3 +2721,86 @@ class SQLiteBackend:
             "SELECT * FROM messages WHERE conversation_id = ? ORDER BY turn_index",
             (conversation_id,),
         )
+
+    # ── Classification surface (Phase E / C-06) ───────────────────────────
+
+    def iter_documents_for_classification(
+        self,
+        dataset_id: "int | None" = None,
+        *,
+        include_classified: bool = False,
+    ) -> "Iterator[Any]":
+        """Yield :class:`ClassifiableDocument` rows for the classifier chain.
+
+        Mirrors :meth:`PostgresBackend.iter_documents_for_classification`
+        (see that method's docstring for the contract).
+        """
+        from corpus_forge.classifiers.base import (  # noqa: PLC0415
+            ClassifiableDocument,
+        )
+
+        where_clauses: list[str] = []
+        params: list[Any] = []
+        if dataset_id is not None:
+            where_clauses.append("d.dataset_id = ?")
+            params.append(dataset_id)
+
+        if not include_classified:
+            where_clauses.append(
+                "NOT EXISTS ("
+                "  SELECT 1 FROM document_labels dl2"
+                "  JOIN labels l2 ON l2.id = dl2.label_id"
+                "  WHERE dl2.document_id = d.id"
+                "    AND l2.namespace = 'class'"
+                "    AND dl2.source LIKE 'classifier:%'"
+                ")"
+            )
+
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+        doc_rows = self._execute(
+            f"""
+            SELECT d.id AS document_id, d.source_uri, d.title, d.text, d.metadata
+            FROM documents d
+            {where_sql}
+            ORDER BY d.id
+            """,
+            tuple(params),
+        )
+        if not doc_rows:
+            return
+
+        ids = [int(r["document_id"]) for r in doc_rows]
+        placeholders = ",".join("?" * len(ids))
+        label_rows = self._execute(
+            f"""
+            SELECT dl.document_id, l.namespace, l.value
+            FROM document_labels dl
+            JOIN labels l ON l.id = dl.label_id
+            WHERE dl.document_id IN ({placeholders})
+            """,
+            tuple(ids),
+        )
+        labels_by_doc: dict[int, list[tuple[str, str]]] = {i: [] for i in ids}
+        for lr in label_rows:
+            labels_by_doc[int(lr["document_id"])].append((lr["namespace"], lr["value"]))
+
+        for row in doc_rows:
+            doc_id = int(row["document_id"])
+            md_raw = row["metadata"]
+            if isinstance(md_raw, str):
+                try:
+                    md = json.loads(md_raw)
+                except (TypeError, ValueError):
+                    md = {}
+            elif isinstance(md_raw, dict):
+                md = md_raw
+            else:
+                md = {}
+            yield ClassifiableDocument(
+                document_id=doc_id,
+                source_uri=row["source_uri"],
+                title=row.get("title") if hasattr(row, "get") else row["title"],
+                text=row["text"] or "",
+                format_labels=labels_by_doc.get(doc_id, []),
+                metadata=md,
+            )
