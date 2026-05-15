@@ -23,7 +23,7 @@ class TestProcessDocument:
     """Tests for _process_document."""
 
     def test_process_document_returns_chunks(self):
-        """Test that _process_document returns chunk tuples."""
+        """Test that _process_document returns TextChunk instances (Phase D HK-1)."""
         doc = RawDocument(
             source_uri="vault://test.md",
             content_hash="abc",
@@ -36,9 +36,10 @@ class TestProcessDocument:
         chunker = Chunker(max_chars=50, overlap=10)
         result = _process_document(doc, chunker)
         assert len(result) >= 1
-        for _heading, text in result:
-            assert isinstance(text, str)
-            assert len(text) > 0
+        for chunk in result:
+            assert isinstance(chunk, TextChunk)
+            assert isinstance(chunk.text, str)
+            assert len(chunk.text) > 0
 
     def test_process_document_empty_text(self):
         """Test that _process_document handles empty text."""

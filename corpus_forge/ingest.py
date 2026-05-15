@@ -5,7 +5,7 @@ import socket
 from typing import Any
 
 from .backends.base import StorageBackend
-from .chunkers.base import Chunker, PassthroughChunker
+from .chunkers.base import Chunker, PassthroughChunker, TextChunk
 from .config import Config
 from .embedders.base import Embedder
 from .embedders.registry import registry
@@ -135,6 +135,16 @@ def get_active_embedders(config: Config) -> list[Embedder]:
     return embedders
 
 
+# Module-level dispatcher singleton — Phase D housekeeping (HK-1).
+#
+# ``ChunkerDispatcher`` is cheap to construct and caches per-hint chunker
+# instances. Sharing one across ``ingest_one`` calls means the (possibly
+# expensive) ``CodeChunker`` is instantiated at most once per process.
+# Per-call construction would defeat the cache and re-import tree-sitter
+# on every code document.
+_DISPATCHER = ChunkerDispatcher()
+
+
 def ingest_one(
     backend: StorageBackend,
     raw: RawDocument | RawConversation,
@@ -157,14 +167,21 @@ def ingest_one(
         # Resolve active embedder IDs once at start for bulk embedding copy
         embedder_ids = [backend.register_embedder(e) for e in embedders] or None
 
+        # Phase D housekeeping (HK-1) — resolve the per-document chunker
+        # from ``raw.metadata["chunker_hint"]`` via the module-level
+        # dispatcher. Sources without a hint (markdown_vault, claude_code,
+        # opencode) keep their source-level chunker via the fallback —
+        # behaviour-preserving.
+        effective_chunker = _DISPATCHER.dispatch_for(raw, fallback=chunker)
+
         # Process based on type
         if isinstance(raw, RawDocument):
             # Process document
-            chunk_data = _process_document(raw, chunker)
+            chunk_data = _process_document(raw, effective_chunker)
             backend.upsert_document(dataset_id, raw, chunk_data, embedder_ids=embedder_ids)
         else:  # RawConversation
             # Process conversation
-            chunked_messages = _process_conversation(raw, chunker)
+            chunked_messages = _process_conversation(raw, effective_chunker)
             conv_id = backend.upsert_conversation(dataset_id, raw, chunked_messages)
             # If the source is a chat client (claude_code/opencode/gemini), link the session.
             # Prefer explicit _session_link_client on the source object; fall back to
@@ -191,16 +208,70 @@ def ingest_one(
             _write_embeddings_for_chunks(backend, embedder_id, embedder)
 
 
-def _process_document(doc: RawDocument, chunker: Chunker) -> list[tuple[str | None, str]]:
-    """Process a document into chunks with headings."""
-    chunks = chunker.chunk(doc.text)
-    return [(chunk.heading, chunk.text) for chunk in chunks]
+def _process_document(doc: RawDocument, chunker: Chunker) -> list[TextChunk]:
+    """Process a document into a list of :class:`TextChunk`.
+
+    Phase D housekeeping (HK-1 + HK-2):
+
+    - Returns ``list[TextChunk]`` (not flattened 2-tuples) so the storage
+      layer can persist ``chunk.metadata``, ``chunk.role``, and
+      ``chunk.token_count``.
+    - For :class:`corpus_forge.chunkers.code.CodeChunker`, threads
+      ``language`` (from ``doc.metadata["language"]``) and
+      ``relative_path`` (derived from ``doc.source_uri``) into the
+      ``chunk()`` call so the AST path can annotate chunks with
+      ``kind``/``name``/``byte_range``. Other chunkers receive only
+      ``text`` — preserving the legacy ``Chunker.chunk(text)`` shape.
+    """
+    text = doc.text
+    if not text:
+        return []
+
+    # Special-case CodeChunker so the AST path (and the byte-line
+    # fallback) get the metadata they need. Avoids polluting the base
+    # ``Chunker.chunk(text)`` signature.
+    try:
+        from .chunkers.code import CodeChunker  # noqa: PLC0415
+    except ImportError:  # pragma: no cover — only when [code] extra missing
+        CodeChunker = None  # type: ignore[assignment]
+
+    if CodeChunker is not None and isinstance(chunker, CodeChunker):
+        language = None
+        if isinstance(doc.metadata, dict):
+            language = doc.metadata.get("language")
+        relative_path = _relative_path_from_source_uri(doc.source_uri)
+        return chunker.chunk(text, language=language, relative_path=relative_path)
+
+    return chunker.chunk(text)
 
 
-def _process_conversation(
-    conv: RawConversation, chunker: Chunker
-) -> list[list[tuple[str | None, str]]]:
-    """Process a conversation into chunked messages."""
+def _relative_path_from_source_uri(source_uri: str) -> str | None:
+    """Best-effort extraction of a display path from a ``filesystem://`` URI.
+
+    Used by :func:`_process_document` to feed
+    ``CodeChunker.chunk(relative_path=...)`` so AST-emitted chunks carry
+    the ``# <relative path> :: <kind> <name>`` header. Returns ``None``
+    for non-filesystem URIs (markdown_vault, claude_code, etc.) — in
+    that case the chunker simply skips the header line.
+    """
+    prefix = "filesystem://"
+    if not source_uri.startswith(prefix):
+        return None
+    body = source_uri[len(prefix) :]
+    # ``filesystem://{root.name}/{rel_path}`` — strip the root.name prefix.
+    sep = body.find("/")
+    if sep == -1:
+        return body or None
+    return body[sep + 1 :] or None
+
+
+def _process_conversation(conv: RawConversation, chunker: Chunker) -> list[list[TextChunk]]:
+    """Process a conversation into chunked messages.
+
+    Returns ``list[list[TextChunk]]`` (one list per source message) so
+    storage backends can persist chunk-level metadata. The conversation
+    chunker shape is otherwise unchanged.
+    """
     # Extract text from each message
     message_texts = [msg.content for msg in conv.messages]
 
@@ -212,13 +283,13 @@ def _process_conversation(
             # Group chunks by message - simplified approach
             # In reality, we'd need to track which chunks belong to which message
             # For now, return a list where each element corresponds to a message
-            result = []
+            result: list[list[TextChunk]] = []
             chunk_idx = 0
             for _msg_idx, _msg in enumerate(conv.messages):
-                msg_chunks = []
+                msg_chunks: list[TextChunk] = []
                 # Simple distribution - in reality this would be more complex
                 if chunk_idx < len(chunks):
-                    msg_chunks.append((chunks[chunk_idx].heading, chunks[chunk_idx].text))
+                    msg_chunks.append(chunks[chunk_idx])
                     chunk_idx += 1
                 result.append(msg_chunks)
             return result
@@ -235,7 +306,7 @@ def _process_conversation(
 
             simple_chunker = Chunker()
             chunks = simple_chunker.chunk(msg.content)
-            result.append([(chunk.heading, chunk.text) for chunk in chunks])
+            result.append(list(chunks))
         else:
             result.append([])
 

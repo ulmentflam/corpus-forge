@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from corpus_forge.chunkers.base import MarkdownChunker
+from corpus_forge.chunkers.base import MarkdownChunker, TextChunk
 from corpus_forge.ingest import (
     _get_or_create_dataset,
     _instantiate_source,
@@ -34,7 +34,8 @@ class TestProcessDocument:
         chunker = MarkdownChunker(max_chars=1500)
         result = _process_document(doc, chunker)
         assert len(result) == 1
-        assert result[0][1] == "Short text"
+        assert isinstance(result[0], TextChunk)
+        assert result[0].text == "Short text"
 
     def test_process_document_multiple_chunks(self):
         """Test processing a document that spans multiple chunks."""
@@ -51,8 +52,9 @@ class TestProcessDocument:
         chunker = MarkdownChunker(max_chars=1000)
         result = _process_document(doc, chunker)
         assert len(result) > 1
-        for _heading, text in result:
-            assert len(text) <= chunker.max_chars + chunker.overlap
+        for chunk in result:
+            assert isinstance(chunk, TextChunk)
+            assert len(chunk.text) <= chunker.max_chars + chunker.overlap
 
     def test_process_document_empty(self):
         """Test processing an empty document."""
@@ -83,7 +85,8 @@ class TestProcessDocument:
         chunker = MarkdownChunker(max_chars=1500)
         result = _process_document(doc, chunker)
         assert len(result) == 1
-        assert "# Title" in result[0][1]
+        assert isinstance(result[0], TextChunk)
+        assert "# Title" in result[0].text
 
 
 class TestProcessConversation:
@@ -492,16 +495,17 @@ class TestIngestOneEmbedderIds:
             labels=[],
         )
         chunker = MagicMock()
-        mock_chunk = MagicMock()
-        mock_chunk.heading = "h1"
-        mock_chunk.text = "chunk text"
+        mock_chunk = TextChunk(text="chunk text", heading="h1")
         chunker.chunk.return_value = [mock_chunk]
 
         ingest_one(backend, doc, chunker, [MagicMock()], dataset_id=1)
 
-        backend.upsert_document.assert_called_once_with(
-            1, doc, [("h1", "chunk text")], embedder_ids=[42]
-        )
+        # Phase D HK-1: upsert_document now receives a list of TextChunk
+        # instances instead of (heading, text) tuples.
+        backend.upsert_document.assert_called_once()
+        call_args = backend.upsert_document.call_args
+        assert call_args.args == (1, doc, [mock_chunk])
+        assert call_args.kwargs == {"embedder_ids": [42]}
 
     def test_upsert_document_receives_embedder_ids_none_when_no_embedders(self):
         """upsert_document is called with embedder_ids=None when no embedders."""
@@ -517,13 +521,13 @@ class TestIngestOneEmbedderIds:
             labels=[],
         )
         chunker = MagicMock()
-        mock_chunk = MagicMock()
-        mock_chunk.heading = "h1"
-        mock_chunk.text = "chunk text"
+        mock_chunk = TextChunk(text="chunk text", heading="h1")
         chunker.chunk.return_value = [mock_chunk]
 
         ingest_one(backend, doc, chunker, [], dataset_id=1)
 
-        backend.upsert_document.assert_called_once_with(
-            1, doc, [("h1", "chunk text")], embedder_ids=None
-        )
+        # Phase D HK-1: upsert_document receives TextChunk instances, not tuples.
+        backend.upsert_document.assert_called_once()
+        call_args = backend.upsert_document.call_args
+        assert call_args.args == (1, doc, [mock_chunk])
+        assert call_args.kwargs == {"embedder_ids": None}

@@ -2948,3 +2948,50 @@ behavior") points the same way.
 - E-08: live Mistral e2e (`requires_mistral_api` marker).
 - E-09: Makefile + secrets.env.example + docs/architecture.md VLM section.
 - E-10: manual cross-backend smoke; P1 gate close.
+
+## Phase D housekeeping (post-P1) — chunker dispatch + chunk metadata wiring
+
+Smoke against corpus-forge itself surfaced two wiring gaps that bypass
+Wave-0 (D-05 ChunkerDispatcher) and Wave-1 (D-13 CodeExtractor + CodeChunker
+metadata):
+
+| id | title | depends_on | surface | risk | status | claimed_by | notes |
+|----|-------|------------|---------|------|--------|------------|-------|
+| HK-1 | ChunkerDispatcher wired into `ingest_one` (per-doc chunker by hint) | — | `corpus_forge/ingest.py`, `tests/unit/test_ingest_core.py`, `tests/unit/test_ingest_filesystem.py`, `tests/unit/test_chunker_dispatch.py`, `tests/integration/test_multi_format_ingest_e2e.py` | med | done | tdd-coder | green: dispatcher fires on chunker_hint; full chunk-list returned |
+| HK-2 | `TextChunk.metadata` round-trips through both backends | HK-1 | `corpus_forge/backends/base.py`, `corpus_forge/backends/postgres.py`, `corpus_forge/backends/sqlite.py`, `corpus_forge/ingest.py`, `tests/unit/test_sqlite_backend.py`, `tests/unit/test_postgres_backend.py`, `tests/unit/test_chunk_reuse.py`, `tests/integration/test_backend_sqlite.py`, `tests/integration/test_backend_dual.py`, `tests/integration/test_chunk_reuse_e2e.py`, `tests/integration/test_chunk_reuse_isolation.py`, `tests/integration/test_multi_format_ingest_e2e.py` | high | done | tdd-coder | green: chunks.metadata persists round-trip; legacy 2-tuple callers accepted |
+
+### Acceptance — HK-1 ChunkerDispatcher wiring
+
+- `ingest_one(backend, raw, chunker, embedders, dataset_id, source=None)`
+  resolves a per-document chunker via `ChunkerDispatcher.dispatch_for(raw,
+  fallback=chunker)` before chunking. Sources that don't set
+  `chunker_hint` (markdown_vault, claude_code, opencode) keep the
+  fallback chunker — zero behavioural change.
+- `_process_document(doc, chunker)` returns `list[TextChunk]` (no
+  flattening to `(heading, text)` tuples).
+- A unit test constructs `RawDocument(metadata={"chunker_hint": "code"})`
+  and asserts that the chunker passed to `chunker.chunk(...)` is a
+  `CodeChunker`, not the source-level fallback.
+- The integration suite asserts that ingesting
+  `tests/fixtures/multi_format_corpus/code/python/module.py` produces at
+  least one chunk row whose `metadata->>'kind'` is non-null.
+
+### Acceptance — HK-2 chunk metadata round-trip
+
+- `StorageBackend.upsert_document` accepts
+  `chunks: list[TextChunk] | list[tuple[str | None, str]]` — production
+  code passes `TextChunk` after HK-1; legacy 2-tuple callers (existing
+  tests + `tests/smoke`) still work via internal coercion.
+- `StorageBackend.upsert_conversation` accepts
+  `chunked_messages: list[list[TextChunk]] | list[list[tuple]]` likewise.
+- Both backends persist `TextChunk.metadata` (and `role`, `token_count`)
+  to the existing `chunks` row. BUG-3 chunk-reuse (UPDATE-in-place when
+  content_hash matches) is preserved.
+- A round-trip test ingests a `RawDocument` whose chunks carry
+  `metadata={"kind": "Function", "name": "foo", "language": "python"}`
+  and asserts `SELECT metadata FROM chunks WHERE document_id = ?`
+  returns the same JSON object on both Postgres and SQLite.
+- Manual smoke (`/tmp/cf-smoke`): `sqlite3 -header ...
+  SELECT json_extract(metadata, '$.kind'), COUNT(*) FROM chunks GROUP BY 1`
+  shows non-null `kind` rows after ingesting the corpus-forge source
+  tree.

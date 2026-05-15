@@ -18,10 +18,37 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..chunkers.base import TextChunk
 from ..identity import chunk_content_hash
 from ..schema import migrate as _migrate_module
 from ..sources.base import RawDocument
 from .sqlite_vec_loader import SQLITE_VEC_AVAILABLE, load_sqlite_vec
+
+# Width of the legacy ``(heading, text)`` chunk shape accepted by
+# :func:`_coerce_to_textchunk`. See ``postgres.py`` for rationale.
+_LEGACY_CHUNK_TUPLE_LEN = 2
+
+
+def _coerce_to_textchunk(item: Any) -> TextChunk:
+    """Normalize a chunk input to a :class:`TextChunk`.
+
+    Phase D housekeeping (HK-2): backends accept both the production
+    ``TextChunk`` shape and the legacy ``(heading, text)`` 2-tuple shape
+    used by older tests and ``tests/smoke``. Coercing at the backend
+    boundary lets the storage path treat everything uniformly without
+    forcing every caller to migrate at once.
+    """
+    if isinstance(item, TextChunk):
+        return item
+    # Legacy ``(heading, text)`` shape.
+    if isinstance(item, tuple) and len(item) == _LEGACY_CHUNK_TUPLE_LEN:
+        heading, text = item
+        return TextChunk(text=text, heading=heading, metadata={})
+    raise TypeError(
+        f"upsert_document/upsert_conversation chunk inputs must be "
+        f"TextChunk or (heading, text) tuples; got {type(item).__name__}"
+    )
+
 
 if TYPE_CHECKING:
     import numpy as np
@@ -637,7 +664,7 @@ class SQLiteBackend:
         self,
         dataset_id: int,
         doc: "RawDocument",
-        chunks: list[tuple[str | None, str]],
+        chunks: "list[TextChunk] | list[tuple[str | None, str]]",
         embedder_ids: list[int] | None = None,
     ) -> int:
         """Insert or update a document and its chunks.
@@ -646,7 +673,15 @@ class SQLiteBackend:
         matches (preserving the chunk_id and therefore the embedding rows)
         rather than DELETE-then-INSERT all chunks.  Only genuinely removed
         chunks are deleted, and only truly new chunks are inserted.
+
+        Accepts either :class:`TextChunk` instances (production path —
+        persists ``metadata``/``role``/``token_count``) or legacy
+        ``(heading, text)`` 2-tuples (defaults metadata to ``{}``).
         """
+        # Phase D housekeeping (HK-2): normalize at the boundary so the
+        # rest of this method can assume TextChunk shape.
+        norm_chunks: list[TextChunk] = [_coerce_to_textchunk(c) for c in chunks]
+
         # Check if document already exists
         existing = self._execute(
             "SELECT id, content_hash FROM documents WHERE dataset_id = ? AND source_uri = ?",
@@ -699,7 +734,7 @@ class SQLiteBackend:
                     prior_by_hash.setdefault(pr["content_hash"], pr["id"])
 
             # Compute new chunk hashes
-            new_chunk_hashes = {chunk_content_hash(t) for _, t in chunks}
+            new_chunk_hashes = {chunk_content_hash(c.text) for c in norm_chunks}
 
             # Build reusable map: content_hash -> prior chunk_id
             reusable: dict[str, int] = {}
@@ -716,18 +751,30 @@ class SQLiteBackend:
             used_prior_ids: set[int] = set()
             cache: dict[tuple[str, int], int] = {}
 
-            for i, (heading, text) in enumerate(chunks):
-                chunk_hash = chunk_content_hash(text)
+            for i, chunk in enumerate(norm_chunks):
+                chunk_hash = chunk_content_hash(chunk.text)
+                meta_json = json.dumps(chunk.metadata or {})
                 prior_id = reusable.get(chunk_hash)
                 if prior_id is not None and prior_id not in used_prior_ids:
-                    # Update-in-place: keep chunk_id (preserves embedding rows)
+                    # Update-in-place: keep chunk_id (preserves embedding rows).
+                    # HK-2: also refresh metadata/role/token_count so
+                    # extractor-emitted labels propagate on re-ingest.
                     self._execute(
                         """
                         UPDATE chunks
-                        SET chunk_index = ?, heading = ?, text = ?
+                        SET chunk_index = ?, heading = ?, text = ?,
+                            metadata = ?, role = ?, token_count = ?
                         WHERE id = ?
                         """,
-                        (i, heading, text, prior_id),
+                        (
+                            i,
+                            chunk.heading,
+                            chunk.text,
+                            meta_json,
+                            chunk.role,
+                            chunk.token_count,
+                            prior_id,
+                        ),
                     )
                     used_prior_ids.add(prior_id)
                 else:
@@ -735,11 +782,21 @@ class SQLiteBackend:
                     row = self._execute(
                         """
                         INSERT INTO chunks
-                        (document_id, chunk_index, heading, text, metadata, content_hash)
-                        VALUES (?, ?, ?, ?, '{}', ?)
+                        (document_id, chunk_index, heading, text, metadata,
+                         role, token_count, content_hash)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         RETURNING id
                         """,
-                        (doc_id, i, heading, text, chunk_hash),
+                        (
+                            doc_id,
+                            i,
+                            chunk.heading,
+                            chunk.text,
+                            meta_json,
+                            chunk.role,
+                            chunk.token_count,
+                            chunk_hash,
+                        ),
                     )
                     new_chunk_id = row[0]["id"]
                     if embedder_ids:
@@ -778,16 +835,27 @@ class SQLiteBackend:
 
         # Add chunks for new document
         cache: dict[tuple[str, int], int] = {}
-        for i, (heading, text) in enumerate(chunks):
-            chunk_hash = chunk_content_hash(text)
+        for i, chunk in enumerate(norm_chunks):
+            chunk_hash = chunk_content_hash(chunk.text)
+            meta_json = json.dumps(chunk.metadata or {})
             row = self._execute(
                 """
                 INSERT INTO chunks
-                (document_id, chunk_index, heading, text, metadata, content_hash)
-                VALUES (?, ?, ?, ?, '{}', ?)
+                (document_id, chunk_index, heading, text, metadata,
+                 role, token_count, content_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
                 """,
-                (doc_id, i, heading, text, chunk_hash),
+                (
+                    doc_id,
+                    i,
+                    chunk.heading,
+                    chunk.text,
+                    meta_json,
+                    chunk.role,
+                    chunk.token_count,
+                    chunk_hash,
+                ),
             )
             if embedder_ids:
                 self._copy_reusable_embeddings(row[0]["id"], chunk_hash, embedder_ids, cache)
@@ -901,9 +969,13 @@ class SQLiteBackend:
         self,
         dataset_id: int,
         conv: "RawConversation",
-        chunked_messages: list[list[tuple[str | None, str]]],
+        chunked_messages: "list[list[TextChunk]] | list[list[tuple[str | None, str]]]",
     ) -> int:
         """Insert or update a conversation and its messages/chunks.
+
+        Phase D housekeeping (HK-2): ``chunked_messages`` accepts either
+        :class:`TextChunk` lists (preferred) or legacy
+        ``(heading, text)`` 2-tuple lists, normalized at the boundary.
 
         Mirrors ``PostgresBackend.upsert_conversation`` semantics in SQLite
         dialect.  The flow is:
@@ -1017,22 +1089,29 @@ class SQLiteBackend:
         for msg_idx, chunks_in_msg in enumerate(chunked_messages):
             message_id = message_ids[msg_idx]
             message_role = conv.messages[msg_idx].role
-            for chunk_idx, (heading, text) in enumerate(chunks_in_msg):
-                chunk_hash = chunk_content_hash(text)
+            for chunk_idx, raw_chunk in enumerate(chunks_in_msg):
+                chunk = _coerce_to_textchunk(raw_chunk)
+                chunk_hash = chunk_content_hash(chunk.text)
+                meta_json = json.dumps(chunk.metadata or {})
+                # The message role wins over chunk.role for conversation
+                # chunks — chunk-level role is reserved for non-chat
+                # chunkers. Token count is optional and may be None.
                 self._execute(
                     """
                     INSERT INTO chunks
                     (conversation_id, message_id, chunk_index, heading, text,
-                     metadata, role, content_hash)
-                    VALUES (?, ?, ?, ?, ?, '{}', ?, ?)
+                     metadata, role, token_count, content_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         conv_id,
                         message_id,
                         chunk_idx,
-                        heading,
-                        text,
+                        chunk.heading,
+                        chunk.text,
+                        meta_json,
                         message_role,
+                        chunk.token_count,
                         chunk_hash,
                     ),
                 )

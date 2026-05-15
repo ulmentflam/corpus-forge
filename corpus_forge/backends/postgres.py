@@ -15,6 +15,7 @@ import psycopg
 from psycopg import sql as pgsql
 from psycopg.rows import dict_row
 
+from ..chunkers.base import TextChunk
 from ..identity import advisory_lock_key, chunk_content_hash
 from .base import StorageBackend
 
@@ -22,6 +23,35 @@ if TYPE_CHECKING:
     from corpus_forge.sources.base import RawConversation, RawDocument
 
     from ..retrieval.types import Hit
+
+
+# Width of the legacy ``(heading, text)`` chunk shape accepted by
+# :func:`_coerce_to_textchunk`. Pulled to a module constant so the
+# ``isinstance ... len(item) == _LEGACY_CHUNK_TUPLE_LEN`` check stays
+# readable without a ruff ``PLR2004`` magic-number flag.
+_LEGACY_CHUNK_TUPLE_LEN = 2
+
+
+def _coerce_to_textchunk(item: Any) -> TextChunk:
+    """Normalize a chunk input to a :class:`TextChunk`.
+
+    Phase D housekeeping (HK-2): backends accept both the production
+    ``TextChunk`` shape and the legacy ``(heading, text)`` 2-tuple shape
+    used by older tests and ``tests/smoke``. Coercing at the backend
+    boundary lets the storage path treat everything uniformly without
+    forcing every caller to migrate at once.
+    """
+    if isinstance(item, TextChunk):
+        return item
+    # Legacy ``(heading, text)`` shape.
+    if isinstance(item, tuple) and len(item) == _LEGACY_CHUNK_TUPLE_LEN:
+        heading, text = item
+        return TextChunk(text=text, heading=heading, metadata={})
+    raise TypeError(
+        f"upsert_document/upsert_conversation chunk inputs must be "
+        f"TextChunk or (heading, text) tuples; got {type(item).__name__}"
+    )
+
 
 logger = logging.getLogger(__name__)
 
@@ -333,7 +363,7 @@ class PostgresBackend(StorageBackend):
         self,
         dataset_id: int,
         doc: "RawDocument",
-        chunks: list[tuple[str | None, str]],
+        chunks: "list[TextChunk] | list[tuple[str | None, str]]",
         embedder_ids: list[int] | None = None,
     ) -> int:
         """Insert or update a document and its chunks.
@@ -342,7 +372,16 @@ class PostgresBackend(StorageBackend):
         matches (preserving the chunk_id and therefore the embedding rows) rather
         than DELETE-then-INSERT all chunks.  Only genuinely removed chunks are
         deleted, and only truly new chunks are inserted.
+
+        Phase D housekeeping (HK-2): ``chunks`` accepts either
+        :class:`TextChunk` instances (production path — persists
+        ``metadata``/``role``/``token_count``) or legacy
+        ``(heading, text)`` 2-tuples (defaults metadata to ``{}``).
         """
+        # Normalize at the boundary so the rest of this method can assume
+        # TextChunk shape.
+        norm_chunks: list[TextChunk] = [_coerce_to_textchunk(c) for c in chunks]
+
         # Check if document already exists
         existing = self._execute(
             "SELECT id FROM corpus.documents WHERE dataset_id = %s AND source_uri = %s",
@@ -395,7 +434,7 @@ class PostgresBackend(StorageBackend):
 
             # Compute the set of new content_hashes to determine which prior
             # chunks to keep vs delete.
-            new_chunk_hashes = {chunk_content_hash(t) for _, t in chunks}
+            new_chunk_hashes = {chunk_content_hash(c.text) for c in norm_chunks}
 
             # Build a "reuse by hash" map: for chunks whose content_hash appears
             # in the new set, match them to new chunk positions greedily.
@@ -417,18 +456,30 @@ class PostgresBackend(StorageBackend):
             # Reuse cache for _copy_reusable_embeddings (cross-document or new chunks)
             cache: dict[tuple[str, int], int] = {}
 
-            for i, (heading, text) in enumerate(chunks):
-                chunk_hash = chunk_content_hash(text)
+            for i, chunk in enumerate(norm_chunks):
+                chunk_hash = chunk_content_hash(chunk.text)
+                meta = psycopg.types.json.Json(chunk.metadata or {})
                 prior_id = reusable.get(chunk_hash)
                 if prior_id is not None and prior_id not in used_prior_ids:
-                    # Update-in-place: change chunk_index/heading but keep id + embeddings
+                    # Update-in-place: keep chunk_id (preserves embedding rows).
+                    # HK-2: also refresh metadata/role/token_count so
+                    # extractor-emitted labels propagate on re-ingest.
                     self._execute(
                         """
                         UPDATE corpus.chunks
-                        SET chunk_index = %s, heading = %s, text = %s
+                        SET chunk_index = %s, heading = %s, text = %s,
+                            metadata = %s, role = %s, token_count = %s
                         WHERE id = %s
                         """,
-                        (i, heading, text, prior_id),
+                        (
+                            i,
+                            chunk.heading,
+                            chunk.text,
+                            meta,
+                            chunk.role,
+                            chunk.token_count,
+                            prior_id,
+                        ),
                     )
                     used_prior_ids.add(prior_id)
                     # Embedding already exists for prior_id; no need to copy/encode
@@ -436,11 +487,21 @@ class PostgresBackend(StorageBackend):
                     row = self._execute(
                         """
                         INSERT INTO corpus.chunks
-                        (document_id, chunk_index, heading, text, metadata, content_hash)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        (document_id, chunk_index, heading, text, metadata,
+                         role, token_count, content_hash)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING id
                         """,
-                        (doc_id, i, heading, text, psycopg.types.json.Json({}), chunk_hash),
+                        (
+                            doc_id,
+                            i,
+                            chunk.heading,
+                            chunk.text,
+                            meta,
+                            chunk.role,
+                            chunk.token_count,
+                            chunk_hash,
+                        ),
                     )
                     if embedder_ids is not None:
                         self._copy_reusable_embeddings(
@@ -475,16 +536,27 @@ class PostgresBackend(StorageBackend):
 
         # Add chunks for new document
         cache: dict[tuple[str, int], int] = {}
-        for i, (heading, text) in enumerate(chunks):
-            chunk_hash = chunk_content_hash(text)
+        for i, chunk in enumerate(norm_chunks):
+            chunk_hash = chunk_content_hash(chunk.text)
+            meta = psycopg.types.json.Json(chunk.metadata or {})
             row = self._execute(
                 """
                 INSERT INTO corpus.chunks
-                (document_id, chunk_index, heading, text, metadata, content_hash)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                (document_id, chunk_index, heading, text, metadata,
+                 role, token_count, content_hash)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (doc_id, i, heading, text, psycopg.types.json.Json({}), chunk_hash),
+                (
+                    doc_id,
+                    i,
+                    chunk.heading,
+                    chunk.text,
+                    meta,
+                    chunk.role,
+                    chunk.token_count,
+                    chunk_hash,
+                ),
             )
             if embedder_ids is not None:
                 self._copy_reusable_embeddings(row[0]["id"], chunk_hash, embedder_ids, cache)
@@ -532,9 +604,14 @@ class PostgresBackend(StorageBackend):
         self,
         dataset_id: int,
         conv: "RawConversation",
-        chunked_messages: list[list[tuple[str | None, str]]],
+        chunked_messages: "list[list[TextChunk]] | list[list[tuple[str | None, str]]]",
     ) -> int:
-        """Insert or update a conversation and its messages/chunks."""
+        """Insert or update a conversation and its messages/chunks.
+
+        Phase D housekeeping (HK-2): ``chunked_messages`` accepts either
+        :class:`TextChunk` lists (preferred) or legacy
+        ``(heading, text)`` 2-tuple lists, normalized at the boundary.
+        """
         # Check if conversation already exists
         existing = self._execute(
             "SELECT id FROM corpus.conversations WHERE dataset_id = %s AND source_uri = %s",
@@ -643,21 +720,25 @@ class PostgresBackend(StorageBackend):
         # Add chunks for each message
         for msg_idx, chunks_in_msg in enumerate(chunked_messages):
             message_id = message_ids[msg_idx]
-            for chunk_idx, (heading, text) in enumerate(chunks_in_msg):
+            for chunk_idx, raw_chunk in enumerate(chunks_in_msg):
+                chunk = _coerce_to_textchunk(raw_chunk)
+                meta = psycopg.types.json.Json(chunk.metadata or {})
                 self._execute(
                     """
-                    INSERT INTO corpus.chunks 
-                    (conversation_id, message_id, chunk_index, heading, text, metadata, role)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO corpus.chunks
+                    (conversation_id, message_id, chunk_index, heading, text,
+                     metadata, role, token_count)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         conv_id,
                         message_id,
                         chunk_idx,
-                        heading,
-                        text,
-                        psycopg.types.json.Json({}),
+                        chunk.heading,
+                        chunk.text,
+                        meta,
                         conv.messages[msg_idx].role,
+                        chunk.token_count,
                     ),
                 )
 

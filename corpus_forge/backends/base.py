@@ -2,7 +2,7 @@
 
 from collections.abc import Iterator
 from contextlib import AbstractContextManager
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     import numpy as np
@@ -23,9 +23,23 @@ class StorageBackend(Protocol):
         self,
         dataset_id: int,
         doc: "RawDocument",
-        chunks: list[tuple[str | None, str]],
+        chunks: list[Any],
         embedder_ids: "list[int] | None" = None,
-    ) -> int: ...
+    ) -> int:
+        """Insert or update a document and its chunks.
+
+        Phase D housekeeping (HK-2): ``chunks`` accepts either
+        :class:`~corpus_forge.chunkers.base.TextChunk` instances
+        (preferred — carries ``metadata``, ``role``, ``token_count``) or
+        the legacy ``(heading, text)`` 2-tuple shape used by older tests
+        and ``tests/smoke``. Implementations coerce on the way in.
+
+        Typed as ``list[Any]`` so the invariant-``list`` mismatch between
+        the Protocol and the per-backend implementations stays out of
+        the type checker's way; both backends document the accepted
+        shapes in their own docstrings.
+        """
+        ...
 
     def find_document(self, dataset_id: int, source_uri: str) -> "dict | None": ...
 
@@ -33,8 +47,15 @@ class StorageBackend(Protocol):
         self,
         dataset_id: int,
         conv: "RawConversation",
-        chunked_messages: list[list[tuple[str | None, str]]],
-    ) -> int: ...
+        chunked_messages: list[list[Any]],
+    ) -> int:
+        """Insert or update a conversation and its messages/chunks.
+
+        ``chunked_messages`` accepts either :class:`TextChunk` instances
+        or the legacy ``(heading, text)`` 2-tuple shape, same as
+        :meth:`upsert_document`.
+        """
+        ...
 
     def write_embeddings(self, embedder_id: int, pairs: list[tuple[int, "np.ndarray"]]) -> None: ...
 
