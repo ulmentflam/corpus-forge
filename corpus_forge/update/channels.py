@@ -11,9 +11,12 @@ detection misses (the dispatcher honours the override). Unknown
 channels fall through to ``pip`` since that's the lowest-common-
 denominator installer.
 
-Cross-channel order of preference (when multiple matches are
-plausible — e.g. uv tool installs also leave a pip-style entry in the
-PATH): ``source > docker > uv-tool > pipx > brew > pip``.
+Cross-channel order of preference: explicit-substring probes
+(uv-tool / pipx / brew) win first, then env-sentinel docker, then the
+``git rev-parse`` source-checkout probe, with ``pip`` as the
+catch-all fallback. The explicit-substring probes run first so a
+``uv tool install`` from inside a git clone is still detected as
+``uv-tool``, not ``source``.
 """
 
 from __future__ import annotations
@@ -56,30 +59,29 @@ def detect_channel(*, executable: str | None = None, env: dict[str, str] | None 
     no-clear-signal — the safest delegated upgrade command across
     every Linux distro / macOS / Windows install layout.
     """
-    exe = Path(executable or sys.executable).resolve()
+    # Don't ``.resolve()`` — on Windows that maps an arbitrary POSIX
+    # path against the current drive and raises ``NotADirectoryError``
+    # for fake test inputs. Substring matching below doesn't need a
+    # resolved path.
+    exe = Path(executable or sys.executable)
     e = env if env is not None else os.environ
 
-    # 1. ``source``: ``git rev-parse --is-inside-work-tree`` succeeds
-    #    from the venv's parent. Only flagged when the venv lives
-    #    INSIDE a git checkout (typical for ``setup-corpus-forge.sh`` /
-    #    ``uv sync``). Cheap subprocess; fail-closed on any error.
-    venv_dir = exe.parent.parent  # .venv/bin/python → .venv → repo
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            cwd=venv_dir.parent,
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-        if result.returncode == 0 and result.stdout.strip() == "true":
-            return "source"
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        # git not installed / hung — fall through.
-        pass
+    exe_str = str(exe)
 
-    # 2. ``docker``: container env vars set by Docker / Podman, plus the
+    # 1. ``uv-tool``: ``uv tool install`` puts the venv under
+    #    ``$XDG_DATA_HOME/uv/tools/<pkg>/`` (or ``~/.local/share/uv``).
+    if "/uv/tools/" in exe_str or "\\uv\\tools\\" in exe_str:
+        return "uv-tool"
+
+    # 2. ``pipx``: standard layout is ``~/.local/pipx/venvs/<pkg>/``.
+    if "/pipx/venvs/" in exe_str or "\\pipx\\venvs\\" in exe_str:
+        return "pipx"
+
+    # 3. ``brew``: Homebrew installs land under Cellar/.
+    if "/Cellar/" in exe_str:
+        return "brew"
+
+    # 4. ``docker``: container env vars set by Docker / Podman, plus the
     #    ``/.dockerenv`` filesystem sentinel.
     if (
         e.get("DOCKER_CONTAINER")
@@ -89,19 +91,28 @@ def detect_channel(*, executable: str | None = None, env: dict[str, str] | None 
     ):
         return "docker"
 
-    # 3. ``uv-tool``: ``uv tool install`` puts the venv under
-    #    ``$XDG_DATA_HOME/uv/tools/<pkg>/`` (or ``~/.local/share/uv``).
-    exe_str = str(exe)
-    if "/uv/tools/" in exe_str or "\\uv\\tools\\" in exe_str:
-        return "uv-tool"
-
-    # 4. ``pipx``: standard layout is ``~/.local/pipx/venvs/<pkg>/``.
-    if "/pipx/venvs/" in exe_str or "\\pipx\\venvs\\" in exe_str:
-        return "pipx"
-
-    # 5. ``brew``: Homebrew installs land under Cellar/.
-    if "/Cellar/" in exe_str:
-        return "brew"
+    # 5. ``source``: ``git rev-parse --is-inside-work-tree`` succeeds
+    #    from the venv's parent. Only flagged when the venv lives
+    #    INSIDE a git checkout (typical for ``setup-corpus-forge.sh`` /
+    #    ``uv sync``). Cheap subprocess; fail-closed on any error.
+    #    Runs LAST so it can't claim a layout one of the explicit
+    #    substring probes above would have correctly identified.
+    venv_dir = exe.parent.parent  # .venv/bin/python → .venv → repo
+    if venv_dir.exists():
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--is-inside-work-tree"],
+                cwd=venv_dir.parent,
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            if result.returncode == 0 and result.stdout.strip() == "true":
+                return "source"
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            # git not installed / hung — fall through.
+            pass
 
     # 6. ``pip``: everything else.
     return "pip"
