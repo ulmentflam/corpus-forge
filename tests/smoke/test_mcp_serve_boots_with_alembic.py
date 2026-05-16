@@ -42,6 +42,7 @@ import json
 import os
 import select
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -51,9 +52,15 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
-_VENV_BIN = Path(__file__).resolve().parent.parent.parent / ".venv" / "bin"
-_CORPUS_FORGE_BIN = _VENV_BIN / "corpus-forge"
-_VENV_PYTHON = _VENV_BIN / "python"
+# ``sys.executable`` is the interpreter currently running pytest — same
+# venv on every platform, no need to guess between POSIX's
+# ``.venv/bin/python`` and Windows' ``.venv\Scripts\python.exe`` layouts.
+# Avoids the iCloud-sync-stale-shebang issue documented in
+# ``_boot_and_send_initialize`` below because we invoke
+# ``python -m corpus_forge.cli`` directly, not the entry-point script.
+_VENV_PYTHON = Path(sys.executable)
+_VENV_BIN = _VENV_PYTHON.parent
+_CORPUS_FORGE_BIN = _VENV_BIN / ("corpus-forge.exe" if sys.platform == "win32" else "corpus-forge")
 
 _MCP_INITIALIZE_REQUEST = (
     json.dumps(
@@ -188,7 +195,13 @@ def _boot_and_send_initialize(
 # pytestmark
 # ---------------------------------------------------------------------------
 
-pytestmark = pytest.mark.smoke
+# Module is marked ``requires_unix`` because ``_boot_and_send_initialize``
+# uses ``select.select()`` on the subprocess's stdout pipe. ``select`` on
+# Windows only accepts sockets, not file descriptors, so the call raises
+# ``OSError`` at runtime there. Cross-platform replacement would use a
+# reader thread + ``queue.Queue`` — a worthwhile rewrite but separate
+# scope from the Phase I-01 portability sweep.
+pytestmark = [pytest.mark.smoke, pytest.mark.requires_unix]
 
 
 # ---------------------------------------------------------------------------
