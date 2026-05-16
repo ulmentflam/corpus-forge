@@ -320,3 +320,76 @@ single hosted model endpoint.
 
 For the wave-by-wave history, see
 [`.planning/tdd/phase_e_classification.md`](../.planning/tdd/phase_e_classification.md).
+
+## Code enrichment
+
+Phase H attaches LLM-synthesised metadata to every chunk of a
+`class=code` document. The pipeline is gated by Phase E's classifier
+output — non-code documents are silently skipped by
+`StorageBackend.iter_code_chunks_for_enrichment` — so the LLM cost only
+lands where it matters.
+
+```
+classify → "class=code" docs → iter_code_chunks_for_enrichment → CodeEnricher → update_chunk_enrichment
+                                          ↑                          ↑                 ↑
+                                  filters on class=code     enrich(chunk, language)  jsonb_set 'enrichment'
+                                  AND missing-or-stale model
+```
+
+The enrichment record (`chunks.metadata.enrichment`) carries five keys:
+
+| key | type | purpose |
+|---|---|---|
+| `docstring` | `str` or `null` | synthesised docstring or `null` when existing one suffices |
+| `summary` | `str` | 1-2 sentence semantic summary in domain language |
+| `symbols` | `list[str]` | referenced symbol names (flat; P2 reserved for graph storage) |
+| `model` | `str` | model tag that produced the record; idempotency key |
+| `confidence` | `float` | self-reported `[0.0, 1.0]` |
+
+### Backend matrix
+
+| backend | local-or-remote | API shape | auth |
+|---|---|---|---|
+| `QwenCoderLocal` | local | Ollama `/api/generate` | none |
+| `QwenCoderRemote(api_shape="ollama")` | remote | Ollama `/api/generate` | optional `Authorization: Bearer …` |
+| `QwenCoderRemote(api_shape="openai")` | remote | OpenAI `/chat/completions` (`response_format=json_object`) | required `Authorization: Bearer …` |
+
+All three concrete backends share the inner-JSON parser
+`corpus_forge.enrichers.base._parse_enrichment_response`. A model that
+emits malformed JSON or the wrong shape produces a graceful-fallback
+`CodeChunkEnrichment(summary="invalid LLM output", confidence=0.0)`
+with a WARNING log — never an exception. Transport failures (timeout,
+connection refused, 4xx/5xx, missing envelope keys) raise typed
+exceptions from `corpus_forge.enrichers.base`
+(`EnricherTimeoutError`, `EnricherUnavailableError`, `EnricherResponseError`).
+
+### Local vs remote endpoints
+
+Phase H ships **two** concrete classes (`QwenCoderLocal` and
+`QwenCoderRemote`) plus **two** explicit config fields (`local_url`,
+`remote_url`) to satisfy the project's local-or-remote URL principle.
+The local backend is wired for the common laptop case (local Ollama
+daemon at `http://localhost:11434`); the remote backend handles two
+production patterns at once:
+
+- a hosted Ollama on a beefier internal box (`api_shape="ollama"`,
+  optional bearer auth);
+- any OpenAI-compatible proxy or SaaS — vLLM, TGI, llama.cpp's OpenAI
+  shim, Together / DeepInfra / Fireworks (`api_shape="openai"`,
+  required bearer auth).
+
+Switching shape is a one-line config change; no code change.
+
+### Idempotency
+
+`iter_code_chunks_for_enrichment(model_tag)` filters out chunks whose
+existing `metadata.enrichment.model` already equals `model_tag`. Re-running
+`corpus-forge enrich` after the first pass is a near-no-op (the iterator
+elides every already-enriched chunk before it touches the LLM); changing
+the model tag in config causes the next run to reprocess the corpus
+automatically. The `--reclassify-on-model-change` flag forces re-enrichment
+even when tags match — used after a prompt-template change where the model
+is unchanged but you still want fresh output.
+
+For the wave-by-wave history, see
+[`.planning/tdd/phase_h_code_enrichment.md`](../.planning/tdd/phase_h_code_enrichment.md).

@@ -3112,3 +3112,114 @@ class SQLiteBackend:
                 format_labels=labels_by_doc.get(doc_id, []),
                 metadata=md,
             )
+
+    # ── Code-enrichment surface (Phase H) ─────────────────────────────────
+
+    def iter_code_chunks_for_enrichment(
+        self,
+        model_tag: str,
+        dataset_id: "int | None" = None,
+    ) -> "Iterator[tuple[int, TextChunk, str]]":
+        """Yield ``(chunk_id, TextChunk, language)`` for code chunks to enrich.
+
+        Mirrors :meth:`PostgresBackend.iter_code_chunks_for_enrichment`.
+        Idempotency check (``metadata.enrichment.model != model_tag``)
+        runs in Python after the row is decoded.
+        """
+        params: list[Any] = []
+        ds_clause = ""
+        if dataset_id is not None:
+            ds_clause = "AND d.dataset_id = ?"
+            params.append(dataset_id)
+
+        rows = self._execute(
+            f"""
+            SELECT c.id AS chunk_id,
+                   c.text,
+                   c.heading,
+                   c.role,
+                   c.token_count,
+                   c.metadata AS chunk_metadata,
+                   (
+                       SELECT l2.value
+                       FROM document_labels dl2
+                       JOIN labels l2 ON l2.id = dl2.label_id
+                       WHERE dl2.document_id = d.id AND l2.namespace = 'language'
+                       LIMIT 1
+                   ) AS doc_language
+            FROM chunks c
+            JOIN documents d ON d.id = c.document_id
+            JOIN document_labels dl ON dl.document_id = d.id
+            JOIN labels l ON l.id = dl.label_id
+            WHERE l.namespace = 'class' AND l.value = 'code'
+              {ds_clause}
+            ORDER BY c.id
+            """,
+            tuple(params),
+        )
+
+        for row in rows:
+            md_raw = row["chunk_metadata"]
+            if isinstance(md_raw, str):
+                try:
+                    md = json.loads(md_raw)
+                except (TypeError, ValueError):
+                    md = {}
+            elif isinstance(md_raw, dict):
+                md = md_raw
+            else:
+                md = {}
+            existing = md.get("enrichment") or {}
+            if isinstance(existing, dict) and existing.get("model") == model_tag:
+                continue
+
+            chunk_language = (
+                md.get("language")
+                or (row.get("doc_language") if hasattr(row, "get") else row["doc_language"])
+                or "unknown"
+            )
+            chunk = TextChunk(
+                text=row["text"] or "",
+                heading=row.get("heading") if hasattr(row, "get") else row["heading"],
+                role=row.get("role") if hasattr(row, "get") else row["role"],
+                token_count=(row.get("token_count") if hasattr(row, "get") else row["token_count"]),
+                metadata=md,
+            )
+            yield int(row["chunk_id"]), chunk, str(chunk_language)
+
+    def update_chunk_enrichment(
+        self,
+        chunk_id: int,
+        enrichment: Any,
+    ) -> None:
+        """Merge ``enrichment.to_metadata()`` into ``chunks.metadata.enrichment``.
+
+        SQLite path: read-modify-write the JSON column (no JSONB merge
+        operator available) preserving every other key.
+        """
+        payload = (
+            enrichment.to_metadata() if hasattr(enrichment, "to_metadata") else dict(enrichment)
+        )
+        rows = self._execute(
+            "SELECT metadata FROM chunks WHERE id = ?",
+            (chunk_id,),
+        )
+        if not rows:
+            return
+        md_raw = rows[0]["metadata"]
+        if isinstance(md_raw, str):
+            try:
+                md = json.loads(md_raw)
+            except (TypeError, ValueError):
+                md = {}
+        elif isinstance(md_raw, dict):
+            md = dict(md_raw)
+        else:
+            md = {}
+        if not isinstance(md, dict):
+            md = {}
+        md["enrichment"] = payload
+        self._execute(
+            "UPDATE chunks SET metadata = ? WHERE id = ?",
+            (json.dumps(md), chunk_id),
+        )

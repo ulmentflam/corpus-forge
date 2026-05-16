@@ -86,6 +86,20 @@ def clip_local_ready() -> bool:
 
 
 @pytest.fixture(scope="session")
+def qwen_coder_ready() -> tuple[bool, str | None]:
+    """Return ``(ready, tag)`` for the qwen-coder live tests.
+
+    Phase H (H-09). Used by :data:`requires_qwen_coder`. The probe
+    accepts any of three model families since the canonical Phase H
+    default (``qwen3.6:35b-a3b-instruct``) may not be pulled on every
+    machine — falling back to ``qwen2.5-coder:*`` or the
+    already-installed Phase E text model
+    (``qwen2.5:*-instruct``) keeps the live tests runnable.
+    """
+    return _probe_qwen_coder()
+
+
+@pytest.fixture(scope="session")
 def mistral_ready() -> bool:
     """Return True iff ``MISTRAL_API_KEY`` is set to a non-empty value.
 
@@ -181,6 +195,57 @@ def _probe_clip_local() -> bool:
     return True
 
 
+def _probe_qwen_coder() -> tuple[bool, str | None]:
+    """Probe for a qwen-coder-capable Ollama model.
+
+    Phase H (H-09). Returns ``(ready, tag)``. The probe accepts the
+    canonical Phase H model first, then falls back to two other
+    families so the live tests can still run on machines that haven't
+    pulled the 22 GB Qwen3.6 MoE:
+
+    1. ``qwen3.6:35b-a3b-instruct`` — Phase H default (MoE 35B/~3B).
+    2. ``qwen2.5-coder:*`` — Qwen's purpose-built coder family.
+    3. ``qwen2.5:*-instruct`` — the Phase E text model, already pulled
+       on machines that ran the LLM-classifier live tests.
+
+    On miss, returns ``(False, None)`` and the marker decorator below
+    skips with a helpful message.
+    """
+    try:
+        import requests  # type: ignore[import-not-found]
+    except ImportError:
+        return False, None
+    try:
+        resp = requests.get("http://localhost:11434/api/tags", timeout=2.0)
+    except Exception:
+        return False, None
+    if resp.status_code != 200:
+        return False, None
+    try:
+        payload: dict[str, Any] = resp.json()
+    except ValueError:
+        return False, None
+    models = payload.get("models") or []
+    names: list[str] = []
+    for m in models:
+        if not isinstance(m, dict):
+            continue
+        name = m.get("name") or m.get("model") or ""
+        if isinstance(name, str):
+            names.append(name)
+    # Preference order: Phase H canonical → coder family → instruct family.
+    for n in names:
+        if n.startswith("qwen3.6:") and "instruct" in n:
+            return True, n
+    for n in names:
+        if n.startswith("qwen2.5-coder:"):
+            return True, n
+    for n in names:
+        if n.startswith("qwen2.5:") and "instruct" in n:
+            return True, n
+    return False, None
+
+
 def _probe_ollama_for(prefix: str) -> bool:
     """Internal helper: True iff any tag begins with ``prefix``."""
     try:
@@ -256,6 +321,17 @@ def pytest_collection_modifyitems(
             "(model download failed or sentence-transformers not installed)"
         )
 
+    qwen_coder_skip: pytest.MarkDecorator | None = None
+    _need_qwen_coder_probe = any("requires_qwen_coder" in i.keywords for i in items)
+    if _need_qwen_coder_probe:
+        ready, _tag = _probe_qwen_coder()
+        if not ready:
+            qwen_coder_skip = pytest.mark.skip(
+                reason="Ollama unreachable or no qwen-coder model pulled "
+                "(run: ollama pull qwen3.6:35b-a3b-instruct OR ollama pull "
+                "qwen2.5-coder:7b OR ollama pull qwen2.5:7b-instruct)"
+            )
+
     for item in items:
         if ollama_skip is not None and "requires_ollama" in item.keywords:
             item.add_marker(ollama_skip)
@@ -267,3 +343,5 @@ def pytest_collection_modifyitems(
             item.add_marker(whisper_local_skip)
         if clip_local_skip is not None and "requires_clip_local" in item.keywords:
             item.add_marker(clip_local_skip)
+        if qwen_coder_skip is not None and "requires_qwen_coder" in item.keywords:
+            item.add_marker(qwen_coder_skip)

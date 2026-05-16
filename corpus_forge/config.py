@@ -379,6 +379,64 @@ class ClassifierConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class EnricherConfig(BaseModel):
+    """Phase H — code-enrichment backend config.
+
+    Drives :func:`corpus_forge.enrichers.get_active_enricher`. Default
+    ``backend = "none"`` keeps legacy configs untouched — Phase H is
+    opt-in: no enrichment runs until the user flips this knob.
+
+    **Cross-cutting: local-or-remote URL.** Two concrete backends
+    (separate classes, separate config fields):
+
+    - ``"local"`` → :class:`corpus_forge.enrichers.qwen_local.QwenCoderLocal`
+      against ``local_url`` (default ``http://localhost:11434``).
+    - ``"remote"`` → :class:`corpus_forge.enrichers.qwen_remote.QwenCoderRemote`
+      against ``remote_url``; speaks either the Ollama
+      ``/api/generate`` shape (default) or the OpenAI chat-completions
+      shape via ``remote_api_shape``.
+
+    Fields:
+
+    - ``backend``: ``"none" | "local" | "remote"``. Default ``"none"``.
+    - ``local_model``: Ollama tag for the local backend.
+    - ``local_url``: base URL of the local Ollama-compatible endpoint.
+    - ``remote_model``: model tag for the remote backend.
+    - ``remote_url``: base URL of the remote endpoint.
+    - ``remote_api_shape``: ``"ollama" | "openai"`` — selects request
+      envelope on the remote backend. Local backend always uses Ollama.
+    - ``remote_api_key_env``: name of the env var holding the API key
+      (read from ``secrets.env``). Validated as a POSIX identifier.
+    - ``timeout_s``: per-request HTTP budget.
+    - ``temperature``: sampling temperature in ``[0.0, 2.0]``.
+    """
+
+    backend: Literal["local", "remote", "none"] = "none"
+    local_model: str = "qwen3.6:35b-a3b-instruct"
+    local_url: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
+    remote_model: str = "qwen3.6:35b-a3b-instruct"
+    remote_url: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
+    remote_api_shape: Literal["ollama", "openai"] = "ollama"
+    remote_api_key_env: str = "OLLAMA_API_KEY"
+    timeout_s: float = Field(180.0, gt=0)
+    temperature: float = Field(0.1, ge=0.0, le=2.0)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_remote_env_var_name(self) -> "EnricherConfig":
+        """Reject ``remote_api_key_env`` values that aren't valid POSIX
+        environment variable names — catches typos at config-load time.
+        """
+        if not _ENV_VAR_NAME_RE.match(self.remote_api_key_env):
+            raise ValueError(
+                f"remote_api_key_env={self.remote_api_key_env!r} is not a valid "
+                "POSIX environment variable name (ASCII letters / digits / "
+                "underscore; cannot start with a digit)."
+            )
+        return self
+
+
 class Config(BaseModel):
     """Main configuration for corpus-forge."""
 
@@ -399,6 +457,9 @@ class Config(BaseModel):
     # existing configs (audio/video files were unsupported pre-Phase-G;
     # they remain silently skipped until the user opts in).
     whisper: WhisperConfig = Field(default_factory=WhisperConfig)
+    # Phase H — code-enricher backend selector. Default backend="none"
+    # keeps legacy configs untouched.
+    code_enricher: EnricherConfig = Field(default_factory=EnricherConfig)
 
     model_config = ConfigDict(
         str_strip_whitespace=True,
@@ -435,6 +496,16 @@ class Config(BaseModel):
         ``"none"`` / ``"ollama"`` it isn't.
         """
         return os.environ.get(self.vlm.mistral_api_key_env)
+
+    def resolve_code_enricher_api_key(self) -> str | None:
+        """Read the code-enricher remote API key from the configured env var.
+
+        Returns ``None`` when the env var is unset. The remote-Ollama
+        path tolerates an absent key (the Bearer header is just
+        omitted); the OpenAI-shape path treats absence as fatal at
+        construction time.
+        """
+        return os.environ.get(self.code_enricher.remote_api_key_env)
 
     def host_id(self) -> str:
         if self.daemon.host_id:

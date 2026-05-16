@@ -2544,3 +2544,112 @@ class PostgresBackend(StorageBackend):
                 format_labels=labels_by_doc.get(doc_id, []),
                 metadata=md if isinstance(md, dict) else {},
             )
+
+    # ── Code-enrichment surface (Phase H) ─────────────────────────────────
+
+    def iter_code_chunks_for_enrichment(
+        self,
+        model_tag: str,
+        dataset_id: "int | None" = None,
+    ) -> "Iterator[tuple[int, TextChunk, str]]":
+        """Yield ``(chunk_id, TextChunk, language)`` for code chunks to enrich.
+
+        Joins ``chunks`` → ``documents`` → ``document_labels`` →
+        ``labels`` to filter on ``namespace='class' AND value='code'``.
+        Idempotency is enforced in Python rather than SQL so the
+        comparison reads ``model_tag`` from JSON without relying on
+        Postgres-specific JSON-path syntax (keeps the SQLite parity
+        simple).
+
+        ``language`` resolution falls back from
+        ``chunks.metadata.language`` to a ``namespace='language'``
+        document-label to the literal ``"unknown"``.
+        """
+        params: tuple[Any, ...]
+        ds_clause = ""
+        if dataset_id is not None:
+            ds_clause = "AND d.dataset_id = %s"
+            params = (dataset_id,)
+        else:
+            params = ()
+
+        # Pull every code-class chunk with its metadata + the parent doc's
+        # language label (if any).
+        rows = self._execute(
+            f"""
+            SELECT c.id AS chunk_id,
+                   c.text,
+                   c.heading,
+                   c.role,
+                   c.token_count,
+                   c.metadata AS chunk_metadata,
+                   (
+                       SELECT l2.value
+                       FROM corpus.document_labels dl2
+                       JOIN corpus.labels l2 ON l2.id = dl2.label_id
+                       WHERE dl2.document_id = d.id AND l2.namespace = 'language'
+                       LIMIT 1
+                   ) AS doc_language
+            FROM corpus.chunks c
+            JOIN corpus.documents d ON d.id = c.document_id
+            JOIN corpus.document_labels dl ON dl.document_id = d.id
+            JOIN corpus.labels l ON l.id = dl.label_id
+            WHERE l.namespace = 'class' AND l.value = 'code'
+              {ds_clause}
+            ORDER BY c.id
+            """,
+            params,
+        )
+
+        for row in rows:
+            md = row["chunk_metadata"] or {}
+            if isinstance(md, str):
+                try:
+                    md = json.loads(md)
+                except (TypeError, ValueError):
+                    md = {}
+            if not isinstance(md, dict):
+                md = {}
+            existing = md.get("enrichment") or {}
+            if isinstance(existing, dict) and existing.get("model") == model_tag:
+                # Idempotency: skip chunks already enriched with this model.
+                continue
+
+            chunk_language = md.get("language") or row.get("doc_language") or "unknown"
+            chunk = TextChunk(
+                text=row["text"] or "",
+                heading=row.get("heading"),
+                role=row.get("role"),
+                token_count=row.get("token_count"),
+                metadata=md,
+            )
+            yield int(row["chunk_id"]), chunk, str(chunk_language)
+
+    def update_chunk_enrichment(
+        self,
+        chunk_id: int,
+        enrichment: Any,
+    ) -> None:
+        """Merge ``enrichment.to_metadata()`` into ``chunks.metadata.enrichment``.
+
+        Uses Postgres ``jsonb_set`` (full-path replace) so existing
+        sibling keys (``kind``, ``name``, ``byte_range``, ``language``,
+        ``cdc_fingerprint``) survive. ``COALESCE(metadata, '{}'::jsonb)``
+        keeps the merge safe when ``chunks.metadata`` is NULL.
+        """
+        payload = (
+            enrichment.to_metadata() if hasattr(enrichment, "to_metadata") else dict(enrichment)
+        )
+        self._execute(
+            """
+            UPDATE corpus.chunks
+            SET metadata = jsonb_set(
+                COALESCE(metadata, '{}'::jsonb),
+                '{enrichment}',
+                %s::jsonb,
+                true
+            )
+            WHERE id = %s
+            """,
+            (json.dumps(payload), chunk_id),
+        )

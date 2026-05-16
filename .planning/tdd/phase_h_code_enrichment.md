@@ -4,7 +4,7 @@ _Owner: tdd-principal. Workers: read freely. Edit only your claimed row's `statu
 
 ## Status
 
-**Phase G** complete (TBD). **Phase H** (this file): **pending kickoff**.
+**Phase G** complete. **Phase H** (this file): **COMPLETE** (2026-05-15).
 
 ## Goal
 
@@ -51,26 +51,26 @@ Per `project_model_local_or_remote.md`: `[code_enricher]` config block with `bac
 
 | id | title | depends_on | surface | risk | status |
 |----|-------|------------|---------|------|--------|
-| H-01 | `CodeEnricher` protocol + `CodeChunkEnrichment` + `EnricherRegistry` | — | `corpus_forge/enrichers/{__init__,base,registry}.py` (new), `tests/unit/test_enricher_registry.py` | low | pending |
-| H-02 | `QwenCoderLocal` (Ollama HTTP) | H-01 | `corpus_forge/enrichers/qwen_local.py`, `tests/unit/test_qwen_local.py` (mocked HTTP) | med | pending |
-| H-03 | `QwenCoderRemote` (configurable URL + shape) | H-01 | `corpus_forge/enrichers/qwen_remote.py`, `tests/unit/test_qwen_remote.py` (mocked HTTP) | med | pending |
-| H-04 | `EnricherConfig` pydantic + `Config.code_enricher` | — | `corpus_forge/config.py`, `tests/unit/test_config_enricher.py` | low | pending |
-| H-05 | Backend helpers: `iter_code_chunks_for_enrichment`, `update_chunk_metadata` | — | `corpus_forge/backends/{base,postgres,sqlite}.py`, `tests/unit/test_backend_enrichment_helpers.py` | med | pending |
-| H-06 | `corpus-forge enrich` CLI command | H-02, H-04, H-05 | `corpus_forge/cli.py`, `tests/unit/test_cli_enrich.py` | med | pending |
-| H-07 | `config.example.toml` `[code_enricher]` rich-docs block | H-04 | `config.example.toml` | low | pending |
-| H-08 | README + `docs/architecture.md` "Code enrichment" sections | H-06 | `README.md`, `docs/architecture.md` | low | pending |
-| H-09 | E2E integration test (requires_qwen_coder marker) | H-06 | `tests/integration/test_enrich_e2e.py`, `tests/integration/conftest.py` (probe) | med | pending |
-| H-10 | **P0 gate** — `make ci` green + manual cross-model smoke | H-09 | — | gate | pending |
+| H-01 | `CodeEnricher` protocol + `CodeChunkEnrichment` + `EnricherRegistry` | — | `corpus_forge/enrichers/{__init__,base,registry}.py` (new), `tests/unit/test_enricher_registry.py` | low | **done** |
+| H-02 | `QwenCoderLocal` (Ollama HTTP) | H-01 | `corpus_forge/enrichers/qwen_local.py`, `tests/unit/test_qwen_local.py` (mocked HTTP) | med | **done** |
+| H-03 | `QwenCoderRemote` (configurable URL + shape) | H-01 | `corpus_forge/enrichers/qwen_remote.py`, `tests/unit/test_qwen_remote.py` (mocked HTTP) | med | **done** |
+| H-04 | `EnricherConfig` pydantic + `Config.code_enricher` | — | `corpus_forge/config.py`, `tests/unit/test_config_enricher.py` | low | **done** |
+| H-05 | Backend helpers: `iter_code_chunks_for_enrichment`, `update_chunk_enrichment` | — | `corpus_forge/backends/{base,postgres,sqlite}.py`, `tests/unit/test_backend_enrichment_helpers.py` | med | **done** |
+| H-06 | `corpus-forge enrich` CLI command | H-02, H-04, H-05 | `corpus_forge/cli.py`, `tests/unit/test_cli_enrich.py` | med | **done** |
+| H-07 | `config.example.toml` `[code_enricher]` rich-docs block | H-04 | `config.example.toml` | low | **done** |
+| H-08 | README + `docs/architecture.md` "Code enrichment" sections | H-06 | `README.md`, `docs/architecture.md` | low | **done** |
+| H-09 | E2E integration test (requires_qwen_coder marker) | H-06 | `tests/integration/test_enrich_e2e.py`, `tests/integration/conftest.py` (probe) | med | **done** |
+| H-10 | **P0 gate** — `make ci` green + manual cross-model smoke | H-09 | — | gate | **done** |
 
 ## Definition of Done
 
-- [ ] `corpus_forge/enrichers/` package with protocol + 2 backends + registry
-- [ ] `[code_enricher]` config block parses; defaults to `backend = "none"` (Phase H is opt-in)
-- [ ] `corpus-forge enrich` walks `class=code` chunks, populates `chunks.metadata.enrichment`, is idempotent on model-tag match
-- [ ] Cost-guard preflight estimates LLM calls and per-chunk latency
-- [ ] Live e2e against local Ollama (skip when model not pulled) classifies ≥ 5 fixture-corpus code chunks successfully
-- [ ] Manual smoke: enrich a small Python module from `corpus_forge/`; review the synthesized docstrings + summaries for coherence
-- [ ] `make ci` exit 0 at ≥ 90% coverage
+- [x] `corpus_forge/enrichers/` package with protocol + 2 backends + registry
+- [x] `[code_enricher]` config block parses; defaults to `backend = "none"` (Phase H is opt-in)
+- [x] `corpus-forge enrich` walks `class=code` chunks, populates `chunks.metadata.enrichment`, is idempotent on model-tag match
+- [x] Cost-guard preflight estimates LLM calls and per-chunk latency
+- [x] Live e2e against local Ollama (skip when model not pulled) classifies ≥ 5 fixture-corpus code chunks successfully
+- [x] Manual smoke: enrich a small Python module from `corpus_forge/`; review the synthesized docstrings + summaries for coherence
+- [x] `make ci` exit 0 at ≥ 90% coverage (achieved: 90.09%)
 
 ## Out of scope (P2)
 

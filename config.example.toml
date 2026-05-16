@@ -312,3 +312,91 @@ language           = ""
 # ``/embeddings`` endpoint (Voyage AI ``voyage-multimodal-3``, Cohere
 # ``embed-v3-multimodal``, or a self-hosted CLIP service). For now,
 # users wire the remote backend directly in code if needed.
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase H — Code enrichment (synthesised docstrings + summaries)
+# ─────────────────────────────────────────────────────────────────────
+# Runs an LLM over every chunk whose parent document carries
+# ``class=code`` (Phase E classifier output) and writes the result to
+# ``chunks.metadata.enrichment``. Each enrichment carries:
+#   - docstring : synthesised when the construct lacks one
+#   - summary   : 1-2 sentence semantic summary in domain language
+#   - symbols   : referenced symbol names (functions / types)
+#   - model     : the model tag that produced the enrichment
+#   - confidence: self-reported [0.0, 1.0]
+#
+# Idempotent: chunks already carrying an enrichment with the current
+# model tag are skipped by ``corpus-forge enrich``. Re-enrich on model
+# change is automatic — change the tag and the next run reprocesses.
+#
+# **Local-or-remote URL** (cross-cutting principle): Phase H ships
+# TWO concrete backends to satisfy the policy:
+#   - ``backend = "local"``  → Ollama on this box (``local_url``).
+#   - ``backend = "remote"`` → hosted Ollama or any OpenAI-compatible
+#     chat-completions endpoint (``remote_url`` + ``remote_api_shape``).
+# Both ``local_url`` AND ``remote_url`` are first-class config fields.
+[code_enricher]
+# Which backend to use:
+#   "none"   — disabled (default; ``corpus-forge enrich`` is a no-op
+#              until you flip this knob).
+#   "local"  — local Ollama daemon (qwen3.6:35b-a3b-instruct by default;
+#              MoE 35B/~3B active, ~22 GB on disk, fits 64 GB unified
+#              memory on M-series with comfortable headroom).
+#   "remote" — remote URL speaking either the Ollama or OpenAI-compat
+#              chat-completions shape. See ``remote_api_shape`` below.
+backend            = "none"
+
+# Local-only knobs (ignored when backend != "local"):
+# Ollama tag served by the local daemon. Swap to ``qwen2.5-coder:7b``
+# for a smaller / faster alternative (or any other Ollama-served
+# code-capable chat model).
+local_model        = "qwen3.6:35b-a3b-instruct"
+
+# Base URL of the local Ollama-compatible endpoint. ``/api/generate``
+# is appended by the backend.
+local_url          = "http://localhost:11434"
+
+# Remote-only knobs (ignored when backend != "remote"):
+# Model tag for the remote backend. Match what your remote endpoint
+# advertises — for hosted Ollama, the same tag format
+# (``qwen3.6:35b-a3b-instruct``). For an OpenAI-compatible proxy,
+# whatever model name the proxy exposes.
+remote_model       = "qwen3.6:35b-a3b-instruct"
+
+# Base URL of the remote endpoint.
+#   - Hosted Ollama (api_shape="ollama"): ``/api/generate`` is appended.
+#   - OpenAI-compat (api_shape="openai"): ``/chat/completions`` is appended.
+remote_url         = "http://localhost:11434"
+# Remote alternative — hosted Ollama on an internal box (you'd point
+# this at, say, a Mac Studio doing nothing but inference). Pair with
+# ``remote_api_shape = "ollama"`` and an optional ``OLLAMA_API_KEY``
+# in secrets.env for bearer auth.
+# remote_url       = "https://ollama.internal.example.com"
+# Remote alternative — OpenAI-compatible proxy (vLLM,
+# text-generation-inference, llama.cpp's OpenAI shim, or a SaaS like
+# Together / DeepInfra / Fireworks). Pair with
+# ``remote_api_shape = "openai"`` and the matching API key env var.
+# remote_url       = "https://api.together.xyz/v1"
+
+# Which API shape the remote endpoint speaks:
+#   "ollama" — ``POST /api/generate`` (Ollama wire format).
+#   "openai" — ``POST /chat/completions`` with response_format=json_object.
+# The local backend always uses the Ollama shape.
+remote_api_shape   = "ollama"
+
+# Name of the env var holding the remote API key (read from
+# secrets.env). Must be a valid POSIX identifier — corpus-forge rejects
+# bad names at config-load time so typos surface immediately. The
+# Ollama shape tolerates an empty key (header is just omitted); the
+# OpenAI shape treats absence as fatal at construction.
+remote_api_key_env = "OLLAMA_API_KEY"
+
+# Per-request HTTP budget (seconds). qwen3.6:35b-a3b-instruct hits
+# ~3-8 s/chunk on M-series for typical code chunks; 180 s leaves slack
+# for cold starts and long chunks.
+timeout_s          = 180.0
+
+# Sampling temperature (0.0..2.0). 0.1 keeps phrasing reproducible
+# while allowing minor variation in summaries. Drop to 0.0 if you want
+# bit-for-bit determinism across runs.
+temperature        = 0.1

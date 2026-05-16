@@ -1342,5 +1342,216 @@ def rechunk(
     )
 
 
+# ── enrich command (Phase H / H-06) ──────────────────────────────────────
+
+
+@app.command("enrich")
+def enrich(
+    dataset: list[str] = typer.Option(
+        None,
+        "--dataset",
+        "-d",
+        help="Restrict to one or more datasets (repeatable).",
+    ),
+    reclassify_on_model_change: bool = typer.Option(
+        False,
+        "--reclassify-on-model-change",
+        help=(
+            "Force re-enrichment even when the chunk already carries an "
+            "enrichment record (idempotency is normally model-tag-based; "
+            "use this to override after a prompt tweak)."
+        ),
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the plan without writing any rows.",
+    ),
+    limit: int = typer.Option(
+        None,
+        "--limit",
+        help="Stop after enriching N chunks.",
+    ),
+    json_out: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit one JSON object per enriched chunk.",
+    ),
+    backend: str = typer.Option(
+        None,
+        "--backend",
+        help="Force a specific enricher backend (qwen-local | qwen-remote). "
+        "Bypasses the config chain.",
+    ),
+) -> None:
+    """Walk ``class=code`` chunks and attach LLM-generated enrichments.
+
+    Each chunk picks up a ``chunks.metadata.enrichment`` record with a
+    synthesized docstring, semantic summary, referenced symbols, model
+    tag, and confidence. Idempotent on the model tag — chunks already
+    enriched with the *current* model are skipped unless
+    ``--reclassify-on-model-change`` is set.
+
+    Cost-guard preflight: the CLI counts the candidate chunks and prints
+    an estimated wall-clock budget. qwen3.6:35b-a3b-instruct (the
+    default) runs ~3-8 s/chunk on M-series for typical code chunks —
+    the MoE active-param count keeps it fast.
+    """
+    import json as _json
+
+    from corpus_forge.config import Config
+    from corpus_forge.enrichers import get_active_enricher
+    from corpus_forge.enrichers.base import EnricherError, EnricherUnavailableError
+
+    try:
+        config = Config.load()
+    except FileNotFoundError:
+        typer.echo(
+            "No configuration found; run 'corpus-forge migrate' to initialise.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from None
+
+    # Optional --backend override: build the enricher directly without
+    # consulting config.code_enricher.backend.
+    if backend is not None:
+        if backend == "qwen-local":
+            from corpus_forge.enrichers.qwen_local import QwenCoderLocal
+
+            enricher = QwenCoderLocal(
+                model=config.code_enricher.local_model,
+                llm_url=str(config.code_enricher.local_url).rstrip("/"),
+                timeout_s=config.code_enricher.timeout_s,
+                temperature=config.code_enricher.temperature,
+            )
+        elif backend == "qwen-remote":
+            from corpus_forge.enrichers.qwen_remote import QwenCoderRemote
+
+            enricher = QwenCoderRemote(
+                api_shape=config.code_enricher.remote_api_shape,
+                model=config.code_enricher.remote_model,
+                base_url=str(config.code_enricher.remote_url).rstrip("/"),
+                api_key=config.resolve_code_enricher_api_key(),
+                timeout_s=config.code_enricher.timeout_s,
+                temperature=config.code_enricher.temperature,
+            )
+        else:
+            typer.echo(
+                f"--backend {backend!r} is not a known enricher backend. "
+                f"Available: ['qwen-local', 'qwen-remote'].",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+    else:
+        try:
+            enricher = get_active_enricher(config)
+        except EnricherUnavailableError as exc:
+            typer.echo(f"Enricher unavailable: {exc}", err=True)
+            raise typer.Exit(code=2) from None
+
+    if enricher.name == "noop":
+        typer.echo(
+            "Code enricher is disabled (config.code_enricher.backend == 'none'). "
+            "Set backend to 'local' or 'remote' in config.toml, or pass --backend "
+            "qwen-local / --backend qwen-remote to force a specific backend.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    storage = _build_backend_from_config(config)
+
+    # The "model tag" used for idempotency depends on which concrete
+    # enricher we ended up with — local vs remote may target different
+    # model names.
+    if backend == "qwen-remote" or (backend is None and config.code_enricher.backend == "remote"):
+        model_tag = config.code_enricher.remote_model
+    else:
+        model_tag = config.code_enricher.local_model
+
+    # Resolve dataset filter(s).
+    if dataset:
+        dataset_ids: list[int | None] = []
+        for name in dataset:
+            ds_id = storage.find_dataset_id_by_name(name)
+            if ds_id is None:
+                typer.echo(f"Dataset not found: {name}", err=True)
+                raise typer.Exit(code=2)
+            dataset_ids.append(ds_id)
+    else:
+        dataset_ids = [None]
+
+    # Cost-guard preflight: count candidates across selected datasets.
+    # Pass an obviously-bogus model_tag if --reclassify-on-model-change so
+    # the iterator returns every chunk (idempotency check is "skip when
+    # already enriched with THIS model" — an impossible tag never matches).
+    iter_tag = "__force_reenrich__" if reclassify_on_model_change else model_tag
+    total_to_process = 0
+    for ds_id in dataset_ids:
+        total_to_process += sum(1 for _ in storage.iter_code_chunks_for_enrichment(iter_tag, ds_id))
+
+    typer.echo(
+        f"Enriching {total_to_process} code chunk(s) with {enricher.name} (model={model_tag}).",
+        err=True,
+    )
+    typer.echo(
+        f"Estimated wall-clock: ~{total_to_process * 5:d}-{total_to_process * 8:d} s "
+        f"(3-8 s per chunk on M-series for qwen3.6:35b-a3b-instruct; "
+        f"MoE active params ~3B keep this fast).",
+        err=True,
+    )
+
+    processed = 0
+    applied = 0
+    failed = 0
+    for ds_id in dataset_ids:
+        for chunk_id, chunk, language in storage.iter_code_chunks_for_enrichment(iter_tag, ds_id):
+            if limit is not None and processed >= limit:
+                break
+
+            try:
+                enrichment = enricher.enrich(chunk, language=language)
+            except EnricherError as exc:
+                failed += 1
+                processed += 1
+                typer.echo(
+                    f"chunk {chunk_id}: enricher failed ({exc}); skipping.",
+                    err=True,
+                )
+                continue
+
+            write_now = not dry_run
+            if write_now:
+                storage.update_chunk_enrichment(chunk_id, enrichment)
+                applied += 1
+
+            if json_out:
+                payload = {
+                    "chunk_id": chunk_id,
+                    "language": language,
+                    "docstring": enrichment.docstring,
+                    "summary": enrichment.summary,
+                    "symbols": list(enrichment.symbols),
+                    "model": enrichment.model,
+                    "confidence": float(enrichment.confidence),
+                    "applied": bool(write_now),
+                }
+                typer.echo(_json.dumps(payload, ensure_ascii=False))
+            else:
+                action = "would enrich" if dry_run else "enriched"
+                summary_snippet = (enrichment.summary or "").split("\n", 1)[0][:80]
+                typer.echo(
+                    f"chunk {chunk_id} [{language}] -> {action} "
+                    f"({enrichment.confidence:.2f}): {summary_snippet}"
+                )
+            processed += 1
+        if limit is not None and processed >= limit:
+            break
+
+    typer.echo(
+        f"Processed {processed} chunk(s); applied {applied}; failed {failed}.",
+        err=True,
+    )
+
+
 if __name__ == "__main__":
     app()

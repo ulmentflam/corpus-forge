@@ -282,6 +282,49 @@ The CLI prints a cost-guard preflight with a worst-case LLM-call estimate
 before the run starts; `--limit N` and `--dataset NAME` are available for
 quick smoke tests.
 
+## Code enrichment
+
+Phase H (`corpus-forge enrich`) layers an LLM-generated **enrichment** record
+onto every chunk of a `class=code` document. Each enrichment carries:
+
+| field | what it is |
+|---|---|
+| `docstring` | synthesised docstring for the construct (or `null` when the existing docstring is adequate) |
+| `summary` | 1–2 sentence semantic summary in domain language |
+| `symbols` | flat list of referenced symbol names (functions / types this chunk depends on) |
+| `model` | the model tag that produced the enrichment (used for idempotency) |
+| `confidence` | self-reported `[0.0, 1.0]` |
+
+The enrichment lands in `chunks.metadata.enrichment` next to the existing
+`{kind, name, language, byte_range}` keys from Phase D's CodeChunker — no
+schema change needed. Downstream retrievers can boost on enrichment text,
+do natural-language code search, and surface dependency edges via the flat
+`symbols` array.
+
+The default model is **`qwen3.6:35b-a3b-instruct`** — an MoE (35B total /
+~3B active) that runs ~3-8 s/chunk on M-series hardware. Phase H ships
+**two backends** to satisfy the local-or-remote URL principle:
+
+- `backend = "local"` → `QwenCoderLocal` against a local Ollama daemon
+  (`local_url` defaults to `http://localhost:11434`).
+- `backend = "remote"` → `QwenCoderRemote` against either a hosted Ollama
+  endpoint (`remote_api_shape = "ollama"`) or any OpenAI-compatible
+  chat-completions endpoint (`remote_api_shape = "openai"`). Pair with
+  the env-var name in `remote_api_key_env` for bearer auth.
+
+Wire both endpoints in the `[code_enricher]` block of `config.toml`; the
+default `backend = "none"` keeps legacy configs untouched.
+
+```bash
+corpus-forge enrich --dry-run --json      # preview the plan, one JSON line per chunk
+corpus-forge enrich --dataset notes -l 5  # smoke against 5 chunks of one dataset
+corpus-forge enrich --backend qwen-remote # force the remote backend (bypass config)
+```
+
+Idempotency: chunks whose `metadata.enrichment.model` already matches the
+configured model tag are skipped. Change the model tag (or pass
+`--reclassify-on-model-change`) to force a full re-enrichment pass.
+
 ## Architecture
 
 ```

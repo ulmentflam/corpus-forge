@@ -223,6 +223,43 @@ class StorageBackend(Protocol):
 
     # --- Classification surface (Phase E) ----------------------------------
 
+    # --- Code-enrichment surface (Phase H) ---------------------------------
+
+    def iter_code_chunks_for_enrichment(
+        self,
+        model_tag: str,
+        dataset_id: "int | None" = None,
+    ) -> "Iterator[tuple[int, Any, str]]":
+        """Yield ``(chunk_id, TextChunk, language)`` for code chunks to enrich.
+
+        Iterates chunks whose parent document carries ``class=code``
+        (the Phase E classifier output) AND whose
+        ``metadata.enrichment.model`` does NOT equal ``model_tag``.
+        That second filter is the idempotency guard — chunks already
+        enriched with the current model tag are skipped so re-running
+        the CLI is cheap.
+
+        ``language`` resolution order (first non-empty wins):
+        1. ``chunks.metadata.language`` (CodeChunker stamps this).
+        2. ``documents.language`` document-label
+           (``namespace='language'``).
+        3. The string ``"unknown"`` as a final fallback.
+        """
+        ...
+
+    def update_chunk_enrichment(
+        self,
+        chunk_id: int,
+        enrichment: Any,
+    ) -> None:
+        """Merge ``enrichment.to_metadata()`` into ``chunks.metadata.enrichment``.
+
+        Preserves existing chunk-metadata fields (``kind``, ``name``,
+        ``byte_range``, ``cdc_fingerprint``) by writing only the
+        ``enrichment`` sub-key — other keys are left untouched.
+        """
+        ...
+
     def iter_documents_for_classification(
         self,
         dataset_id: "int | None" = None,

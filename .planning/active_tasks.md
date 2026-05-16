@@ -196,8 +196,26 @@ edits no longer shift every downstream chunk; the Phase C
 - [x] G-16 — live e2e (`requires_clip_local` marker): screenshot fixture round-trips, text+image dim parity, cross-modal cosine smoke
 - [x] G-17 — **P1 gate** closed: `make ci` exit 0 @ 90.01% coverage; cross-modal cosine similarity = 0.2383 (above 0.2 spec floor); 3078 unit + 403 integration + 30 smoke + 15 fuzz tests pass
 
-### Backlog (queued after Phase G, in declared order)
-- **Phase H** — **Qwen3.6-35B-A3B** code-LLM enrichment for code chunks (docstring synthesis, semantic summaries). MoE: 35B / ~3B active, fits 64 GB unified memory on M-series. Gated to `class=code` docs only.
+### Phase H — Qwen3.6-35B-A3B Code Enrichment (plan: .planning/tdd/phase_h_code_enrichment.md)
+
+LLM-synthesised enrichment metadata (docstring + summary + symbols + model + confidence)
+attached to every chunk of `class=code` documents. Gated to code only. Default
+`backend = "none"` keeps legacy configs untouched; opt in via `[code_enricher]`.
+Two concrete backends (`QwenCoderLocal` + `QwenCoderRemote`) satisfy the
+local-or-remote URL principle; remote speaks either Ollama or OpenAI chat-completions.
+
+#### P0 — `CodeEnricher` + 2 backends + CLI + e2e
+- [x] H-01..H-03 — `CodeEnricher` protocol, `CodeChunkEnrichment` dataclass, `EnricherRegistry`, exception hierarchy, `QwenCoderLocal` (mocked HTTP, 30 unit tests), `QwenCoderRemote` (mocked HTTP, both shapes, 32 unit tests), shared `_parse_enrichment_response` parser
+- [x] H-04 — `EnricherConfig` pydantic with `local_url` + `remote_url` + `remote_api_shape`, default `backend = "none"`, POSIX env-var name validator (18 unit tests)
+- [x] H-05 — `StorageBackend.iter_code_chunks_for_enrichment` + `update_chunk_enrichment` on both Postgres (`jsonb_set`) and SQLite (read-modify-write) backends (15 unit tests)
+- [x] H-06 — `corpus-forge enrich` CLI: `--dataset` / `--reclassify-on-model-change` / `--dry-run` / `--limit` / `--json` / `--backend` (15 unit tests via stub enricher)
+- [x] H-07 — `config.example.toml` `[code_enricher]` rich-docs block with both `ollama` and `openai` remote-URL examples
+- [x] H-08 — README new "Code enrichment" H2 + `docs/architecture.md` new "Code enrichment" H2 with backend matrix + local-vs-remote endpoints + idempotency policy
+- [x] H-09 — live e2e (`requires_qwen_coder` marker; probe accepts qwen3.6 / qwen2.5-coder / qwen2.5:*-instruct in that order): round-trip + idempotency + CLI e2e against testcontainers Postgres
+- [x] H-10 — **P0 gate** closed: `make ci` exit 0 @ 90.09% coverage; 3246 unit + 406 integration + 15 fuzz + 30 smoke tests pass; manual smoke on 3 functions from `corpus_forge/identity.py` (`advisory_lock_key`, `chunk_content_hash`, `stable_chunk_id`) produced coherent summaries + accurate symbol refs at 0.95 confidence
+
+### Backlog (queued after Phase H, in declared order)
+- (none — Phase I to be defined)
 
 ## Verification Criteria for Phase A Completion:
 - [ ] Daemon running on both Macs
