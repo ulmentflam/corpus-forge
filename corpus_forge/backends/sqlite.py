@@ -1215,6 +1215,183 @@ class SQLiteBackend:
         for row in rows:
             yield (row["id"], row["text"])
 
+    # ── Phase G P1 — multi-modal embedding helpers ─────────────────────
+
+    def register_multimodal_embedder(
+        self,
+        *,
+        name: str,
+        model_id: str,
+        dimension: int,
+    ) -> int:
+        """Register a multi-modal embedder + provision its image table.
+
+        Same pattern as :meth:`register_embedder` but flags the row
+        ``image=1`` and creates an ``image_embeddings_<name>`` table.
+        Uses the sqlite-vec ``vec0`` virtual table when available; falls
+        back to a plain ``BLOB`` table otherwise.
+        """
+        safe_name = name.replace("-", "_")
+        table_name = f"image_embeddings_{safe_name}"
+        config_json = json.dumps({"provider": "multimodal", "model_id": model_id})
+
+        existing = self._execute(
+            "SELECT id FROM embedders WHERE name = ?",
+            (name,),
+        )
+        if existing:
+            embedder_id: int = existing[0]["id"]
+            self._execute(
+                """
+                UPDATE embedders
+                SET provider = ?, model_id = ?, dimension = ?,
+                    normalized = ?, distance = ?, active = ?,
+                    table_name = ?, config = ?, image = 1
+                WHERE id = ?
+                """,
+                (
+                    "multimodal",
+                    model_id,
+                    dimension,
+                    1,
+                    "cosine",
+                    1,
+                    table_name,
+                    config_json,
+                    embedder_id,
+                ),
+            )
+        else:
+            self._execute(
+                """
+                INSERT INTO embedders
+                  (name, provider, model_id, dimension, normalized, distance,
+                   active, table_name, config, image)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    name,
+                    "multimodal",
+                    model_id,
+                    dimension,
+                    1,
+                    "cosine",
+                    1,
+                    table_name,
+                    config_json,
+                ),
+            )
+            id_row = self._execute(
+                "SELECT id FROM embedders WHERE name = ?",
+                (name,),
+            )
+            embedder_id = id_row[0]["id"]
+
+        if SQLITE_VEC_AVAILABLE:
+            self._execute(
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS {table_name}"
+                f" USING vec0(chunk_id INTEGER PRIMARY KEY,"
+                f" embedder_id INTEGER,"
+                f" embedding FLOAT[{dimension}])"
+            )
+        else:
+            self._execute(
+                f"CREATE TABLE IF NOT EXISTS {table_name}"
+                f" (chunk_id INTEGER PRIMARY KEY,"
+                f" embedder_id INTEGER NOT NULL,"
+                f" embedding BLOB NOT NULL,"
+                f" model TEXT,"
+                f" created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                f" FOREIGN KEY (chunk_id) REFERENCES chunks(id) ON DELETE CASCADE,"
+                f" FOREIGN KEY (embedder_id) REFERENCES embedders(id))"
+            )
+        return embedder_id
+
+    def write_image_embeddings(
+        self,
+        embedder_id: int,
+        pairs: "list[tuple[int, list[float]]]",
+    ) -> None:
+        """Write image embeddings for chunks (Phase G P1)."""
+        if not pairs:
+            return
+        import numpy as np  # noqa: PLC0415
+
+        embedder_rows = self._execute(
+            "SELECT table_name, model_id FROM embedders WHERE id = ?",
+            (embedder_id,),
+        )
+        if not embedder_rows:
+            raise ValueError(f"Embedder with ID {embedder_id} not found")
+
+        table_name = embedder_rows[0]["table_name"]
+        model_id = embedder_rows[0]["model_id"]
+
+        if SQLITE_VEC_AVAILABLE:
+            from sqlite_vec import serialize_float32  # noqa: PLC0415
+
+            for chunk_id, embedding in pairs:
+                vec = np.asarray(embedding, dtype=np.float32)
+                blob = serialize_float32(vec.tolist())
+                self._execute(
+                    f"DELETE FROM {table_name} WHERE chunk_id = ?",
+                    (chunk_id,),
+                )
+                self._execute(
+                    f"INSERT INTO {table_name} (chunk_id, embedder_id, embedding) VALUES (?, ?, ?)",
+                    (chunk_id, embedder_id, blob),
+                )
+        else:
+            for chunk_id, embedding in pairs:
+                vec = np.asarray(embedding, dtype=np.float32)
+                blob = vec.tobytes()
+                self._execute(
+                    f"INSERT OR REPLACE INTO {table_name}"
+                    f" (chunk_id, embedder_id, embedding, model)"
+                    f" VALUES (?, ?, ?, ?)",
+                    (chunk_id, embedder_id, blob, model_id),
+                )
+
+    def image_chunks_missing_embedding(
+        self, embedder_id: int, *, limit: int = 1024
+    ) -> "Iterator[tuple[int, dict]]":
+        """Yield ``(chunk_id, metadata_dict)`` for image chunks needing embeddings."""
+        embedder_rows = self._execute(
+            "SELECT table_name FROM embedders WHERE id = ?",
+            (embedder_id,),
+        )
+        if not embedder_rows:
+            return
+        table_name = embedder_rows[0]["table_name"]
+
+        rows = self._execute(
+            f"SELECT c.id, c.text, c.metadata FROM chunks c"
+            f" JOIN documents d ON d.id = c.document_id"
+            f" JOIN document_labels dl ON dl.document_id = d.id"
+            f" JOIN labels l ON l.id = dl.label_id"
+            f" WHERE NOT EXISTS ("
+            f"   SELECT 1 FROM {table_name} e"
+            f"   WHERE e.chunk_id = c.id AND e.embedder_id = ?"
+            f" )"
+            f" AND l.namespace = 'format' AND l.value = 'image'"
+            f" ORDER BY c.id LIMIT ?",
+            (embedder_id, limit),
+        )
+        for row in rows:
+            raw_meta = row["metadata"]
+            if isinstance(raw_meta, str):
+                try:
+                    meta = json.loads(raw_meta)
+                except json.JSONDecodeError:
+                    meta = {}
+            elif isinstance(raw_meta, dict):
+                meta = raw_meta
+            else:
+                meta = {}
+            if "text" not in meta:
+                meta = {**meta, "text": row["text"]}
+            yield (row["id"], meta)
+
     # ── Document / Conversation lifecycle helpers (B-09) ─────────────────────
 
     def delete_document(self, dataset_id: int, source_uri: str) -> None:

@@ -63,6 +63,52 @@ class StorageBackend(Protocol):
         self, embedder_id: int, limit: int = 1024
     ) -> Iterator[tuple[int, str]]: ...
 
+    # --- Multi-modal embedding surface (Phase G P1) ----------------------------
+
+    def register_multimodal_embedder(
+        self,
+        *,
+        name: str,
+        model_id: str,
+        dimension: int,
+    ) -> int:
+        """Register a multi-modal embedder and create its ``image_embeddings_<name>`` table.
+
+        Mirrors :meth:`register_embedder` but flags the row as
+        ``image=TRUE`` (Phase G migration 0011 added the column) and
+        provisions a parallel ``image_embeddings_<name>`` table rather
+        than ``embeddings_<name>``.
+        """
+        ...
+
+    def write_image_embeddings(
+        self,
+        embedder_id: int,
+        pairs: "list[tuple[int, list[float]]]",
+    ) -> None:
+        """Write image embeddings for chunks (Phase G P1).
+
+        Same shape as :meth:`write_embeddings` but operates on the
+        ``image_embeddings_<name>`` table and accepts plain
+        ``list[float]`` vectors (no numpy dependency required at this
+        boundary — the image-embed pipeline produces lists directly).
+        """
+        ...
+
+    def image_chunks_missing_embedding(
+        self, embedder_id: int, *, limit: int = 1024
+    ) -> "Iterator[tuple[int, dict]]":
+        """Return image-labeled chunks missing an embedding for ``embedder_id``.
+
+        Yields ``(chunk_id, metadata_dict)`` so the caller can read
+        ``metadata["image_uri"]`` (or however image bytes are sourced)
+        from the dict rather than re-querying the chunks table.
+
+        Filter: only chunks whose document carries ``format=image`` are
+        considered (image-extractor output).
+        """
+        ...
+
     def lock_source(
         self, key: str
     ) -> "AbstractContextManager[None]": ...  # Context manager for advisory lock

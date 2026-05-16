@@ -269,6 +269,68 @@ class VLMConfig(BaseModel):
         return self
 
 
+class WhisperConfig(BaseModel):
+    """Phase G — Whisper transcription backend config.
+
+    Drives :func:`corpus_forge.whisper.get_active_whisper`. Default
+    ``backend = "none"`` means audio/video files are silently skipped
+    on ingest — no transcription layer is constructed.
+
+    Fields:
+
+    - ``backend``: ``"local" | "remote" | "none"``. Required to opt in
+      to audio/video transcription.
+    - ``model``: Whisper model tag. For ``local``, one of
+      ``tiny | base | small | medium | large`` (default ``small``).
+      For ``remote``, provider-specific (e.g. ``whisper-1`` for
+      OpenAI, ``whisper-large-v3`` for Groq).
+    - ``local_compute_type``: precision for ``faster-whisper``.
+      ``auto`` lets the backend pick (float16 on CUDA/MPS, int8 on
+      CPU). Use ``float16`` / ``int8`` to force.
+    - ``remote_base_url``: base URL of any OpenAI-compatible Whisper
+      endpoint (the backend appends ``/audio/transcriptions``).
+      Default OpenAI; swap to Groq / Replicate / self-hosted
+      whisper.cpp without changing code.
+    - ``remote_api_key_env``: name of the env var holding the API key
+      (read from ``secrets.env``). Validated as a POSIX identifier.
+    - ``timeout_s``: per-request HTTP budget for the remote backend
+      (also used as the local backend's per-file wall budget).
+    - ``language``: ISO-639-1 hint. Empty string ``""`` = auto-detect.
+
+    Cross-cutting: every model client in corpus-forge supports a
+    configurable local-or-remote URL — see
+    ``project_model_local_or_remote.md`` and the ``[vlm]`` / ``[classifier]``
+    blocks. The remote Whisper path shows the same pattern.
+    """
+
+    backend: Literal["local", "remote", "none"] = "none"
+    model: str = "small"
+    local_compute_type: Literal["auto", "float16", "int8", "int8_float16"] = "auto"
+    remote_base_url: AnyHttpUrl = AnyHttpUrl("https://api.openai.com/v1")
+    remote_api_key_env: str = "OPENAI_API_KEY"
+    timeout_s: float = Field(300.0, gt=0)
+    language: str = ""
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_remote_env_var_name(self) -> "WhisperConfig":
+        """Reject ``remote_api_key_env`` values that aren't valid POSIX
+        environment variable names.
+
+        Catches typos (``"MY KEY"`` with a space, ``"123KEY"`` starting
+        with a digit, ``"MY-KEY"`` with a dash) at config-load time
+        instead of silently producing ``None`` at runtime.
+        """
+        if not _ENV_VAR_NAME_RE.match(self.remote_api_key_env):
+            raise ValueError(
+                f"remote_api_key_env={self.remote_api_key_env!r} is not a valid "
+                "POSIX environment variable name (ASCII letters / digits / "
+                "underscore; cannot start with a digit)."
+            )
+        return self
+
+
 class ClassifierConfig(BaseModel):
     """Phase E — document-classification chain config.
 
@@ -332,6 +394,11 @@ class Config(BaseModel):
     # rule-only so existing configs without a ``[classifier]`` block
     # opt in to the rule classifier transparently.
     classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)
+    # Phase G (G-04) — Whisper transcription backend selector. Default
+    # backend="none" so adding the field doesn't change behaviour for
+    # existing configs (audio/video files were unsupported pre-Phase-G;
+    # they remain silently skipped until the user opts in).
+    whisper: WhisperConfig = Field(default_factory=WhisperConfig)
 
     model_config = ConfigDict(
         str_strip_whitespace=True,

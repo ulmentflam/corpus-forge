@@ -536,6 +536,7 @@ def _instantiate_source(source_config, *, config: Config | None = None):
 
         extraction = source_config.extraction or ExtractionConfig()
         vlm = None
+        whisper = None
         if config is not None:
             try:
                 from .vlm.registry import get_active_vlm  # noqa: PLC0415
@@ -553,11 +554,30 @@ def _instantiate_source(source_config, *, config: Config | None = None):
                     exc,
                 )
                 vlm = None
+            # Phase G (G-05/G-06): same pattern for the Whisper backend.
+            # When the user hasn't configured ``[whisper]`` the factory
+            # returns NoopWhisper and audio/video files are silently
+            # skipped — no extra try needed for that path. We still wrap
+            # in try/except so a misconfigured remote URL / missing API
+            # key downgrades to "no transcription" rather than blowing
+            # up the entire ingest run.
+            try:
+                from .whisper.registry import get_active_whisper  # noqa: PLC0415
+
+                whisper = get_active_whisper(config)
+            except Exception as exc:
+                logger.warning(
+                    "Whisper resolution failed (%s) — audio/video files "
+                    "will be skipped on this ingest pass.",
+                    exc,
+                )
+                whisper = None
         return FilesystemSource(
             root=source_config.root,
             exclude_globs=source_config.exclude_globs or [],
             extraction=extraction,
             vlm=vlm,
+            whisper=whisper,
             debounce=2.0,
         )
     else:

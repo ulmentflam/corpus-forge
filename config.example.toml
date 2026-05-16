@@ -232,3 +232,83 @@ llm_temperature      = 0.0
 # 2000 default fits comfortably inside qwen2.5:7b-instruct's 8K
 # context with prompt overhead.
 llm_excerpt_chars    = 2000
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase G — Whisper transcription (audio + video → Markdown)
+# ─────────────────────────────────────────────────────────────────────
+# Routes ``.mp3 .wav .m4a .ogg .flac`` and ``.mp4 .mov .webm .mkv .avi``
+# files through a Whisper-family transcription model so audio/video
+# content becomes ingestable Markdown (with timestamp anchors for
+# local backends). The default ``backend = "none"`` skips every audio/
+# video file silently — opt in here to enable.
+#
+# Local-or-remote URL: same principle as the [vlm] / [classifier]
+# blocks above. ``remote_base_url`` accepts ANY OpenAI-compatible
+# Whisper endpoint (OpenAI, Groq, Replicate, self-hosted whisper.cpp
+# via HTTP). The default points at OpenAI; uncomment the Groq URL
+# below for the faster free-tier provider.
+#
+# The [whisper] extra installs both backends + ffmpeg:
+#   uv sync --extra whisper
+[whisper]
+# Which backend to use:
+#   "none"   — disabled (default; audio/video files silently skipped).
+#   "local"  — in-process faster-whisper (model lives on this box).
+#   "remote" — OpenAI-compatible HTTP endpoint (see remote_base_url).
+backend            = "none"
+
+# Whisper model.
+# - local : tiny | base | small | medium | large  (default: small)
+# - remote: provider-specific (OpenAI: whisper-1; Groq: whisper-large-v3)
+model              = "small"
+
+# Local-only knob (ignored when backend != "local"):
+# Precision for faster-whisper. "auto" picks int8 on CPU and float16
+# on CUDA. Force "float16" / "int8" / "int8_float16" to override.
+local_compute_type = "auto"
+
+# Remote-only knobs (ignored when backend != "remote"):
+# Base URL of the OpenAI-compatible Whisper endpoint. The backend
+# appends ``/audio/transcriptions``.
+remote_base_url    = "https://api.openai.com/v1"
+# Remote alternative — Groq's whisper-large-v3 is ~10x faster than
+# OpenAI's whisper-1 on the free tier. Set ``remote_api_key_env =
+# "GROQ_API_KEY"`` and add the key to secrets.env.
+# remote_base_url  = "https://api.groq.com/openai/v1"
+# Self-hosted whisper.cpp speaking the same multipart contract.
+# remote_base_url  = "http://whisper.internal.example.com:8080/v1"
+
+# Name of the env var holding the API key (read from secrets.env).
+# Must be a valid POSIX identifier — corpus-forge rejects bad names
+# at config-load time so typos surface immediately.
+remote_api_key_env = "OPENAI_API_KEY"
+
+# Per-request HTTP / per-file wall budget (seconds). Real audio
+# commonly takes 10-60 s to transcribe; 300 s leaves comfortable
+# slack for multi-minute clips.
+timeout_s          = 300.0
+
+# ISO-639-1 language hint (empty string = auto-detect). Set to e.g.
+# "en" to force English when working with monolingual corpora — both
+# faster and slightly more accurate than auto-detect.
+language           = ""
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase G P1 — Multi-modal embeddings (text + image shared vector space)
+# ─────────────────────────────────────────────────────────────────────
+# Multi-modal embedders are activated on-demand via the CLI rather than
+# a TOML block (Phase G P1 keeps the config surface narrow). The
+# default local backend is ``ClipLocalEmbedder`` with ``clip-ViT-B-32``
+# (512 d, ~150 MB, MIT). Run image-embedding backfill with:
+#
+#     corpus-forge embed -e clip_local --image
+#
+# The backend transparently creates an ``image_embeddings_clip_local``
+# table on first run (mirrors the per-text-embedder
+# ``embeddings_<name>`` family).
+#
+# Local-or-remote URL: a future ``[multimodal]`` block will gate the
+# remote :class:`ClipRemoteEmbedder` against an OpenAI-compatible
+# ``/embeddings`` endpoint (Voyage AI ``voyage-multimodal-3``, Cohere
+# ``embed-v3-multimodal``, or a self-hosted CLIP service). For now,
+# users wire the remote backend directly in code if needed.

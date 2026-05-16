@@ -71,11 +71,21 @@ def embed(
     embedder: str = typer.Option(..., "-e", help="Embedder name"),
     dataset: str | None = typer.Option(None, "-d", help="Dataset name"),
     limit: int | None = typer.Option(None, "-l", help="Max chunks to process"),
+    image: bool = typer.Option(
+        False,
+        "--image",
+        help="Embed images (uses the multi-modal embedder; Phase G P1).",
+    ),
 ):
-    """Backfill embeddings for chunks."""
+    """Backfill embeddings for chunks.
+
+    By default, embed text chunks via the configured text embedder.
+    With ``--image``, embed image-labeled chunks via a multi-modal
+    embedder (CLIP family) and write to ``image_embeddings_<name>``.
+    """
     from .embed import main
 
-    main(embedder=embedder, dataset=dataset, limit=limit)
+    main(embedder=embedder, dataset=dataset, limit=limit, image=image)
 
 
 @app.command()

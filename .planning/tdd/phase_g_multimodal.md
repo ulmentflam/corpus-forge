@@ -4,7 +4,7 @@ _Owner: tdd-principal. Workers: read freely. Edit only your claimed row's `statu
 
 ## Status
 
-**Phase F** complete (TBD). **Phase G** (this file): **pending kickoff**.
+**Phase F** complete (TBD). **Phase G** (this file): **complete** — P0 gate (G-09) and P1 gate (G-17) both closed; `make ci` exit 0; cross-modal cosine similarity 0.2383 (above 0.2 spec floor).
 
 ## Goal
 
@@ -73,28 +73,28 @@ class MultiModalEmbedder(Protocol):
 
 | id | title | depends_on | surface | risk | status |
 |----|-------|------------|---------|------|--------|
-| G-01 | `WhisperBackend` protocol + registry | — | `corpus_forge/whisper/{__init__,base,registry}.py` (new), `tests/unit/test_whisper_registry.py` | low | pending |
-| G-02 | `LocalWhisper` (faster-whisper) | G-01 | `corpus_forge/whisper/local.py`, `tests/unit/test_whisper_local.py` (mocked model) | med | pending |
-| G-03 | `RemoteWhisper` (OpenAI-compatible HTTP) | G-01 | `corpus_forge/whisper/remote.py`, `tests/unit/test_whisper_remote.py` (mocked HTTP) | med | pending |
-| G-04 | `WhisperConfig` pydantic + `Config.whisper` | — | `corpus_forge/config.py`, `tests/unit/test_config_whisper.py` | low | pending |
-| G-05 | `AudioExtractor` | G-02 or G-03 | `corpus_forge/extractors/audio.py`, `tests/unit/test_extractor_audio.py` | med | pending |
-| G-06 | `VideoExtractor` (ffmpeg) | G-05 | `corpus_forge/extractors/video.py`, `tests/unit/test_extractor_video.py`, `pyproject.toml` (`imageio-ffmpeg`) | med | pending |
-| G-07 | `config.example.toml` `[whisper]` rich-docs block | G-04 | `config.example.toml` | low | pending |
-| G-08 | Live e2e (requires_whisper_local marker) | G-05, G-06 | `tests/integration/test_whisper_local_e2e.py`, `tests/integration/conftest.py` (probe) | med | pending |
-| G-09 | **P0 gate** — `make ci` green | G-08 | — | gate | pending |
+| G-01 | `WhisperBackend` protocol + registry | — | `corpus_forge/whisper/{__init__,base,registry}.py` (new), `tests/unit/test_whisper_registry.py` | low | **done** |
+| G-02 | `LocalWhisper` (faster-whisper) | G-01 | `corpus_forge/whisper/local.py`, `tests/unit/test_whisper_local.py` (mocked model) | med | **done** |
+| G-03 | `RemoteWhisper` (OpenAI-compatible HTTP) | G-01 | `corpus_forge/whisper/remote.py`, `tests/unit/test_whisper_remote.py` (mocked HTTP) | med | **done** |
+| G-04 | `WhisperConfig` pydantic + `Config.whisper` | — | `corpus_forge/config.py`, `tests/unit/test_config_whisper.py` | low | **done** |
+| G-05 | `AudioExtractor` | G-02 or G-03 | `corpus_forge/extractors/audio.py`, `tests/unit/test_extractor_audio.py` | med | **done** |
+| G-06 | `VideoExtractor` (ffmpeg) | G-05 | `corpus_forge/extractors/video.py`, `tests/unit/test_extractor_video.py`, `pyproject.toml` (`imageio-ffmpeg`) | med | **done** |
+| G-07 | `config.example.toml` `[whisper]` rich-docs block | G-04 | `config.example.toml` | low | **done** |
+| G-08 | Live e2e (requires_whisper_local marker) | G-05, G-06 | `tests/integration/test_whisper_local_e2e.py`, `tests/integration/conftest.py` (probe) | med | **done** |
+| G-09 | **P0 gate** — `make ci` green | G-08 | — | gate | **done** |
 
 ### P1 — Multi-modal embeddings
 
 | id | title | depends_on | surface | risk | status |
 |----|-------|------------|---------|------|--------|
-| G-10 | `MultiModalEmbedder` protocol | G-09 | `corpus_forge/embedders/multimodal.py`, `tests/unit/test_multimodal_protocol.py` | low | pending |
-| G-11 | `ClipLocalEmbedder` (sentence-transformers) | G-10 | `corpus_forge/embedders/clip_local.py`, `tests/unit/test_clip_local.py` | med | pending |
-| G-12 | `ClipRemoteEmbedder` (OpenAI-compat HTTP) | G-10 | `corpus_forge/embedders/clip_remote.py`, `tests/unit/test_clip_remote.py` (mocked HTTP) | med | pending |
-| G-13 | `image_embeddings_<embedder>` schema migration | — | `corpus_forge/alembic/versions/0011_image_embeddings.py`, `tests/integration/test_migrate_image_embeddings.py` | low | pending |
-| G-14 | Backend `write_image_embeddings` + `image_chunks_missing_embedding` helpers | G-13 | `corpus_forge/backends/postgres.py`, `corpus_forge/backends/sqlite.py`, `tests/unit/test_backend_image_embeddings.py` | med | pending |
-| G-15 | `corpus-forge embed --image` integration | G-11, G-14 | `corpus_forge/embed.py`, `corpus_forge/cli.py` | med | pending |
-| G-16 | Live e2e | G-15 | `tests/integration/test_multimodal_embed_e2e.py` (`requires_clip_local` marker) | med | pending |
-| G-17 | **P1 gate** — `make ci` green + manual cross-modal retrieval smoke | G-16 | — | gate | pending |
+| G-10 | `MultiModalEmbedder` protocol | G-09 | `corpus_forge/embedders/multimodal.py`, `tests/unit/test_multimodal_protocol.py` | low | **done** |
+| G-11 | `ClipLocalEmbedder` (sentence-transformers) | G-10 | `corpus_forge/embedders/clip_local.py`, `tests/unit/test_clip_local.py` | med | **done** |
+| G-12 | `ClipRemoteEmbedder` (OpenAI-compat HTTP) | G-10 | `corpus_forge/embedders/clip_remote.py`, `tests/unit/test_clip_remote.py` (mocked HTTP) | med | **done** |
+| G-13 | `image_embeddings_<embedder>` schema migration | — | `corpus_forge/alembic/versions/0011_image_embeddings.py`, `tests/integration/test_migrate_image_embeddings.py` | low | **done** |
+| G-14 | Backend `write_image_embeddings` + `image_chunks_missing_embedding` helpers | G-13 | `corpus_forge/backends/postgres.py`, `corpus_forge/backends/sqlite.py`, `tests/unit/test_backend_image_embeddings.py` | med | **done** |
+| G-15 | `corpus-forge embed --image` integration | G-11, G-14 | `corpus_forge/embed.py`, `corpus_forge/cli.py` | med | **done** |
+| G-16 | Live e2e | G-15 | `tests/integration/test_multimodal_embed_e2e.py` (`requires_clip_local` marker) | med | **done** |
+| G-17 | **P1 gate** — `make ci` green + manual cross-modal retrieval smoke | G-16 | — | gate | **done** |
 
 ## Local-or-remote requirement
 

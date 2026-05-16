@@ -802,6 +802,151 @@ class PostgresBackend(StorageBackend):
         for row in results:
             yield (row["id"], row["text"])
 
+    # ── Phase G P1 — multi-modal embedding helpers ─────────────────────
+
+    def register_multimodal_embedder(
+        self,
+        *,
+        name: str,
+        model_id: str,
+        dimension: int,
+    ) -> int:
+        """Register a multi-modal embedder + provision its image table."""
+        safe_name = name.replace("-", "_")
+        table_name_val = f"image_embeddings_{safe_name}"
+
+        existing = self._execute(
+            "SELECT id FROM corpus.embedders WHERE name = %s",
+            (name,),
+        )
+        if existing:
+            embedder_id = existing[0]["id"]
+            self._execute(
+                """
+                UPDATE corpus.embedders
+                SET provider = %s, model_id = %s, dimension = %s,
+                    normalized = %s, distance = %s, active = %s,
+                    table_name = %s, image = TRUE
+                WHERE id = %s
+                """,
+                (
+                    "multimodal",
+                    model_id,
+                    dimension,
+                    True,
+                    "cosine",
+                    True,
+                    table_name_val,
+                    embedder_id,
+                ),
+            )
+        else:
+            result = self._execute(
+                """
+                INSERT INTO corpus.embedders
+                (name, provider, model_id, dimension, normalized, distance,
+                 active, table_name, config, image)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+                RETURNING id
+                """,
+                (
+                    name,
+                    "multimodal",
+                    model_id,
+                    dimension,
+                    True,
+                    "cosine",
+                    True,
+                    table_name_val,
+                    psycopg.types.json.Json({"provider": "multimodal", "model_id": model_id}),
+                ),
+            )
+            embedder_id = result[0]["id"]
+
+        self._execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS corpus.{table_name_val} (
+              chunk_id    BIGINT PRIMARY KEY REFERENCES corpus.chunks(id) ON DELETE CASCADE,
+              embedder_id BIGINT NOT NULL REFERENCES corpus.embedders(id),
+              embedding   vector({dimension}) NOT NULL,
+              model       TEXT,
+              created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS {table_name_val}_hnsw
+              ON corpus.{table_name_val}
+              USING hnsw (embedding vector_cosine_ops);
+            """
+        )
+        return embedder_id
+
+    def write_image_embeddings(
+        self,
+        embedder_id: int,
+        pairs: "list[tuple[int, list[float]]]",
+    ) -> None:
+        """Write image embeddings for chunks (Phase G P1)."""
+        if not pairs:
+            return
+        embedder_info = self._execute(
+            "SELECT name, model_id FROM corpus.embedders WHERE id = %s",
+            (embedder_id,),
+        )
+        if not embedder_info:
+            raise ValueError(f"Embedder with ID {embedder_id} not found")
+        embedder_name = embedder_info[0]["name"]
+        model_id = embedder_info[0]["model_id"]
+        table_name = f"image_embeddings_{embedder_name.replace('-', '_')}"
+
+        for chunk_id, embedding in pairs:
+            self._execute(
+                f"""
+                INSERT INTO corpus.{table_name} (chunk_id, embedder_id, embedding, model)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (chunk_id) DO UPDATE SET
+                    embedding = EXCLUDED.embedding,
+                    model = EXCLUDED.model
+                """,
+                (chunk_id, embedder_id, list(embedding), model_id),
+            )
+
+    def image_chunks_missing_embedding(
+        self, embedder_id: int, *, limit: int = 1024
+    ) -> "Iterator[tuple[int, dict]]":
+        """Yield image-labeled chunks missing an embedding for ``embedder_id``."""
+        embedder_info = self._execute(
+            "SELECT name FROM corpus.embedders WHERE id = %s",
+            (embedder_id,),
+        )
+        if not embedder_info:
+            return
+        embedder_name = embedder_info[0]["name"]
+        table_name = f"image_embeddings_{embedder_name.replace('-', '_')}"
+
+        # Join chunks → documents → document_labels → labels to filter on
+        # format=image. The metadata dict is built from chunks.metadata
+        # (JSONB) so callers can read ``image_uri`` etc. directly.
+        query = f"""
+        SELECT c.id, c.text, c.metadata
+        FROM corpus.chunks c
+        JOIN corpus.documents d ON d.id = c.document_id
+        JOIN corpus.document_labels dl ON dl.document_id = d.id
+        JOIN corpus.labels l ON l.id = dl.label_id
+        LEFT JOIN corpus.{table_name} e ON e.chunk_id = c.id
+        WHERE e.chunk_id IS NULL
+          AND l.namespace = 'format' AND l.value = 'image'
+        ORDER BY c.id
+        LIMIT %s
+        """
+        results = self._execute(query, (limit,))
+        for row in results:
+            meta = row.get("metadata") or {}
+            # Augment with stored chunk text so callers can use it as a
+            # fallback image source (some extractors stash the path in
+            # text rather than metadata).
+            if "text" not in meta:
+                meta = {**meta, "text": row["text"]}
+            yield (row["id"], meta)
+
     @contextmanager
     def lock_source(self, key: str):
         """Context manager for advisory lock on a source."""

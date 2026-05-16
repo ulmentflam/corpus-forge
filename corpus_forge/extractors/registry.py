@@ -28,6 +28,7 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
     from collections.abc import Iterable
 
     from corpus_forge.vlm.base import VLMBackend
+    from corpus_forge.whisper.base import WhisperBackend
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,7 @@ class ExtractorRegistry:
 def register_default_extractors(
     config: object | None,
     vlm: VLMBackend | None = None,
+    whisper: WhisperBackend | None = None,
 ) -> ExtractorRegistry:
     """Construct a fully-wired :class:`ExtractorRegistry` from ``config``.
 
@@ -261,6 +263,19 @@ def register_default_extractors(
         if cls is not None:
             reg.register(cls(vlm=vlm))
 
+    # ── Phase G (G-05/G-06) — Whisper-backed audio + video extractors ──
+    # Registered only when a real (non-Noop) Whisper backend is wired
+    # in. NoopWhisper is treated as "no transcription configured" so
+    # users who haven't opted in to the ``[whisper]`` extra aren't
+    # surprised by audio/video files becoming ingest-eligible.
+    if whisper is not None and not _is_noop_whisper(whisper):
+        audio_cls = _try_load("audio", "AudioExtractor")
+        if audio_cls is not None:
+            reg.register(audio_cls(whisper=whisper))
+        video_cls = _try_load("video", "VideoExtractor")
+        if video_cls is not None:
+            reg.register(video_cls(whisper=whisper))
+
     return reg
 
 
@@ -277,3 +292,16 @@ def _is_noop_vlm(vlm: object) -> bool:
     from corpus_forge.vlm.base import NoopVLM  # noqa: PLC0415
 
     return isinstance(vlm, NoopVLM)
+
+
+def _is_noop_whisper(whisper: object) -> bool:
+    """Return True if ``whisper`` is a :class:`NoopWhisper` instance.
+
+    ``corpus_forge.whisper.base`` is dependency-free (the heavy backends
+    lazy-import ``faster_whisper`` / ``requests`` inside their methods),
+    so importing :class:`NoopWhisper` here is safe even on a no-``[whisper]``
+    install.
+    """
+    from corpus_forge.whisper.base import NoopWhisper  # noqa: PLC0415
+
+    return isinstance(whisper, NoopWhisper)

@@ -32,6 +32,7 @@ from corpus_forge.sources.base import RawDocument, WatchedSource
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from corpus_forge.vlm.base import VLMBackend
+    from corpus_forge.whisper.base import WhisperBackend
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,12 @@ _FAMILY_FLAGS: dict[str, str] = {
     "NotebookExtractor": "enable_notebook",
     "CsvExtractor": "enable_csv",
     "ImageExtractor": "enable_image",
+    # Phase G — Whisper extractors. There is no per-family flag on the
+    # current ``ExtractionConfig``; gating happens via the global
+    # ``config.whisper.backend`` (NoopWhisper short-circuits both
+    # extractors). Listing them here is forward-compatible — if a future
+    # ``enable_audio`` / ``enable_video`` flag lands, gating will Just
+    # Work via the same path.
 }
 
 
@@ -98,16 +105,21 @@ class FilesystemSource(WatchedSource):
         exclude_globs: list[str] | None = None,
         extraction: ExtractionConfig | None = None,
         vlm: VLMBackend | None = None,
+        whisper: WhisperBackend | None = None,
         debounce: float = 2.0,
     ):
         super().__init__(Path(root), debounce=debounce)
         self.exclude_globs: list[str] = list(exclude_globs) if exclude_globs else []
         self.extraction: ExtractionConfig = extraction or ExtractionConfig()
         self.vlm = vlm
+        self.whisper = whisper
         # Registry baked with the user's tunables (csv_max_rows,
-        # code_chunker_config, OCR knobs, VLM injection) at construction
-        # time so the hot path never re-reads config.
-        self._registry: ExtractorRegistry = register_default_extractors(self.extraction, vlm=vlm)
+        # code_chunker_config, OCR knobs, VLM injection, Whisper
+        # injection) at construction time so the hot path never re-reads
+        # config.
+        self._registry: ExtractorRegistry = register_default_extractors(
+            self.extraction, vlm=vlm, whisper=whisper
+        )
 
     # ── Discovery ──────────────────────────────────────────────────────
 
@@ -172,6 +184,17 @@ class FilesystemSource(WatchedSource):
             extracted = extractor.extract(path)
         except Exception as exc:
             logger.warning("Extractor %s failed on %s: %s", type(extractor).__name__, path, exc)
+            return None
+
+        # Phase G: AudioExtractor / VideoExtractor may return ``None`` to
+        # signal "no transcription backend configured — skip this file
+        # silently". Treat that the same as "no extractor matched".
+        if extracted is None:
+            logger.debug(
+                "Extractor %s returned None for %s — skipping",
+                type(extractor).__name__,
+                path,
+            )
             return None
 
         # Build metadata: extractor's free-form dict + reserved keys

@@ -179,8 +179,24 @@ edits no longer shift every downstream chunk; the Phase C
 - [x] F-06 — hypothesis-driven stability invariants (append prefix-stable, mid-edit reuse-floor)
 - [x] F-07 — **P0 gate** closed: `make ci` exit 0 @ 90.53% coverage; 2886 unit + 396 integration + 15 fuzz + 30 smoke tests pass
 
-### Backlog (queued after Phase F, in declared order)
-- **Phase G** — multi-modal embeddings + Whisper transcription. New audio/video extractors; class label disambiguates transcript-class from chat-class.
+### Phase G — Multi-modal embeddings + Whisper transcription
+
+#### P0 — Whisper transcription (audio/video → Markdown)
+- [x] G-01..G-04 — `WhisperBackend` protocol + registry, `LocalWhisper` (faster-whisper), `RemoteWhisper` (OpenAI-compat HTTP), `WhisperConfig` pydantic (default `backend="none"` keeps legacy configs untouched)
+- [x] G-05..G-06 — `AudioExtractor` (`.mp3 .wav .m4a .ogg .flac`), `VideoExtractor` (`.mp4 .mov .webm .mkv .avi` via `imageio-ffmpeg`); both return `None` on NoopWhisper so files are silently skipped pre-opt-in
+- [x] G-07 — `config.example.toml` `[whisper]` rich-docs block with OpenAI / Groq / self-hosted whisper.cpp URL examples
+- [x] G-08 — live e2e (`requires_whisper_local` marker, synthetic silent WAV via stdlib `wave`); conftest probe + `requires_clip_local` marker plumbing added at the same time
+- [x] G-09 — **P0 gate** closed: lint + format + typecheck + unit + coverage + integration all green
+
+#### P1 — Multi-modal embeddings (text + image shared space)
+- [x] G-10..G-12 — `MultiModalEmbedder` Protocol (new surface, not retrofitted), `ClipLocalEmbedder` (sentence-transformers `clip-ViT-B-32`, 512 d default), `ClipRemoteEmbedder` (OpenAI-compat `/embeddings` with base64 data-URL image input)
+- [x] G-13 — alembic `0011_image_embeddings` adds `embedders.image BOOLEAN` column (forward-only, NULL-defaulted FALSE so pre-G rows are valid)
+- [x] G-14 — `StorageBackend.register_multimodal_embedder` / `write_image_embeddings` / `image_chunks_missing_embedding` on both Postgres + SQLite (sqlite-vec vec0 path + plain-BLOB fallback)
+- [x] G-15 — `corpus-forge embed --image` integration: routes to `backfill_image_embedder`; `_resolve_image_bytes` looks up base64 → `image_path` → `filesystem://` URI in order; `ImageExtractor` now persists `image_path` in metadata
+- [x] G-16 — live e2e (`requires_clip_local` marker): screenshot fixture round-trips, text+image dim parity, cross-modal cosine smoke
+- [x] G-17 — **P1 gate** closed: `make ci` exit 0 @ 90.01% coverage; cross-modal cosine similarity = 0.2383 (above 0.2 spec floor); 3078 unit + 403 integration + 30 smoke + 15 fuzz tests pass
+
+### Backlog (queued after Phase G, in declared order)
 - **Phase H** — **Qwen3.6-35B-A3B** code-LLM enrichment for code chunks (docstring synthesis, semantic summaries). MoE: 35B / ~3B active, fits 64 GB unified memory on M-series. Gated to `class=code` docs only.
 
 ## Verification Criteria for Phase A Completion:

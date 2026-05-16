@@ -124,6 +124,22 @@ ocr = [
   "pdf2image>=1.17",
   "pillow>=10.0",
 ]
+# Phase G (G-02, G-03, G-06): Whisper transcription + ffmpeg.
+#
+# License posture: faster-whisper (MIT), imageio-ffmpeg (BSD-2-Clause)
+# bundles an ffmpeg static binary (LGPL / GPL pieces of ffmpeg are not
+# linked into corpus-forge — the binary is invoked as a subprocess,
+# which is the documented LGPL boundary). Installing [whisper] does NOT
+# widen the AGPL surface introduced by [multi-format].
+#
+# Both backends ship together: faster-whisper for the local path,
+# requests (already in [ocr]; declared again here so the extra is
+# usable standalone) for the OpenAI-compatible HTTP path.
+whisper = [
+  "faster-whisper>=1.0",
+  "imageio-ffmpeg>=0.5",
+  "requests>=2.32",
+]
 
 [project.scripts]
 corpus-forge = "corpus_forge.cli:app"
@@ -260,6 +276,8 @@ markers = [
   "requires_ollama: requires a running ollama daemon with qwen2.5vl:7b pulled",
   "requires_ollama_text: requires a running ollama daemon with a qwen2.5:*-instruct text model pulled",
   "requires_mistral_api: requires MISTRAL_API_KEY environment variable",
+  "requires_whisper_local: requires faster-whisper installed AND a downloadable Whisper model on disk",
+  "requires_clip_local: requires sentence-transformers + the CLIP ViT-B-32 weights pulled",
 ]
 
 [tool.coverage.run]

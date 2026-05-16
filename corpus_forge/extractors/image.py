@@ -89,6 +89,10 @@ class ImageExtractor:
                 "extractor": "image",
                 "ocr_backend": self.vlm.name,
                 "byte_count": len(image_bytes),
+                # Phase G P1 (G-15): persist the source path so the
+                # image-embed backfill can re-read the bytes without
+                # parsing the source URI.
+                "image_path": str(path.resolve()),
             },
             labels=[("format", "image"), ("ocr", self.vlm.name)],
         )
