@@ -331,8 +331,15 @@ else
     fi
 fi
 
-info "Running: $UV_CMD tool install '$pkg_spec' --upgrade"
-"$UV_CMD" tool install "$pkg_spec" --upgrade
+# corpus-forge requires Python >=3.11,<3.14. Pin a compatible interpreter
+# explicitly so uv doesn't pick whatever system Python happens to be
+# default (Ubuntu 22.04's default is 3.10, which fails resolution).
+# ``CF_PYTHON`` overrides the default if the user wants a specific
+# version (e.g. ``3.12`` on a host with multiple installed).
+pin_python="${CF_PYTHON:-3.11}"
+
+info "Running: $UV_CMD tool install --python $pin_python '$pkg_spec' --upgrade"
+"$UV_CMD" tool install --python "$pin_python" "$pkg_spec" --upgrade
 
 ok "corpus-forge installed"
 

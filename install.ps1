@@ -267,8 +267,13 @@ if ($env:CF_INSTALL_FROM) {
     }
 }
 
-Write-Info "Running: $UvCmd tool install '$pkgSpec' --upgrade"
-& $UvCmd tool install $pkgSpec --upgrade
+# corpus-forge requires Python >=3.11,<3.14. Pin a compatible
+# interpreter explicitly. ``CF_PYTHON`` overrides the default if the
+# user wants a specific version (e.g. ``3.12``).
+$pinPython = if ($env:CF_PYTHON) { $env:CF_PYTHON } else { '3.11' }
+
+Write-Info "Running: $UvCmd tool install --python $pinPython '$pkgSpec' --upgrade"
+& $UvCmd tool install --python $pinPython $pkgSpec --upgrade
 if ($LASTEXITCODE -ne 0) {
     Write-Fail "uv tool install exited with code $LASTEXITCODE"
 }
