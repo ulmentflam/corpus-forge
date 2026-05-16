@@ -2,23 +2,19 @@
 
 Talks to a local Ollama daemon via ``POST /api/generate`` with
 ``stream=false`` and ``format=json`` so the model is constrained to
-emit a parseable JSON object. Transport layout, lazy ``requests``
-import, and exception mapping mirror
-:class:`corpus_forge.classifiers.llm.LLMClassifier` —
-the endpoint and prompt differ; the transport doesn't.
+emit a parseable JSON object. Transport-level error mapping is
+delegated to :mod:`corpus_forge._http` and shared with every other
+remote model backend in the repo.
 
 **Local-or-remote URL is a cross-cutting requirement.** Every model
 client in corpus-forge accepts an arbitrary HTTP URL: the default is
 ``http://localhost:11434`` (local Ollama). The remote sibling is
-:class:`corpus_forge.enrichers.qwen_remote.QwenCoderRemote`; together
-they provide the explicit local-vs-remote pair the project policy
-calls for.
+:class:`corpus_forge.enrichers.qwen_remote.QwenCoderRemote`.
 
 Failure modes:
 
-- Transport-layer (``requests.Timeout``, ``ConnectionError``, non-2xx
-  HTTP, malformed outer JSON) → raise a typed exception from
-  :mod:`corpus_forge.enrichers.base`.
+- Transport-layer failures → raise a typed exception from
+  :mod:`corpus_forge.enrichers.base` (via :mod:`corpus_forge._http`).
 - Output-validation (model emits unparseable inner JSON or the wrong
   shape) → graceful fallback :class:`CodeChunkEnrichment` with
   ``summary='invalid LLM output'`` and ``confidence=0.0``. The shared
@@ -30,6 +26,8 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
+
+from corpus_forge._http import HttpErrors, request_json
 
 from .base import (
     CodeChunkEnrichment,
@@ -81,6 +79,19 @@ Respond with ONLY the JSON object — no preamble, no markdown fence, no \
 commentary.
 """
 
+_ERR = HttpErrors(EnricherUnavailableError, EnricherTimeoutError, EnricherResponseError)
+
+
+def build_prompt(chunk_text: str, language: str) -> str:
+    """Format :data:`_PROMPT_TEMPLATE` with the chunk's language + text.
+
+    Shared by :class:`QwenCoderLocal` and
+    :class:`corpus_forge.enrichers.qwen_remote.QwenCoderRemote` so both
+    backends present the model with the exact same prompt — required
+    for behavioural parity in the inner-JSON parser.
+    """
+    return _PROMPT_TEMPLATE.format(language=language or "unknown", code=chunk_text or "")
+
 
 class QwenCoderLocal:
     """Local Ollama backend for the :class:`CodeEnricher` protocol.
@@ -119,37 +130,16 @@ class QwenCoderLocal:
 
     def warmup(self) -> None:
         """Health-check: GET ``/api/tags`` and verify the model is installed."""
-        import requests  # noqa: PLC0415 — lazy import (see module docstring)
-
-        url = f"{self.llm_url}/api/tags"
-        try:
-            resp = requests.get(url, timeout=self.timeout_s)
-        except requests.Timeout as exc:
-            raise EnricherUnavailableError(
-                f"Ollama daemon at {self.llm_url} did not respond to /api/tags within "
-                f"{self.timeout_s}s — is it running?"
-            ) from exc
-        except requests.ConnectionError as exc:
-            raise EnricherUnavailableError(
-                f"Cannot connect to Ollama daemon at {self.llm_url}: {exc}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise EnricherUnavailableError(
-                f"Ollama health check at {self.llm_url} failed: {exc}"
-            ) from exc
-
-        if not resp.ok:
-            body = (resp.text or "")[:200]
-            raise EnricherUnavailableError(
-                f"Ollama /api/tags returned HTTP {resp.status_code}: {body}"
-            )
-
-        try:
-            data = resp.json()
-        except ValueError as exc:
-            raise EnricherUnavailableError(
-                f"Ollama /api/tags returned non-JSON: {(resp.text or '')[:200]}"
-            ) from exc
+        data = request_json(
+            "GET",
+            f"{self.llm_url}/api/tags",
+            timeout_s=self.timeout_s,
+            errors=_ERR,
+            label="Ollama daemon",
+            base_url=self.llm_url,
+            auth_to_unavailable=False,
+            health_check=True,
+        )
 
         models = data.get("models") or []
         installed = {m.get("name") for m in models if isinstance(m, dict)}
@@ -166,56 +156,25 @@ class QwenCoderLocal:
         sentinel enrichment with ``summary='invalid LLM output'`` so a
         flaky model doesn't block the whole run.
         """
-        import requests  # noqa: PLC0415 — lazy (see module docstring)
-
-        url = f"{self.llm_url}/api/generate"
-        prompt = self._build_prompt(chunk, language)
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "stream": False,
-            "format": "json",
-            "options": {
-                "temperature": self.temperature,
-                "num_ctx": _NUM_CTX,
+        envelope = request_json(
+            "POST",
+            f"{self.llm_url}/api/generate",
+            timeout_s=self.timeout_s,
+            errors=_ERR,
+            label="Qwen-local enricher",
+            base_url=self.llm_url,
+            json_body={
+                "model": self.model,
+                "prompt": build_prompt(chunk.text or "", language),
+                "stream": False,
+                "format": "json",
+                "options": {"temperature": self.temperature, "num_ctx": _NUM_CTX},
             },
-        }
-
-        try:
-            resp = requests.post(url, json=payload, timeout=self.timeout_s)
-        except requests.Timeout as exc:
-            raise EnricherTimeoutError(
-                f"Qwen-local enricher exceeded {self.timeout_s}s budget at {url}"
-            ) from exc
-        except requests.ConnectionError as exc:
-            raise EnricherUnavailableError(
-                f"Cannot connect to enricher endpoint at {self.llm_url}: {exc}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise EnricherUnavailableError(f"Qwen-local enricher request failed: {exc}") from exc
-
-        if not resp.ok:
-            body = (resp.text or "")[:200]
-            raise EnricherResponseError(f"HTTP {resp.status_code}: {body}")
-
-        try:
-            envelope = resp.json()
-        except ValueError as exc:
-            body = (resp.text or "")[:200]
-            raise EnricherResponseError(f"Malformed outer JSON: {body}") from exc
-
-        if "response" not in envelope:
-            raise EnricherResponseError(
-                f"Qwen-local response missing 'response' key: {str(envelope)[:200]}"
-            )
+            required_keys=("response",),
+            auth_to_unavailable=False,
+        )
 
         raw_inner = envelope["response"]
         if not isinstance(raw_inner, str):
             raw_inner = "" if raw_inner is None else str(raw_inner)
         return _parse_enrichment_response(raw_inner, self.model)
-
-    # ── internals ─────────────────────────────────────────────────────
-
-    def _build_prompt(self, chunk: TextChunk, language: str) -> str:
-        """Build the user prompt: schema + language hint + chunk text."""
-        return _PROMPT_TEMPLATE.format(language=language or "unknown", code=chunk.text or "")

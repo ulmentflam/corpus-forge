@@ -277,7 +277,7 @@ class TestTransport:
         resp.json.side_effect = ValueError("nope")
         with patch("requests.post") as mock_post:
             mock_post.return_value = resp
-            with pytest.raises(EnricherResponseError, match="Malformed outer JSON"):
+            with pytest.raises(EnricherResponseError, match=r"(?i)malformed (outer )?json"):
                 q.enrich(_chunk(), language="python")
 
     def test_missing_response_key_raises_response_error(self) -> None:
@@ -364,7 +364,7 @@ class TestWarmup:
         resp.json.side_effect = ValueError("nope")
         with patch("requests.get") as mock_get:
             mock_get.return_value = resp
-            with pytest.raises(EnricherUnavailableError, match="non-JSON"):
+            with pytest.raises(EnricherUnavailableError, match=r"(?i)malformed json|non-json"):
                 q.warmup()
 
 

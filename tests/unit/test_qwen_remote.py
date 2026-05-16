@@ -238,10 +238,25 @@ class TestOpenAIShape:
                 q.enrich(_chunk(), language="python")
 
     def test_4xx_raises(self) -> None:
+        """401/403 = API key rejected → Unavailable (configuration error).
+
+        Matches the cross-backend convention shared with VLM/Mistral,
+        Whisper-remote, and CLIP-remote: an authenticated endpoint
+        returning 401/403 is a config failure, not a flaky-response
+        retry candidate.
+        """
         q = QwenCoderRemote(api_shape="openai", api_key="sk-abc")
         with patch("requests.post") as mock_post:
             mock_post.return_value = _err_response(401, "unauthorized")
-            with pytest.raises(EnricherResponseError, match="401"):
+            with pytest.raises(EnricherUnavailableError, match=r"(?i)401|api key"):
+                q.enrich(_chunk(), language="python")
+
+    def test_non_auth_4xx_raises_response_error(self) -> None:
+        """Non-auth 4xx (404, 422, etc.) still raises ResponseError."""
+        q = QwenCoderRemote(api_shape="openai", api_key="sk-abc")
+        with patch("requests.post") as mock_post:
+            mock_post.return_value = _err_response(404, "not found")
+            with pytest.raises(EnricherResponseError, match="404"):
                 q.enrich(_chunk(), language="python")
 
     def test_missing_choices_raises(self) -> None:
@@ -353,7 +368,7 @@ class TestExtraTransport:
         resp.json.side_effect = ValueError("nope")
         with patch("requests.post") as mock_post:
             mock_post.return_value = resp
-            with pytest.raises(EnricherResponseError, match="Malformed outer JSON"):
+            with pytest.raises(EnricherResponseError, match=r"(?i)malformed (outer )?json"):
                 q.enrich(_chunk(), language="python")
 
     def test_openai_malformed_outer_json_raises(self) -> None:
@@ -365,7 +380,7 @@ class TestExtraTransport:
         resp.json.side_effect = ValueError("nope")
         with patch("requests.post") as mock_post:
             mock_post.return_value = resp
-            with pytest.raises(EnricherResponseError, match="Malformed outer JSON"):
+            with pytest.raises(EnricherResponseError, match=r"(?i)malformed (outer )?json"):
                 q.enrich(_chunk(), language="python")
 
     def test_ollama_non_string_response_field_coerced(self) -> None:

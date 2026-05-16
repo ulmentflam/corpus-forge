@@ -2,22 +2,22 @@
 
 Talks to a local Ollama daemon via the ``POST /api/generate`` endpoint
 with ``stream=false`` (single JSON response per request). The
-``requests`` library is lazy-imported inside each method so importing
-this module with the ``[ocr]`` extra absent does NOT error — the
-import happens at the first OCR call instead, surfacing a clean
-``ImportError`` only if/when OCR is actually attempted.
+``requests`` library is lazy-imported inside the shared
+:mod:`corpus_forge._http` helper, so importing this module with the
+``[ocr]`` extra absent does NOT error — the import happens at the first
+OCR call instead, surfacing a clean ``ImportError`` only if/when OCR is
+actually attempted.
 
-Failure modes (mapped to custom :class:`~corpus_forge.vlm.VLMError`
-subclasses):
+Failure modes (mapped to :class:`~corpus_forge.vlm.VLMError` subclasses
+via :class:`corpus_forge._http.HttpErrors`):
 
 - ``requests.ConnectionError`` → :class:`VLMUnavailableError` (daemon down).
-- ``requests.Timeout`` from ``/api/generate`` → :class:`VLMTimeoutError`
-  (the budget is the user's primary tuning knob).
-- ``requests.Timeout`` from ``/api/tags`` (warmup) → :class:`VLMUnavailableError`
-  (we treat health-check slowness as daemon-not-reachable, not as a
-  retryable timeout).
-- Non-2xx response → :class:`VLMResponseError` carrying the status and
-  a truncated body.
+- ``requests.Timeout`` from ``/api/generate`` → :class:`VLMTimeoutError`.
+- ``requests.Timeout`` from ``/api/tags`` (warmup) →
+  :class:`VLMUnavailableError` (health-check slowness is "not reachable",
+  not a retryable timeout).
+- Non-2xx response → :class:`VLMResponseError` carrying the status and a
+  truncated body.
 - Malformed JSON / missing ``response`` key → :class:`VLMResponseError`.
 - Anything else under :class:`requests.RequestException` →
   :class:`VLMUnavailableError`.
@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import base64
 import logging
+
+from corpus_forge._http import HttpErrors, request_json
 
 from .base import (
     VLMResponseError,
@@ -45,6 +47,8 @@ _DEFAULT_DESCRIBE_PROMPT = (
 # silently truncate. Override at the request layer if a backend ever
 # exposes the knob, but right now 8K is the safe floor.
 _NUM_CTX = 8192
+
+_ERR = HttpErrors(VLMUnavailableError, VLMTimeoutError, VLMResponseError)
 
 
 class OllamaVLM:
@@ -77,36 +81,16 @@ class OllamaVLM:
 
     def warmup(self) -> None:
         """Health-check: GET ``/api/tags`` and verify the model is installed."""
-        import requests  # noqa: PLC0415 — lazy import (see module docstring)
-
-        url = f"{self.ollama_url}/api/tags"
-        try:
-            resp = requests.get(url, timeout=self.timeout_s)
-        except requests.Timeout as exc:
-            # Treat health-check timeout as "daemon not reachable".
-            raise VLMUnavailableError(
-                f"Ollama daemon at {self.ollama_url} did not respond to /api/tags within "
-                f"{self.timeout_s}s — is it running?"
-            ) from exc
-        except requests.ConnectionError as exc:
-            raise VLMUnavailableError(
-                f"Cannot connect to Ollama daemon at {self.ollama_url}: {exc}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise VLMUnavailableError(
-                f"Ollama health check at {self.ollama_url} failed: {exc}"
-            ) from exc
-
-        if not resp.ok:
-            body = (resp.text or "")[:200]
-            raise VLMUnavailableError(f"Ollama /api/tags returned HTTP {resp.status_code}: {body}")
-
-        try:
-            data = resp.json()
-        except ValueError as exc:
-            raise VLMUnavailableError(
-                f"Ollama /api/tags returned non-JSON: {(resp.text or '')[:200]}"
-            ) from exc
+        data = request_json(
+            "GET",
+            f"{self.ollama_url}/api/tags",
+            timeout_s=self.timeout_s,
+            errors=_ERR,
+            label="Ollama daemon",
+            base_url=self.ollama_url,
+            auth_to_unavailable=False,
+            health_check=True,
+        )
 
         models = data.get("models") or []
         installed = {m.get("name") for m in models if isinstance(m, dict)}
@@ -134,42 +118,21 @@ class OllamaVLM:
 
     def _generate(self, image: bytes, prompt: str) -> str:
         """Single ``POST /api/generate`` call. Returns ``response`` text."""
-        import requests  # noqa: PLC0415
-
-        url = f"{self.ollama_url}/api/generate"
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "images": [base64.b64encode(image).decode("ascii")],
-            "stream": False,
-            "options": {
-                "temperature": self.temperature,
-                "num_ctx": _NUM_CTX,
+        data = request_json(
+            "POST",
+            f"{self.ollama_url}/api/generate",
+            timeout_s=self.timeout_s,
+            errors=_ERR,
+            label="Ollama generate",
+            base_url=self.ollama_url,
+            json_body={
+                "model": self.model,
+                "prompt": prompt,
+                "images": [base64.b64encode(image).decode("ascii")],
+                "stream": False,
+                "options": {"temperature": self.temperature, "num_ctx": _NUM_CTX},
             },
-        }
-
-        try:
-            resp = requests.post(url, json=payload, timeout=self.timeout_s)
-        except requests.Timeout as exc:
-            raise VLMTimeoutError(f"Ollama generate exceeded {self.timeout_s}s budget") from exc
-        except requests.ConnectionError as exc:
-            raise VLMUnavailableError(
-                f"Cannot connect to Ollama daemon at {self.ollama_url}: {exc}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise VLMUnavailableError(f"Ollama generate request failed: {exc}") from exc
-
-        if not resp.ok:
-            body = (resp.text or "")[:200]
-            raise VLMResponseError(f"HTTP {resp.status_code}: {body}")
-
-        try:
-            data = resp.json()
-        except ValueError as exc:
-            body = (resp.text or "")[:200]
-            raise VLMResponseError(f"Malformed JSON from Ollama: {body}") from exc
-
-        if "response" not in data:
-            raise VLMResponseError(f"Ollama response missing 'response' key: {str(data)[:200]}")
-
+            required_keys=("response",),
+            auth_to_unavailable=False,
+        )
         return data["response"]

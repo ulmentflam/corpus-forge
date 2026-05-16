@@ -185,6 +185,8 @@ def test_payload_not_dict_raises_response_error() -> None:
     resp.json = MagicMock(return_value=["unexpected"])
     with (
         patch("requests.post", return_value=resp),
-        pytest.raises(WhisperResponseError, match=r"(?i)text"),
+        # Either wording — "non-object JSON" or "missing 'text' key" — is
+        # a faithful description of the failure mode.
+        pytest.raises(WhisperResponseError, match=r"(?i)text|non-object"),
     ):
         w.transcribe(b"a")

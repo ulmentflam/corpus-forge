@@ -3,7 +3,9 @@
 Talks to any ``POST {base_url}/embeddings`` endpoint that accepts
 multi-modal input (e.g. Voyage AI ``voyage-multimodal-3``, Cohere
 ``embed-v3-multimodal``, or a self-hosted CLIP service speaking the
-same JSON shape).
+same JSON shape). Transport-level error mapping is delegated to
+:mod:`corpus_forge._http` and shared with every other remote backend
+in the repo.
 
 Request body for text:
     {"model": "<id>", "input": ["t1", "t2", ...]}
@@ -13,15 +15,14 @@ Request body for images (base64 data URLs):
 
 Response:
     {"data": [{"embedding": [...]}, ...]}
-
-Same lazy-``requests`` discipline as :class:`RemoteWhisper` /
-:class:`OllamaVLM`.
 """
 
 from __future__ import annotations
 
 import base64
 import logging
+
+from corpus_forge._http import HttpErrors, request_json
 
 from .multimodal import (
     MultiModalResponseError,
@@ -31,14 +32,15 @@ from .multimodal import (
 
 logger = logging.getLogger(__name__)
 
+_ERR = HttpErrors(MultiModalUnavailableError, MultiModalTimeoutError, MultiModalResponseError)
+
 
 def _to_data_url(image_bytes: bytes) -> str:
     """Wrap raw bytes in a ``data:image/<mime>;base64,...`` URL.
 
-    The mime sniff is intentionally minimal — PNG / JPEG / WebP /
-    GIF cover the common cases. Anything else falls back to
-    ``application/octet-stream``; the remote service decides what to
-    do with it.
+    The mime sniff is intentionally minimal — PNG / JPEG / WebP / GIF
+    cover the common cases. Anything else falls back to
+    ``application/octet-stream``.
     """
     if image_bytes.startswith(b"\x89PNG"):
         mime = "image/png"
@@ -50,8 +52,7 @@ def _to_data_url(image_bytes: bytes) -> str:
         mime = "image/gif"
     else:
         mime = "application/octet-stream"
-    b64 = base64.b64encode(image_bytes).decode("ascii")
-    return f"data:{mime};base64,{b64}"
+    return f"data:{mime};base64,{base64.b64encode(image_bytes).decode('ascii')}"
 
 
 class ClipRemoteEmbedder:
@@ -104,45 +105,17 @@ class ClipRemoteEmbedder:
     # ── internals ─────────────────────────────────────────────────────
 
     def _post(self, body: dict) -> list[list[float]]:
-        import requests  # noqa: PLC0415
-
-        url = f"{self.base_url}/embeddings"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        try:
-            resp = requests.post(url, headers=headers, json=body, timeout=self.timeout_s)
-        except requests.Timeout as exc:
-            raise MultiModalTimeoutError(
-                f"Remote embedder exceeded {self.timeout_s}s budget at {url}"
-            ) from exc
-        except requests.ConnectionError as exc:
-            raise MultiModalUnavailableError(
-                f"Cannot connect to embedder endpoint at {self.base_url}: {exc}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise MultiModalUnavailableError(f"Remote embedder request failed: {exc}") from exc
-
-        if resp.status_code in (401, 403):
-            raise MultiModalUnavailableError(
-                f"Embedder API key rejected (HTTP {resp.status_code}): {(resp.text or '')[:200]}"
-            )
-
-        if not resp.ok:
-            body_str = (resp.text or "")[:200]
-            raise MultiModalResponseError(f"HTTP {resp.status_code}: {body_str}")
-
-        try:
-            payload = resp.json()
-        except ValueError as exc:
-            body_str = (resp.text or "")[:200]
-            raise MultiModalResponseError(f"Malformed JSON from embedder: {body_str}") from exc
-
-        if not isinstance(payload, dict) or "data" not in payload:
-            raise MultiModalResponseError(
-                f"Embedder response missing 'data' key: {str(payload)[:200]}"
-            )
+        payload = request_json(
+            "POST",
+            f"{self.base_url}/embeddings",
+            timeout_s=self.timeout_s,
+            errors=_ERR,
+            label="Remote embedder",
+            base_url=self.base_url,
+            api_key=self.api_key,
+            json_body=body,
+            required_keys=("data",),
+        )
         data = payload["data"]
         if not isinstance(data, list):
             raise MultiModalResponseError("Embedder 'data' field is not a list")

@@ -4,38 +4,32 @@ The LLM classifier is the "escalation" half of the default Phase E
 classification chain (``[rule, llm]``). It talks to a local Ollama
 daemon via ``POST /api/generate`` with ``stream=false`` and
 ``format=json`` so the model is constrained to emit a parseable JSON
-object. Transport layout, lazy ``requests`` import, and exception
-mapping mirror :class:`corpus_forge.vlm.ollama.OllamaVLM` — the
-endpoint and prompt differ; the transport doesn't.
+object. Transport-level error mapping is delegated to
+:mod:`corpus_forge._http` and shared with every other remote model
+backend in the repo.
 
 **Local-or-remote URL is a cross-cutting requirement.** Every model
 client in corpus-forge accepts an arbitrary HTTP URL: the default is
 ``http://localhost:11434`` (local Ollama), but the same backend works
-against any Ollama-compatible endpoint by swapping ``llm_url``. Tests
-exercise both the default and a non-default URL.
+against any Ollama-compatible endpoint by swapping ``llm_url`` and
+supplying ``api_key`` for hosted services.
 
 Failure modes:
 
-- Transport-layer (``requests.Timeout``, ``ConnectionError``,
-  non-2xx HTTP, malformed outer JSON) → raise a typed exception from
+- Transport-layer failures → raise a typed exception from
   :mod:`corpus_forge.classifiers.base`. The caller's chain walker
   surfaces this as "this classifier had no signal" and continues.
 - Output-validation (model returned a ``class`` not in the 9-value
   enum, or its inner JSON is unparseable) → log a WARNING and return
-  ``ClassLabel(value="other", confidence=0.2, rationale=...)``. This
-  is the documented graceful-fallback contract: a hallucinating LLM
-  must not block the whole classify run.
-
-Confidence values are clamped into ``[0.0, 1.0]`` before constructing
-the :class:`ClassLabel` so the dataclass invariant in
-:mod:`~corpus_forge.classifiers.base` cannot trip on a model that
-emits ``confidence: 1.5``.
+  ``ClassLabel(value="other", confidence=0.2, rationale=...)``. A
+  hallucinating LLM must not block the whole classify run.
 """
 
 from __future__ import annotations
 
-import json
 import logging
+
+from corpus_forge._http import HttpErrors, request_json
 
 from .base import (
     ALLOWED_CLASS_VALUES,
@@ -64,6 +58,8 @@ _INVALID_OUTPUT_PREFIX = "invalid LLM output: "
 # entire payload when the model dumps a long error string.
 _INVALID_SNIPPET_CHARS = 120
 
+_ERR = HttpErrors(ClassifierUnavailableError, ClassifierTimeoutError, ClassifierResponseError)
+
 
 class LLMClassifier:
     """Ollama-backed document classifier.
@@ -76,13 +72,16 @@ class LLMClassifier:
       ``"http://localhost:11434"`` (local). Swap to a remote URL to
       point at a hosted Ollama / vLLM / OpenAI-shape proxy that speaks
       the ``/api/generate`` shape.
+    - ``api_key``: optional bearer token. Empty / ``None`` omits the
+      ``Authorization`` header (matches open local Ollama daemons);
+      set it to use the same classifier against a hosted, authenticated
+      endpoint without changing any other config.
     - ``timeout_s``: per-request HTTP budget. The qwen2.5:7b-instruct
       first-token floor on M-series is ~1-3 s; warm calls run 5-10 s
       for a 2 KB excerpt. Default 60 s leaves slack for the first call.
     - ``temperature``: sampling temperature. Default 0.0 (deterministic).
     - ``excerpt_chars``: total head+tail budget passed to the model
-      (head and tail each get ``excerpt_chars // 2``). The model never
-      sees the document middle — a 9-way classifier doesn't need it.
+      (head and tail each get ``excerpt_chars // 2``).
     """
 
     name = "llm"
@@ -92,6 +91,7 @@ class LLMClassifier:
         *,
         model: str = "qwen2.5:7b-instruct",
         llm_url: str = "http://localhost:11434",
+        api_key: str | None = None,
         timeout_s: float = 60.0,
         temperature: float = 0.0,
         excerpt_chars: int = 2000,
@@ -99,6 +99,7 @@ class LLMClassifier:
         self.model = model
         # Strip trailing slash so URL composition produces exactly one.
         self.llm_url = llm_url.rstrip("/")
+        self.api_key = api_key or None
         self.timeout_s = timeout_s
         self.temperature = temperature
         self.excerpt_chars = excerpt_chars
@@ -113,64 +114,31 @@ class LLMClassifier:
         is a fallback ``other``). Transport failures raise; output
         validation gracefully falls back to ``class=other``.
         """
-        import requests  # noqa: PLC0415 — lazy import (module docstring)
-
-        url = f"{self.llm_url}/api/generate"
-        prompt = self._build_prompt(doc)
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "stream": False,
-            "format": "json",
-            "options": {
-                "temperature": self.temperature,
-                "num_ctx": _NUM_CTX,
+        envelope = request_json(
+            "POST",
+            f"{self.llm_url}/api/generate",
+            timeout_s=self.timeout_s,
+            errors=_ERR,
+            label="LLM classifier",
+            base_url=self.llm_url,
+            api_key=self.api_key,
+            json_body={
+                "model": self.model,
+                "prompt": self._build_prompt(doc),
+                "stream": False,
+                "format": "json",
+                "options": {"temperature": self.temperature, "num_ctx": _NUM_CTX},
             },
-        }
-
-        try:
-            resp = requests.post(url, json=payload, timeout=self.timeout_s)
-        except requests.Timeout as exc:
-            raise ClassifierTimeoutError(
-                f"LLM classifier exceeded {self.timeout_s}s budget at {url}"
-            ) from exc
-        except requests.ConnectionError as exc:
-            raise ClassifierUnavailableError(
-                f"Cannot connect to LLM endpoint at {self.llm_url}: {exc}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise ClassifierUnavailableError(f"LLM classifier request failed: {exc}") from exc
-
-        if not resp.ok:
-            body = (resp.text or "")[:200]
-            raise ClassifierResponseError(f"HTTP {resp.status_code}: {body}")
-
-        try:
-            envelope = resp.json()
-        except ValueError as exc:
-            body = (resp.text or "")[:200]
-            raise ClassifierResponseError(f"Malformed outer JSON: {body}") from exc
-
-        if "response" not in envelope:
-            raise ClassifierResponseError(
-                f"LLM response missing 'response' key: {str(envelope)[:200]}"
-            )
-
-        raw_inner = envelope["response"]
-        return self._parse_inner(raw_inner)
+            required_keys=("response",),
+            auth_to_unavailable=bool(self.api_key),
+        )
+        return self._parse_inner(envelope["response"])
 
     # ── internals ─────────────────────────────────────────────────────
 
     def _build_prompt(self, doc: ClassifiableDocument) -> str:
-        """Assemble the head+tail excerpt + format labels + 9-enum prompt.
-
-        Format labels appear as a ``key=value`` list so the model can
-        condition on already-attached structural hints. All nine enum
-        values are listed explicitly to keep the model's output space
-        constrained.
-        """
-        text = doc.text or ""
-        excerpt = self._excerpt(text, self.excerpt_chars)
+        """Assemble the head+tail excerpt + format labels + 9-enum prompt."""
+        excerpt = _excerpt(doc.text or "", self.excerpt_chars)
         labels_str = "\n".join(f"- {k}={v}" for k, v in (doc.format_labels or [])) or "- (none)"
         enum_list = ", ".join(ALLOWED_CLASS_VALUES)
         title = doc.title or "(no title)"
@@ -215,31 +183,22 @@ class LLMClassifier:
             "fence, no commentary."
         )
 
-    @staticmethod
-    def _excerpt(text: str, budget: int) -> str:
-        """Return head + tail of ``text`` totalling at most ``budget`` chars.
-
-        When ``len(text) <= budget`` the whole text is returned. Otherwise
-        the head is ``budget // 2`` chars, the tail is ``budget // 2``
-        chars, and a ``\\n...\\n`` separator marks the elision so the
-        model knows there's a gap.
-        """
-        if not text:
-            return ""
-        if len(text) <= budget:
-            return text
-        half = max(1, budget // 2)
-        head = text[:half]
-        tail = text[-half:]
-        return f"{head}\n...\n{tail}"
-
-    def _parse_inner(self, raw_inner: str) -> ClassLabel:
+    def _parse_inner(self, raw_inner: object) -> ClassLabel:
         """Parse the model's inner JSON output and validate it.
 
         Falls back to ``ClassLabel(value="other", confidence=0.2, ...)``
         for any output-validation failure (logged as WARNING). Transport
         failures never reach this method.
         """
+        # The shared HTTP helper preserves the envelope value untouched,
+        # so the model's inner JSON may legitimately come back as a
+        # non-string (some Ollama versions emit empty list / dict on
+        # error). Coerce to str like the enricher does for parity.
+        import json  # noqa: PLC0415
+
+        if not isinstance(raw_inner, str):
+            raw_inner = "" if raw_inner is None else str(raw_inner)
+
         try:
             parsed = json.loads(raw_inner)
         except (ValueError, TypeError):
@@ -275,3 +234,21 @@ class LLMClassifier:
             confidence=0.2,
             rationale=f"{_INVALID_OUTPUT_PREFIX}{snippet}",
         )
+
+
+def _excerpt(text: str, budget: int) -> str:
+    """Return head + tail of ``text`` totalling at most ``budget`` chars.
+
+    When ``len(text) <= budget`` the whole text is returned. Otherwise
+    the head is ``budget // 2`` chars, the tail is ``budget // 2``
+    chars, and a ``\\n...\\n`` separator marks the elision so the model
+    knows there's a gap.
+    """
+    if not text:
+        return ""
+    if len(text) <= budget:
+        return text
+    half = max(1, budget // 2)
+    head = text[:half]
+    tail = text[-half:]
+    return f"{head}\n...\n{tail}"

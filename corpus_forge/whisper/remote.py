@@ -2,27 +2,28 @@
 
 Talks to any OpenAI-compatible Whisper endpoint
 (``POST {base_url}/audio/transcriptions``) — OpenAI itself, Groq (free
-tier, very fast), Replicate, self-hosted whisper.cpp via HTTP. Same
-transport layout, lazy ``requests`` import, and exception mapping as
-:class:`corpus_forge.classifiers.llm.LLMClassifier` /
-:class:`corpus_forge.vlm.ollama.OllamaVLM`.
+tier, very fast), Replicate, self-hosted whisper.cpp via HTTP.
+Transport-level error mapping is delegated to
+:mod:`corpus_forge._http` and shared with every other remote model
+backend in the codebase (VLM, code enricher, LLM classifier, CLIP
+embedder).
 
-Failure modes (mapped to custom :class:`WhisperError` subclasses):
+Failure modes:
 
-- ``requests.ConnectionError`` → :class:`WhisperUnavailableError` (endpoint down).
-- ``requests.Timeout`` → :class:`WhisperTimeoutError`.
+- ``ConnectionError`` / generic ``RequestException`` →
+  :class:`WhisperUnavailableError` (endpoint down).
+- ``Timeout`` → :class:`WhisperTimeoutError`.
 - 401 / 403 → :class:`WhisperUnavailableError` ("API key rejected").
-- Non-2xx response (other) → :class:`WhisperResponseError` carrying the
-  status code and a truncated body.
-- Malformed JSON / missing ``text`` key → :class:`WhisperResponseError`.
-- Anything else under :class:`requests.RequestException` →
-  :class:`WhisperUnavailableError`.
+- Non-2xx (other) / malformed JSON / missing ``text`` →
+  :class:`WhisperResponseError`.
 """
 
 from __future__ import annotations
 
 import io
 import logging
+
+from corpus_forge._http import HttpErrors, request_json
 
 from .base import (
     WhisperResponseError,
@@ -31,6 +32,8 @@ from .base import (
 )
 
 logger = logging.getLogger(__name__)
+
+_ERR = HttpErrors(WhisperUnavailableError, WhisperTimeoutError, WhisperResponseError)
 
 
 class RemoteWhisper:
@@ -78,63 +81,25 @@ class RemoteWhisper:
     def transcribe(self, audio: bytes, *, language: str | None = None) -> str:
         """Transcribe ``audio`` via HTTP POST to ``/audio/transcriptions``.
 
-        Returns the transcribed text from the JSON ``text`` field.
-        The endpoint shape matches OpenAI's documented Whisper API
-        and is implemented by most "OpenAI-compatible" providers.
+        Returns the transcribed text from the JSON ``text`` field. The
+        endpoint shape matches OpenAI's documented Whisper API.
         """
-        import requests  # noqa: PLC0415 — lazy import (module docstring)
-
-        url = f"{self.base_url}/audio/transcriptions"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        # multipart/form-data — the audio bytes are sent as a "file" field.
-        files = {
-            "file": ("audio.bin", io.BytesIO(audio), "application/octet-stream"),
-        }
-        data: dict[str, str] = {
-            "model": self.model,
-            "response_format": "json",
-        }
+        form: dict[str, str] = {"model": self.model, "response_format": "json"}
         if language:
-            data["language"] = language
+            form["language"] = language
 
-        try:
-            resp = requests.post(
-                url,
-                headers=headers,
-                files=files,
-                data=data,
-                timeout=self.timeout_s,
-            )
-        except requests.Timeout as exc:
-            raise WhisperTimeoutError(
-                f"Remote Whisper exceeded {self.timeout_s}s budget at {url}"
-            ) from exc
-        except requests.ConnectionError as exc:
-            raise WhisperUnavailableError(
-                f"Cannot connect to Whisper endpoint at {self.base_url}: {exc}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise WhisperUnavailableError(f"Remote Whisper request failed: {exc}") from exc
-
-        # Auth errors get their own bucket so callers can decide whether
-        # to retry (rate-limit) vs surface a config error (401 / 403).
-        if resp.status_code in (401, 403):
-            raise WhisperUnavailableError(
-                f"Whisper API key rejected (HTTP {resp.status_code}): {(resp.text or '')[:200]}"
-            )
-
-        if not resp.ok:
-            body = (resp.text or "")[:200]
-            raise WhisperResponseError(f"HTTP {resp.status_code}: {body}")
-
-        try:
-            payload = resp.json()
-        except ValueError as exc:
-            body = (resp.text or "")[:200]
-            raise WhisperResponseError(f"Malformed JSON from Whisper endpoint: {body}") from exc
-
-        if not isinstance(payload, dict) or "text" not in payload:
-            raise WhisperResponseError(f"Whisper response missing 'text' key: {str(payload)[:200]}")
+        payload = request_json(
+            "POST",
+            f"{self.base_url}/audio/transcriptions",
+            timeout_s=self.timeout_s,
+            errors=_ERR,
+            label="Remote Whisper",
+            base_url=self.base_url,
+            api_key=self.api_key,
+            files={"file": ("audio.bin", io.BytesIO(audio), "application/octet-stream")},
+            data=form,
+            required_keys=("text",),
+        )
 
         text = payload["text"]
         if not isinstance(text, str):
