@@ -48,6 +48,20 @@ class TestDetectCloudProvideriCloud:
         iCloud_path.parent.mkdir(parents=True)
         assert detect_cloud_provider(iCloud_path) == "icloud"
 
+    def test_icloud_windows_drive_path(self, tmp_path):
+        """iCloud-for-Windows mounts ``iCloudDrive`` under %USERPROFILE%."""
+        win_path = tmp_path / "iCloudDrive" / "Documents" / "note.md"
+        win_path.parent.mkdir(parents=True)
+        win_path.write_text("x")
+        assert detect_cloud_provider(win_path) == "icloud"
+
+    def test_icloud_windows_photos_path(self, tmp_path):
+        """iCloud-for-Windows photos folder is detected as iCloud too."""
+        win_path = tmp_path / "iCloud Photos" / "2026" / "shot.jpg"
+        win_path.parent.mkdir(parents=True)
+        win_path.write_text("x")
+        assert detect_cloud_provider(win_path) == "icloud"
+
 
 # ── Dropbox tests ─────────────────────────────────────────────────────────
 

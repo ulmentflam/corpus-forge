@@ -10,10 +10,10 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -198,7 +198,7 @@ class TestMakefileDispatch:
             "Makefile must keep macOS launchctl behaviour (directly or via macos/stop.sh)"
         )
 
-    @pytest.mark.skipif(os.uname().sysname != "Darwin", reason="darwin-only smoke check")
+    @pytest.mark.skipif(sys.platform != "darwin", reason="darwin-only smoke check")
     def test_make_dryrun_stop_on_darwin(self) -> None:
         """`make -n stop` on darwin should expand to something with launchctl or macos/stop.sh."""
         make = shutil.which("make")
