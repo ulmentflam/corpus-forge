@@ -1,0 +1,40 @@
+# NSSM (Non-Sucking Service Manager) configuration template for the
+# corpus-forge daemon on Windows.
+#
+# Rendered by ``scripts/windows/install.ps1``. Placeholders the renderer
+# substitutes:
+#
+#   {{ AppPath }}        — absolute path to ``corpus-forge.exe`` (the
+#                          installed entry point under
+#                          ``%USERPROFILE%\.local\bin\``).
+#   {{ AppArguments }}   — ``daemon`` (or override via the installer).
+#   {{ AppDirectory }}   — working directory; default is
+#                          ``%USERPROFILE%\.config\corpus-forge``.
+#   {{ ServiceName }}    — unique Windows service name; default
+#                          ``corpus-forge``.
+#   {{ LogStdoutPath }}  — where stdout is appended.
+#   {{ LogStderrPath }}  — where stderr is appended.
+#
+# The renderer uses ``nssm.exe install``/``set`` calls; this file is a
+# documentation reference for the rendered options (NSSM doesn't ingest
+# config files itself).
+
+ServiceName = {{ ServiceName }}
+Application = {{ AppPath }}
+AppParameters = {{ AppArguments }}
+AppDirectory = {{ AppDirectory }}
+
+# Auto-restart on crash (NSSM-default behaviour; documented here for
+# transparency).
+AppRestartDelay = 5000
+AppStopMethodSkip = 0
+AppStopMethodConsole = 1500
+AppStopMethodWindow = 1500
+AppStopMethodThreads = 1500
+
+# Log rotation: rotate on service start and at 10 MiB.
+AppStdout = {{ LogStdoutPath }}
+AppStderr = {{ LogStderrPath }}
+AppRotateFiles = 1
+AppRotateOnline = 1
+AppRotateBytes = 10485760

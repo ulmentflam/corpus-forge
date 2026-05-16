@@ -1,0 +1,154 @@
+name: Install smoke
+
+# Phase I-17 — end-to-end smoke test for the easy-install entry points.
+#
+# Runs install.sh / install.ps1 in non-interactive mode against a fresh
+# matrix runner, then exercises ``corpus-forge setup --non-interactive``
+# and confirms the resulting ``config.toml`` is valid TOML. Catches
+# drift between the three shells + the Python wizard before users do.
+#
+# Triggered on PRs that touch install entry points + on main, plus
+# nightly so a regression on a transitive surfaces within 24h.
+
+on:
+  pull_request:
+    paths:
+      - "install.sh"
+      - "install.ps1"
+      - "setup-corpus-forge.sh"
+      - "packaging/install/questions.toml"
+      - "corpus_forge/setup/**"
+      - "corpus_forge/cli.py"
+      - ".github/workflows/install-smoke.yml"
+  push:
+    branches: [main]
+  schedule:
+    # 07:00 UTC nightly so a quarantined PyPI transitive surfaces fast.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: install-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  posix:
+    name: install.sh (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14]
+    env:
+      # Non-interactive answers — every CF_* the question tree
+      # currently exposes. Skip the heavyweight optional extras
+      # (whisper, OCR) to keep CI matrix minutes manageable.
+      CF_NON_INTERACTIVE: "1"
+      CF_BACKEND: "sqlite"
+      CF_MULTI_FORMAT: "no"
+      CF_CODE: "no"
+      CF_OCR: "no"
+      CF_WHISPER: "no"
+      CF_TOKENS: "no"
+      CF_RETRIEVAL: "no"
+      CF_RERANKER: "no"
+      CF_EMBEDDER: "st"
+      CF_CLASSIFIER: "rule"
+      CF_MCP: "yes"
+      CF_HF: "no"
+      CF_SUPERVISOR: "no"
+      # Install from the PR's source tree, not PyPI — the package
+      # isn't published for un-released commits.
+      CF_INSTALL_FROM: "."
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Run install.sh (non-interactive)
+        run: bash install.sh
+
+      - name: Verify corpus-forge on PATH
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          corpus-forge --version
+
+      - name: Verify config.toml + parse-clean TOML
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          # ``uv run --python 3.11`` ensures a tomllib-capable
+          # interpreter is used even on Ubuntu 22.04 (whose system
+          # ``python3`` is 3.10 and lacks the stdlib ``tomllib``).
+          uv run --python 3.11 --no-project python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          cfg = Path.home() / ".config" / "corpus-forge" / "config.toml"
+          assert cfg.exists(), f"missing: {cfg}"
+          data = tomllib.loads(cfg.read_text(encoding="utf-8"))
+          assert data["backend"]["kind"] == "sqlite", data["backend"]
+          print(f"OK {cfg} parsed; backend.kind={data['backend']['kind']!r}")
+          PY
+
+  windows:
+    name: install.ps1 (windows-2022)
+    runs-on: windows-2022
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CF_NON_INTERACTIVE: "1"
+      CF_BACKEND: "sqlite"
+      CF_MULTI_FORMAT: "no"
+      CF_CODE: "no"
+      CF_OCR: "no"
+      CF_WHISPER: "no"
+      CF_TOKENS: "no"
+      CF_RETRIEVAL: "no"
+      CF_RERANKER: "no"
+      CF_EMBEDDER: "st"
+      CF_CLASSIFIER: "rule"
+      CF_MCP: "yes"
+      CF_HF: "no"
+      CF_SUPERVISOR: "no"
+      # Install from the PR's source tree, not PyPI — the package
+      # isn't published for un-released commits.
+      CF_INSTALL_FROM: "."
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Run install.ps1 (non-interactive)
+        run: .\install.ps1
+
+      - name: Verify corpus-forge on PATH
+        run: |
+          $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
+          corpus-forge --version
+
+      - name: Verify config.toml + parse-clean TOML
+        run: |
+          $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
+          # Write the verify script to a temp file then invoke uv to
+          # run it under Python 3.11. Avoids PowerShell here-string +
+          # Python f-string escape interactions that turned into a
+          # SyntaxError on the previous attempt.
+          $verifyScript = New-TemporaryFile
+          @'
+          import tomllib
+          from pathlib import Path
+          cfg = Path.home() / ".config" / "corpus-forge" / "config.toml"
+          assert cfg.exists(), f"missing: {cfg}"
+          data = tomllib.loads(cfg.read_text(encoding="utf-8"))
+          kind = data["backend"]["kind"]
+          assert kind == "sqlite", data["backend"]
+          print(f"OK {cfg} parsed; backend.kind={kind!r}")
+          '@ | Set-Content -LiteralPath $verifyScript.FullName -Encoding utf8
+          uv run --python 3.11 --no-project python $verifyScript.FullName

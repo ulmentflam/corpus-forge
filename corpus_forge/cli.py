@@ -14,6 +14,35 @@ app = typer.Typer(
 )
 
 
+def _version_callback(value: bool) -> None:
+    """Print the package version and exit. Conventionally bound to ``--version``.
+
+    Pairs with the ``version`` subcommand so both ``corpus-forge --version``
+    (idiomatic CLI flag) and ``corpus-forge version`` (subcommand) work.
+    The install-smoke E2E uses ``--version`` for terseness; users may
+    prefer either.
+    """
+    if value:
+        typer.echo(f"corpus-forge version {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _root(
+    version: Annotated[  # noqa: ARG001 — typer callback signature
+        bool,
+        typer.Option(
+            "--version",
+            help="Print the package version and exit.",
+            callback=_version_callback,
+            is_eager=True,
+        ),
+    ] = False,
+) -> None:
+    """Root callback that wires ``--version`` onto the app entry point."""
+    return None
+
+
 migrate_app = typer.Typer(
     help="Database migration commands.",
     add_completion=False,
@@ -118,6 +147,52 @@ def daemon():
 def version():
     """Print version and exit."""
     typer.echo(f"corpus-forge version {__version__}")
+
+
+@app.command()
+def setup(
+    non_interactive: bool = typer.Option(
+        False,
+        "--non-interactive",
+        help="Read answers from CF_* env vars instead of prompting. Use for CI.",
+    ),
+    config_dir: Path = typer.Option(
+        Path.home() / ".config" / "corpus-forge",
+        "--config-dir",
+        help="Where to write config.toml + secrets.env.",
+    ),
+) -> None:
+    """Post-install setup wizard.
+
+    Walks the same question tree the shell installers use
+    (``packaging/install/questions.toml``), validates endpoint reachability
+    where possible, and renders ``config.toml`` + ``secrets.env`` under
+    ``--config-dir`` (defaults to ``~/.config/corpus-forge/``).
+
+    Re-running the wizard overwrites ``config.toml`` — back up local edits
+    first. ``secrets.env`` is preserved if it already exists.
+    """
+    from .setup import run_non_interactive, run_wizard
+
+    # Use ASCII glyphs for status markers. Windows consoles default to
+    # cp1252 / cp437 and choke on ✓ / ⚠ / ✗ at write time. The shell
+    # installers use the fancy glyphs (their output goes to a POSIX
+    # terminal); the Python CLI stays cross-platform safe.
+    if non_interactive:
+        config_path, secrets_path, answers = run_non_interactive(config_dir=config_dir)
+        typer.echo(f"[OK] Wrote {config_path} (non-interactive)")
+    else:
+        config_path, secrets_path, answers = run_wizard(config_dir=config_dir)
+        typer.echo(f"[OK] Wrote {config_path}")
+
+    if secrets_path.exists() and secrets_path.stat().st_size > 0:
+        typer.echo(
+            f"[OK] Secrets template at {secrets_path} — fill in real values before first use."
+        )
+    # Echo a short selection summary so the user can sanity-check.
+    backend = answers.get("backend", "sqlite")
+    embedder = answers.get("embedder", "st")
+    typer.echo(f"  backend={backend!r}  embedder={embedder!r}")
 
 
 # ── export subcommand group ──────────────────────────────────────────────
