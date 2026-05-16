@@ -312,8 +312,19 @@ if [ -n "$extras_clean" ]; then
     pkg_spec="corpus-forge[$extras_clean]"
 fi
 
-info "Running: $UV_CMD tool install '$pkg_spec' --upgrade"
-"$UV_CMD" tool install "$pkg_spec" --upgrade
+# ``CF_INSTALL_FROM`` lets the install-smoke E2E workflow point at the
+# checked-out source tree so the installer is exercised against the
+# current branch (the package isn't on PyPI yet for un-released
+# commits).  Default empty → install from PyPI as usual.
+install_from=""
+if [ -n "${CF_INSTALL_FROM:-}" ]; then
+    install_from="--from $CF_INSTALL_FROM"
+    info "Installing from local source: $CF_INSTALL_FROM"
+fi
+
+# shellcheck disable=SC2086 — install_from is intentionally word-split
+info "Running: $UV_CMD tool install $install_from '$pkg_spec' --upgrade"
+"$UV_CMD" tool install $install_from "$pkg_spec" --upgrade
 
 ok "corpus-forge installed"
 

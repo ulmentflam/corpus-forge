@@ -65,6 +65,9 @@ jobs:
       CF_MCP: "yes"
       CF_HF: "no"
       CF_SUPERVISOR: "no"
+      # Install from the PR's source tree, not PyPI — the package
+      # isn't published for un-released commits.
+      CF_INSTALL_FROM: "."
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -112,6 +115,9 @@ jobs:
       CF_MCP: "yes"
       CF_HF: "no"
       CF_SUPERVISOR: "no"
+      # Install from the PR's source tree, not PyPI — the package
+      # isn't published for un-released commits.
+      CF_INSTALL_FROM: "."
     steps:
       - name: Checkout
         uses: actions/checkout@v6

@@ -246,8 +246,19 @@ Write-Host ''
 $pkgSpec = 'corpus-forge'
 if ($extrasClean) { $pkgSpec = "corpus-forge[$extrasClean]" }
 
-Write-Info "Running: $UvCmd tool install '$pkgSpec' --upgrade"
-& $UvCmd tool install $pkgSpec --upgrade
+# ``CF_INSTALL_FROM`` lets the install-smoke E2E workflow point at the
+# checked-out source tree so the installer is exercised against the
+# current branch (the package isn't on PyPI yet for un-released
+# commits).  Default empty → install from PyPI as usual.
+$installArgs = @()
+if ($env:CF_INSTALL_FROM) {
+    $installArgs += @('--from', $env:CF_INSTALL_FROM)
+    Write-Info "Installing from local source: $($env:CF_INSTALL_FROM)"
+}
+$installArgs += @($pkgSpec, '--upgrade')
+
+Write-Info "Running: $UvCmd tool install $($installArgs -join ' ')"
+& $UvCmd tool install @installArgs
 if ($LASTEXITCODE -ne 0) {
     Write-Fail "uv tool install exited with code $LASTEXITCODE"
 }
