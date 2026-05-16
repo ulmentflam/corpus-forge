@@ -103,22 +103,10 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
         # macOS-arm64 + py3.13 stays soft-fail until sentence-transformers
         # / torch wheels stabilize; revisit weekly.
+        # windows-2022 is now required after Phase I-01 closed the
+        # portability blockers — three green CI runs on this PR.
         include:
           - os: macos-14
-            python-version: "3.13"
-            allow-failure: true
-          # windows-2022 stays soft-fail for the first re-introduction —
-          # we'd rather observe drift than gate main on it while the
-          # I-01 fixes settle. Flip ``allow-failure: false`` (or remove
-          # these include entries) once the matrix has gone three green
-          # nightlies in a row.
-          - os: windows-2022
-            python-version: "3.11"
-            allow-failure: true
-          - os: windows-2022
-            python-version: "3.12"
-            allow-failure: true
-          - os: windows-2022
             python-version: "3.13"
             allow-failure: true
     continue-on-error: ${{ matrix.allow-failure == true }}
