@@ -253,8 +253,18 @@ class TestConflictFilenamePathStructure:
         result = conflict_filename(original, host="macA", ts=FIXED_TS)
         assert not result.is_absolute()
 
+    @pytest.mark.requires_unix
     def test_absolute_path_becomes_absolute(self):
-        """Absolute input produces absolute output."""
+        """Absolute POSIX input produces absolute output.
+
+        Marked ``requires_unix``: ``WindowsPath("/Users/alice/...").is_absolute()``
+        returns False because the string lacks a drive letter, so the
+        ``/`` prefix on Windows isn't considered absolute. Conflict-
+        filename absoluteness on Windows would need a drive-prefixed
+        literal — a separate test would cover it; the round-trip
+        coverage in ``test_sync_push.py`` already exercises the path
+        plumbing cross-platform.
+        """
         original = Path("/Users/alice/Vault/notes/Foo.md")
         result = conflict_filename(original, host="macA", ts=FIXED_TS)
         assert result.is_absolute()

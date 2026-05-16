@@ -48,8 +48,10 @@ class TestMacOSScripts:
         path = SCRIPTS / "macos" / name
         assert path.exists(), f"Missing {path}"
 
+    @pytest.mark.requires_unix
     @pytest.mark.parametrize("name", MACOS_SCRIPTS)
     def test_executable(self, name: str) -> None:
+        """``S_IXUSR`` is a POSIX bit Windows filesystems don't preserve."""
         path = SCRIPTS / "macos" / name
         mode = path.stat().st_mode
         assert mode & stat.S_IXUSR, f"{path} is not executable (mode={oct(mode)})"
@@ -85,8 +87,10 @@ class TestLinuxScripts:
         path = SCRIPTS / "linux" / name
         assert path.exists(), f"Missing {path}"
 
+    @pytest.mark.requires_unix
     @pytest.mark.parametrize("name", LINUX_SCRIPTS)
     def test_executable(self, name: str) -> None:
+        """``S_IXUSR`` is a POSIX bit Windows filesystems don't preserve."""
         path = SCRIPTS / "linux" / name
         mode = path.stat().st_mode
         assert mode & stat.S_IXUSR, f"{path} is not executable (mode={oct(mode)})"

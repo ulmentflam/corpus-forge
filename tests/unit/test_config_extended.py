@@ -20,14 +20,26 @@ from corpus_forge.config import (
 
 
 class TestExpandUser:
+    @pytest.mark.requires_unix
     def test_expand_user_with_home(self):
-        """Test that ~ is expanded to home directory."""
+        """Test that ~ is expanded to home directory.
+
+        Marked ``requires_unix``: the assertion ``result.startswith("/")``
+        is a POSIX absolute-path shape; Windows expands ``~`` to
+        ``C:\\Users\\<name>``.
+        """
         result = expand_user("~/test")
         assert result.startswith("/")
         assert "test" in result
 
+    @pytest.mark.requires_unix
     def test_expand_user_without_home(self):
-        """Test that non-tilde paths are unchanged."""
+        """Test that non-tilde POSIX absolute paths are unchanged.
+
+        Marked ``requires_unix``: ``Path("/absolute/path")`` normalises
+        to ``\\absolute\\path`` on Windows (it's seen as a drive-
+        relative absolute path); the equality check is POSIX-only.
+        """
         result = expand_user("/absolute/path")
         assert result == "/absolute/path"
 

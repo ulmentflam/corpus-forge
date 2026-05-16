@@ -523,10 +523,10 @@ class Config(BaseModel):
             return self.daemon.host_id
         host_id_path = Path.home() / ".config" / "corpus-forge" / "host_id"
         if host_id_path.exists():
-            return host_id_path.read_text().strip()
+            return host_id_path.read_text(encoding="utf-8").strip()
         hostname = socket.gethostname()
         host_id_path.parent.mkdir(parents=True, exist_ok=True)
-        host_id_path.write_text(hostname)
+        host_id_path.write_text(hostname, encoding="utf-8")
         return hostname
 
     @classmethod

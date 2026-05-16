@@ -41,7 +41,9 @@ class TestAtomicWriteTextHappyPath:
         target = tmp_dir / "unicode.txt"
         text = "café résumé naïve 日本語 🌍"
         atomic_write_text(target, text)
-        assert target.read_text() == text
+        # Force utf-8 on read; Windows defaults to cp1252 which mojibakes
+        # non-ASCII content. ``atomic_write_text`` writes utf-8.
+        assert target.read_text(encoding="utf-8") == text
 
     def test_writes_newlines_and_whitespace(self, tmp_dir: Path):
         """Newlines, tabs, and trailing whitespace must be preserved."""
@@ -240,7 +242,8 @@ class TestAtomicWriteTextBoundaries:
         target = tmp_dir / "rtl.txt"
         text = "مرحبا بالعالم"
         atomic_write_text(target, text)
-        assert target.read_text() == text
+        # Force utf-8 on read; see test_writes_unicode_text.
+        assert target.read_text(encoding="utf-8") == text
 
 
 # ── Type / format tests ──────────────────────────────────────────────────

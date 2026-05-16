@@ -35,11 +35,18 @@ def detect_cloud_provider(path: Path) -> Literal["icloud", "dropbox", "gdrive", 
     iCloud-for-Windows layout
     (``%USERPROFILE%\\iCloudDrive`` / ``%USERPROFILE%\\iCloud Photos``);
     the Windows match is case-insensitive on the lowercased path.
+
+    Path separators are normalised to forward slashes before matching
+    so the substrings work on both POSIX (``/Users/x/Library/...``) and
+    Windows (``C:\\Users\\x\\Library\\...``) resolved strings.
     """
     if not isinstance(path, Path):
         raise TypeError(f"Expected Path, got {type(path).__name__}")
 
-    resolved = str(path.resolve())
+    # Use forward slashes for both POSIX and Windows so a single set of
+    # substring patterns matches everywhere. ``Path.resolve()`` on
+    # Windows still yields backslashes; replace before substring scan.
+    resolved = str(path.resolve()).replace("\\", "/")
     lower = resolved.lower()
 
     # iCloud (highest precedence) — macOS substrings first (case-sensitive),
