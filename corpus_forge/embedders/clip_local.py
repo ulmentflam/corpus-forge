@@ -4,9 +4,10 @@ In-process multi-modal embedder using ``sentence-transformers`` with
 ``clip-ViT-B-32`` (default, 512 d) or any CLIP-compatible HF model id.
 
 Both encode methods load the model lazily and run on the device picked
-by :func:`_detect_device` (MPS on Apple Silicon, CUDA on NVIDIA, CPU
-otherwise). The same model handle serves text and image inputs — that's
-what makes them "multi-modal" in the same vector space.
+by :func:`corpus_forge._ml_device.resolve_device` (MPS on Apple Silicon,
+CUDA on NVIDIA, CPU otherwise). The same model handle serves text and
+image inputs — that's what makes them "multi-modal" in the same vector
+space.
 """
 
 from __future__ import annotations
@@ -14,22 +15,11 @@ from __future__ import annotations
 import io
 import logging
 
+from corpus_forge._ml_device import resolve_device
+
 from .multimodal import MultiModalUnavailableError
 
 logger = logging.getLogger(__name__)
-
-
-def _detect_device() -> str:
-    """MPS → CUDA → CPU resolution, lazy-importing torch."""
-    try:
-        import torch  # noqa: PLC0415
-    except ImportError:
-        return "cpu"
-    if torch.backends.mps.is_available():
-        return "mps"
-    if torch.cuda.is_available():
-        return "cuda"
-    return "cpu"
 
 
 class ClipLocalEmbedder:
@@ -124,7 +114,7 @@ class ClipLocalEmbedder:
                 "wheel install correctly?"
             ) from exc
 
-        device = self.device if self.device != "auto" else _detect_device()
+        device = resolve_device(self.device)
         try:
             self._model = SentenceTransformer(self.model_id, device=device)
         except Exception as exc:

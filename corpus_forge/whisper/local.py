@@ -32,25 +32,16 @@ logger = logging.getLogger(__name__)
 
 
 def _detect_device() -> str:
-    """Pick a device using the SentenceTransformers heuristic.
+    """Pick a device for ``faster-whisper`` (CUDA or CPU only).
 
-    Returns the string ``faster_whisper`` wants:
-
-    - ``"cuda"`` if CUDA is available.
-    - ``"cpu"`` otherwise. (MPS is not yet supported by faster-whisper
-      upstream; on Apple Silicon we fall back to CPU + int8 quantisation
-      which keeps the ``small`` model at ~5x real-time.)
-
-    The probe imports ``torch`` lazily so importing this module without
-    the ML stack installed still works.
+    ``faster-whisper`` does not yet support Apple's MPS backend, so on
+    Apple Silicon we fall back to CPU + int8 quantisation (which keeps
+    the ``small`` model at ~5x real-time). The shared device helper's
+    ``prefer_mps=False`` knob enforces that.
     """
-    try:
-        import torch  # noqa: PLC0415
-    except ImportError:
-        return "cpu"
-    if torch.cuda.is_available():
-        return "cuda"
-    return "cpu"
+    from corpus_forge._ml_device import detect_device  # noqa: PLC0415
+
+    return detect_device(prefer_mps=False)
 
 
 def _seconds_to_mmss(seconds: float) -> str:

@@ -60,18 +60,9 @@ class SentenceTransformersEmbedder(BaseEmbedder):
     def _load_model(self):
         """Lazy load the SentenceTransformer model."""
         if self._model is None and SENTENCE_TRANSFORMERS_AVAILABLE:
-            import torch  # noqa: PLC0415
+            from corpus_forge._ml_device import resolve_device  # noqa: PLC0415
 
-            device = self.device
-            if device == "auto":
-                device = (
-                    "mps"
-                    if torch.backends.mps.is_available()
-                    else "cuda"
-                    if torch.cuda.is_available()
-                    else "cpu"
-                )
-            self._model = SentenceTransformer(self.model_id, device=device)
+            self._model = SentenceTransformer(self.model_id, device=resolve_device(self.device))
 
     def warmup(self) -> None:
         """Warm up the embedder by loading the model."""

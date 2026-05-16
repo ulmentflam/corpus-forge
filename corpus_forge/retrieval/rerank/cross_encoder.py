@@ -70,20 +70,14 @@ _AUTO_DEVICE = "auto"
 def _resolve_device(device: str) -> str:
     """Translate the ``"auto"`` sentinel into the best concrete device.
 
-    Mirrors :meth:`SentenceTransformersEmbedder._load_model`: MPS > CUDA > CPU.
+    Thin wrapper over :func:`corpus_forge._ml_device.resolve_device`
+    kept as a private alias so callers in this module don't have to
+    import it; the heuristic itself (MPS > CUDA > CPU) lives in one
+    place now.
     """
-    if device != _AUTO_DEVICE:
-        return device
-    # Lazy import — keep `torch` out of module-import-time.
-    try:
-        import torch  # noqa: PLC0415
-    except ImportError:  # pragma: no cover - torch is a transitive of ST
-        return "cpu"
-    if torch.backends.mps.is_available():
-        return "mps"
-    if torch.cuda.is_available():
-        return "cuda"
-    return "cpu"
+    from corpus_forge._ml_device import resolve_device  # noqa: PLC0415
+
+    return resolve_device(device)
 
 
 class CrossEncoderReranker:
