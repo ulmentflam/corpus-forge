@@ -43,10 +43,10 @@ function Write-Fail($msg) {
 # ---------------------------------------------------------------------------
 
 $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
-$LocalQuestions = Join-Path $ScriptDir 'packaging/install/questions.toml'
+$LocalQuestions = Join-Path $ScriptDir 'corpus_forge/setup/questions.toml'
 $RemoteQuestionsUrl =
     if ($env:CF_QUESTIONS_URL) { $env:CF_QUESTIONS_URL }
-    else { 'https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/packaging/install/questions.toml' }
+    else { 'https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/corpus_forge/setup/questions.toml' }
 
 if (Test-Path $LocalQuestions) {
     $QuestionsPath = $LocalQuestions

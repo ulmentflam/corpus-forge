@@ -1,4 +1,4 @@
-"""Phase I-03 — Schema invariants for ``packaging/install/questions.toml``.
+"""Phase I-03 — Schema invariants for ``corpus_forge/setup/questions.toml``.
 
 The TOML question tree is consumed by three shell installers + the
 Python ``corpus-forge setup`` wizard. Drift in field names or value
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-QUESTIONS_PATH = Path(__file__).resolve().parents[2] / "packaging" / "install" / "questions.toml"
+QUESTIONS_PATH = Path(__file__).resolve().parents[2] / "corpus_forge" / "setup" / "questions.toml"
 
 # Allowed values for the ``type`` field. Adding a new shape needs all
 # three shells + the Python wizard to learn it, so keep the list small.

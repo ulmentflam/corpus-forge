@@ -29,9 +29,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
-DEFAULT_QUESTIONS_PATH = (
-    Path(__file__).resolve().parents[2] / "packaging" / "install" / "questions.toml"
-)
+# Canonical question tree ships INSIDE the corpus_forge package (not in
+# repo-root ``packaging/``) so it's bundled in the wheel and the wizard
+# can find it post-``uv tool install``. The shell installers also read
+# this same file from the source tree (via ``corpus_forge/setup/`` path
+# or the raw.githubusercontent.com URL) so there's no duplication.
+DEFAULT_QUESTIONS_PATH = Path(__file__).resolve().parent / "questions.toml"
 
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "corpus-forge"
 

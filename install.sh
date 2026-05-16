@@ -57,10 +57,10 @@ fail()  { printf '%b\n' "${RED}✗${NC} $*" >&2; exit 1; }
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd 2>/dev/null || pwd)"
-QUESTIONS_REMOTE="${CF_QUESTIONS_URL:-https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/packaging/install/questions.toml}"
+QUESTIONS_REMOTE="${CF_QUESTIONS_URL:-https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/corpus_forge/setup/questions.toml}"
 
-if [ -f "$SCRIPT_DIR/packaging/install/questions.toml" ]; then
-    QUESTIONS_PATH="$SCRIPT_DIR/packaging/install/questions.toml"
+if [ -f "$SCRIPT_DIR/corpus_forge/setup/questions.toml" ]; then
+    QUESTIONS_PATH="$SCRIPT_DIR/corpus_forge/setup/questions.toml"
     info "Using local question tree: $QUESTIONS_PATH"
 else
     QUESTIONS_PATH="$(mktemp -t corpus-forge-questions.XXXXXX.toml 2>/dev/null || mktemp)"
