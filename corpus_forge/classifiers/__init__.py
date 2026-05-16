@@ -70,11 +70,12 @@ def _load_classifier(name: str, config: object | None = None) -> Classifier:
         )
 
     # Forward LLM-relevant kwargs from config. The rule classifier
-    # takes no args; the LLM classifier reads model / url / timeout /
-    # temperature / excerpt_chars from the config block.
+    # takes no args; the LLM classifier reads model / url / api_key /
+    # timeout / temperature / excerpt_chars from the config block.
     if name == "llm" and config is not None:
+        import os  # noqa: PLC0415
+
         kwargs: dict[str, object] = {}
-        # Map ClassifierConfig field names → LLMClassifier constructor kwargs.
         for cfg_attr, kwarg in (
             ("llm_model", "model"),
             ("llm_url", "llm_url"),
@@ -89,6 +90,14 @@ def _load_classifier(name: str, config: object | None = None) -> Classifier:
                 if kwarg == "llm_url":
                     value = str(value)
                 kwargs[kwarg] = value
+        # Optional bearer token. Empty env-var name (default) means
+        # "open local Ollama"; setting it to e.g. ``OPENAI_API_KEY``
+        # swaps the same backend onto a hosted authenticated endpoint.
+        env_name = getattr(config, "llm_api_key_env", "") or ""
+        if env_name:
+            api_key = os.environ.get(env_name)
+            if api_key:
+                kwargs["api_key"] = api_key
         return cls(**kwargs)
 
     return cls()

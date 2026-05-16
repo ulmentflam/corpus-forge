@@ -346,3 +346,39 @@ class TestRegisterDefaultClassifiers:
         llm = reg.get("llm")
         assert llm is not None
         assert llm.name == "llm"
+
+    def test_llm_classifier_forwards_api_key_env_when_set(self) -> None:
+        """When ``llm_api_key_env`` names a real env var, the bearer
+        token is pulled and forwarded to ``LLMClassifier(api_key=...)``."""
+        import os
+
+        os.environ["UNIT_TEST_LLM_KEY"] = "sk-test"
+        try:
+
+            class _Cfg:
+                chain: ClassVar[list[str]] = ["llm"]
+                llm_api_key_env: ClassVar[str] = "UNIT_TEST_LLM_KEY"
+
+            reg = register_default_classifiers(_Cfg())
+            llm = reg.get("llm")
+            assert llm is not None
+            assert llm.api_key == "sk-test"
+        finally:
+            del os.environ["UNIT_TEST_LLM_KEY"]
+
+    def test_llm_classifier_omits_api_key_when_env_unset(self) -> None:
+        """Empty ``llm_api_key_env`` (default) means "open local Ollama"
+        — no Authorization header is attached."""
+        import os
+
+        # Belt-and-braces: ensure the env var isn't set from another test.
+        os.environ.pop("UNIT_TEST_MISSING_KEY", None)
+
+        class _Cfg:
+            chain: ClassVar[list[str]] = ["llm"]
+            llm_api_key_env: ClassVar[str] = "UNIT_TEST_MISSING_KEY"
+
+        reg = register_default_classifiers(_Cfg())
+        llm = reg.get("llm")
+        assert llm is not None
+        assert llm.api_key is None

@@ -57,8 +57,18 @@ def _make_st_config(name="st-embedder", active=True):
     return cfg
 
 
-def _make_openai_config(name="oai-embedder", api_key_env="OPENAI_API_KEY", active=True):
-    """Build a minimal openai EmbedderConfig mock."""
+def _make_openai_config(
+    name="oai-embedder",
+    api_key_env="OPENAI_API_KEY",
+    active=True,
+    base_url=None,
+):
+    """Build a minimal openai EmbedderConfig mock.
+
+    ``base_url`` defaults to ``None`` (the "no local-substitution"
+    case); passing a string forwards it to ``OpenAIEmbedder`` so the
+    local-or-remote URL path can be asserted independently.
+    """
     cfg = MagicMock()
     cfg.name = name
     cfg.provider = "openai"
@@ -70,6 +80,7 @@ def _make_openai_config(name="oai-embedder", api_key_env="OPENAI_API_KEY", activ
     cfg.batch_size = 256
     cfg.device = "auto"
     cfg.api_key_env = api_key_env
+    cfg.base_url = base_url
     return cfg
 
 

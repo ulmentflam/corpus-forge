@@ -92,10 +92,16 @@ class OllamaReranker:
         model_id: str,
         *,
         base_url: str = DEFAULT_BASE_URL,
+        api_key: str | None = None,
         name: str = DEFAULT_NAME,
     ) -> None:
         self.model_id = model_id
         self.base_url = base_url
+        # The OpenAI SDK insists on a non-empty api_key even when the
+        # upstream (a local open Ollama) ignores it; the placeholder is
+        # used when the caller hasn't supplied one. Pass a real key to
+        # authenticate against hosted Ollama / OpenAI-compatible proxies.
+        self.api_key = api_key or "ollama-no-auth"
         self.name = name
         # Memoised OpenAI client; instantiated lazily.
         self._client: Any | None = None
@@ -119,9 +125,7 @@ class OllamaReranker:
                 "(or pip install openai>=1.30)."
             ) from exc
 
-        # The OpenAI SDK insists on a non-empty api_key even when the
-        # upstream (Ollama) ignores it.  Use a placeholder.
-        self._client = OpenAI(base_url=self.base_url, api_key="ollama-no-auth")
+        self._client = OpenAI(base_url=self.base_url, api_key=self.api_key)
         return self._client
 
     # ── public API ─────────────────────────────────────────────────────────

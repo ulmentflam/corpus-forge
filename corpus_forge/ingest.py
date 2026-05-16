@@ -203,6 +203,11 @@ def get_active_embedders(config: Config) -> list[Embedder]:
             }
             if embedder_config.provider == "openai":
                 kwargs["api_key_env"] = getattr(embedder_config, "api_key_env", "OPENAI_API_KEY")
+                base_url = getattr(embedder_config, "base_url", None)
+                if base_url is not None:
+                    # ``base_url`` may be an AnyHttpUrl from pydantic — cast
+                    # to str so the OpenAI SDK accepts it unchanged.
+                    kwargs["base_url"] = str(base_url).rstrip("/")
             embedder = registry.register(**kwargs)
             embedders.append(embedder)
     return embedders

@@ -157,7 +157,15 @@ class DatasetConfig(BaseModel):
 
 
 class EmbedderConfig(BaseModel):
-    """Configuration for an embedder."""
+    """Configuration for a single embedder.
+
+    The ``base_url`` field (provider=``openai`` only) accepts any
+    OpenAI-compatible endpoint — local vLLM, llama.cpp's OpenAI shim,
+    LiteLLM, etc. — so the same embedder swaps between a hosted API
+    and a local proxy by config alone. Cross-cutting with VLM /
+    Whisper / classifier / enricher config blocks: every model
+    integration supports the local-or-remote URL pattern.
+    """
 
     name: str
     provider: str = Field(pattern="^(sentence_transformers|openai)$")
@@ -169,6 +177,7 @@ class EmbedderConfig(BaseModel):
     batch_size: int = Field(default=32, gt=0)
     device: str = Field(default="auto")
     api_key_env: str = Field(default="OPENAI_API_KEY")
+    base_url: AnyHttpUrl | None = Field(default=None)
 
 
 class RerankerConfig(BaseModel):
@@ -220,6 +229,29 @@ class RetrievalConfig(BaseModel):
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def _validate_env_var_name(field_name: str, value: str, *, allow_empty: bool = False) -> str:
+    """Reject ``value`` if it isn't a valid POSIX env-var identifier.
+
+    Catches typos (``"MY KEY"`` with a space, ``"123KEY"`` starting with
+    a digit, ``"MY-KEY"`` with a dash) at config-load time instead of
+    silently producing ``None`` at runtime.
+
+    Pass ``allow_empty=True`` for config fields whose default is empty
+    (the classifier's optional ``llm_api_key_env``); the remote
+    backends that require a key on opt-in keep ``allow_empty=False``
+    so a misconfigured empty string still surfaces a clear error.
+    """
+    if allow_empty and not value:
+        return value
+    if not _ENV_VAR_NAME_RE.match(value):
+        raise ValueError(
+            f"{field_name}={value!r} is not a valid POSIX environment "
+            "variable name (ASCII letters / digits / underscore; cannot "
+            "start with a digit)."
+        )
+    return value
+
+
 class VLMConfig(BaseModel):
     """Phase D / Wave 4 (E-04) — VLM (vision-language model) backend config.
 
@@ -253,19 +285,7 @@ class VLMConfig(BaseModel):
 
     @model_validator(mode="after")
     def _check_mistral_env_var_name(self) -> "VLMConfig":
-        """Reject ``mistral_api_key_env`` values that aren't valid
-        POSIX environment variable names.
-
-        Catches typos (``"MY KEY"`` with a space, ``"123KEY"`` starting
-        with a digit, ``"MY-KEY"`` with a dash) at config-load time
-        instead of silently producing ``None`` at runtime.
-        """
-        if not _ENV_VAR_NAME_RE.match(self.mistral_api_key_env):
-            raise ValueError(
-                f"mistral_api_key_env={self.mistral_api_key_env!r} is not a valid "
-                "POSIX environment variable name (ASCII letters / digits / "
-                "underscore; cannot start with a digit)."
-            )
+        _validate_env_var_name("mistral_api_key_env", self.mistral_api_key_env)
         return self
 
 
@@ -315,19 +335,7 @@ class WhisperConfig(BaseModel):
 
     @model_validator(mode="after")
     def _check_remote_env_var_name(self) -> "WhisperConfig":
-        """Reject ``remote_api_key_env`` values that aren't valid POSIX
-        environment variable names.
-
-        Catches typos (``"MY KEY"`` with a space, ``"123KEY"`` starting
-        with a digit, ``"MY-KEY"`` with a dash) at config-load time
-        instead of silently producing ``None`` at runtime.
-        """
-        if not _ENV_VAR_NAME_RE.match(self.remote_api_key_env):
-            raise ValueError(
-                f"remote_api_key_env={self.remote_api_key_env!r} is not a valid "
-                "POSIX environment variable name (ASCII letters / digits / "
-                "underscore; cannot start with a digit)."
-            )
+        _validate_env_var_name("remote_api_key_env", self.remote_api_key_env)
         return self
 
 
@@ -359,6 +367,11 @@ class ClassifierConfig(BaseModel):
     - ``llm_model``: Ollama tag.
     - ``llm_url``: base URL of the Ollama-compatible endpoint
       (``/api/generate`` is appended by the backend). Local-or-remote.
+    - ``llm_api_key_env``: optional name of an env var holding a bearer
+      token (read from ``secrets.env``). Empty string (default) omits
+      the ``Authorization`` header — preserves the open-local-Ollama
+      shape. Set this to swap the same backend onto a hosted
+      authenticated endpoint without touching code.
     - ``llm_timeout_s``: per-request HTTP budget.
     - ``llm_temperature``: sampling temperature (``[0.0, 2.0]``).
     - ``llm_excerpt_chars``: total head+tail budget passed to the model.
@@ -372,11 +385,17 @@ class ClassifierConfig(BaseModel):
     # class (not bare strings). Mirrors the proven pattern from
     # :attr:`VLMConfig.ollama_url`.
     llm_url: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
+    llm_api_key_env: str = ""
     llm_timeout_s: float = Field(default=60.0, gt=0)
     llm_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     llm_excerpt_chars: int = Field(default=2000, gt=0)
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_llm_api_key_env_name(self) -> "ClassifierConfig":
+        _validate_env_var_name("llm_api_key_env", self.llm_api_key_env, allow_empty=True)
+        return self
 
 
 class EnricherConfig(BaseModel):
@@ -425,15 +444,7 @@ class EnricherConfig(BaseModel):
 
     @model_validator(mode="after")
     def _check_remote_env_var_name(self) -> "EnricherConfig":
-        """Reject ``remote_api_key_env`` values that aren't valid POSIX
-        environment variable names — catches typos at config-load time.
-        """
-        if not _ENV_VAR_NAME_RE.match(self.remote_api_key_env):
-            raise ValueError(
-                f"remote_api_key_env={self.remote_api_key_env!r} is not a valid "
-                "POSIX environment variable name (ASCII letters / digits / "
-                "underscore; cannot start with a digit)."
-            )
+        _validate_env_var_name("remote_api_key_env", self.remote_api_key_env)
         return self
 
 

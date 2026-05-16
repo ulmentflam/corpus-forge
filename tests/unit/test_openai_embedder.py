@@ -66,6 +66,56 @@ class TestOpenAIClient:
             result = embedder._get_client()
             assert result is None
 
+    def test_local_base_url_tolerates_missing_env_var(self):
+        """Local-substitution mode: when ``base_url`` is set we fall
+        back to a placeholder key instead of raising. Lets users point
+        the embedder at a local OpenAI-compat proxy (vLLM, llama.cpp)
+        without inventing a fake key in secrets.env."""
+        import os
+
+        if not OPENAI_AVAILABLE:
+            pytest.skip("openai not installed")
+        orig = os.environ.pop("OPENAI_API_KEY", None)
+        try:
+            embedder = OpenAIEmbedder(
+                name="test",
+                model_id="text-embedding-3-small",
+                dimension=1536,
+                base_url="http://localhost:8000/v1",
+            )
+            with patch("corpus_forge.embedders.openai.OpenAI") as mock_ctor:
+                embedder._get_client()
+            kwargs = mock_ctor.call_args.kwargs
+            assert kwargs["base_url"] == "http://localhost:8000/v1"
+            assert kwargs["api_key"] == "local-no-auth"
+        finally:
+            if orig is not None:
+                os.environ["OPENAI_API_KEY"] = orig
+
+    def test_base_url_forwarded_when_env_var_present(self):
+        """``base_url`` plus a real key forwards both unchanged so a
+        hosted authenticated proxy (LiteLLM, Azure) Just Works."""
+        import os
+
+        if not OPENAI_AVAILABLE:
+            pytest.skip("openai not installed")
+        os.environ["MY_KEY"] = "sk-real"
+        try:
+            embedder = OpenAIEmbedder(
+                name="test",
+                model_id="text-embedding-3-small",
+                dimension=1536,
+                api_key_env="MY_KEY",
+                base_url="https://proxy.example.com/v1",
+            )
+            with patch("corpus_forge.embedders.openai.OpenAI") as mock_ctor:
+                embedder._get_client()
+            kwargs = mock_ctor.call_args.kwargs
+            assert kwargs["base_url"] == "https://proxy.example.com/v1"
+            assert kwargs["api_key"] == "sk-real"
+        finally:
+            del os.environ["MY_KEY"]
+
 
 class TestOpenAIEncode:
     @pytest.fixture

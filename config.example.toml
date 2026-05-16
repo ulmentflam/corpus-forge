@@ -115,6 +115,10 @@ distance  = "cosine"
 active    = false  # enable when cloud redundancy is wanted
 api_key_env = "OPENAI_API_KEY"
 batch_size  = 256
+# Optional: point at any OpenAI-compatible endpoint (local vLLM,
+# llama.cpp's OpenAI shim, LiteLLM, etc.). Same backend, swapped
+# entirely by config. Leave unset for the real OpenAI API.
+# base_url = "http://localhost:8000/v1"
 
 # ─────────────────────────────────────────────────────────────────────
 # Phase D / Wave 4 — VLM (vision-language model) OCR backend
@@ -216,6 +220,13 @@ llm_url              = "http://localhost:11434"
 # different machine than the one doing ingest (e.g. a beefier box on
 # the local network).
 # llm_url            = "https://ollama.internal.example.com"
+
+# Optional bearer token for authenticated remote endpoints. Names the
+# env var the key is read from (read from secrets.env at start-up).
+# Empty (default) omits the Authorization header — matches the open
+# local Ollama daemon. Cross-cutting: same shape as `vlm`,
+# `whisper`, and `code_enricher` blocks.
+# llm_api_key_env    = "OPENAI_API_KEY"
 
 # Per-request HTTP budget (seconds). qwen2.5:7b-instruct takes ~5-10
 # s for a 2 KB excerpt on a warm model; 60 s leaves slack for the
