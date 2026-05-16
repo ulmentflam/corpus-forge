@@ -243,22 +243,32 @@ Write-Host ''
 # Install via uv tool.
 # ---------------------------------------------------------------------------
 
-$pkgSpec = 'corpus-forge'
-if ($extrasClean) { $pkgSpec = "corpus-forge[$extrasClean]" }
-
 # ``CF_INSTALL_FROM`` lets the install-smoke E2E workflow point at the
 # checked-out source tree so the installer is exercised against the
 # current branch (the package isn't on PyPI yet for un-released
-# commits).  Default empty → install from PyPI as usual.
-$installArgs = @()
+# commits).  Default empty → install ``corpus-forge`` from PyPI.
+#
+# uv's CLI: ``uv tool install '<path>[extras]'`` installs the local
+# package with its extras; ``--from`` is for the cross-name case
+# (install foo's CLI from bar's package) and conflicts when the
+# install spec names a package.
 if ($env:CF_INSTALL_FROM) {
-    $installArgs += @('--from', $env:CF_INSTALL_FROM)
     Write-Info "Installing from local source: $($env:CF_INSTALL_FROM)"
+    if ($extrasClean) {
+        $pkgSpec = "$($env:CF_INSTALL_FROM)[$extrasClean]"
+    } else {
+        $pkgSpec = $env:CF_INSTALL_FROM
+    }
+} else {
+    if ($extrasClean) {
+        $pkgSpec = "corpus-forge[$extrasClean]"
+    } else {
+        $pkgSpec = 'corpus-forge'
+    }
 }
-$installArgs += @($pkgSpec, '--upgrade')
 
-Write-Info "Running: $UvCmd tool install $($installArgs -join ' ')"
-& $UvCmd tool install @installArgs
+Write-Info "Running: $UvCmd tool install '$pkgSpec' --upgrade"
+& $UvCmd tool install $pkgSpec --upgrade
 if ($LASTEXITCODE -ne 0) {
     Write-Fail "uv tool install exited with code $LASTEXITCODE"
 }

@@ -307,24 +307,32 @@ echo
 # Install via uv tool.
 # ---------------------------------------------------------------------------
 
-pkg_spec="corpus-forge"
-if [ -n "$extras_clean" ]; then
-    pkg_spec="corpus-forge[$extras_clean]"
-fi
-
 # ``CF_INSTALL_FROM`` lets the install-smoke E2E workflow point at the
 # checked-out source tree so the installer is exercised against the
 # current branch (the package isn't on PyPI yet for un-released
-# commits).  Default empty → install from PyPI as usual.
-install_from=""
+# commits).  Default empty → install ``corpus-forge`` from PyPI.
+#
+# uv's CLI: ``uv tool install '<path>[extras]'`` installs the local
+# package with its extras; ``--from`` is for the cross-name case
+# (install foo's CLI from bar's package) and conflicts when the
+# install spec names a package.
 if [ -n "${CF_INSTALL_FROM:-}" ]; then
-    install_from="--from $CF_INSTALL_FROM"
     info "Installing from local source: $CF_INSTALL_FROM"
+    if [ -n "$extras_clean" ]; then
+        pkg_spec="${CF_INSTALL_FROM}[$extras_clean]"
+    else
+        pkg_spec="$CF_INSTALL_FROM"
+    fi
+else
+    if [ -n "$extras_clean" ]; then
+        pkg_spec="corpus-forge[$extras_clean]"
+    else
+        pkg_spec="corpus-forge"
+    fi
 fi
 
-# shellcheck disable=SC2086 — install_from is intentionally word-split
-info "Running: $UV_CMD tool install $install_from '$pkg_spec' --upgrade"
-"$UV_CMD" tool install $install_from "$pkg_spec" --upgrade
+info "Running: $UV_CMD tool install '$pkg_spec' --upgrade"
+"$UV_CMD" tool install "$pkg_spec" --upgrade
 
 ok "corpus-forge installed"
 
