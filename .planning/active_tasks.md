@@ -217,9 +217,11 @@ local-or-remote URL principle; remote speaks either Ollama or OpenAI chat-comple
 ### Backlog (queued after Phase H, in declared order)
 - (none — Phase I to be defined)
 
-## Verification Criteria for Phase A Completion:
-- [ ] Daemon running on both Macs
-- [ ] corpus.chunks and corpus.embeddings_qwen3_8b populated
-- [ ] watchdog behavior preserved
-- [ ] make ci green
-- [ ] coverage ≥75% (raised to 85% once integration tests added)
+## Status
+
+All declared milestones (A, B, C, CI-1..CI-3, R1..R5, CS, BR, D, E, F, G, H) are
+**complete and shipped**. See `CHANGELOG.md` for the per-phase release notes
+and `.planning/tdd/phase_*.md` for the wave-by-wave construction history.
+
+The next milestone (Phase I) has not yet been defined. Open new planning
+artifacts under `.planning/tdd/phase_i_*.md` when scoping starts.

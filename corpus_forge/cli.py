@@ -60,7 +60,18 @@ def migrate_history() -> None:
 
 @app.command()
 def ingest(once: bool = typer.Option(False, "--once", help="Run one-shot ingestion pass")):
-    """Run ingestion daemon or one-shot pass."""
+    """Discover, extract, chunk, and persist every document the configured sources expose.
+
+    Walks every ``[[datasets.sources]]`` entry, dispatches each file through
+    the extractor registry, runs the per-document chunker (selected by
+    ``ExtractedDocument.metadata.chunker_hint``), and upserts the result via
+    the configured backend. Embedding generation is decoupled — run
+    ``corpus-forge embed`` afterwards to backfill vectors.
+
+    With ``--once`` the pass exits after one full scan; without it the
+    process stays resident and watches for filesystem changes (debounced
+    by ``daemon.debounce_seconds``).
+    """
     from .ingest import main
 
     main(once=once)
@@ -90,7 +101,14 @@ def embed(
 
 @app.command()
 def daemon():
-    """Run daemon in foreground (dev)."""
+    """Run the corpus-forge ingestion daemon in the foreground.
+
+    Watches every configured source for filesystem changes, debounces them,
+    and re-ingests touched documents through the extractor/chunker/embedder
+    pipeline. Intended for development; production deployments wrap this
+    command via the systemd user unit (Linux) or launchd agent (macOS)
+    rendered by ``scripts/{linux,macos}/install.sh``.
+    """
     from .daemon import main
 
     main()
@@ -917,10 +935,10 @@ def classify(
 ) -> None:
     """Walk documents and assign content-class labels via the classifier chain.
 
-    The default chain (``[classifier].chain = ["rule", "llm"]``) starts
-    with the stdlib rule classifier (microseconds/doc). When the rule
-    classifier's confidence falls below
-    ``[classifier].escalation_threshold`` (default 0.4), the LLM
+    The default chain (``classifier.chain = ["rule", "llm"]`` in
+    ``config.toml``) starts with the stdlib rule classifier
+    (microseconds/doc). When the rule classifier's confidence falls
+    below ``classifier.escalation_threshold`` (default 0.4), the LLM
     classifier (Ollama qwen2.5:7b-instruct by default; ~5-10 s/doc on
     M-series) takes over. High-confidence rule outputs short-circuit
     the LLM call entirely — the cost-guard preflight prints a worst-

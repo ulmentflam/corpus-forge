@@ -8,7 +8,116 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+#### Phase D — Universal multi-format ingest (waves 0–6)
+- `Extractor` protocol (`corpus_forge/extractors/base.py`) + `ExtractorRegistry`
+  with a per-extension lookup table and a second-pass `supported_filenames`
+  fallback for the extension-less long tail (`Makefile`, `Dockerfile`, …).
+- Seven document extractors landed under `corpus_forge/extractors/`:
+  `PdfDigitalExtractor` (pymupdf4llm rag-helper), `HtmlExtractor`
+  (readability-lxml + markdownify), `EpubExtractor` (ebooklib), `OfficeExtractor`
+  (Docling for `.docx`/`.pptx`/`.xlsx`), `NotebookExtractor` (jupytext),
+  `CsvExtractor` (pandas → markdown table, row-capped), and a 45+ extension
+  `CodeExtractor` (tree-sitter-language-pack).
+- `PassthroughMarkdownExtractor`, `PlainTextExtractor`, `StructuredDataExtractor`
+  (`.json`/`.yaml`/`.toml`), `SubtitleExtractor` (`.srt`/`.vtt`).
+- `FilesystemSource` — heterogeneous-tree walker that dispatches every file
+  through the extractor registry. New `[[datasets.sources]]` plugin `filesystem`.
+- `ChunkerDispatcher` — picks the per-document chunker from each
+  `ExtractedDocument.metadata.chunker_hint`. `CodeChunker` (`chunkers/code.py`):
+  tree-sitter AST walk with size-bounding + overlap, falling back to a brace-/
+  blank-line byte chunker when the grammar is unavailable.
+- New `[code]`, `[multi-format]`, and `[ocr]` optional extras. License posture
+  documented in the README's "Distribution / licensing" section — `[multi-format]`
+  AGPL-binds; `[code]` and `[ocr]` stay permissive.
+- **P1 — Vision/OCR (waves 4–6).** `VLMBackend` protocol + `OllamaVLM`
+  (local, `qwen2.5vl:7b` default) + `MistralOCR` (remote, `mistral-ocr-2503`).
+  `PdfDigitalExtractor` Tier-1 → Tier-2 escalation on sparse text layers;
+  `ImageExtractor` for `.png`/`.jpg`/`.tif`/`.bmp`/`.webp`/`.heic`. Failure
+  ladder: missing poppler → ERROR + Tier-1 fallback; VLM timeout on a page →
+  placeholder, remaining pages continue. Documented in `docs/architecture.md`.
+
+#### Phase E — Document classification (rule → LLM chain)
+- New `Classifier` protocol (`corpus_forge/classifiers/`) + `ClassifierRegistry`
+  with ordered dispatch and the `tuple[str, ClassLabel] | None` return shape
+  that distinguishes `classifier:rule` from `classifier:llm` on
+  `document_labels.source`.
+- `RuleBasedClassifier` (stdlib, microseconds/doc) — fast path covering the
+  9-value taxonomy (`code`, `chat`, `book`, `textbook`, `paper`, `article`,
+  `reference`, `note`, `other`) via format-label + path + body heuristics.
+- `LLMClassifier` (Ollama `qwen2.5:7b-instruct` default; `POST /api/generate`
+  with `format=json`, head+tail excerpt). Local-or-remote URL via
+  `classifier.llm_url`; same swap-the-URL principle as `vlm.ollama_url`.
+- New `corpus-forge classify` CLI with cost-guard preflight, `--dry-run`,
+  `--limit`, `--json`, `--reclassify`, and `--classifier <name>` (bypass
+  the chain).
+- Alembic `0010_document_label_confidence` adds the `confidence REAL`
+  column to `document_labels`.
+
+#### Phase F — Content-defined chunking (FastCDC)
+- New `CDCChunker` (`corpus_forge/chunkers/cdc.py`) — pure-Python FastCDC
+  rolling-hash boundaries (MIT). Replaces positional slicing for prose classes
+  (`book`/`textbook`/`paper`/`article`/`note`/`other`). Small edits ripple ≤ 2-3
+  chunks, proven via Hypothesis property tests.
+- `ChunkerDispatcher.for_class` — class-mapped chunker resolution
+  (`code → CodeChunker`, `chat → ConversationChunker`,
+  `reference → PassthroughChunker`, everything-else → `CDCChunker`).
+- New `corpus-forge rechunk` CLI — walks classified documents and re-runs the
+  chunker pass. Idempotent on chunk-text + metadata signature; preserves
+  embeddings on identical chunks via `StorageBackend.replace_document_chunks`.
+- New `StorageBackend.get_document_chunk_texts` + `get_document_chunk_metadatas`
+  helpers powering the rechunk idempotency check.
+- `[multi-format]` extra picks up `fastcdc>=1.6`.
+
+#### Phase G — Whisper transcription + multi-modal embeddings
+- **P0 — Whisper.** `WhisperBackend` protocol + `LocalWhisper` (faster-whisper
+  in-process, tiny/base/small/medium/large) + `RemoteWhisper` (OpenAI-compatible
+  `/audio/transcriptions`; works against OpenAI, Groq, Replicate, self-hosted
+  whisper.cpp via HTTP). `AudioExtractor` for `.mp3`/`.wav`/`.m4a`/`.ogg`/`.flac`;
+  `VideoExtractor` for `.mp4`/`.mov`/`.webm`/`.mkv`/`.avi` (uses imageio-ffmpeg).
+  `[whisper]` extra; defaults to `backend = "none"` so audio/video files are
+  silently skipped pre-opt-in.
+- **P1 — Multi-modal embeddings.** New `MultiModalEmbedder` protocol
+  (`corpus_forge/embedders/multimodal.py`) — distinct seam from the text
+  `Embedder` so both keep clean APIs. `ClipLocalEmbedder` (sentence-transformers
+  `clip-ViT-B-32`, 512 d; `jina-clip-v2` 1024 d also accepted) and
+  `ClipRemoteEmbedder` (OpenAI-compatible `/v1/embeddings` with base64 data-URL
+  image input).
+- `corpus-forge embed --image` routes through `backfill_image_embedder`.
+  Resolves image bytes from `metadata.image_b64` → `metadata.image_path` →
+  the document's `filesystem://` URI in order.
+- Alembic `0011_image_embeddings` adds `embedders.image BOOLEAN`; the dynamic
+  `image_embeddings_<name>` per-embedder family mirrors the text
+  `embeddings_<name>` family.
+
+#### Phase H — Qwen3.6-35B-A3B code-chunk enrichment
+- New `CodeEnricher` protocol (`corpus_forge/enrichers/`) + `CodeChunkEnrichment`
+  dataclass (`{docstring, summary, symbols[], model, confidence}`) + `EnricherRegistry`.
+- Two concrete backends to satisfy the local-or-remote URL principle:
+  `QwenCoderLocal` (local Ollama `/api/generate`) and `QwenCoderRemote` —
+  speaks either the Ollama shape OR OpenAI chat-completions
+  (`response_format=json_object`) via `remote_api_shape`. Bearer auth
+  optional on Ollama, required on OpenAI.
+- New `corpus-forge enrich` CLI — walks `class=code` chunks only,
+  cost-guard preflight, idempotent on `chunks.metadata.enrichment.model`.
+  `--backend qwen-local|qwen-remote`, `--reclassify-on-model-change`,
+  `--dataset`, `--limit`, `--dry-run`, `--json`.
+- `iter_code_chunks_for_enrichment(model_tag)` + `update_chunk_enrichment`
+  on both Postgres (`jsonb_set`) and SQLite (read-modify-write) backends.
+- Default `[code_enricher].backend = "none"` keeps existing configs untouched.
+
+### Changed
+
+- Configuration: every model-client block (`[vlm]`, `[classifier]`, `[whisper]`,
+  `[code_enricher]`) now carries explicit local + remote URL fields and rich
+  one-comment-per-field documentation in `config.example.toml`. The
+  local-or-remote URL principle is documented as a cross-cutting concern in
+  `docs/architecture.md` and the README.
+- `Config.backend.kind == "sqlite"` is now validated against multi-host sync
+  (`Config.validate_sync_gate`) — `sync_enabled = true` on any dataset is
+  rejected at config-load time so the failure is at startup, not on the first
+  write.
 
 ## [0.1.0b1] - 2026-05-12
 

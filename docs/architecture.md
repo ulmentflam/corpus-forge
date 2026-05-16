@@ -1,68 +1,90 @@
 # Architecture
 
+This is the "how the system works today" reference. For the historical
+phase-by-phase build log, see `.planning/tdd/phase_*.md`.
+
 ## Overview
 
-Corpus-forge is designed around three core protocols that define the extension points:
-- `Source`: Defines how to ingest data from various origins
-- `Embedder`: Defines how to convert text to vector embeddings
-- `StorageBackend`: Defines how to persist data and embeddings
+Corpus-forge is a compose-everything pipeline of small plug-in protocols. Each
+seam can be implemented anew without touching the rest:
 
-These protocols are implemented by concrete classes that handle specific sources (markdown vault, Claude Code, OpenCode), embedders (Sentence Transformers, OpenAI), and backends (PostgreSQL with pgvector).
+```
+Source ─▶ Extractor ─▶ Chunker ─▶ StorageBackend ─▶ per-embedder tables
+                                       │
+classify (post-ingest) ◀───────────────┤
+rechunk (post-classify) ◀──────────────┤
+enrich   (post-classify, code only) ◀──┤
+            VLM / Whisper feed Extractor at ingest time
+```
 
-## Core Components
+| Protocol | Module | Purpose | Phase |
+|---|---|---|---|
+| `Source` | `sources/base.py` | Discover files / sessions / conversations and parse into `RawDocument` / `RawConversation`. | A |
+| `Extractor` | `extractors/base.py` | Convert a single file off disk to `ExtractedDocument(text, chunker_hint, metadata, labels)`. | D |
+| `Chunker` | `chunkers/base.py` | Split a document or conversation into `TextChunk`s. | A (+D/F additions) |
+| `Embedder` | `embedders/base.py` | `Sequence[str] -> np.ndarray`. Symmetric `encode` + asymmetric `encode_query`. | A |
+| `MultiModalEmbedder` | `embedders/multimodal.py` | Text **or** image bytes → shared vector space. | G P1 |
+| `StorageBackend` | `backends/base.py` | Persist documents, chunks, embeddings, labels, conversations; ANN + FTS search; cross-host sync. | A (+ many) |
+| `Classifier` | `classifiers/base.py` | `ClassifiableDocument` → `ClassLabel` (9-value taxonomy). | E |
+| `VLMBackend` | `vlm/base.py` | Image → text (OCR + description). | D P1 |
+| `WhisperBackend` | `whisper/base.py` | Audio / video → text. | G P0 |
+| `CodeEnricher` | `enrichers/base.py` | Code chunk → `{docstring, summary, symbols, model, confidence}`. | H |
 
-### Protocols
+### Cross-cutting principle — local-or-remote URL
 
-The system is built around three Python Protocols (similar to interfaces) that define contracts:
+Every model client in corpus-forge accepts a configurable HTTP URL. The
+default is local (`http://localhost:11434` for Ollama-shape clients,
+`https://api.openai.com/v1` for OpenAI-shape ones); the same backend code
+talks to a hosted endpoint by changing one config field. Audit checklist:
 
-1. **Source Protocol** (`corpus_forge/sources/base.py`)
-   - Defines how to scan for and parse data sources
-   - Returns `RawDocument` or `RawConversation` objects
-   - Includes `watch()` method for file system monitoring
+| Surface | Config field | Default | Wire shape |
+|---|---|---|---|
+| VLM (PDF Tier-2 OCR + image extractor) | `vlm.ollama_url` or `vlm.mistral_base_url` | local Ollama | `/api/generate` or Mistral `/v1/ocr` |
+| Classifier LLM | `classifier.llm_url` | local Ollama | `/api/generate` |
+| Whisper remote | `whisper.remote_base_url` | OpenAI | `/audio/transcriptions` multipart |
+| Multi-modal embedder remote | constructor arg | n/a (off by default) | OpenAI-compat `/v1/embeddings` with base64 data-URL images |
+| Code enricher remote | `code_enricher.remote_url` + `code_enricher.remote_api_shape` | local Ollama | Ollama `/api/generate` **or** OpenAI `/chat/completions` |
 
-2. **Embedder Protocol** (`corpus_forge/embedders/base.py`)
-   - Defines how to encode text into vector embeddings
-   - Includes `warmup()` method for model initialization
-   - Properties: name, provider, model_id, dimension, normalized, distance
+The local default keeps ingest self-contained; pointing at a remote URL is a
+one-line config change with no code edit. The principle is enforced in tests
+under `tests/unit/test_*_url_*.py`.
 
-3. **StorageBackend Protocol** (`corpus_forge/backends/base.py`)
-   - Defines how to persist data to storage
-   - Includes methods for migration, upserting documents/conversations
-   - Handles embedding storage and retrieval
-   - Provides advisory locking for concurrent access
+### Base classes (shared machinery)
 
-### Base Classes
+- `WatchedSource` — file watching, debouncing, identity tracking, content-hash
+  short-circuit on unchanged files.
+- `ChunkerBase` — size-bounding with overlap and forward-progress invariant.
+  Concrete chunkers extend it (`MarkdownChunker`, `ConversationChunker`,
+  `PassthroughChunker`, `CodeChunker`, `CDCChunker`).
+- `BaseEmbedder` — common embedder lifecycle (`warmup` + `name` + properties).
+- `StorageBackend` — abstract base with `migrate`, `upsert_document`,
+  `upsert_conversation`, `write_embeddings`, `apply_label`, `lock_source`,
+  `search_dense`, `search_lexical`, `iter_documents_for_classification`,
+  `iter_code_chunks_for_enrichment`, `replace_document_chunks`,
+  `update_chunk_enrichment`. Implementations: `PostgresBackend` (`backends/postgres.py`),
+  `SQLiteBackend` (`backends/sqlite.py`).
 
-To avoid repetition, the system provides base classes that implement common functionality:
+### Data flow
 
-- `WatchedSource`: Handles file watching, debouncing, and identity management
-- `ChunkerBase`: Implements size-bounding with overlap for text chunking
-- `BaseEmbedder`: Provides common embedder functionality
-- `PostgresBackend`: Implements the StorageBackend protocol for PostgreSQL
+1. **Discovery** — `Source.discover()` enumerates roots; `WatchedSource` debounces filesystem events.
+2. **Extraction** — `Extractor.extract(path)` returns `ExtractedDocument`. The `FilesystemSource` dispatches every file through `ExtractorRegistry.for_path(path)`.
+3. **Chunking** — `ChunkerDispatcher` picks the chunker from `ExtractedDocument.metadata.chunker_hint`. Class-aware re-dispatch via `ChunkerDispatcher.for_class(...)` runs at rechunk time.
+4. **Persistence** — `StorageBackend.upsert_document` (or `upsert_conversation`) writes the row and its chunks. The Phase C content-hash path reuses existing embeddings for byte-identical chunks.
+5. **Embedding** — `corpus-forge embed` walks `chunks` and writes vectors into the dynamic `embeddings_<name>` table.
+6. **Classification** — `corpus-forge classify` walks documents, runs the chain, and writes a `class=*` label via `apply_label`.
+7. **Rechunking** — `corpus-forge rechunk` (post-classify) re-runs the class-mapped chunker.
+8. **Enrichment** — `corpus-forge enrich` (post-classify) attaches LLM-synthesised metadata to every `class=code` chunk.
+9. **Query** — `HybridRetriever.search()` runs dense (ANN) + lexical (FTS) fanout, fuses, and optionally reranks. `corpus-forge search`, `corpus-forge eval`, and the MCP server all share the same call surface.
+10. **Export** — views (`corpus_text_export`, `corpus_chat_export`) project HF-Datasets-shaped rows; `corpus-forge export chat` adds chat-template rendering.
 
-### Data Flow
+### Extension points
 
-1. **Ingestion**: Sources scan for files and parse them into raw objects
-2. **Chunking**: Raw objects are split into chunks appropriate for embedding
-3. **Storage**: Chunks are persisted to the database with deduplication via content hashes
-4. **Embedding**: Embedders generate vectors for chunks and store them in embedder-specific tables
-5. **Querying**: Views provide HF-Datasets-compatible exports
-
-### Extension Points
-
-To add a new source:
-1. Implement the Source protocol (or subclass WatchedSource)
-2. Override `discover()` and `parse()` methods
-3. Register in configuration
-
-To add a new embedder:
-1. Implement the Embedder protocol
-2. Register in configuration
-3. The system will automatically create the needed database table
-
-To add a new backend:
-1. Implement the StorageBackend protocol
-2. Update configuration to use the new backend
+- **New file format** → drop a class in `corpus_forge/extractors/` implementing `Extractor.supported_extensions` + `extract()`, and add it to `register_default_extractors`.
+- **New chunker** → subclass `ChunkerBase` (or write a free function returning `list[TextChunk]`) and register it in `ChunkerDispatcher`.
+- **New embedder** → subclass `BaseEmbedder` (or implement `Embedder` directly); add to `[[embedders]]` in `config.toml`. A new dynamic `embeddings_<name>` table is provisioned at first registration.
+- **New classifier** → implement `Classifier` (`classify(doc) -> ClassLabel`); add to `_CLASSIFIER_REGISTRY` in `corpus_forge/classifiers/__init__.py`; the `ClassifierConfig.chain` config field accepts the new name.
+- **New VLM / Whisper / enricher backend** → implement the matching protocol + add an entry to the per-package registry (`vlm/registry.py`, `whisper/registry.py`, `enrichers/registry.py`).
+- **New storage backend** → implement `StorageBackend` and dispatch on `[backend].kind` in `_build_backend_from_config`.
 
 ## Backends
 
@@ -74,7 +96,7 @@ The two implementations expose the same method surface but differ in deployment 
 | --- | --- | --- |
 | Deployment | Networked Postgres + `pgvector` extension | Local file (e.g. `~/Library/Application Support/corpus-forge/corpus.db`) or `:memory:` |
 | Host topology | Multi-host (cross-host sync supported) | Single-host only |
-| Sync (`sync_enabled`) | Supported | Rejected at config-load by `validate_sync_gate` (see B-14) |
+| Sync (`sync_enabled`) | Supported | Rejected at config-load by `Config.validate_sync_gate` |
 | Setup cost | Requires PG server + `pgvector` extension | Zero — `sqlite3` is in the stdlib; `sqlite-vec` is an optional extra (`pip install corpus-forge[sqlite]`) |
 | Vector store | `pgvector` column with HNSW cosine index per embedder | `sqlite-vec` `vec0` virtual table when available, BLOB fallback (no ANN search) otherwise |
 | Schema isolation | Dedicated `corpus` schema; tables qualified as `corpus.<name>` | Single namespace; `schema` arg accepted for protocol parity but ignored at query time |
@@ -320,6 +342,117 @@ single hosted model endpoint.
 
 For the wave-by-wave history, see
 [`.planning/tdd/phase_e_classification.md`](../.planning/tdd/phase_e_classification.md).
+
+## Content-defined chunking + rechunk
+
+Phase F replaces positional `MarkdownChunker` / `PassthroughChunker` slicing
+for prose classes with FastCDC rolling-hash boundaries. Mid-document edits
+ripple ≤ 2-3 chunks instead of shifting every downstream chunk, so the
+Phase C `chunks.content_hash` embedding-reuse path achieves its design
+potential.
+
+```
+classify → "class=*" docs → ChunkerDispatcher.for_class → chunk(text) → replace_document_chunks
+                                          ↑                                       ↑
+                                  class-aware routing               content-hash-aware swap
+                                                                    (preserves embeddings on
+                                                                     byte-identical chunks)
+```
+
+### Class-mapped chunker
+
+| class | chunker | metadata signature |
+|---|---|---|
+| `code` | `CodeChunker` (tree-sitter or byte-line fallback) | `kind`, `name`, `language`, `byte_range` |
+| `chat` | `ConversationChunker` | conversation-specific |
+| `reference` | `PassthroughChunker` | none |
+| `book` / `textbook` / `paper` / `article` / `note` / `other` | `CDCChunker` (FastCDC) | `cdc_fingerprint`, `byte_range` |
+
+### CDCChunker
+
+`corpus_forge/chunkers/cdc.py` wraps the MIT-licensed `fastcdc` package. We
+feed the UTF-8 byte representation of the input, re-decode each emitted
+byte range back to `str`, and rewind any mid-codepoint cuts to the nearest
+preceding codepoint start so `UnicodeDecodeError` never surfaces.
+
+Defaults: `min_size = 256`, `avg_size = 1024`, `max_size = 4096`. Each
+chunk's bytes are SHA-256-fingerprinted and stamped into
+`TextChunk.metadata["cdc_fingerprint"]` — the eventual cross-document dedup
+key.
+
+### Idempotency
+
+`corpus-forge rechunk` is idempotent on **text + metadata signature**.
+Text-only comparison is insufficient (a small markdown document that fits
+in a single positional chunk is also a single CDC chunk — same text but
+no `cdc_fingerprint`), so the CLI consults `_expected_metadata_signature(class)`
+and only short-circuits when every stored chunk already carries the
+expected key.
+
+For the wave-by-wave history, see
+[`.planning/tdd/phase_f_cdc_chunking.md`](../.planning/tdd/phase_f_cdc_chunking.md).
+
+## Whisper transcription (audio + video)
+
+Phase G P0 plugs a Whisper-family transcription model behind the existing
+extractor layer. `AudioExtractor` claims `.mp3`/`.wav`/`.m4a`/`.ogg`/`.flac`;
+`VideoExtractor` claims `.mp4`/`.mov`/`.webm`/`.mkv`/`.avi` and uses
+`imageio-ffmpeg` to demux the audio track first.
+
+### Backend matrix
+
+| Backend | Module | Endpoint / runtime | Default model | Notes |
+|---|---|---|---|---|
+| Local | `corpus_forge.whisper.local.LocalWhisper` | in-process `faster-whisper` | `small` | tiny / base / small / medium / large; precision = `local_compute_type` ∈ `{auto, float16, int8, int8_float16}`. |
+| Remote | `corpus_forge.whisper.remote.RemoteWhisper` | `POST /audio/transcriptions` multipart | `whisper-1` | Default base URL: `https://api.openai.com/v1`. Swap to Groq (`whisper-large-v3`), Replicate, or self-hosted whisper.cpp speaking the same multipart contract. |
+| Noop | `corpus_forge.whisper.base.NoopWhisper` | n/a | n/a | Selected when `whisper.backend = "none"` (the default). Audio / video files are silently skipped. |
+
+### Failure mode
+
+If a real Whisper backend is wired in but transcription fails (network,
+unsupported codec, ffmpeg missing), the extractor returns `None` and the
+file is skipped with an ERROR log — never poisoning the ingest pass.
+
+## Multi-modal embeddings
+
+Phase G P1 introduces a **separate** protocol (`MultiModalEmbedder`) instead
+of retrofitting the text `Embedder`. Rationale: text embedders take
+`Sequence[str]`; multi-modal backends accept either `list[str]` OR
+`list[bytes]`, and the dual-write image/text storage paths keep the
+existing text pipeline untouched.
+
+### Storage
+
+The dynamic `image_embeddings_<name>` table family mirrors the text
+`embeddings_<name>` family. Provisioned at runtime by
+`StorageBackend.register_multimodal_embedder` (Postgres `pgvector`
+column + HNSW; SQLite `vec0` virtual table or plain BLOB fallback).
+
+Alembic `0011_image_embeddings` reserves the namespace via an
+`embedders.image BOOLEAN` column so the runtime can distinguish text
+embedders from image embedders when listing registrations.
+
+### Backend matrix
+
+| Backend | Module | Source | Default model | Auth |
+|---|---|---|---|---|
+| `ClipLocalEmbedder` | `corpus_forge.embedders.clip_local` | sentence-transformers | `clip-ViT-B-32` (512 d, MIT) — `jina-clip-v2` (1024 d) also accepted | none |
+| `ClipRemoteEmbedder` | `corpus_forge.embedders.clip_remote` | OpenAI-compatible `/v1/embeddings` | provider-specific | `Authorization: Bearer …` |
+
+### CLI
+
+```
+corpus-forge embed -e clip_local --image    # backfill image embeddings only
+```
+
+`_resolve_image_bytes` looks up the image payload in three places, in
+order: `metadata.image_b64` → `metadata.image_path` → the document's
+`filesystem://` URI. The `ImageExtractor` (Phase D P1) writes
+`image_path` into metadata so this resolution is automatic for
+ingest-discovered images.
+
+For the wave-by-wave history, see
+[`.planning/tdd/phase_g_multimodal.md`](../.planning/tdd/phase_g_multimodal.md).
 
 ## Code enrichment
 

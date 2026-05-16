@@ -17,7 +17,10 @@
 ## Why corpus-forge
 
 - **Training data, not search.** The primary deliverable is a HuggingFace-Datasets-format export of your text + chat sources, deduplicated by content-hash, ready to feed a fine-tuning run.
-- **Multi-embedder by design.** Register as many embedders as you want — local sentence-transformers, OpenAI, anything served via an OpenAI-compatible endpoint (Ollama, vLLM). Backfill new embedders without re-chunking.
+- **Universal multi-format ingest.** Markdown, PDF (digital + VLM OCR escalation), HTML, EPUB, Office (`.docx`/`.pptx`/`.xlsx`), Jupyter notebooks, CSV, structured data (JSON/YAML/TOML), subtitles, 45+ source-code languages via tree-sitter, images via a VLM, and audio/video via Whisper — all behind a single `filesystem` source plugin.
+- **Content-defined chunking + classification + enrichment.** Documents are classified into a 9-value content-class taxonomy (rule classifier → optional LLM escalation), chunked by class (FastCDC for prose, AST-aware for code, conversation-aware for chat), and code chunks are optionally enriched with LLM-synthesised docstrings + summaries + symbol references.
+- **Multi-embedder by design.** Register as many text embedders as you want — local sentence-transformers, OpenAI, anything served via an OpenAI-compatible endpoint (Ollama, vLLM). Multi-modal embedders (CLIP family) cover the image lane. Backfill new embedders without re-chunking.
+- **Local-or-remote, end to end.** Every model client (VLM, classifier, Whisper, code enricher) accepts a configurable HTTP URL — default is a local Ollama daemon, swap to a hosted endpoint with a one-line config change and no code edit.
 - **Hybrid retrieval + MCP exposure are the secondary use case.** Once the corpus exists, expose it to Claude (or any MCP client) for grounded research. The retrieval-eval harness doubles as a corpus-quality signal.
 
 ## Quickstart
@@ -37,8 +40,21 @@ corpus-forge migrate
 # 3. Run a one-shot ingestion pass.
 corpus-forge ingest --once
 
-# 4. Export to HuggingFace Datasets format.
-corpus-forge export hf --dataset my-vault
+# 4. Backfill embeddings for the active embedder(s).
+corpus-forge embed -e qwen3_8b
+
+# 5. (Optional) Classify documents into the 9-value content-class taxonomy.
+corpus-forge classify --dry-run --json
+corpus-forge classify
+
+# 6. (Optional) Re-chunk classified prose with FastCDC + AST-aware code.
+corpus-forge rechunk
+
+# 7. Search the corpus end-to-end.
+corpus-forge search "how does the SQLite lock work" --k 5
+
+# 8. Export to HuggingFace Datasets format.
+corpus-forge export chat --dataset claude-code --out ./chat.jsonl --template chatml
 ```
 
 ## Install
@@ -49,9 +65,15 @@ corpus-forge export hf --dataset my-vault
 ```bash
 # 1. Install the package + the extras you need.
 pip install 'corpus-forge[sqlite,hf]'
-#   add [openai] for OpenAI embedders, [mcp] for the Claude MCP server,
-#       [rerank] for the cross-encoder reranker, [eval] for the
-#       retrieval-evaluation harness.
+#   common adds:
+#     [openai]       OpenAI embedders / OpenAI-compatible endpoints (Ollama, vLLM)
+#     [code]         tree-sitter code chunker + 45+ language extractor
+#     [multi-format] PDF / HTML / EPUB / Office / Notebook / CSV + FastCDC chunker
+#     [ocr]          VLM OCR for sparse-text PDFs + image extractor
+#     [whisper]      audio + video transcription (faster-whisper / OpenAI / Groq)
+#     [mcp]          Model Context Protocol stdio server for Claude / Agent SDK
+#     [rerank]       cross-encoder reranker (BGE default)
+#     [eval]         retrieval-evaluation harness
 
 # 2. (Optional) Register a systemd user unit for the daemon.
 bash scripts/linux/install.sh
@@ -117,23 +139,31 @@ make ci     # full local gate (format / lint / typecheck / tests)
 
 ## What you get — HF export
 
-The headline payoff. Two views map directly to HuggingFace columns:
-
-```bash
-# Text export — one row per chunk, suitable for instruction-tuning prep.
-corpus-forge export hf --dataset my-vault --view corpus_text_export
-
-# Chat export — one row per conversation, ShareGPT-shaped messages list.
-corpus-forge export hf --dataset claude-code --view corpus_chat_export
-```
-
-Or programmatically:
+The headline payoff. Two views map directly to HuggingFace columns. The
+Python API is the supported surface; the `corpus-forge export chat` CLI
+covers the most common chat-side path (with chat-template + ShareGPT
+shaping):
 
 ```python
 from corpus_forge.exports.huggingface import export_to_hf_dataset, push_to_hub
 
+# Text view — one row per chunk, suitable for instruction-tuning prep.
 ds = export_to_hf_dataset("corpus_text_export")
+
+# Chat view — one row per conversation, ShareGPT-shaped `messages` list.
+ds_chat = export_to_hf_dataset("corpus_chat_export")
+
 push_to_hub(ds, "username/my-personal-corpus")
+```
+
+For chat exports with chat-template rendering (ChatML, Llama-3, Gemma, custom
+Jinja):
+
+```bash
+corpus-forge export chat --dataset claude-code \
+    --out ./chat.jsonl --template chatml --format jsonl
+corpus-forge export feedback-pairs --dataset claude-code \
+    --out ./feedback.jsonl
 ```
 
 | View | Columns |
@@ -155,7 +185,7 @@ Set `device = "auto"` to let sentence-transformers pick.
 ## Optional extras
 
 ```bash
-pip install 'corpus-forge[sqlite,openai,hf,tokens,retrieval,rerank,mcp,eval,code,multi-format]'
+pip install 'corpus-forge[sqlite,openai,hf,tokens,retrieval,rerank,mcp,eval,code,multi-format,ocr,whisper]'
 ```
 
 | Extra | What it enables |
@@ -169,7 +199,9 @@ pip install 'corpus-forge[sqlite,openai,hf,tokens,retrieval,rerank,mcp,eval,code
 | `[mcp]` | Model Context Protocol stdio server for Claude / Agent SDK clients. |
 | `[eval]` | Bundled gold-set evaluation harness (NDCG / MRR / Recall). |
 | `[code]` | `tree-sitter` + `tree-sitter-language-pack` for the `CodeChunker` and language-aware code ingest. Apache-2.0 / MIT. |
-| `[multi-format]` | PDF / HTML / EPUB / Office / Notebook / CSV extractors — **includes AGPL-3.0 components**. See [Distribution / licensing](#distribution--licensing). |
+| `[multi-format]` | PDF / HTML / EPUB / Office / Notebook / CSV / FastCDC chunker — **includes AGPL-3.0 components**. See [Distribution / licensing](#distribution--licensing). |
+| `[ocr]` | VLM OCR HTTP clients (`requests`) + PDF rasterisation (`pdf2image`, `pillow`). Needs system `poppler-utils` (see "Distribution / licensing"). Permissive. |
+| `[whisper]` | Audio + video transcription via `faster-whisper` (local) or any OpenAI-compatible `/audio/transcriptions` endpoint (remote). Bundles `imageio-ffmpeg`. Permissive. |
 
 ## Distribution / licensing
 
@@ -183,6 +215,7 @@ installed copy depends on which extras you pull in:
 | `pip install corpus-forge[code]` | **Apache-2.0 + MIT** | Adds the `CodeChunker` and the `CodeExtractor`. Dependencies (`tree-sitter`, `tree-sitter-language-pack`) are Apache-2.0 / MIT — no copyleft contamination. |
 | `pip install 'corpus-forge[multi-format]'` | **AGPL-3.0** (effective) | Pulls in `pymupdf4llm` (AGPL-3.0) for digital PDF extraction and `ebooklib` (AGPL-3.0) for EPUBs. AGPL's network-use clause binds your application if you redistribute or expose it as a service. |
 | `pip install 'corpus-forge[ocr]'` | Apache-2.0 + permissive HTTP clients | Adds the Ollama / Mistral OCR HTTP clients (`requests`, Apache-2.0), the rasterisation step (`pdf2image`, MIT) and `pillow` (HPND). No further copyleft entanglement on top of `[multi-format]`. **Requires a system `poppler-utils` install** — see "System requirements for `[ocr]`" below. |
+| `pip install 'corpus-forge[whisper]'` | Apache-2.0 + MIT + BSD-2 | Adds `faster-whisper` (MIT) for the local backend, `imageio-ffmpeg` (BSD-2) which bundles an ffmpeg binary invoked as a subprocess (the documented LGPL boundary), and `requests` for the remote OpenAI-compatible path. No AGPL widening. |
 
 **Practical guidance.** If you plan to redistribute corpus-forge or a derived
 application, stay on pure-core or pure-core + `[code]` — both are
@@ -225,20 +258,24 @@ surface introduced by `[multi-format]`.
 ### Model endpoints (local vs remote)
 
 Every model client in corpus-forge accepts an arbitrary HTTP URL via config.
-The default is `http://localhost:11434` (a local Ollama daemon) but the same
-backends work against any Ollama-compatible endpoint — hosted Ollama, vLLM, or
-an OpenAI-shape proxy speaking the same `/api/generate` shape. Two clients
-follow this rule today:
+The default is `http://localhost:11434` (a local Ollama daemon for Ollama-shape
+clients) or `https://api.openai.com/v1` (for OpenAI-shape clients), but the
+same backends work against any compatible endpoint — hosted Ollama, vLLM,
+llama.cpp's OpenAI shim, Groq, Together, DeepInfra, Fireworks, or a self-hosted
+mirror. Five clients follow this rule today:
 
-- **VLM (OCR)** — `vlm.ollama_url` in `config.toml`. Used by the PDF Tier 2
-  escalation path and the `ImageExtractor`.
-- **Document classifier (LLM)** — `classifier.llm_url` in `config.toml`.
-  Used by the LLM half of the rule → LLM classification chain.
+| Surface | Config field | API shape |
+|---|---|---|
+| VLM (PDF Tier-2 OCR + image extractor) | `vlm.ollama_url` / `vlm.mistral_base_url` | Ollama `/api/generate` or Mistral `/v1/ocr` |
+| Document classifier (LLM half) | `classifier.llm_url` | Ollama `/api/generate` |
+| Whisper transcription (remote) | `whisper.remote_base_url` | OpenAI-compat `/audio/transcriptions` |
+| Multi-modal embedder (remote) | constructor arg on `ClipRemoteEmbedder` | OpenAI-compat `/v1/embeddings` |
+| Code enricher (remote) | `code_enricher.remote_url` + `code_enricher.remote_api_shape` | Ollama `/api/generate` OR OpenAI `/chat/completions` |
 
 The local default keeps every ingest run self-contained; pointing at a remote
 URL is a one-line config change with no code edit required. Useful when
-classification or OCR should run on a beefier host than the laptop doing the
-ingest.
+classification, OCR, transcription, or enrichment should run on a beefier host
+than the laptop doing the ingest.
 
 ## Document classification
 
@@ -281,6 +318,78 @@ corpus-forge classify --classifier rule   # bypass the LLM (rule classifier only
 The CLI prints a cost-guard preflight with a worst-case LLM-call estimate
 before the run starts; `--limit N` and `--dataset NAME` are available for
 quick smoke tests.
+
+## Content-defined chunking + rechunk
+
+Phase F replaces positional chunk slicing for prose classes (`book`,
+`textbook`, `paper`, `article`, `note`, `other`) with **FastCDC**
+content-defined boundaries. Mid-document edits ripple at most 2-3
+chunks instead of shifting every downstream boundary, and the
+Phase C `chunks.content_hash` embedding-reuse path achieves its
+design potential — most chunks survive a small edit byte-identical.
+
+`corpus-forge rechunk` re-runs the chunker pass against documents that
+already carry a `class=*` label (run `corpus-forge classify` first). The
+class-mapped chunker resolves to:
+
+| class | chunker | notes |
+|---|---|---|
+| `code` | `CodeChunker` | tree-sitter AST when available, byte-line fallback otherwise |
+| `chat` | `ConversationChunker` | per-message or sliding-window |
+| `reference` | `PassthroughChunker` | structured docs round-trip as-is |
+| `book` / `textbook` / `paper` / `article` / `note` / `other` | `CDCChunker` | FastCDC rolling hash |
+
+The rechunk pass is idempotent on chunk-text **and** chunker signature
+(`metadata.cdc_fingerprint`, `metadata.byte_range`) — re-running after
+a green pass is a no-op.
+
+## Audio / video transcription
+
+Phase G P0 routes `.mp3`/`.wav`/`.m4a`/`.ogg`/`.flac` and
+`.mp4`/`.mov`/`.webm`/`.mkv`/`.avi` files through a Whisper-family
+transcription model. Output is markdown (with timestamp anchors on the
+local backend), folded into the same `documents` row family as any
+other extractor.
+
+Two backends ship behind the `[whisper]` extra:
+
+- `backend = "local"` → in-process `faster-whisper` (tiny / base / small /
+  medium / large; `small` default). Bundles `imageio-ffmpeg` for the
+  audio extraction step.
+- `backend = "remote"` → any OpenAI-compatible `/audio/transcriptions`
+  endpoint (OpenAI `whisper-1`, Groq `whisper-large-v3`, self-hosted
+  whisper.cpp via HTTP). Same local-or-remote URL principle — swap
+  `whisper.remote_base_url` to a different provider with no code change.
+
+Default `backend = "none"` keeps existing configs untouched: audio /
+video files are silently skipped until the user opts in via the
+`[whisper]` config block.
+
+## Multi-modal embeddings
+
+Phase G P1 adds a separate **`MultiModalEmbedder`** protocol alongside
+the text `Embedder`. Image chunks (`metadata.image_path` or
+`metadata.image_b64`) get vectorised into a dedicated
+`image_embeddings_<name>` per-embedder table that mirrors the existing
+text family.
+
+```bash
+# Backfill the default CLIP local embedder against image chunks.
+corpus-forge embed -e clip_local --image
+```
+
+Two backends ship out of the box:
+
+- `ClipLocalEmbedder` — sentence-transformers `clip-ViT-B-32` (512 d,
+  ~150 MB, MIT). Default.
+- `ClipRemoteEmbedder` — any OpenAI-compatible `/v1/embeddings`
+  endpoint that accepts base64 data-URL image input (Voyage AI's
+  `voyage-multimodal-3`, Cohere `embed-v3-multimodal`, or a self-hosted
+  CLIP service).
+
+Cross-modal cosine similarity is pinned at ≥ 0.20 on the live e2e
+suite — text and image vectors live in a shared space, so a text query
+can recall image chunks via the same `HybridRetriever`.
 
 ## Code enrichment
 
@@ -328,33 +437,50 @@ configured model tag are skipped. Change the model tag (or pass
 ## Architecture
 
 ```
-Sources → Chunkers → Orchestrator → Backend → per-embedder tables
-   ↑          ↑           ↑            ↑
-markdown   markdown   identity     Postgres/SQLite
-claude     conversation  dedup     advisory locks
-opencode               HF export  per-embedder tables
+Source ─▶ Extractor ─▶ Chunker ─▶ Backend ─▶ per-embedder tables
+                                    │
+classifier (post-ingest) ◀──────────┤
+enricher (post-classify) ◀──────────┤
+            VLM / Whisper feed Extractor
 ```
 
-**Three protocols** define the entire extension surface:
+corpus-forge is composed of small protocols. Each is a plug-in seam — adding a
+new format, classifier, embedder, or backend means writing one new file and
+registering it.
 
 | Protocol | Where | What it does |
 |---|---|---|
 | `Source` | `sources/base.py` | Discover + parse raw data into `RawDocument` / `RawConversation`. |
+| `Extractor` | `extractors/base.py` | Read a file off disk, emit `ExtractedDocument(text, chunker_hint, metadata, labels)`. Phase D. |
+| `Chunker` | `chunkers/base.py` | Split a document into `TextChunk`s. `MarkdownChunker` / `ConversationChunker` / `CodeChunker` (Phase D) / `CDCChunker` (Phase F) / `PassthroughChunker`. |
 | `Embedder` | `embedders/base.py` | Map texts → vectors. Symmetric `encode` + asymmetric `encode_query`. |
+| `MultiModalEmbedder` | `embedders/multimodal.py` | Map images **and** text into a shared vector space. Phase G P1. |
 | `StorageBackend` | `backends/base.py` | Persist chunks + vectors. Search dense + lexical. Cross-host sync. |
+| `Classifier` | `classifiers/base.py` | Map a `ClassifiableDocument` to a `ClassLabel`. Ordered chain via `ClassifierRegistry`. Phase E. |
+| `VLMBackend` | `vlm/base.py` | Image → text (OCR + description). Phase D P1. |
+| `WhisperBackend` | `whisper/base.py` | Audio/video → text transcription. Phase G P0. |
+| `CodeEnricher` | `enrichers/base.py` | Code chunk → `{docstring, summary, symbols, model, confidence}`. Phase H. |
 
-Common machinery lives in base classes: `WatchedSource` (file watching + debounce + identity + hash short-circuit), `Chunker` (size-bounding + overlap with forward-progress invariant), `BaseEmbedder` / `BaseBackend`.
+Common machinery lives in base classes: `WatchedSource` (file watching +
+debounce + identity + hash short-circuit), `ChunkerBase` (size-bounding +
+overlap with forward-progress invariant), `BaseEmbedder` / `BaseBackend`.
+See [`docs/architecture.md`](docs/architecture.md) for the full reference.
 
 ## Configuration reference
 
-See `config.example.toml` for the full reference. Key sections:
+See `config.example.toml` for the full reference (every field carries an inline
+comment + a commented-out remote example for every `*_url`). Key sections:
 
 - `[backend]` — `kind` is `"postgres"` or `"sqlite"`; `dsn` is the Postgres connection string OR the SQLite file path. `schema = "corpus"` for Postgres; ignored on SQLite.
-- `[daemon]` — `debounce_seconds`, `log_level`, `log_format`, `sync_poll_interval_s`, `trash_dir`, `conflict_dir`.
+- `[daemon]` — `debounce_seconds`, `log_level`, `log_format`, `sync_poll_interval_s`, `trash_dir`, `conflict_dir`, `host_id`.
 - `[[datasets]]` — repeated. `name`, `kind` (`text` | `chat`), `description`, `sync_enabled` (Postgres only — SQLite rejects `sync_enabled = true` at config-load).
-- `[[datasets.sources]]` — repeated. `plugin` (`markdown_vault` | `claude_code` | `opencode`), source-specific paths, `chunker`, `chunker_config`.
+- `[[datasets.sources]]` — repeated. `plugin` (`markdown_vault` | `claude_code` | `opencode` | `filesystem` | `chatgpt_export` | `codex_cli` | `gemini_cli` | `jsonl_chat`), source-specific paths, `chunker`, `chunker_config`. An optional `[datasets.sources.extraction]` block tunes the Phase D extractor registry (`enable_pdf`, `enable_office`, `csv_max_rows`, `max_bytes`, `ocr_enabled`, `ocr_dpi`, …).
 - `[[embedders]]` — repeated. `name`, `provider` (`sentence_transformers` | `openai`), `model_id`, `dimension`, `normalize`, `distance`, `active`, `batch_size`, `device`, `api_key_env` (OpenAI only).
 - `[retrieval]` — `fusion` (`rrf` | `alpha`), `alpha`, `default_k`, `rerank_top_n`, `rerank_enabled`, `reranker.{kind, model_id, device, ...}`.
+- `[vlm]` — Phase D P1. `backend ∈ {none, ollama, mistral}`, `ollama_url`, `mistral_base_url`, `timeout_s`.
+- `[classifier]` — Phase E. `chain = ["rule", "llm"]`, `escalation_threshold`, `llm_model`, `llm_url`, `llm_temperature`, `llm_excerpt_chars`.
+- `[whisper]` — Phase G P0. `backend ∈ {none, local, remote}`, `model`, `local_compute_type`, `remote_base_url`, `remote_api_key_env`, `language`.
+- `[code_enricher]` — Phase H. `backend ∈ {none, local, remote}`, `local_url`, `remote_url`, `remote_api_shape ∈ {ollama, openai}`, `temperature`.
 
 ## Run as a service
 

@@ -400,3 +400,10 @@ timeout_s          = 180.0
 # while allowing minor variation in summaries. Drop to 0.0 if you want
 # bit-for-bit determinism across runs.
 temperature        = 0.1
+
+# ─────────────────────────────────────────────────────────────────────
+# See `docs/architecture.md` for the full pipeline reference (every
+# protocol, every backend matrix, the local-or-remote URL principle as
+# a cross-cutting concern) and `docs/schema.md` for the database
+# layout. `README.md` walks the same surface in a getting-started tone.
+# ─────────────────────────────────────────────────────────────────────
