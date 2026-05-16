@@ -113,7 +113,10 @@ def _read_answer_interactive(q: Question, *, stream_in: IO[str], stream_out: IO[
     Stream-injected so tests can drive the prompt without a TTY.
     """
     if q.warn:
-        stream_out.write(f"⚠ {q.warn}\n")
+        # ASCII glyph: Windows consoles default to cp1252/cp437 which
+        # can't encode ⚠. The shell installers use the fancy glyph;
+        # the Python wizard stays cross-platform safe.
+        stream_out.write(f"[WARN] {q.warn}\n")
         stream_out.flush()
 
     hint = ""

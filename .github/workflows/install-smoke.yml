@@ -80,17 +80,20 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           corpus-forge --version
 
-      - name: Verify rendered config.toml is valid TOML
+      - name: Verify config.toml + parse-clean TOML
         run: |
           export PATH="$HOME/.local/bin:$PATH"
-          python3 - <<'PY'
-          import tomllib, sys
+          # ``uv run --python 3.11`` ensures a tomllib-capable
+          # interpreter is used even on Ubuntu 22.04 (whose system
+          # ``python3`` is 3.10 and lacks the stdlib ``tomllib``).
+          uv run --python 3.11 --no-project python - <<'PY'
+          import tomllib
           from pathlib import Path
           cfg = Path.home() / ".config" / "corpus-forge" / "config.toml"
           assert cfg.exists(), f"missing: {cfg}"
           data = tomllib.loads(cfg.read_text(encoding="utf-8"))
           assert data["backend"]["kind"] == "sqlite", data["backend"]
-          print(f"✓ {cfg} parsed; backend.kind={data['backend']['kind']!r}")
+          print(f"OK {cfg} parsed; backend.kind={data['backend']['kind']!r}")
           PY
 
   windows:
