@@ -120,6 +120,46 @@ def version():
     typer.echo(f"corpus-forge version {__version__}")
 
 
+@app.command()
+def setup(
+    non_interactive: bool = typer.Option(
+        False,
+        "--non-interactive",
+        help="Read answers from CF_* env vars instead of prompting. Use for CI.",
+    ),
+    config_dir: Path = typer.Option(
+        Path.home() / ".config" / "corpus-forge",
+        "--config-dir",
+        help="Where to write config.toml + secrets.env.",
+    ),
+) -> None:
+    """Post-install setup wizard.
+
+    Walks the same question tree the shell installers use
+    (``packaging/install/questions.toml``), validates endpoint reachability
+    where possible, and renders ``config.toml`` + ``secrets.env`` under
+    ``--config-dir`` (defaults to ``~/.config/corpus-forge/``).
+
+    Re-running the wizard overwrites ``config.toml`` — back up local edits
+    first. ``secrets.env`` is preserved if it already exists.
+    """
+    from .setup import run_non_interactive, run_wizard
+
+    if non_interactive:
+        config_path, secrets_path, answers = run_non_interactive(config_dir=config_dir)
+        typer.echo(f"✓ Wrote {config_path} (non-interactive)")
+    else:
+        config_path, secrets_path, answers = run_wizard(config_dir=config_dir)
+        typer.echo(f"✓ Wrote {config_path}")
+
+    if secrets_path.exists() and secrets_path.stat().st_size > 0:
+        typer.echo(f"✓ Secrets template at {secrets_path} — fill in real values before first use.")
+    # Echo a short selection summary so the user can sanity-check.
+    backend = answers.get("backend", "sqlite")
+    embedder = answers.get("embedder", "st")
+    typer.echo(f"  backend={backend!r}  embedder={embedder!r}")
+
+
 # ── export subcommand group ──────────────────────────────────────────────
 
 export_app = typer.Typer(

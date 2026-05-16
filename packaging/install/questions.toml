@@ -1,0 +1,331 @@
+# Phase I-03 — Question tree for the corpus-forge installers.
+#
+# Single source of truth shared by:
+#
+# - ``install.sh``        (curl-pipe-bash, POSIX end users)
+# - ``install.ps1``       (iwr | iex, Windows end users)
+# - ``setup-corpus-forge.sh``       (contributor clone-and-run)
+# - ``corpus-forge setup`` (post-install Python wizard)
+#
+# Each shell renders the prompts; the Python wizard re-uses the same
+# question definitions for the ``--reconfigure`` path. The
+# ``--non-interactive`` CI mode reads answers from the matching ``env``
+# variable (case-insensitive ``CF_<ID>``) so the installer can run
+# unattended in CI matrices.
+#
+# Schema is intentionally simple TOML — anything fancier and the bash
+# parser becomes a project of its own.
+#
+# Conventions:
+#
+# - Every question has a stable ``id`` (snake_case).
+# - ``type``: ``yes_no`` | ``choice`` | ``text``.
+# - ``extras``: pip extras to opt into when the answer is the "yes" /
+#   chosen value. Multiple values OK.
+# - ``config_block``: dotted-path into the rendered ``config.toml`` the
+#   answer drives. Inline assignments use ``${value}`` for the answer.
+# - ``warn``: optional one-line warning shown when the user picks the
+#   value (license/license-compatibility surface for [multi-format] is
+#   the canonical example).
+# - ``depends_on``: optional ``"<id>=<value>"`` predicate. Skipped when
+#   the predicate doesn't hold.
+# - ``env``: env var name read in ``--non-interactive`` mode. Always
+#   present so CI matrices don't need to memorise ad-hoc names.
+
+# ---------------------------------------------------------------------------
+# Group 1 — storage backend (drives the [backend] block + [sqlite] extra)
+# ---------------------------------------------------------------------------
+
+[[question]]
+id = "backend"
+prompt = "Storage backend: 'sqlite' (single-host, zero-setup) or 'postgres' (multi-host sync, requires PostgreSQL + pgvector)?"
+type = "choice"
+choices = ["sqlite", "postgres"]
+default = "sqlite"
+env = "CF_BACKEND"
+
+[[question]]
+id = "postgres_dsn"
+prompt = "PostgreSQL DSN (e.g. postgresql://user:pass@localhost:5432/corpus_forge)"
+type = "text"
+default = "postgresql://localhost:5432/corpus_forge"
+env = "CF_POSTGRES_DSN"
+depends_on = "backend=postgres"
+config_block = "backend.dsn"
+
+# ---------------------------------------------------------------------------
+# Group 2 — ingest scope (which extractors light up)
+# ---------------------------------------------------------------------------
+
+[[question]]
+id = "multi_format"
+prompt = "Multi-format ingest (PDF / EPUB / Office / Notebook / CSV)?"
+type = "yes_no"
+default = "yes"
+env = "CF_MULTI_FORMAT"
+extras = ["multi-format"]
+warn = "[multi-format] pulls in pymupdf4llm and ebooklib, both AGPL-3.0. If your project is not AGPL-compatible, decline this extra and ingest only Markdown / code / plain text."
+
+[[question]]
+id = "code_ingest"
+prompt = "Code-aware ingest (tree-sitter AST chunking for 45+ languages)?"
+type = "yes_no"
+default = "yes"
+env = "CF_CODE"
+extras = ["code"]
+
+[[question]]
+id = "ocr_escalation"
+prompt = "OCR escalation for sparse-text PDFs / image files (requires a VLM backend below)?"
+type = "yes_no"
+default = "no"
+env = "CF_OCR"
+extras = ["ocr"]
+warn = "[ocr] needs system package ``poppler-utils`` for PDF rasterisation. macOS: ``brew install poppler``. Debian/Ubuntu: ``apt install poppler-utils``. Windows: ``scoop install poppler``."
+
+[[question]]
+id = "whisper_transcription"
+prompt = "Audio / video transcription via Whisper?"
+type = "yes_no"
+default = "no"
+env = "CF_WHISPER"
+extras = ["whisper"]
+
+[[question]]
+id = "tokens"
+prompt = "Token-aware chunk sizing (tiktoken)?"
+type = "yes_no"
+default = "yes"
+env = "CF_TOKENS"
+extras = ["tokens"]
+
+# ---------------------------------------------------------------------------
+# Group 3 — retrieval surface
+# ---------------------------------------------------------------------------
+
+[[question]]
+id = "retrieval"
+prompt = "Retrieval + eval surface (numpy floor)?"
+type = "yes_no"
+default = "yes"
+env = "CF_RETRIEVAL"
+extras = ["retrieval", "eval"]
+
+[[question]]
+id = "reranker"
+prompt = "Cross-encoder reranker (BAAI/bge-reranker-v2-m3, ~600 MB auto-downloaded on first use)?"
+type = "yes_no"
+default = "no"
+env = "CF_RERANKER"
+extras = ["rerank"]
+
+# ---------------------------------------------------------------------------
+# Group 4 — embedders (always at least one; choice between sentence_transformers
+# and OpenAI / OpenAI-compatible)
+# ---------------------------------------------------------------------------
+
+[[question]]
+id = "embedder"
+prompt = "Text embedder: 'st' (sentence-transformers, local, default), 'openai' (cloud or local proxy), or 'both'?"
+type = "choice"
+choices = ["st", "openai", "both"]
+default = "st"
+env = "CF_EMBEDDER"
+
+[[question]]
+id = "openai_api_key_env"
+prompt = "Env var holding the OpenAI API key (e.g. OPENAI_API_KEY)"
+type = "text"
+default = "OPENAI_API_KEY"
+env = "CF_OPENAI_API_KEY_ENV"
+depends_on = "embedder=openai"
+extras = ["openai"]
+
+[[question]]
+id = "openai_base_url"
+prompt = "Custom OpenAI-compatible base URL (leave blank for the real OpenAI API)"
+type = "text"
+default = ""
+env = "CF_OPENAI_BASE_URL"
+depends_on = "embedder=openai"
+
+# ---------------------------------------------------------------------------
+# Group 5 — classifier chain
+# ---------------------------------------------------------------------------
+
+[[question]]
+id = "classifier_chain"
+prompt = "Document classifier chain: 'rule' (stdlib only) or 'rule+llm' (Ollama-backed escalation)?"
+type = "choice"
+choices = ["rule", "rule+llm"]
+default = "rule"
+env = "CF_CLASSIFIER"
+
+[[question]]
+id = "classifier_llm_url"
+prompt = "Ollama base URL for the LLM classifier"
+type = "text"
+default = "http://localhost:11434"
+env = "CF_CLASSIFIER_LLM_URL"
+depends_on = "classifier_chain=rule+llm"
+
+[[question]]
+id = "classifier_llm_api_key_env"
+prompt = "Env var for bearer token (blank for open local Ollama)"
+type = "text"
+default = ""
+env = "CF_CLASSIFIER_LLM_API_KEY_ENV"
+depends_on = "classifier_chain=rule+llm"
+
+# ---------------------------------------------------------------------------
+# Group 6 — VLM / OCR backend (only if ocr_escalation=yes)
+# ---------------------------------------------------------------------------
+
+[[question]]
+id = "vlm_backend"
+prompt = "VLM backend: 'ollama' (local, qwen2.5vl:7b) or 'mistral' (Mistral OCR API)?"
+type = "choice"
+choices = ["ollama", "mistral"]
+default = "ollama"
+env = "CF_VLM"
+depends_on = "ocr_escalation=yes"
+
+[[question]]
+id = "vlm_ollama_url"
+prompt = "Ollama base URL for the VLM"
+type = "text"
+default = "http://localhost:11434"
+env = "CF_VLM_OLLAMA_URL"
+depends_on = "vlm_backend=ollama"
+
+[[question]]
+id = "vlm_mistral_api_key_env"
+prompt = "Env var holding the Mistral API key"
+type = "text"
+default = "MISTRAL_API_KEY"
+env = "CF_VLM_MISTRAL_API_KEY_ENV"
+depends_on = "vlm_backend=mistral"
+
+# ---------------------------------------------------------------------------
+# Group 7 — Whisper backend (only if whisper_transcription=yes)
+# ---------------------------------------------------------------------------
+
+[[question]]
+id = "whisper_backend"
+prompt = "Whisper backend: 'local' (faster-whisper in-process) or 'remote' (OpenAI-compatible /audio/transcriptions)?"
+type = "choice"
+choices = ["local", "remote"]
+default = "local"
+env = "CF_WHISPER_BACKEND"
+depends_on = "whisper_transcription=yes"
+
+[[question]]
+id = "whisper_local_model"
+prompt = "Whisper model size (tiny / base / small / medium / large)"
+type = "choice"
+choices = ["tiny", "base", "small", "medium", "large"]
+default = "small"
+env = "CF_WHISPER_LOCAL_MODEL"
+depends_on = "whisper_backend=local"
+
+[[question]]
+id = "whisper_remote_base_url"
+prompt = "Remote Whisper base URL (OpenAI default; Groq/Replicate/etc work too)"
+type = "text"
+default = "https://api.openai.com/v1"
+env = "CF_WHISPER_REMOTE_BASE_URL"
+depends_on = "whisper_backend=remote"
+
+[[question]]
+id = "whisper_remote_api_key_env"
+prompt = "Env var for Whisper API key"
+type = "text"
+default = "OPENAI_API_KEY"
+env = "CF_WHISPER_REMOTE_API_KEY_ENV"
+depends_on = "whisper_backend=remote"
+
+# ---------------------------------------------------------------------------
+# Group 8 — Code enricher (LLM-backed code summaries / docstrings)
+# ---------------------------------------------------------------------------
+
+[[question]]
+id = "code_enricher"
+prompt = "Code enricher (LLM-generated docstrings + summaries for code chunks)?"
+type = "choice"
+choices = ["none", "local", "remote"]
+default = "none"
+env = "CF_CODE_ENRICHER"
+depends_on = "code_ingest=yes"
+warn = "Local ``qwen3.6:35b-a3b-instruct`` is ~22 GB on disk and needs ``ollama pull qwen3.6:35b-a3b-instruct``. Skip if disk-bound."
+
+[[question]]
+id = "code_enricher_url"
+prompt = "Code enricher endpoint base URL"
+type = "text"
+default = "http://localhost:11434"
+env = "CF_CODE_ENRICHER_URL"
+depends_on = "code_enricher=local"
+
+[[question]]
+id = "code_enricher_remote_url"
+prompt = "Remote code enricher endpoint base URL"
+type = "text"
+default = "http://localhost:11434"
+env = "CF_CODE_ENRICHER_REMOTE_URL"
+depends_on = "code_enricher=remote"
+
+[[question]]
+id = "code_enricher_remote_api_shape"
+prompt = "Remote API shape: 'ollama' (hosted Ollama) or 'openai' (vLLM / OpenAI proxy)?"
+type = "choice"
+choices = ["ollama", "openai"]
+default = "ollama"
+env = "CF_CODE_ENRICHER_REMOTE_API_SHAPE"
+depends_on = "code_enricher=remote"
+
+[[question]]
+id = "code_enricher_remote_api_key_env"
+prompt = "Env var for code-enricher bearer token (blank for open Ollama)"
+type = "text"
+default = "OLLAMA_API_KEY"
+env = "CF_CODE_ENRICHER_REMOTE_API_KEY_ENV"
+depends_on = "code_enricher=remote"
+
+# ---------------------------------------------------------------------------
+# Group 9 — integrations
+# ---------------------------------------------------------------------------
+
+[[question]]
+id = "mcp_server"
+prompt = "MCP server (lets Claude Code / Claude Desktop query your corpus)?"
+type = "yes_no"
+default = "yes"
+env = "CF_MCP"
+extras = ["mcp"]
+
+[[question]]
+id = "mcp_register"
+prompt = "Drop the MCP server config snippet into Claude Code / Claude Desktop now?"
+type = "yes_no"
+default = "yes"
+env = "CF_MCP_REGISTER"
+depends_on = "mcp_server=yes"
+
+[[question]]
+id = "hf_export"
+prompt = "HuggingFace dataset export view?"
+type = "yes_no"
+default = "yes"
+env = "CF_HF"
+extras = ["hf"]
+
+# ---------------------------------------------------------------------------
+# Group 10 — daemon supervisor
+# ---------------------------------------------------------------------------
+
+[[question]]
+id = "daemon_supervisor"
+prompt = "Register the corpus-forge daemon as a system service (systemd-user / launchd / NSSM)?"
+type = "yes_no"
+default = "yes"
+env = "CF_SUPERVISOR"
