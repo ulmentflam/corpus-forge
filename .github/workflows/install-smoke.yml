@@ -133,15 +133,22 @@ jobs:
           $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
           corpus-forge --version
 
-      - name: Verify rendered config.toml is valid TOML
+      - name: Verify config.toml + parse-clean TOML
         run: |
           $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
-          python -c @"
-          import tomllib, sys
+          # Write the verify script to a temp file then invoke uv to
+          # run it under Python 3.11. Avoids PowerShell here-string +
+          # Python f-string escape interactions that turned into a
+          # SyntaxError on the previous attempt.
+          $verifyScript = New-TemporaryFile
+          @'
+          import tomllib
           from pathlib import Path
-          cfg = Path.home() / '.config' / 'corpus-forge' / 'config.toml'
-          assert cfg.exists(), f'missing: {cfg}'
-          data = tomllib.loads(cfg.read_text(encoding='utf-8'))
-          assert data['backend']['kind'] == 'sqlite', data['backend']
-          print(f'OK {cfg} parsed; backend.kind={data[\"backend\"][\"kind\"]!r}')
-          "@
+          cfg = Path.home() / ".config" / "corpus-forge" / "config.toml"
+          assert cfg.exists(), f"missing: {cfg}"
+          data = tomllib.loads(cfg.read_text(encoding="utf-8"))
+          kind = data["backend"]["kind"]
+          assert kind == "sqlite", data["backend"]
+          print(f"OK {cfg} parsed; backend.kind={kind!r}")
+          '@ | Set-Content -LiteralPath $verifyScript.FullName -Encoding utf8
+          uv run --python 3.11 --no-project python $verifyScript.FullName
