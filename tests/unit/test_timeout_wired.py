@@ -16,6 +16,7 @@ import pytest
 pytest_plugins = ["pytester"]
 
 
+@pytest.mark.requires_unix
 def test_pytest_timeout_kills_deadlocked_test(pytester: pytest.Pytester) -> None:
     """A deliberately deadlocked test under timeout=2 must fail (not hang).
 
@@ -27,6 +28,11 @@ def test_pytest_timeout_kills_deadlocked_test(pytester: pytest.Pytester) -> None
     ``failed=1``. The repo-level addopts pin remains ``thread`` (safer
     for I/O-blocked tests in the real suite); this isolated subprocess
     intentionally uses ``signal`` purely so we can ASSERT the failure.
+
+    Marked ``requires_unix``: pytest-timeout's ``signal`` method needs
+    ``signal.SIGALRM``, which is POSIX-only. The repo-level addopts use
+    ``--timeout-method=thread`` so the real suite still runs on Windows;
+    only this isolated meta-test is signal-gated.
     """
     pytester.makepyfile(
         test_hang=(

@@ -72,11 +72,14 @@ class _StubEnricher:
 def _build_test_config(tmp_path: Path, *, backend: str = "local") -> Path:
     """Write a minimal SQLite-backed config with ``code_enricher.backend``."""
     db_path = tmp_path / "corpus.db"
+    # TOML basic strings interpret ``\\U`` / ``\\u`` as unicode escapes,
+    # which corrupts Windows paths like ``C:\\Users\\...``. Render with
+    # forward slashes so the same fixture works on every OS.
     cfg = textwrap.dedent(
         f"""
         [backend]
         kind = "sqlite"
-        dsn  = "{db_path}"
+        dsn  = "{db_path.as_posix()}"
 
         [daemon]
 

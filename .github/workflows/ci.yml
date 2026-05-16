@@ -80,14 +80,17 @@ jobs:
       - name: pyrefly check
         run: make typecheck
 
-  # ── Job 2: unit + smoke + fuzz across the 2-OS × 3-Python matrix ─────────
-  # CI-2: Linux + macOS, python 3.11/3.12/3.13. Windows was dropped from
-  # the matrix for the v0.1.0b1 beta — the runner surface (path separators,
-  # cp1252 default encoding, ``os.uname`` not existing, iCloud detection
-  # being macOS-only) is real but architectural to fix and shouldn't gate
-  # the beta.  Integration tests are NOT run here — see integration.yml
-  # (Linux + macOS, drops 3.13 until upstream wheels).
-  # TODO(post-beta): add windows-2022 back once portability is tracked.
+  # ── Job 2: unit + smoke + fuzz across the 3-OS × 3-Python matrix ─────────
+  # Phase I-02 restored windows-2022 to the matrix after I-01 closed the
+  # four real portability blockers (cp1252 encoding on the secrets file,
+  # ``os.uname`` in one test, two unmarked symlink tests, iCloud-on-
+  # Windows detection). Integration tests are NOT run here — see
+  # integration.yml (Linux only; testcontainers needs a Docker daemon
+  # that's not available on GitHub-hosted Windows runners).
+  #
+  # Windows cells set ``CI_NO_DOCKER=1`` so any test carrying the
+  # ``integration`` keyword skips with a clear reason at collection time
+  # (see tests/conftest.py::pytest_collection_modifyitems).
   test:
     name: Tests (${{ matrix.os }} / py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
@@ -96,15 +99,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-14]
+        os: [ubuntu-22.04, macos-14, windows-2022]
         python-version: ["3.11", "3.12", "3.13"]
         # macOS-arm64 + py3.13 stays soft-fail until sentence-transformers
         # / torch wheels stabilize; revisit weekly.
+        # windows-2022 is now required after Phase I-01 closed the
+        # portability blockers — three green CI runs on this PR.
         include:
           - os: macos-14
             python-version: "3.13"
             allow-failure: true
     continue-on-error: ${{ matrix.allow-failure == true }}
+    env:
+      # Skip the Docker-backed integration suite at collection time.
+      # Plumbed through tests/conftest.py — see pytest_collection_modifyitems.
+      # Windows runners have a Docker CLI without a daemon, which would
+      # otherwise spuriously slip past _docker_available().
+      CI_NO_DOCKER: ${{ matrix.os == 'windows-2022' && '1' || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6

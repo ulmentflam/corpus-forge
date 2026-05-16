@@ -523,10 +523,10 @@ class Config(BaseModel):
             return self.daemon.host_id
         host_id_path = Path.home() / ".config" / "corpus-forge" / "host_id"
         if host_id_path.exists():
-            return host_id_path.read_text().strip()
+            return host_id_path.read_text(encoding="utf-8").strip()
         hostname = socket.gethostname()
         host_id_path.parent.mkdir(parents=True, exist_ok=True)
-        host_id_path.write_text(hostname)
+        host_id_path.write_text(hostname, encoding="utf-8")
         return hostname
 
     @classmethod
@@ -561,8 +561,9 @@ class Config(BaseModel):
             secrets_path = Path.home() / ".config" / "corpus-forge" / "secrets.env"
 
         if secrets_path.exists():
-            # Load secrets as environment variables
-            with secrets_path.open() as f:
+            # Load secrets as environment variables. Force utf-8 so Windows
+            # (default cp1252) doesn't garble non-ASCII tokens.
+            with secrets_path.open(encoding="utf-8") as f:
                 for _line in f:
                     line = _line.strip()
                     if line and not line.startswith("#") and "=" in line:

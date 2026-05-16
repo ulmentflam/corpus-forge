@@ -13,8 +13,15 @@ from corpus_forge.config import (
 )
 
 
+@pytest.mark.requires_unix
 def test_expand_user_validator():
-    """Test that ~ expansion works."""
+    """Test that ~ expansion works.
+
+    Marked ``requires_unix``: ``Path("/absolute/path")`` normalises to
+    ``\\absolute\\path`` on Windows; the second equality assertion is
+    POSIX-only. The macOS / Linux matrix cells cover the ``ExpandUser``
+    invariants we care about.
+    """
     assert ExpandUser("~/test") == str(Path("~/test").expanduser())
     assert ExpandUser("/absolute/path") == "/absolute/path"
 

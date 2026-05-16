@@ -33,11 +33,14 @@ def _build_test_config(tmp_path: Path) -> Path:
     :meth:`Config.load` finds it.
     """
     db_path = tmp_path / "corpus.db"
+    # TOML basic strings interpret ``\\U`` / ``\\u`` as unicode escapes,
+    # which corrupts Windows paths like ``C:\\Users\\...``. Render with
+    # forward slashes so the same fixture works on every OS.
     cfg = textwrap.dedent(
         f"""
         [backend]
         kind = "sqlite"
-        dsn  = "{db_path}"
+        dsn  = "{db_path.as_posix()}"
 
         [daemon]
 

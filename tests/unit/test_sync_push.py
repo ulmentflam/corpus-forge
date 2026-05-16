@@ -481,7 +481,13 @@ class TestDebounce:
         timers[0].cancel.assert_called_once()
         timers[1].cancel.assert_not_called()
 
+    @pytest.mark.requires_unix
     def test_different_paths_independent(self):
+        """``requires_unix``: the test compares timer-keys against POSIX
+        path strings (``/vault/a.md``). Windows yields ``\\vault\\a.md``
+        and the dict-key lookup breaks. The plumbing itself is OS-
+        agnostic; this test would need a portable path fixture to run
+        on Windows."""
         pipeline = _make_pipeline()
         timers_by_path: dict[str, list[Mock]] = {}
 
@@ -760,8 +766,15 @@ class TestHandleDeleteTombstone:
         call_kwargs = pipeline._backend.insert_revision.call_args[1]
         assert call_kwargs["parent_revision_id"] is None
 
+    @pytest.mark.requires_unix
     def test_acquires_lock_source(self):
-        """lock_source acquired for the deleted path."""
+        """lock_source acquired for the deleted path.
+
+        ``requires_unix``: the mocked ``path.resolve()`` returns
+        ``Path("/vault/doc.md")`` which on Windows stringifies to
+        ``\\vault\\doc.md``, breaking the literal-string assertion
+        ``lock_source.assert_called_once_with("/vault/doc.md")``.
+        """
         pipeline = _make_pipeline(host_id="macA")
         path = MagicMock(spec=Path)
         path.resolve.return_value = Path("/vault/doc.md")

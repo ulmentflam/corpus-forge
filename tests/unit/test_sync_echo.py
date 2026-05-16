@@ -217,8 +217,14 @@ class TestEchoSuppressorPathNormalization:
         finally:
             os.chdir(cwd)
 
+    @pytest.mark.requires_unix
     def test_symlinked_path_matches_original(self, tmp_path, clock_state):
-        """Register with original path, query with symlink → True."""
+        """Register with original path, query with symlink → True.
+
+        Marked ``requires_unix``: ``symlink_to`` on Windows needs admin
+        rights or developer-mode; neither is guaranteed on the
+        ``windows-2022`` GitHub runner.
+        """
         suppressor = EchoSuppressor(default_ttl_s=5.0, clock=lambda: clock_fn(clock_state))
         original = tmp_path / "doc.md"
         symlink = tmp_path / "link.md"
