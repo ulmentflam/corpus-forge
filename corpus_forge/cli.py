@@ -14,6 +14,35 @@ app = typer.Typer(
 )
 
 
+def _version_callback(value: bool) -> None:
+    """Print the package version and exit. Conventionally bound to ``--version``.
+
+    Pairs with the ``version`` subcommand so both ``corpus-forge --version``
+    (idiomatic CLI flag) and ``corpus-forge version`` (subcommand) work.
+    The install-smoke E2E uses ``--version`` for terseness; users may
+    prefer either.
+    """
+    if value:
+        typer.echo(f"corpus-forge version {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _root(
+    version: Annotated[  # noqa: ARG001 — typer callback signature
+        bool,
+        typer.Option(
+            "--version",
+            help="Print the package version and exit.",
+            callback=_version_callback,
+            is_eager=True,
+        ),
+    ] = False,
+) -> None:
+    """Root callback that wires ``--version`` onto the app entry point."""
+    return None
+
+
 migrate_app = typer.Typer(
     help="Database migration commands.",
     add_completion=False,
