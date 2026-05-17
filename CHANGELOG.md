@@ -25,6 +25,13 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   any MCP-connected assistant. Read-only; no `writes_enabled` flag
   required. Args: `{path, dataset?, embedders?, compression_ratio?}`.
   Returns the same `SyncEstimate` JSON shape with `schema_version = 1`.
+- `CLAUDE.md`, `GEMINI.md`, and `AGENTS.md` at the repo root — vendor-
+  specific (Claude Code / Desktop / API; Gemini CLI / Code Assist) and
+  vendor-neutral (OpenCode, Cursor, Zed, Continue, Cline, any MCP-
+  speaking client) setup guides covering install → configure →
+  migrate → wire MCP → register skills → first-run sanity →
+  curation-loop playbook → troubleshooting. README cross-links via a
+  new "For AI assistants" section (J3).
 
 #### Phase D — Universal multi-format ingest (waves 0–6)
 - `Extractor` protocol (`corpus_forge/extractors/base.py`) + `ExtractorRegistry`
