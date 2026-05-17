@@ -240,7 +240,9 @@ class TestWritesEnabledGate:
 
         G-03: render_conversation + list_chat_templates are always-available
         read tools, so the set is now 5 (not 3). J1 adds estimate_sync_size
-        (also always-available, read-only) bumping the count to 6.
+        (also always-available, read-only) bumping the count to 6. J4 adds
+        next_curation_target and next_curation_batch (both read-only,
+        always available) → 8.
         """
         server = _build_server(backend, writes_enabled=False)
         tools = _list_tools(server)
@@ -251,17 +253,21 @@ class TestWritesEnabledGate:
             "render_conversation",
             "list_chat_templates",
             "estimate_sync_size",
-        }, f"Expected exactly 6 read tools; got: {sorted(tools)}"
+            "next_curation_target",
+            "next_curation_batch",
+        }, f"Expected exactly 8 read tools; got: {sorted(tools)}"
 
     def test_writes_enabled_exposes_all_11_tools(
         self, backend: SQLiteBackend, seeded: dict
     ) -> None:
-        """When writes_enabled=True, all tools (6 read + 10 write) are registered.
+        """When writes_enabled=True, all tools (8 read + 11 write) are registered.
 
         H-02 adds register_session (write-gated) = 15 total.
         G-03 adds register_template (write-gated) + render_conversation +
         list_chat_templates (read, always available) = 14 total before H-02.
         J1 adds estimate_sync_size (read, always available) = 16 total.
+        J4 adds next_curation_target + next_curation_batch (read) and
+        commit_curation (write) = 19 total.
         """
         server = _build_server(backend, writes_enabled=True)
         tools = _list_tools(server)
@@ -274,6 +280,9 @@ class TestWritesEnabledGate:
             "list_chat_templates",
             # J1 read tool
             "estimate_sync_size",
+            # J4 read tools
+            "next_curation_target",
+            "next_curation_batch",
             # F-03 write tools
             "add_label",
             "remove_label",
@@ -287,9 +296,11 @@ class TestWritesEnabledGate:
             "register_template",
             # H-02 write tool
             "register_session",
+            # J4 write tool
+            "commit_curation",
         }
         assert set(tools) == expected, (
-            f"Expected 16 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
+            f"Expected 19 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
         )
 
     def test_unknown_tool_returns_error_when_writes_disabled(

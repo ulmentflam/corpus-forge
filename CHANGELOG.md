@@ -32,6 +32,23 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   migrate → wire MCP → register skills → first-run sanity →
   curation-loop playbook → troubleshooting. README cross-links via a
   new "For AI assistants" section (J3).
+- Data-curation chat skill (Claude / Gemini / OpenCode / AGENTS.md
+  generic recipe) — pulls low-confidence or metadata-poor entries,
+  facilitates a chat to improve them, and commits changes via MCP. New
+  module `corpus_forge/curation/` (selector + shared chat-loop prompt
+  template). New MCP tools: `next_curation_target` /
+  `next_curation_batch` (read-only; both available regardless of the
+  `writes_enabled` gate) and `commit_curation` (gated by
+  `writes_enabled`; composes the existing
+  `add_label`/`remove_label`/`set_metadata`/`set_description`/`add_feedback`
+  write surface in one call). Skill assets land under
+  `.claude/skills/corpus-curate/`, `.opencode/command/corpus-curate.md`,
+  and the greenfield `.gemini/agents/corpus-curate.md`. Selector score
+  formula: classifier_confidence_deficit × 0.35 + missing_metadata ×
+  0.30 + ranker_elevation × 0.25 + freshness × 0.10, normalised to
+  [0, 1]; the reranker leg reuses the existing `Reranker` protocol
+  (cross_encoder or ollama) so the local-or-remote URL invariant
+  carries through unchanged.
 
 #### Phase D — Universal multi-format ingest (waves 0–6)
 - `Extractor` protocol (`corpus_forge/extractors/base.py`) + `ExtractorRegistry`

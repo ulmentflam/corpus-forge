@@ -3,6 +3,10 @@
 Record of test suites written by tdd-tester.
 | task-id | status | notes |
 |---------|--------|-------|
+| J4-01   | red    | 47 tests in `tests/unit/test_curation_selector.py` covering score primitives, dataclass discipline, batch grouping, and generic-walk fallback. Suite went green against the implementation in the same task — see code-status.md. |
+| J4-02   | pending | tester dispatched — RED suite for 3 new MCP tool dispatches. |
+| J4-03   | pending | tester dispatched — RED suite asserts presence + frontmatter of the three new skill assets. |
+| J4-04   | pending | tester dispatched — RED suite for rot-detectors + integration test (depends on J4-01/02/03 GREEN). |
 | J1-01   | red    | 55 tests in tests/unit/test_estimate.py; module `corpus_forge.estimate` and `corpus_forge.config.EstimateConfig` both missing — all 55 fail at import. Ready for GREEN. |
 | P0-01   | red    | handed off to tdd-coder |
 | P0-02   | red    | DDL created, validated |

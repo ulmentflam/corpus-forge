@@ -152,6 +152,7 @@ def test_mcp_stdio_smoke(tmp_path: Path) -> None:
     # ── Assertions ────────────────────────────────────────────────────
     # G-03: render_conversation + list_chat_templates are always-available read tools.
     # J1:   estimate_sync_size is an always-available read tool.
+    # J4:   next_curation_target + next_curation_batch are always-available read tools.
     _expected_read_tools = {
         "search",
         "get_chunk",
@@ -159,9 +160,11 @@ def test_mcp_stdio_smoke(tmp_path: Path) -> None:
         "render_conversation",
         "list_chat_templates",
         "estimate_sync_size",
+        "next_curation_target",
+        "next_curation_batch",
     }
     assert set(captured["tools"]) == _expected_read_tools, (
-        f"Expected six read tools; got {captured['tools']}"
+        f"Expected eight read tools; got {captured['tools']}"
     )
     assert not captured["search_isError"], (
         f"search returned isError=True; content={captured['search_content']}"

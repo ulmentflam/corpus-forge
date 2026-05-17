@@ -37,6 +37,14 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from mcp.server import Server
 
 
+# Sentinel used to distinguish "set_description was omitted" from
+# "set_description was explicitly set to None" in the commit_curation
+# payload. ``None`` is a legitimate value for set_description (it
+# clears the entity's description) so we can't use ``None`` as the
+# absence marker.
+_SENTINEL_UNSET: Any = object()
+
+
 # ── JSON schemas for the three tools ─────────────────────────────────────
 
 
@@ -171,6 +179,101 @@ _ESTIMATE_SYNC_SIZE_INPUT_SCHEMA: dict[str, Any] = {
         },
     },
     "required": ["path"],
+    "additionalProperties": False,
+}
+
+
+# ── J4 curation read schemas ─────────────────────────────────────────────
+
+
+_NEXT_CURATION_TARGET_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "dataset": {
+            "type": "string",
+            "description": "Optional dataset name filter.",
+        },
+        "embedder": {
+            "type": "string",
+            "description": "Optional embedder name for centroid routing (forward-compat).",
+        },
+        "seed_query": {
+            "type": "string",
+            "description": (
+                "Optional natural-language query. When supplied, the selector "
+                "routes through the configured reranker for the "
+                "ranker_elevation sub-score. When omitted, the selector "
+                "falls back to cosine distance from the dataset centroid."
+            ),
+        },
+    },
+    "additionalProperties": False,
+}
+
+
+_NEXT_CURATION_BATCH_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "dataset": {"type": "string"},
+        "embedder": {"type": "string"},
+        "seed_query": {"type": "string"},
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Max number of targets to return in the batch (default 10).",
+        },
+    },
+    "additionalProperties": False,
+}
+
+
+# ── J4 curation write schema ─────────────────────────────────────────────
+
+
+_COMMIT_CURATION_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "chunk_id": {"type": "integer"},
+        "chunk_ids": {"type": "array", "items": {"type": "integer"}},
+        "add_labels": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "namespace": {"type": "string"},
+                    "value": {"type": "string"},
+                    "confidence": {"type": "number"},
+                },
+                "required": ["namespace", "value"],
+                "additionalProperties": False,
+            },
+        },
+        "remove_labels": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "namespace": {"type": "string"},
+                    "value": {"type": "string"},
+                },
+                "required": ["namespace", "value"],
+                "additionalProperties": False,
+            },
+        },
+        "set_metadata": {"type": "object"},
+        "set_description": {"type": ["string", "null"]},
+        "feedback": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string"},
+                "rating": {"type": "integer"},
+                "text": {"type": "string"},
+            },
+            "required": ["kind"],
+            "additionalProperties": False,
+        },
+        "dry_run": {"type": "boolean"},
+    },
     "additionalProperties": False,
 }
 
@@ -549,6 +652,27 @@ def build_server(
                 ),
                 inputSchema=_ESTIMATE_SYNC_SIZE_INPUT_SCHEMA,
             ),
+            # J4 curation read tools (always available — read-only)
+            mt.Tool(
+                name="next_curation_target",
+                description=(
+                    "Return the single highest-priority chunk for curation. "
+                    "Scores candidates on classifier-confidence deficit, "
+                    "missing-metadata count, ranker-elevation potential, and "
+                    "freshness. Read-only — no backend writes."
+                ),
+                inputSchema=_NEXT_CURATION_TARGET_INPUT_SCHEMA,
+            ),
+            mt.Tool(
+                name="next_curation_batch",
+                description=(
+                    "Return a coherent group of up to `limit` curation "
+                    "targets sharing a (source stem, classifier label) "
+                    "grouping key, with a cohesion_score explaining group "
+                    "tightness. Read-only — no backend writes."
+                ),
+                inputSchema=_NEXT_CURATION_BATCH_INPUT_SCHEMA,
+            ),
             # G-03 read tools (always available)
             mt.Tool(
                 name="render_conversation",
@@ -613,6 +737,19 @@ def build_server(
                     description="Record user feedback (rating or text) on an entity.",
                     inputSchema=_ADD_FEEDBACK_INPUT_SCHEMA,
                 ),
+                # J4 curation write tool (gated by writes_enabled)
+                mt.Tool(
+                    name="commit_curation",
+                    description=(
+                        "Atomic-ish multi-write that applies any combination of "
+                        "add_labels / remove_labels / set_metadata / "
+                        "set_description / feedback for one chunk_id or a list "
+                        "of chunk_ids. Routes each piece through the existing "
+                        "write surface; returns counts per kind plus audit ids. "
+                        "Pass dry_run=true to preview without mutating."
+                    ),
+                    inputSchema=_COMMIT_CURATION_INPUT_SCHEMA,
+                ),
                 # G-03 write tool (gated by writes_enabled)
                 mt.Tool(
                     name="register_template",
@@ -646,6 +783,11 @@ def build_server(
             return await _dispatch_list_datasets(arguments)
         if name == "estimate_sync_size":
             return await _dispatch_estimate_sync_size(arguments)
+        # J4 curation read tools — always available (read-only)
+        if name == "next_curation_target":
+            return await _dispatch_next_curation_target(arguments)
+        if name == "next_curation_batch":
+            return await _dispatch_next_curation_batch(arguments)
         # G-03 read tools — always available
         if name == "render_conversation":
             return await _dispatch_render_conversation(arguments)
@@ -668,6 +810,9 @@ def build_server(
                 return await _dispatch_append_message(arguments)
             if name == "add_feedback":
                 return await _dispatch_add_feedback(arguments)
+            # J4 curation write tool
+            if name == "commit_curation":
+                return await _dispatch_commit_curation(arguments)
             # G-03 write tool
             if name == "register_template":
                 return await _dispatch_register_template(arguments)
@@ -906,6 +1051,85 @@ def build_server(
 
         return {"estimate": asdict(est)}
 
+    # ── J4 curation read dispatchers ─────────────────────────────────────
+
+    def _maybe_build_reranker(seed_query: str | None) -> Any | None:
+        """Build a reranker iff ``seed_query`` is set AND the reranker
+        factory succeeds. Reuses :func:`_build_reranker_from_config` so
+        the local-or-remote URL invariant is honoured uniformly.
+        """
+        if not seed_query:
+            return None
+        try:
+            from corpus_forge.cli import _build_reranker_from_config
+            from corpus_forge.config import Config
+
+            cfg = Config.load()
+            return _build_reranker_from_config(cfg)
+        except (FileNotFoundError, RuntimeError, ImportError, ValueError) as exc:
+            # Reranker is best-effort — if it can't be built (no
+            # config, missing extras), fall back to the centroid path.
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "reranker unavailable for seed_query; falling back to centroid path: %r",
+                exc,
+            )
+            return None
+
+    async def _dispatch_next_curation_target(arguments: dict[str, Any]) -> Any:
+        from dataclasses import asdict
+
+        from corpus_forge.curation import next_curation_target
+
+        backend = _get_write_backend()
+        if backend is None:
+            return _error_result("retriever has no backend; cannot run curation selector")
+
+        seed_query = arguments.get("seed_query")
+        reranker = _maybe_build_reranker(seed_query)
+        try:
+            target = next_curation_target(
+                backend=backend,
+                dataset=arguments.get("dataset"),
+                embedder=arguments.get("embedder"),
+                seed_query=seed_query,
+                reranker=reranker,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            return _error_result(str(exc))
+
+        if target is None:
+            return {"target": None}
+        return {"target": asdict(target)}
+
+    async def _dispatch_next_curation_batch(arguments: dict[str, Any]) -> Any:
+        from dataclasses import asdict
+
+        from corpus_forge.curation import next_curation_batch
+
+        backend = _get_write_backend()
+        if backend is None:
+            return _error_result("retriever has no backend; cannot run curation selector")
+
+        seed_query = arguments.get("seed_query")
+        reranker = _maybe_build_reranker(seed_query)
+        try:
+            batch = next_curation_batch(
+                backend=backend,
+                dataset=arguments.get("dataset"),
+                embedder=arguments.get("embedder"),
+                seed_query=seed_query,
+                reranker=reranker,
+                limit=int(arguments.get("limit", 10)),
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            return _error_result(str(exc))
+
+        if batch is None:
+            return {"batch": None}
+        return {"batch": asdict(batch)}
+
     # ── write dispatchers (only reached when writes_enabled=True) ────────
 
     def _make_write_ctx() -> Any:
@@ -1070,6 +1294,151 @@ def build_server(
             dry_run=bool(arguments.get("dry_run", False)),
         )
         return result
+
+    async def _dispatch_commit_curation(arguments: dict[str, Any]) -> Any:
+        """J4 — atomic-ish multi-write composing the existing write surface.
+
+        This is NOT a single transactional commit (the underlying
+        per-call dispatchers each emit their own audit row). It is a
+        best-effort serial application that bubbles the first failure
+        back as an ``isError`` result. The order is fixed:
+
+          add_labels → remove_labels → set_metadata → set_description →
+          feedback
+
+        per chunk_id, then the loop moves to the next chunk_id.
+        """
+        raw_chunk_id = arguments.get("chunk_id")
+        raw_chunk_ids = arguments.get("chunk_ids")
+        if (raw_chunk_id is None) == (raw_chunk_ids is None):
+            return _error_result("commit_curation requires exactly one of chunk_id or chunk_ids")
+        if raw_chunk_ids is not None:
+            if not isinstance(raw_chunk_ids, list) or not raw_chunk_ids:
+                return _error_result("chunk_ids must be a non-empty array of integers")
+            chunk_ids = [int(c) for c in raw_chunk_ids]
+        else:
+            chunk_ids = [int(raw_chunk_id)]  # type: ignore[arg-type]
+
+        dry_run = bool(arguments.get("dry_run", False))
+        add_labels = arguments.get("add_labels") or []
+        remove_labels = arguments.get("remove_labels") or []
+        set_metadata_payload = arguments.get("set_metadata") or {}
+        set_description_payload = arguments.get("set_description", _SENTINEL_UNSET)
+        feedback_payload = arguments.get("feedback")
+
+        counts = {
+            "add_label": 0,
+            "remove_label": 0,
+            "set_metadata": 0,
+            "set_description": 0,
+            "add_feedback": 0,
+        }
+        audit_ids: list[int] = []
+
+        for cid in chunk_ids:
+            for entry in add_labels:
+                sub_args = {
+                    "entity_type": "chunk",
+                    "entity_id": cid,
+                    "namespace": entry["namespace"],
+                    "value": entry["value"],
+                    "dry_run": dry_run,
+                }
+                if "confidence" in entry:
+                    sub_args["confidence"] = entry["confidence"]
+                try:
+                    res = await _dispatch_add_label(sub_args)
+                except Exception as exc:
+                    return _error_result(f"add_label failed for chunk_id={cid}: {exc}")
+                if isinstance(res, dict):
+                    aid = res.get("audit_id")
+                    if isinstance(aid, int):
+                        audit_ids.append(aid)
+                    counts["add_label"] += 1
+
+            for entry in remove_labels:
+                try:
+                    res = await _dispatch_remove_label(
+                        {
+                            "entity_type": "chunk",
+                            "entity_id": cid,
+                            "namespace": entry["namespace"],
+                            "value": entry["value"],
+                            "dry_run": dry_run,
+                        }
+                    )
+                except Exception as exc:
+                    return _error_result(f"remove_label failed for chunk_id={cid}: {exc}")
+                if isinstance(res, dict):
+                    aid = res.get("audit_id")
+                    if isinstance(aid, int):
+                        audit_ids.append(aid)
+                    counts["remove_label"] += 1
+
+            for key, value in set_metadata_payload.items():
+                try:
+                    res = await _dispatch_set_metadata(
+                        {
+                            "entity_type": "chunk",
+                            "entity_id": cid,
+                            "key": key,
+                            "value": value,
+                            "dry_run": dry_run,
+                        }
+                    )
+                except Exception as exc:
+                    return _error_result(f"set_metadata failed for chunk_id={cid}: {exc}")
+                if isinstance(res, dict):
+                    aid = res.get("audit_id")
+                    if isinstance(aid, int):
+                        audit_ids.append(aid)
+                    counts["set_metadata"] += 1
+
+            if set_description_payload is not _SENTINEL_UNSET:
+                try:
+                    res = await _dispatch_set_description(
+                        {
+                            "entity_type": "chunk",
+                            "entity_id": cid,
+                            "text": set_description_payload,
+                            "dry_run": dry_run,
+                        }
+                    )
+                except Exception as exc:
+                    return _error_result(f"set_description failed for chunk_id={cid}: {exc}")
+                if isinstance(res, dict):
+                    aid = res.get("audit_id")
+                    if isinstance(aid, int):
+                        audit_ids.append(aid)
+                    counts["set_description"] += 1
+
+            if feedback_payload:
+                fb_args = {
+                    "entity_type": "chunk",
+                    "entity_id": cid,
+                    "kind": feedback_payload["kind"],
+                    "dry_run": dry_run,
+                }
+                if "rating" in feedback_payload:
+                    fb_args["rating"] = feedback_payload["rating"]
+                if "text" in feedback_payload:
+                    fb_args["text"] = feedback_payload["text"]
+                try:
+                    res = await _dispatch_add_feedback(fb_args)
+                except Exception as exc:
+                    return _error_result(f"add_feedback failed for chunk_id={cid}: {exc}")
+                if isinstance(res, dict):
+                    aid = res.get("audit_id")
+                    if isinstance(aid, int):
+                        audit_ids.append(aid)
+                    counts["add_feedback"] += 1
+
+        return {
+            "writes": counts,
+            "chunk_ids_processed": chunk_ids,
+            "dry_run": dry_run,
+            "audit_ids": audit_ids,
+        }
 
     # ── G-03 template dispatchers ────────────────────────────────────────
 

@@ -38,6 +38,7 @@ pytestmark = pytest.mark.smoke
 
 # G-03: render_conversation + list_chat_templates are always-available read tools.
 # J1:   estimate_sync_size is an always-available read tool.
+# J4:   next_curation_target / next_curation_batch are always-available read tools.
 _READ_TOOL_NAMES = {
     "search",
     "get_chunk",
@@ -45,6 +46,8 @@ _READ_TOOL_NAMES = {
     "render_conversation",
     "list_chat_templates",
     "estimate_sync_size",
+    "next_curation_target",
+    "next_curation_batch",
 }
 
 _WRITE_TOOL_NAMES = {
@@ -60,6 +63,8 @@ _WRITE_TOOL_NAMES = {
     "register_template",
     # H-02 write tool
     "register_session",
+    # J4 write tool
+    "commit_curation",
 }
 
 _ALL_TOOL_NAMES = _READ_TOOL_NAMES | _WRITE_TOOL_NAMES

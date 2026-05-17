@@ -51,7 +51,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client  # noqa: E402
 
 pytestmark = pytest.mark.smoke
 
-# ── Expected write tool names (F-03 / F-05 / G-03 / H-02) ───────────────────
+# ── Expected write tool names (F-03 / F-05 / G-03 / H-02 / J4) ──────────────
 _WRITE_TOOLS = {
     "add_label",
     "remove_label",
@@ -65,9 +65,12 @@ _WRITE_TOOLS = {
     "register_template",
     # H-02 write tool
     "register_session",
+    # J4 write tool
+    "commit_curation",
 }
 # G-03: render_conversation + list_chat_templates are always-available read tools.
 # J1:   estimate_sync_size is an always-available read tool (no backend writes).
+# J4:   next_curation_target / next_curation_batch are always-available read tools.
 _READ_TOOLS = {
     "search",
     "get_chunk",
@@ -75,8 +78,10 @@ _READ_TOOLS = {
     "render_conversation",
     "list_chat_templates",
     "estimate_sync_size",
+    "next_curation_target",
+    "next_curation_batch",
 }
-_ALL_15_TOOLS = _READ_TOOLS | _WRITE_TOOLS
+_ALL_TOOLS = _READ_TOOLS | _WRITE_TOOLS
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -209,30 +214,31 @@ def _skill_allowed_tools() -> list[str]:
 # ── F-05 in-process contract test (no Docker / seed corpus needed) ────────
 
 
-def test_server_exposes_15_tools_when_writes_enabled() -> None:
-    """build_server(writes_enabled=True) must advertise all 15 tools.
+def test_server_exposes_all_tools_when_writes_enabled() -> None:
+    """build_server(writes_enabled=True) must advertise every read + write tool.
 
-    H-02 update: 5 read tools + 10 write tools = 15 total.
-    (Previously 5 read + 9 write = 14; H-02 added register_session as a write tool.)
+    J4 update: 8 read tools + 11 write tools = 19 total.
+    (J1 added estimate_sync_size; J4 added next_curation_target /
+    next_curation_batch as read tools and commit_curation as a write tool.)
     """
     tools = _list_in_process_server_tools(writes_enabled=True)
-    missing = _ALL_15_TOOLS - tools
-    extra = tools - _ALL_15_TOOLS
+    missing = _ALL_TOOLS - tools
+    extra = tools - _ALL_TOOLS
     assert not missing, (
         f"Server with writes_enabled=True is missing expected tools: {sorted(missing)}. "
         f"Registered tools: {sorted(tools)}"
     )
     assert not extra, (
         f"Server with writes_enabled=True registered unexpected extra tools: {sorted(extra)}. "
-        f"Expected exactly: {sorted(_ALL_15_TOOLS)}"
+        f"Expected exactly: {sorted(_ALL_TOOLS)}"
     )
 
 
-def test_server_exposes_only_5_tools_when_writes_disabled() -> None:
-    """build_server(writes_enabled=False) must advertise only the 5 read tools.
+def test_server_exposes_only_read_tools_when_writes_disabled() -> None:
+    """build_server(writes_enabled=False) must advertise only the read tools.
 
-    G-03 update: 5 read tools (previously 3 before G-03 added render_conversation
-    and list_chat_templates as always-available read tools).
+    J4 update: 8 read tools (J1's estimate_sync_size + J4's
+    next_curation_target / next_curation_batch joined the existing 5).
     """
     tools = _list_in_process_server_tools(writes_enabled=False)
     assert tools == _READ_TOOLS, (
