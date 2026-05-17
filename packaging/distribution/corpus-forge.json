@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ScoopInstaller/Scoop/master/schemas/scoop-manifest.schema.json",
+  "version": "0.1.0b1",
+  "description": "HF-format corpus + multi-embedder ingestion daemon for personal text and chat data",
+  "homepage": "https://github.com/ulmentflam/corpus-forge",
+  "license": "Apache-2.0",
+  "depends": ["python", "uv"],
+  "suggest": {
+    "ffmpeg": "main/ffmpeg"
+  },
+  "_comment": "Phase I-13 — Scoop manifest scaffold. Deploy to ulmentflam/scoop-corpus-forge (or to the ulmentflam tap's `bucket/` directory). Update `version`, `url`, `hash` on each release; a release-CI job can automate via `scoop bucket update` patterns.",
+  "url": "https://github.com/ulmentflam/corpus-forge/releases/download/v0.1.0b1/corpus_forge-0.1.0b1-py3-none-any.whl",
+  "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "installer": {
+    "script": [
+      "# Install via uv tool; Scoop is just the bootstrapper.",
+      "uv tool install --python 3.12 corpus-forge",
+      "Write-Host 'Run `corpus-forge setup` to configure the corpus.'"
+    ]
+  },
+  "uninstaller": {
+    "script": [
+      "uv tool uninstall corpus-forge"
+    ]
+  },
+  "checkver": {
+    "url": "https://pypi.org/pypi/corpus-forge/json",
+    "jsonpath": "$.info.version"
+  },
+  "autoupdate": {
+    "url": "https://github.com/ulmentflam/corpus-forge/releases/download/v$version/corpus_forge-$version-py3-none-any.whl"
+  }
+}
