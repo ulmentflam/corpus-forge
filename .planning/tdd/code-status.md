@@ -3,6 +3,10 @@
 Record of implementations written by tdd-coder.
 | task-id | status | notes |
 |---------|--------|-------|
+| J1-01   | green  | corpus_forge/estimate.py (new, ~480 lines after format) + EstimateConfig added to corpus_forge/config.py + config.example.toml gets a documented [estimate] block; 55/55 unit tests pass (test_estimate.py). |
+| J1-02   | green  | corpus-forge estimate CLI command landed in corpus_forge/cli.py (~190 lines added). Human + --json output, --compression-ratio / --embedder / --dataset / --verbose flags; 13/13 unit tests pass (test_cli_estimate.py). |
+| J1-03   | green  | estimate_sync_size MCP tool registered in corpus_forge/mcp/server.py (read-only, always available — no writes_enabled gate). Schema + _list_tools entry + _call_tool dispatch + _dispatch_estimate_sync_size; 10/10 unit tests pass (test_mcp_estimate.py). |
+| J1-04   | green  | tests/integration/test_estimate_real_tree.py (1 test, <0.2s on fixtures/multi_format_corpus/). CHANGELOG [Unreleased] gets "Phase J — Living Corpus" subhead with two Added bullets. |
 | P0-01   | green  | all 17 identity tests pass; full suite 255 passed/38 skipped/0 failed, 89.3% coverage |
 | P1-03   | green  | 54/58 config tests pass; 4 failures are tester bug (missing ValidationError import); coverage 88.7% |
 | P1-08   | green  | is_cloud_duplicate implemented, all 77 tests pass, conflicts.py 100% coverage |

@@ -140,6 +140,41 @@ _LIST_DATASETS_INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+_ESTIMATE_SYNC_SIZE_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "path": {
+            "type": "string",
+            "description": "Absolute or user-expanded directory path to scan.",
+        },
+        "dataset": {
+            "type": "string",
+            "description": (
+                "Optional dataset name (forward-compat hook; J1 falls back to "
+                "all active embedders when the dataset is unknown)."
+            ),
+        },
+        "embedders": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Optional explicit embedder filter. Unknown names error out "
+                "instead of falling back."
+            ),
+        },
+        "compression_ratio": {
+            "type": "number",
+            "description": (
+                "Optional override for [estimate].compression_ratio. "
+                "Multiplier in (0.0, 1.0] applied to text-heavy columns."
+            ),
+        },
+    },
+    "required": ["path"],
+    "additionalProperties": False,
+}
+
+
 # ── JSON schemas for the eight write tools ────────────────────────────────
 
 _ADD_LABEL_INPUT_SCHEMA: dict[str, Any] = {
@@ -501,6 +536,19 @@ def build_server(
                 ),
                 inputSchema=_LIST_DATASETS_INPUT_SCHEMA,
             ),
+            # J1 read tool (always available — no backend writes)
+            mt.Tool(
+                name="estimate_sync_size",
+                description=(
+                    "Estimate the Postgres storage footprint of syncing a folder "
+                    "into the corpus, without actually syncing. Pure-prediction; "
+                    "no backend opens, no extractor runs, no model calls. Returns "
+                    "per-extractor file counts, per-embedder embedding sizing, "
+                    "HNSW + btree index overhead, and a total bytes prediction. "
+                    "Result is JSON-serialisable with stable schema_version=1."
+                ),
+                inputSchema=_ESTIMATE_SYNC_SIZE_INPUT_SCHEMA,
+            ),
             # G-03 read tools (always available)
             mt.Tool(
                 name="render_conversation",
@@ -596,6 +644,8 @@ def build_server(
             return await _dispatch_get_chunk(arguments)
         if name == "list_datasets":
             return await _dispatch_list_datasets(arguments)
+        if name == "estimate_sync_size":
+            return await _dispatch_estimate_sync_size(arguments)
         # G-03 read tools — always available
         if name == "render_conversation":
             return await _dispatch_render_conversation(arguments)
@@ -815,6 +865,46 @@ def build_server(
             return {"datasets": []}
         catalogue = backend.list_datasets()
         return {"datasets": [dict(d) for d in catalogue]}
+
+    async def _dispatch_estimate_sync_size(arguments: dict[str, Any]) -> Any:
+        """Pure-prediction storage estimator (Phase J / J1).
+
+        Does NOT use ``_get_retriever`` — the estimator never opens the
+        backend. Loads :class:`Config` from disk on first call (via the
+        same ``CORPUS_FORGE_CONFIG`` resolution as the CLI). Errors are
+        returned as ``isError`` results so the MCP client gets a clean
+        text block instead of a transport-level exception.
+        """
+        # Lazy-import — keeps `build_server` cheap and side-effect free
+        # for callers that never invoke this tool. The fully-qualified
+        # `corpus_forge.estimate.estimate_sync` lookup is what test
+        # monkeypatches target.
+        from dataclasses import asdict
+
+        import corpus_forge.estimate as _estimate_mod
+        from corpus_forge.config import Config
+
+        try:
+            config = Config.load()
+        except FileNotFoundError as exc:
+            return _error_result(f"configuration not found: {exc}")
+
+        path = arguments["path"]
+        embedders = arguments.get("embedders")
+        compression_ratio = arguments.get("compression_ratio")
+        try:
+            est = _estimate_mod.estimate_sync(
+                path,
+                config,
+                embedders=embedders,
+                compression_ratio=compression_ratio,
+            )
+        except (FileNotFoundError, NotADirectoryError) as exc:
+            return _error_result(str(exc))
+        except ValueError as exc:
+            return _error_result(str(exc))
+
+        return {"estimate": asdict(est)}
 
     # ── write dispatchers (only reached when writes_enabled=True) ────────
 

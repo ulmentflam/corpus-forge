@@ -239,7 +239,8 @@ class TestWritesEnabledGate:
         """When writes_enabled=False, only read tools are registered.
 
         G-03: render_conversation + list_chat_templates are always-available
-        read tools, so the set is now 5 (not 3).
+        read tools, so the set is now 5 (not 3). J1 adds estimate_sync_size
+        (also always-available, read-only) bumping the count to 6.
         """
         server = _build_server(backend, writes_enabled=False)
         tools = _list_tools(server)
@@ -249,16 +250,18 @@ class TestWritesEnabledGate:
             "list_datasets",
             "render_conversation",
             "list_chat_templates",
-        }, f"Expected exactly 5 read tools; got: {sorted(tools)}"
+            "estimate_sync_size",
+        }, f"Expected exactly 6 read tools; got: {sorted(tools)}"
 
     def test_writes_enabled_exposes_all_11_tools(
         self, backend: SQLiteBackend, seeded: dict
     ) -> None:
-        """When writes_enabled=True, all tools (5 read + 10 write) are registered.
+        """When writes_enabled=True, all tools (6 read + 10 write) are registered.
 
         H-02 adds register_session (write-gated) = 15 total.
         G-03 adds register_template (write-gated) + render_conversation +
         list_chat_templates (read, always available) = 14 total before H-02.
+        J1 adds estimate_sync_size (read, always available) = 16 total.
         """
         server = _build_server(backend, writes_enabled=True)
         tools = _list_tools(server)
@@ -269,6 +272,8 @@ class TestWritesEnabledGate:
             # G-03 read tools
             "render_conversation",
             "list_chat_templates",
+            # J1 read tool
+            "estimate_sync_size",
             # F-03 write tools
             "add_label",
             "remove_label",
@@ -284,7 +289,7 @@ class TestWritesEnabledGate:
             "register_session",
         }
         assert set(tools) == expected, (
-            f"Expected 15 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
+            f"Expected 16 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
         )
 
     def test_unknown_tool_returns_error_when_writes_disabled(

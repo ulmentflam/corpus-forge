@@ -37,12 +37,14 @@ pytestmark = pytest.mark.smoke
 # ---------------------------------------------------------------------------
 
 # G-03: render_conversation + list_chat_templates are always-available read tools.
+# J1:   estimate_sync_size is an always-available read tool.
 _READ_TOOL_NAMES = {
     "search",
     "get_chunk",
     "list_datasets",
     "render_conversation",
     "list_chat_templates",
+    "estimate_sync_size",
 }
 
 _WRITE_TOOL_NAMES = {

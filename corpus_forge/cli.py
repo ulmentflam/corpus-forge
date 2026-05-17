@@ -609,7 +609,7 @@ def _resolve_dataset(dataset: str) -> Path:
 
 
 def _parse_csv_ints(raw: str) -> list[int]:
-    """Parse '10,20,30' → [10, 20, 30]; reject empty / non-int entries."""
+    """Parse '10,20,30' -> [10, 20, 30]; reject empty / non-int entries."""
     parts = [p.strip() for p in raw.split(",") if p.strip()]
     if not parts:
         raise typer.BadParameter(f"empty list: {raw!r}")
@@ -689,9 +689,9 @@ def _build_reranker_from_config(config):
 
     Resolves the configured ``kind`` to a concrete class:
 
-    - ``"cross_encoder"`` → :class:`CrossEncoderReranker` (default;
+    - ``"cross_encoder"`` -> :class:`CrossEncoderReranker` (default;
       uses ``BAAI/bge-reranker-v2-m3`` unless overridden).
-    - ``"ollama"`` → :class:`OllamaReranker` (score-via-completion;
+    - ``"ollama"`` -> :class:`OllamaReranker` (score-via-completion;
       requires a chat model ``model_id``).
 
     The constructor is LAZY — the heavy model load happens on the first
@@ -790,7 +790,7 @@ def _do_eval(
     typer.echo(report(metrics))
     if json_out is not None:
         dump_json(metrics, json_out)
-        typer.echo(f"Wrote metrics → {json_out}", err=True)
+        typer.echo(f"Wrote metrics -> {json_out}", err=True)
 
 
 def _load_eval_config(fusion: str | None = None, alpha: float | None = None):
@@ -1000,7 +1000,7 @@ def search(
             "hits": [_hit_to_jsonable(h) for h in hits],
         }
         json_out.write_text(_json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        typer.echo(f"Wrote {len(hits)} hits → {json_out}", err=True)
+        typer.echo(f"Wrote {len(hits)} hits -> {json_out}", err=True)
         return
 
     if not hits:
@@ -1328,11 +1328,11 @@ def rechunk(
     (Phase E classifier output) and re-runs the chunker pass using the
     chunker mapped to that class:
 
-    - ``class=code`` → :class:`CodeChunker` (tree-sitter or byte-line fallback)
-    - ``class=chat`` → :class:`ConversationChunker`
-    - ``class=reference`` → :class:`PassthroughChunker`
+    - ``class=code`` -> :class:`CodeChunker` (tree-sitter or byte-line fallback)
+    - ``class=chat`` -> :class:`ConversationChunker`
+    - ``class=reference`` -> :class:`PassthroughChunker`
     - ``class=book`` / ``textbook`` / ``paper`` / ``article`` / ``note`` /
-      ``other`` → :class:`CDCChunker` (FastCDC rolling hash)
+      ``other`` -> :class:`CDCChunker` (FastCDC rolling hash)
 
     The Phase C BUG-3 ``content_hash`` chunk-reuse path inside
     :meth:`StorageBackend.upsert_document` preserves embeddings for any
@@ -1432,9 +1432,9 @@ def rechunk(
             prior_texts = backend.get_document_chunk_texts(doc.document_id)
             new_texts = [c.text for c in new_chunks]
             # Expected metadata-key signature for the class:
-            # - CDC chunks → ``cdc_fingerprint``
-            # - code chunks → ``kind`` (tree-sitter) or ``byte_range`` (byte fallback)
-            # - everything else has no required signature → text-only check.
+            # - CDC chunks -> ``cdc_fingerprint``
+            # - code chunks -> ``kind`` (tree-sitter) or ``byte_range`` (byte fallback)
+            # - everything else has no required signature -> text-only check.
             expected_key = _expected_metadata_signature(class_value)
             new_has_signature = expected_key is None or all(
                 (c.metadata or {}).get(expected_key) for c in new_chunks
@@ -1719,6 +1719,194 @@ def enrich(
     typer.echo(
         f"Processed {processed} chunk(s); applied {applied}; failed {failed}.",
         err=True,
+    )
+
+
+# ── estimate command (Phase J / J1) ─────────────────────────────────────
+
+
+_HUMAN_BYTES_BASE = 1024
+
+
+def _human_bytes(n: int) -> str:
+    """Format ``n`` bytes for human display.
+
+    Uses 1024-based units with two-significant-digit precision for the
+    fractional decade ("412 MB", "9.2 GB", "1.4 TB").
+    """
+    if n < 0:
+        return f"-{_human_bytes(-n)}"
+    units = ("B", "KB", "MB", "GB", "TB", "PB")
+    value = float(n)
+    idx = 0
+    while value >= _HUMAN_BYTES_BASE and idx < len(units) - 1:
+        value /= _HUMAN_BYTES_BASE
+        idx += 1
+    if idx == 0:
+        return f"{int(value)} {units[idx]}"
+    # Drop trailing .0 for round numbers; keep one fractional digit for
+    # mid-decade ("9.2 GB").
+    return f"{value:.1f} {units[idx]}".replace(".0 ", " ")
+
+
+def _human_count(n: int) -> str:
+    """Format ``n`` files with a thousands separator."""
+    return f"{n:,}"
+
+
+@app.command("estimate")
+def estimate(
+    path: Path = typer.Argument(
+        ...,
+        help="Directory to scan. Recursively walked; symlinks not followed.",
+        exists=False,  # we validate manually so we can exit code 2 with a friendly message
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=False,
+    ),
+    dataset: str = typer.Option(
+        None,
+        "--dataset",
+        "-d",
+        help=(
+            "Filter active embedders by dataset name. Permissive — an unknown "
+            "dataset falls back to all active embedders."
+        ),
+    ),
+    embedder: list[str] = typer.Option(
+        None,
+        "--embedder",
+        help="Explicit embedder filter (repeatable). Overrides --dataset.",
+    ),
+    compression_ratio: float = typer.Option(
+        None,
+        "--compression-ratio",
+        help=(
+            "Override [estimate].compression_ratio. Multiplier in (0.0, 1.0] "
+            "applied to text-heavy columns. Drop to 0.5 to model LZ4-toasted "
+            "text columns."
+        ),
+    ),
+    json_out: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit the SyncEstimate dataclass as JSON (schema_version=1).",
+    ),
+    verbose: bool = typer.Option(  # noqa: ARG001 — reserved for future per-file dump
+        False,
+        "--verbose",
+        help="Print per-file detail (reserved for future use).",
+    ),
+) -> None:
+    """Predict the Postgres storage footprint of syncing a folder.
+
+    Pure-prediction — does not touch the database, does not instantiate
+    any extractor, does not call any model. Walks the filesystem, buckets
+    each file into an extractor class via the per-extension heuristic
+    table, then sums the per-row + per-embedder + index overheads.
+
+    Default output is human-readable; pass ``--json`` for the
+    JSON-serialised :class:`SyncEstimate` (schema_version=1) suitable for
+    piping into downstream tools.
+
+    Tunable via the ``[estimate]`` block in ``config.toml`` (currently
+    just ``compression_ratio``). Override the ratio per invocation with
+    ``--compression-ratio``.
+    """
+    import json as _json
+    from dataclasses import asdict
+
+    from corpus_forge.config import Config
+    from corpus_forge.estimate import estimate_sync
+
+    try:
+        config = Config.load()
+    except FileNotFoundError:
+        typer.echo(
+            "No configuration found; run 'corpus-forge migrate' to initialise.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from None
+
+    # Embedder selection precedence:
+    #   1. --embedder NAME (repeatable)  — explicit filter, hard-fail on
+    #      unknown names.
+    #   2. --dataset NAME — permissive forward-compat hook; today it
+    #      falls back to all active embedders since per-dataset embedder
+    #      lists aren't a config field yet.
+    #   3. Default = every active embedder.
+    if embedder:
+        chosen_embedders: list[str] | None = list(embedder)
+    else:
+        # --dataset is accepted for forward-compat but is a no-op for
+        # embedder selection in J1. Mention silently — no warning, no
+        # crash — to keep MCP callers' lives simple.
+        if dataset is not None:
+            configured_names = {d.name for d in config.datasets}
+            if dataset not in configured_names:
+                typer.echo(
+                    f"note: --dataset {dataset!r} is not in the configured datasets "
+                    f"({sorted(configured_names)}); using all active embedders.",
+                    err=True,
+                )
+        chosen_embedders = None  # signal "all active" to estimate_sync
+
+    try:
+        estimate_result = estimate_sync(
+            path,
+            config,
+            embedders=chosen_embedders,
+            compression_ratio=compression_ratio,
+        )
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    except ValueError as exc:
+        typer.echo(f"estimate error: {exc}", err=True)
+        raise typer.Exit(code=2) from None
+
+    if json_out:
+        typer.echo(_json.dumps(asdict(estimate_result), ensure_ascii=False))
+        return
+
+    # Human output. Layout mirrors the brief's example verbatim.
+    typer.echo(
+        f"corpus-forge estimate {estimate_result.scanned_path}\n"
+        f"Scanned {_human_count(estimate_result.file_count)} files "
+        f"across {_human_count(estimate_result.dir_count)} directories "
+        f"({_human_bytes(estimate_result.total_raw_bytes)} raw)."
+    )
+    typer.echo("")
+    typer.echo("By extractor:")
+    for summary in estimate_result.by_extractor:
+        chunk_str = (
+            "skipped"
+            if summary.est_chunks == 0 and summary.extractor_class in ("image", "unknown")
+            else f"~{_human_count(summary.est_chunks)} chunks"
+        )
+        typer.echo(
+            f"  {summary.extractor_class:<12} "
+            f"{_human_count(summary.file_count):>10} files     "
+            f"{_human_bytes(summary.raw_bytes):>9}    ->  {chunk_str}"
+        )
+    typer.echo("")
+    typer.echo("Estimated Postgres footprint (purely additive):")
+    typer.echo(f"  {'documents':<18} {_human_bytes(estimate_result.documents_bytes):>10}")
+    typer.echo(f"  {'chunks':<18} {_human_bytes(estimate_result.chunks_bytes):>10}")
+    if estimate_result.embeddings:
+        typer.echo("  embeddings")
+        for e in estimate_result.embeddings:
+            typer.echo(
+                f"    {e.name:<16} {_human_bytes(e.total_bytes):>10}   "
+                f"({_human_count(e.n_chunks)} x {e.dim} x 4 B + 35% HNSW)"
+            )
+    typer.echo(f"  {'btree indexes':<18} {_human_bytes(estimate_result.btree_index_bytes):>10}")
+    typer.echo("  " + "-" * 28)
+    typer.echo(f"  {'Total':<18} {_human_bytes(estimate_result.total_bytes):>10}")
+    typer.echo("")
+    typer.echo(
+        f"Assumed compression ratio: {estimate_result.compression_ratio}. "
+        "Pass `--compression-ratio 0.5` to model LZ4-toasted text columns."
     )
 
 

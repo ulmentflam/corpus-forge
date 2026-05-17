@@ -10,6 +10,22 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ### Added
 
+#### Phase J — Living Corpus
+- `corpus-forge estimate <path>` CLI (new `corpus_forge/estimate.py`
+  module + Typer command) — predicts the Postgres storage footprint of
+  syncing a folder without touching the database. Per-extractor file
+  counts and per-embedder embedding-row sizing including pgvector HNSW
+  overhead (35 %) and btree-index overhead (~80 B / row). Human output
+  by default; `--json` emits the `SyncEstimate` dataclass under stable
+  `schema_version = 1`. `--compression-ratio` models LZ4-toasted text
+  columns. New `[estimate]` config block with `compression_ratio`
+  (default `1.0`; lower it to model TOAST compression on
+  `documents.text` / `chunks.text`).
+- `estimate_sync_size` MCP tool — same surface as the CLI, available to
+  any MCP-connected assistant. Read-only; no `writes_enabled` flag
+  required. Args: `{path, dataset?, embedders?, compression_ratio?}`.
+  Returns the same `SyncEstimate` JSON shape with `schema_version = 1`.
+
 #### Phase D — Universal multi-format ingest (waves 0–6)
 - `Extractor` protocol (`corpus_forge/extractors/base.py`) + `ExtractorRegistry`
   with a per-extension lookup table and a second-pass `supported_filenames`

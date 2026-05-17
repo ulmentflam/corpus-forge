@@ -3,6 +3,7 @@
 Record of QA verifications by tdd-qa.
 | task-id | verdict | notes |
 |---------|---------|-------|
+| J1-01..J1-04 | approved | All gates green — `ruff format --check`, `ruff check`, `pyrefly` (0 errors, 32 suppressed), unit suite 3463 passed / 2 skipped / 1 xfailed with 90.14% unit-only coverage (90% gate), full sweep (unit+integration+smoke+fuzz) 3915 passed / 8 skipped / 1 xfailed with 93.30% combined coverage. J1 surface: 78 unit tests (test_estimate.py 55 + test_cli_estimate.py 13 + test_mcp_estimate.py 10) + 1 integration test. Three pre-existing pinned-tool-count tests updated to include `estimate_sync_size` (test_mcp_server.py, test_mcp_server_enrichment.py, test_skill_tool_contract.py, test_mcp_writes_disabled_by_default.py, test_mcp_stdio.py). Skill drift warning for SKILL.md will be addressed in J2 per brief. |
 | P0-01 | approved | All gates green |
 | P1-03 | approved | All gates green, 58/58 config tests pass, coverage OK |
 | P1-06 | approved | All gates green, 28/28 echo tests pass, coverage OK |

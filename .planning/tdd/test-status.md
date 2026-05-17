@@ -3,6 +3,7 @@
 Record of test suites written by tdd-tester.
 | task-id | status | notes |
 |---------|--------|-------|
+| J1-01   | red    | 55 tests in tests/unit/test_estimate.py; module `corpus_forge.estimate` and `corpus_forge.config.EstimateConfig` both missing — all 55 fail at import. Ready for GREEN. |
 | P0-01   | red    | handed off to tdd-coder |
 | P0-02   | red    | DDL created, validated |
 | P1-01   | red    | handed off to tdd-coder |

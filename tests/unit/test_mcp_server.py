@@ -158,6 +158,7 @@ class TestRegisteredTools:
 
     def test_three_tools_registered(self) -> None:
         # G-03: render_conversation + list_chat_templates are always-available read tools.
+        # J1:   estimate_sync_size is an always-available read tool (no backend writes).
         server, _ = self._build()
         tools = _list_tools_via_handler(server)
         names = {t.name for t in tools}
@@ -167,9 +168,11 @@ class TestRegisteredTools:
             "list_datasets",
             "render_conversation",
             "list_chat_templates",
+            "estimate_sync_size",
         }, (
-            f"Expected five read tools (search/get_chunk/list_datasets/"
-            f"render_conversation/list_chat_templates); got {names}"
+            f"Expected six read tools (search/get_chunk/list_datasets/"
+            f"render_conversation/list_chat_templates/estimate_sync_size); "
+            f"got {names}"
         )
 
     def test_search_input_schema_has_query_required(self) -> None:

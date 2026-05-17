@@ -448,6 +448,31 @@ class EnricherConfig(BaseModel):
         return self
 
 
+class EstimateConfig(BaseModel):
+    """Phase J / J1 — sync storage estimator knobs.
+
+    Drives :func:`corpus_forge.estimate.estimate_sync`. Pure-prediction —
+    the estimator never opens the backend, never instantiates an
+    extractor, and never calls a model client. The only knob today is
+    the TOAST compression ratio applied to text-heavy columns
+    (``documents.text``, ``chunks.text``). Users on Postgres ``LZ4``
+    toast columns can drop this to ``0.5`` to halve the text-bytes
+    estimate; default ``1.0`` is the conservative no-compression
+    baseline.
+
+    Fields:
+
+    - ``compression_ratio``: multiplier applied to the bytes attributed
+      to text-heavy columns. Must be in ``(0.0, 1.0]``. ``1.0`` =
+      uncompressed (the default and the safest over-estimate); ``0.5``
+      ≈ typical LZ4 ratio on English prose.
+    """
+
+    compression_ratio: float = Field(default=1.0, gt=0.0, le=1.0)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class Config(BaseModel):
     """Main configuration for corpus-forge."""
 
@@ -471,6 +496,11 @@ class Config(BaseModel):
     # Phase H — code-enricher backend selector. Default backend="none"
     # keeps legacy configs untouched.
     code_enricher: EnricherConfig = Field(default_factory=EnricherConfig)
+    # Phase J / J1 — sync storage estimator knobs. Pure-prediction;
+    # default ``compression_ratio = 1.0`` is the conservative
+    # no-compression baseline so existing configs see no behaviour
+    # change.
+    estimate: EstimateConfig = Field(default_factory=EstimateConfig)
 
     model_config = ConfigDict(
         str_strip_whitespace=True,

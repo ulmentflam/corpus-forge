@@ -413,6 +413,31 @@ timeout_s          = 180.0
 temperature        = 0.1
 
 # ─────────────────────────────────────────────────────────────────────
+# Phase J / J1 — sync storage estimator
+# ─────────────────────────────────────────────────────────────────────
+# Drives `corpus-forge estimate <path>` and the MCP tool
+# `estimate_sync_size`. The estimator predicts the Postgres footprint of
+# syncing a folder WITHOUT touching the database — no backend opens, no
+# extractor runs, no model calls. Pure prediction over the per-extractor
+# heuristic table.
+#
+# The only knob today is TOAST compression. Postgres compresses long
+# text columns with LZ4 (or pglz on older clusters); for English prose
+# the typical ratio is ~0.5. Default `1.0` is the conservative
+# no-compression baseline — drop it to `0.5` when you've moved
+# `documents.text` and `chunks.text` to `STORAGE EXTENDED` with LZ4.
+[estimate]
+# Multiplier applied to the bytes attributed to text-heavy columns
+# (`documents.text`, `chunks.text`). Must be in `(0.0, 1.0]`.
+#   1.0 — uncompressed (default; safest over-estimate).
+#   0.5 — typical LZ4 ratio on English prose.
+#   0.3 — aggressive LZ4 on highly-redundant text (logs, structured
+#         JSON, repetitive docs).
+# Embeddings, btree indexes, and row overhead are NOT compressed —
+# the ratio only touches the text columns.
+compression_ratio = 1.0
+
+# ─────────────────────────────────────────────────────────────────────
 # See `docs/architecture.md` for the full pipeline reference (every
 # protocol, every backend matrix, the local-or-remote URL principle as
 # a cross-cutting concern) and `docs/schema.md` for the database

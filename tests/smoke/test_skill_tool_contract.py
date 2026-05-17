@@ -67,12 +67,14 @@ _WRITE_TOOLS = {
     "register_session",
 }
 # G-03: render_conversation + list_chat_templates are always-available read tools.
+# J1:   estimate_sync_size is an always-available read tool (no backend writes).
 _READ_TOOLS = {
     "search",
     "get_chunk",
     "list_datasets",
     "render_conversation",
     "list_chat_templates",
+    "estimate_sync_size",
 }
 _ALL_15_TOOLS = _READ_TOOLS | _WRITE_TOOLS
 
