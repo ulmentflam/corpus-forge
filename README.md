@@ -1,10 +1,10 @@
 <p align="center">
-  <img alt="corpus-forge — forge a HuggingFace-format training corpus from your notes and chat history" src="assets/banner.png" width="100%">
+  <img alt="corpus-forge — chat with your data, forge a living, trainable corpus from your notes, code, and chat history" src="assets/banner.png" width="100%">
 </p>
 
 # corpus-forge
 
-> **Forge a HuggingFace-format training corpus from your notes and chat history.**
+> **Chat with your data. Forge a living, trainable corpus that makes any model smarter.**
 
 [![CI](https://github.com/ulmentflam/corpus-forge/actions/workflows/ci.yml/badge.svg)](https://github.com/ulmentflam/corpus-forge/actions/workflows/ci.yml)
 [![nightly](https://github.com/ulmentflam/corpus-forge/actions/workflows/nightly.yml/badge.svg?label=nightly)](https://github.com/ulmentflam/corpus-forge/actions/workflows/nightly.yml)
@@ -16,12 +16,14 @@
 
 ## Why corpus-forge
 
-- **Training data, not search.** The primary deliverable is a HuggingFace-Datasets-format export of your text + chat sources, deduplicated by content-hash, ready to feed a fine-tuning run.
+- **Chat with your data. Build a living corpus.** Point corpus-forge at your notes, code, PDFs, chat history, audio, and video, and you get a searchable index that grows as you (or an AI assistant) curate it. The corpus is the product — *and* it's the upstream of every training run.
+- **Training data is the deliverable.** A HuggingFace-Datasets-format export of your text + chat sources, deduplicated by content-hash, ready to feed a fine-tuning run. The living corpus is the way you get there.
+- **Human-in-the-loop curation.** Your model finds the weakest entries — low classifier confidence, thin metadata, missing labels — and you fortify them in a chat with Claude, Gemini, or OpenCode. Edits commit back through MCP, so the next training run starts from stronger data. See [`AGENTS.md`](AGENTS.md) for the vendor-neutral playbook.
 - **Universal multi-format ingest.** Markdown, PDF (digital + VLM OCR escalation), HTML, EPUB, Office (`.docx`/`.pptx`/`.xlsx`), Jupyter notebooks, CSV, structured data (JSON/YAML/TOML), subtitles, 45+ source-code languages via tree-sitter, images via a VLM, and audio/video via Whisper — all behind a single `filesystem` source plugin.
 - **Content-defined chunking + classification + enrichment.** Documents are classified into a 9-value content-class taxonomy (rule classifier → optional LLM escalation), chunked by class (FastCDC for prose, AST-aware for code, conversation-aware for chat), and code chunks are optionally enriched with LLM-synthesised docstrings + summaries + symbol references.
 - **Multi-embedder by design.** Register as many text embedders as you want — local sentence-transformers, OpenAI, anything served via an OpenAI-compatible endpoint (Ollama, vLLM). Multi-modal embedders (CLIP family) cover the image lane. Backfill new embedders without re-chunking.
-- **Local-or-remote, end to end.** Every model client (VLM, classifier, Whisper, code enricher) accepts a configurable HTTP URL — default is a local Ollama daemon, swap to a hosted endpoint with a one-line config change and no code edit.
-- **Hybrid retrieval + MCP exposure are the secondary use case.** Once the corpus exists, expose it to Claude (or any MCP client) for grounded research. The retrieval-eval harness doubles as a corpus-quality signal.
+- **Local-or-remote, end to end.** Every model client (VLM, classifier, Whisper, code enricher, reranker) accepts a configurable HTTP URL — default is a local Ollama daemon, swap to a hosted endpoint with a one-line config change and no code edit.
+- **Predictable storage.** `corpus-forge estimate <path>` predicts the Postgres footprint of syncing a tree *before* you sync. Same surface available to any MCP-connected assistant via `estimate_sync_size`.
 
 ## Quickstart
 
@@ -37,23 +39,30 @@ $EDITOR ~/.config/corpus-forge/config.toml
 # 2. Initialize the database (SQLite or PostgreSQL).
 corpus-forge migrate
 
-# 3. Run a one-shot ingestion pass.
+# 3. Estimate the Postgres footprint *before* you sync. No I/O, no model calls.
+corpus-forge estimate ~/Notes
+
+# 4. Run a one-shot ingestion pass.
 corpus-forge ingest --once
 
-# 4. Backfill embeddings for the active embedder(s).
+# 5. Backfill embeddings for the active embedder(s).
 corpus-forge embed -e qwen3_8b
 
-# 5. (Optional) Classify documents into the 9-value content-class taxonomy.
+# 6. (Optional) Classify documents into the 9-value content-class taxonomy.
 corpus-forge classify --dry-run --json
 corpus-forge classify
 
-# 6. (Optional) Re-chunk classified prose with FastCDC + AST-aware code.
+# 7. (Optional) Re-chunk classified prose with FastCDC + AST-aware code.
 corpus-forge rechunk
 
-# 7. Search the corpus end-to-end.
+# 8. Search the corpus end-to-end.
 corpus-forge search "how does the SQLite lock work" --k 5
 
-# 8. Export to HuggingFace Datasets format.
+# 9. Curate weak entries with an AI assistant (Claude / Gemini / OpenCode).
+#    Wire the MCP server (see "For AI assistants" below), then in your chat:
+#    /corpus-curate    →  next_curation_target → chat → commit_curation
+
+# 10. Export to HuggingFace Datasets format.
 corpus-forge export chat --dataset claude-code --out ./chat.jsonl --template chatml
 ```
 
@@ -565,15 +574,30 @@ corpus-forge embed
 
 Chunks already have content-hashes; the backfill encodes only what's missing.
 
+## For AI assistants
+
+corpus-forge ships ready-to-use setup guides for every major coding assistant. Hand one of these to your assistant (or read it yourself) and you'll be ingesting + searching + curating within a few commands:
+
+- [`CLAUDE.md`](CLAUDE.md) — Claude Code, Claude Desktop, Anthropic API / Managed MCP.
+- [`GEMINI.md`](GEMINI.md) — Gemini CLI, Gemini Code Assist, Vertex AI.
+- [`AGENTS.md`](AGENTS.md) — vendor-neutral recipe for OpenCode, Cursor, Zed, Continue, Cline, and anything else that speaks MCP.
+
+Each guide walks an assistant from install → configure → migrate → MCP wire-up → skill registration → first-run sanity → curation-loop playbook → troubleshooting. The same canonical MCP launch block (`corpus-forge mcp serve --transport stdio`) works across every client.
+
 ## Agent integration (MCP)
 
-corpus-forge ships a stdio Model Context Protocol server that exposes three tools:
+corpus-forge ships a stdio Model Context Protocol server that exposes the following tools:
 
-| Tool | Use |
-|---|---|
-| `search` | Hybrid (dense + lexical) search with optional rerank. Returns `{hits: [...]}` with `chunk_id`, `score`, `text`, `source_uri`, `title`, `dataset_id`. |
-| `get_chunk` | Fetch a chunk by id. |
-| `list_datasets` | Enumerate datasets with `chunk_count` / `document_count`. |
+| Tool | Use | Gate |
+|---|---|---|
+| `search` | Hybrid (dense + lexical) search with optional rerank. Returns `{hits: [...]}` with `chunk_id`, `score`, `text`, `source_uri`, `title`, `dataset_id`. | read-only |
+| `get_chunk` | Fetch a chunk by id. | read-only |
+| `list_datasets` | Enumerate datasets with `chunk_count` / `document_count`. | read-only |
+| `estimate_sync_size` | Predict the Postgres footprint of syncing a directory tree. No I/O, no model calls. | read-only |
+| `next_curation_target` / `next_curation_batch` | Ranker-driven "what entry most needs my help right now?" Returns a `CurationTarget` (or a cohesive batch) with text, current labels, missing fields, and a score breakdown. | read-only |
+| `commit_curation` | Atomic multi-write covering label adds/removes, metadata, description, feedback — for a single chunk or a batch. Composes the lower-level write tools below. | `writes_enabled` |
+| `add_label` / `remove_label` / `set_metadata` / `set_description` / `add_feedback` / `list_labels` | Direct curation writes. Available stand-alone or wrapped by `commit_curation`. | `writes_enabled` |
+| `append_conversation` / `append_message` / `render_conversation` / `list_chat_templates` / `register_template` / `register_session` | Chat-corpus authoring + templated rendering for export. | `writes_enabled` |
 
 ### Wire-up
 
@@ -605,13 +629,16 @@ Run ingester daemons on multiple machines against a single central Postgres.
 See [`docs/deployment-satellite.md`](docs/deployment-satellite.md) for the
 step-by-step satellite setup guide.
 
-### First-class Claude assets
+### First-class skill assets
 
-- **Project-scoped skill** — `.claude/skills/corpus-forge-search/SKILL.md` — instructs Claude Code on when to invoke the MCP tools and how to cite results.
-- **Agent SDK subagent** — `.claude/agents/corpus-forge-researcher.md` — research-style delegate scoped to the three MCP tools.
+Both shipped under the repo and mirrored across the three supported clients:
+
+- **`corpus-forge-search`** — search-and-cite. Files: `.claude/skills/corpus-forge-search/SKILL.md`, `.opencode/command/corpus-forge-search.md`, `.gemini/agents/corpus-forge-search.md`.
+- **`corpus-curate`** — the data-improvement chat loop. Files: `.claude/skills/corpus-curate/SKILL.md`, `.opencode/command/corpus-curate.md`, `.gemini/agents/corpus-curate.md`.
+- **Research-librarian subagent** — `.claude/agents/corpus-forge-researcher.md` — Anthropic Agent SDK delegate scoped to the search-and-cite tools.
 - **Full walkthrough** — [`docs/claude-integration.md`](docs/claude-integration.md).
 
-Rerank (`rerank=true`) triggers a one-time ~600 MB `BAAI/bge-reranker-v2-m3` download. Opt-in only for top-of-list precision needs.
+Rerank (`rerank=true`) triggers a one-time ~600 MB `BAAI/bge-reranker-v2-m3` download. Opt-in only for top-of-list precision needs. The `corpus-curate` selector reuses the same reranker for its "elevation potential" score, so it inherits the same local-or-remote URL choice you set in `[reranker]`.
 
 ## Local search
 

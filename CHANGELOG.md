@@ -50,6 +50,19 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   (cross_encoder or ollama) so the local-or-remote URL invariant
   carries through unchanged.
 
+### Changed
+
+#### Phase J — Living Corpus
+- README reframed around "Chat with your data. Forge a living, trainable
+  corpus." Training-data export stays the headline deliverable, framed
+  as the outcome of an active corpus rather than a one-shot ETL job.
+  New "Human-in-the-loop curation" bullet under "Why corpus-forge."
+  Quickstart now shows `corpus-forge estimate <path>` between `migrate`
+  and `ingest`, and the curation skill flow before `export`. New "For
+  AI assistants" H2 cross-linking to `CLAUDE.md` / `GEMINI.md` /
+  `AGENTS.md`. The MCP tool table now lists every tool with its
+  `writes_enabled` gate. Banner alt-text updated to match.
+
 #### Phase D — Universal multi-format ingest (waves 0–6)
 - `Extractor` protocol (`corpus_forge/extractors/base.py`) + `ExtractorRegistry`
   with a per-extension lookup table and a second-pass `supported_filenames`
