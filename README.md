@@ -59,6 +59,55 @@ corpus-forge export chat --dataset claude-code --out ./chat.jsonl --template cha
 
 ## Install
 
+### One-liner (recommended)
+
+The installer walks you through a short prompt-tree, picks the right
+pip extras for the components you want, runs `uv tool install`, and
+hands off to the `corpus-forge setup` wizard to render
+`~/.config/corpus-forge/config.toml`. Works on macOS, Linux, and
+Windows.
+
+```bash
+# macOS / Linux / WSL
+curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh | sh
+```
+
+```powershell
+# Windows (run from an elevated PowerShell if you also want the daemon service)
+iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 | iex
+```
+
+**CI / unattended installs** — set `CF_NON_INTERACTIVE=1` plus the
+`CF_*` env vars documented in [`corpus_forge/setup/questions.toml`](corpus_forge/setup/questions.toml):
+
+```bash
+CF_NON_INTERACTIVE=1 CF_BACKEND=sqlite CF_MCP=yes CF_HF=yes \
+  curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh | sh
+```
+
+### Upgrade + diagnostics
+
+```bash
+corpus-forge update    # auto-detects channel (uv-tool / pipx / brew / docker / source / pip)
+corpus-forge doctor    # post-install health check (Python, system deps, config)
+corpus-forge --version # prints version; daily PyPI ping surfaces newer releases
+```
+
+The `--version` ping is strictly anonymous (User-Agent
+`corpus-forge/<version>`, no install-id) and caches the result for
+24 h. Opt out with `CF_NO_VERSION_CHECK=1`.
+
+### Distribution channels
+
+- **Homebrew tap** — `brew install ulmentflam/tap/corpus-forge`
+  (formula scaffold at [`packaging/distribution/corpus-forge.rb`](packaging/distribution/corpus-forge.rb))
+- **Scoop bucket** — manifest scaffold at [`packaging/distribution/corpus-forge.json`](packaging/distribution/corpus-forge.json)
+- **Docker** — `docker run -it ghcr.io/ulmentflam/corpus-forge:latest --help`
+  (see [`Dockerfile`](Dockerfile); `:full` tag bundles every extra)
+- **PyPI** — `pip install corpus-forge` or `uv tool install corpus-forge`
+
+### Advanced: manual install with hand-picked extras
+
 <details>
 <summary><strong>Linux</strong></summary>
 

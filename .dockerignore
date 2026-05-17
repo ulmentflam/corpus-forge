@@ -1,0 +1,31 @@
+# Phase I-14 — keep the Docker build context small.
+
+# Local virtualenvs.
+.venv/
+.venv311/
+
+# Caches.
+.coverage
+.hypothesis/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+**/*.pyc
+
+# Build artefacts.
+dist/
+build/
+*.egg-info/
+
+# Repo-internal planning + scratch.
+.planning/
+.claude/
+.opencode/
+
+# IDE noise.
+.idea/
+.vscode/
+.DS_Store
+
+# Tests aren't needed inside the image.
+tests/
