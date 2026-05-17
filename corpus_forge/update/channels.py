@@ -77,8 +77,11 @@ def detect_channel(*, executable: str | None = None, env: dict[str, str] | None 
     if "/pipx/venvs/" in exe_str or "\\pipx\\venvs\\" in exe_str:
         return "pipx"
 
-    # 3. ``brew``: Homebrew installs land under Cellar/.
-    if "/Cellar/" in exe_str:
+    # 3. ``brew``: Homebrew installs land under Cellar/. Brew is
+    #    macOS/Linux-only in practice, but include the backslash form
+    #    so the test suite (which runs on Windows) stays platform-
+    #    agnostic.
+    if "/Cellar/" in exe_str or "\\Cellar\\" in exe_str:
         return "brew"
 
     # 4. ``docker``: container env vars set by Docker / Podman, plus the
