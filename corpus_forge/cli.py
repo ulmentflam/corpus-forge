@@ -15,16 +15,20 @@ app = typer.Typer(
 
 
 def _version_callback(value: bool) -> None:
-    """Print the package version and exit. Conventionally bound to ``--version``.
-
-    Pairs with the ``version`` subcommand so both ``corpus-forge --version``
-    (idiomatic CLI flag) and ``corpus-forge version`` (subcommand) work.
-    The install-smoke E2E uses ``--version`` for terseness; users may
-    prefer either.
-    """
-    if value:
-        typer.echo(f"corpus-forge version {__version__}")
-        raise typer.Exit()
+    """Print the package version (+ optional newer-version notice) and exit."""
+    if not value:
+        return
+    typer.echo(f"corpus-forge version {__version__}")
+    # Phase I-11: daily PyPI ping. Strictly anonymous, 24h cached,
+    # silent on offline / DNS / 5xx. Opt out via CF_NO_VERSION_CHECK=1.
+    try:
+        from .update import check_for_update
+    except ImportError:
+        raise typer.Exit() from None
+    result = check_for_update()
+    if result and result.notice():
+        typer.echo(result.notice())
+    raise typer.Exit()
 
 
 @app.callback()
@@ -193,6 +197,78 @@ def setup(
     backend = answers.get("backend", "sqlite")
     embedder = answers.get("embedder", "st")
     typer.echo(f"  backend={backend!r}  embedder={embedder!r}")
+
+
+@app.command()
+def update(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print the command that would run; don't execute."
+    ),
+    channel: str | None = typer.Option(
+        None,
+        "--channel",
+        help="Force a specific install channel (uv-tool / pipx / brew / docker / source / pip).",
+    ),
+    skip_migrate: bool = typer.Option(
+        False, "--skip-migrate", help="Skip the migrate step after upgrade."
+    ),
+    skip_doctor: bool = typer.Option(
+        False, "--skip-doctor", help="Skip the doctor sanity check after upgrade."
+    ),
+) -> None:
+    """Self-update corpus-forge via the detected install channel.
+
+    Detects how the package was installed (uv tool / pipx / brew /
+    docker / source / pip) by inspecting ``sys.executable`` + env
+    hints, then runs the matching upgrade command. After a successful
+    upgrade, runs ``corpus-forge migrate`` + ``corpus-forge doctor``
+    automatically (skip with ``--skip-migrate`` / ``--skip-doctor``).
+    """
+    from .update import Channel, run_update
+
+    ch: Channel | None = None
+    if channel is not None:
+        ch = channel  # type: ignore[assignment] — validated inside run_update
+    result = run_update(channel=ch, dry_run=dry_run)
+    typer.echo(f"channel: {result.channel}")
+    typer.echo(f"command: {' '.join(result.command)}")
+    if result.stdout:
+        typer.echo(result.stdout)
+    if result.stderr:
+        typer.echo(result.stderr, err=True)
+    if not result.succeeded:
+        raise typer.Exit(code=result.returncode or 1)
+    if dry_run:
+        return
+    if not skip_migrate:
+        typer.echo("[OK] Running migrations...")
+        try:
+            from .schema.migrate import main as migrate_main
+
+            migrate_main()
+        except Exception as exc:
+            typer.echo(f"[WARN] migrate failed (continue manually): {exc}", err=True)
+    if not skip_doctor:
+        from .doctor import run_doctor
+
+        report = run_doctor()
+        typer.echo(report.render())
+
+
+@app.command()
+def doctor() -> None:
+    """Run a post-install health check (Python, config, system deps).
+
+    Exit code 0 iff every check passes (``OK`` or ``SKIP``). Issues are
+    printed to stdout for inspection. Read-only — never writes config,
+    never changes state.
+    """
+    from .doctor import run_doctor
+
+    report = run_doctor()
+    typer.echo(report.render())
+    if not report.healthy:
+        raise typer.Exit(code=1)
 
 
 # ── export subcommand group ──────────────────────────────────────────────
