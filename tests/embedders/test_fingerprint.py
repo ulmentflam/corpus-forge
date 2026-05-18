@@ -157,3 +157,159 @@ def test_fingerprint_changes_with_distance(embedder_cfg):
     )
 
     assert embedder_fingerprint(embedder_cfg).full != embedder_fingerprint(different).full
+
+
+# ── coverage push: edge branches in _stored_fingerprint / helpers ────────
+
+
+def test_seconds_per_chunk_env_override_invalid_falls_back(monkeypatch):
+    """Bad ``CF_REEMBED_SECONDS_PER_CHUNK`` falls back to the default."""
+
+    from corpus_forge.embedders.fingerprint import _seconds_per_chunk
+
+    monkeypatch.setenv("CF_REEMBED_SECONDS_PER_CHUNK", "not-a-float")
+    # Falls back to the default (0.034) when the env value can't parse.
+    assert _seconds_per_chunk() == pytest.approx(0.034)
+
+
+def test_seconds_per_chunk_env_override_valid(monkeypatch):
+    """Well-formed env override wins over the default."""
+
+    from corpus_forge.embedders.fingerprint import _seconds_per_chunk
+
+    monkeypatch.setenv("CF_REEMBED_SECONDS_PER_CHUNK", "0.1")
+    assert _seconds_per_chunk() == pytest.approx(0.1)
+
+
+def test_stored_fingerprint_string_blob_json_decoded():
+    """SQLite stores ``config`` as a JSON string — must be decoded transparently."""
+
+    import json as _json
+
+    from corpus_forge.embedders.fingerprint import _stored_fingerprint
+
+    row = {
+        "provider": "sentence_transformers",
+        "model_id": "Qwen/Qwen3-Embedding-8B",
+        "dimension": 1024,
+        "normalized": 1,  # SQLite INTEGER
+        "distance": "cosine",
+        "config": _json.dumps(
+            {
+                "provider": "sentence_transformers",
+                "model_id": "Qwen/Qwen3-Embedding-8B",
+                "dimension": 1024,
+                "normalize": True,
+                "distance": "cosine",
+            }
+        ),
+    }
+    fp = _stored_fingerprint(row)
+    assert len(fp.full) == 64
+
+
+def test_stored_fingerprint_malformed_json_string_falls_back():
+    """Malformed JSON in the ``config`` column falls back to the top-level columns."""
+
+    from corpus_forge.embedders.fingerprint import _stored_fingerprint
+
+    row = {
+        "provider": "sentence_transformers",
+        "model_id": "Qwen/Qwen3-Embedding-8B",
+        "dimension": 1024,
+        "normalized": True,
+        "distance": "cosine",
+        "config": "{not valid json",
+    }
+    fp = _stored_fingerprint(row)
+    # Just make sure we got a real hash without raising.
+    assert len(fp.full) == 64
+
+
+def test_stored_fingerprint_non_dict_config_falls_back():
+    """Non-dict ``config`` (e.g. a JSON list) is ignored cleanly."""
+
+    import json as _json
+
+    from corpus_forge.embedders.fingerprint import _stored_fingerprint
+
+    row = {
+        "provider": "sentence_transformers",
+        "model_id": "Qwen/Qwen3-Embedding-8B",
+        "dimension": 1024,
+        "normalized": True,
+        "distance": "cosine",
+        "config": _json.dumps(["unexpected", "shape"]),
+    }
+    fp = _stored_fingerprint(row)
+    assert len(fp.full) == 64
+
+
+def test_stored_fingerprint_none_dimension_coerces_to_zero():
+    """A null dimension column is coerced to 0 rather than raising."""
+
+    from corpus_forge.embedders.fingerprint import _stored_fingerprint
+
+    row = {
+        "provider": "sentence_transformers",
+        "model_id": "Qwen/Qwen3-Embedding-8B",
+        "dimension": None,
+        "normalized": True,
+        "distance": "cosine",
+        "config": {},
+    }
+    fp = _stored_fingerprint(row)
+    assert len(fp.full) == 64
+
+
+def test_count_existing_swallows_attribute_error():
+    """`_count_existing` returns 0 when the backend lacks the helper."""
+
+    from corpus_forge.embedders.fingerprint import _count_existing
+
+    class _NoHelpers:
+        pass
+
+    assert _count_existing(_NoHelpers(), 1) == 0
+
+
+def test_count_missing_swallows_attribute_error():
+    """`_count_missing` returns 0 when the backend lacks the helper."""
+
+    from corpus_forge.embedders.fingerprint import _count_missing
+
+    class _NoHelpers:
+        pass
+
+    assert _count_missing(_NoHelpers(), 1) == 0
+
+
+def test_save_active_fingerprint_skips_backend_without_blob_helper():
+    """`save_active_fingerprint` silently degrades when the backend is pre-Wave-5."""
+
+    from unittest.mock import MagicMock
+
+    from corpus_forge.embedders.fingerprint import save_active_fingerprint
+
+    class _LegacyBackend:
+        def find_embedder_row_by_name(self, name: str):
+            return {"id": 1, "name": name}
+
+        # No update_embedder_config_blob method → AttributeError swallowed.
+
+    cfg = MagicMock()
+    cfg.embedders = [
+        MagicMock(
+            name="e1",
+            provider="openai",
+            model_id="text-embedding-3-small",
+            dimension=1536,
+            normalize=True,
+            distance="cosine",
+            active=True,
+        )
+    ]
+    # Configure the MagicMock's ``name`` attribute (MagicMock auto-assigns
+    # this from the constructor, so we have to overwrite it manually).
+    cfg.embedders[0].name = "e1"
+    save_active_fingerprint(cfg, _LegacyBackend())  # must not raise

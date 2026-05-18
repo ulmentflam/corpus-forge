@@ -211,6 +211,238 @@ def test_run_attached_foreground_zero_on_success(
     assert rc == 0
 
 
+# ── coverage push: edge branches in read_pid / _safe_std / signal install ──
+
+
+def test_read_pid_returns_none_for_empty_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 0-byte pid file returns ``None`` (the early ``if not raw`` branch)."""
+
+    _isolate_state_dir(monkeypatch, tmp_path)
+    foreground.pid_path("empty").write_text("", encoding="utf-8")
+    assert foreground.read_pid("empty") is None
+
+
+def test_read_pid_returns_none_when_read_raises_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OSError during ``Path.read_text`` is swallowed (returns None)."""
+
+    _isolate_state_dir(monkeypatch, tmp_path)
+    # Write the file (so the ``exists()`` check passes) then patch
+    # ``read_text`` on the Path class to raise.
+    foreground.write_pid("perm", os.getpid())
+
+    real_read_text = Path.read_text
+
+    def _broken_read_text(self, *args, **kwargs):
+        if self.name == "perm.pid":
+            raise OSError("simulated read failure")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _broken_read_text)
+    assert foreground.read_pid("perm") is None
+
+
+def test_read_pid_returns_pid_on_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``os.kill(pid, 0)`` raising PermissionError → pid still counted as alive."""
+
+    _isolate_state_dir(monkeypatch, tmp_path)
+    foreground.write_pid("alien", 99999)
+
+    def _fake_kill(pid: int, sig: int) -> None:
+        raise PermissionError("not yours, but it's there")
+
+    monkeypatch.setattr(os, "kill", _fake_kill)
+    assert foreground.read_pid("alien") == 99999
+
+
+def test_read_pid_returns_none_on_other_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-PermissionError, non-ProcessLookupError OSError → None."""
+
+    _isolate_state_dir(monkeypatch, tmp_path)
+    foreground.write_pid("strange", 99999)
+
+    def _fake_kill(pid: int, sig: int) -> None:
+        raise OSError(99, "some other errno")
+
+    monkeypatch.setattr(os, "kill", _fake_kill)
+    assert foreground.read_pid("strange") is None
+
+
+def test_safe_std_returns_default_for_none() -> None:
+    """`_safe_std(None, default=X)` returns X immediately."""
+
+    sentinel = object()
+    assert foreground._safe_std(None, default=sentinel) is sentinel
+
+
+def test_safe_std_returns_default_for_streams_without_fileno() -> None:
+    """A stream without a ``fileno`` attr falls back to the default."""
+
+    class _NoFileno:
+        pass
+
+    sentinel = object()
+    assert foreground._safe_std(_NoFileno(), default=sentinel) is sentinel
+
+
+def test_safe_std_returns_default_when_fileno_raises() -> None:
+    """A stream whose ``fileno()`` raises falls back to the default."""
+
+    class _BrokenFileno:
+        def fileno(self) -> int:
+            raise OSError("captured by pytest")
+
+    sentinel = object()
+    assert foreground._safe_std(_BrokenFileno(), default=sentinel) is sentinel
+
+
+def test_safe_std_returns_stream_when_fileno_works() -> None:
+    """A real stream is passed through unchanged."""
+
+    stream = sys.stdout
+
+    # ``sys.stdout`` may not have a real fileno() under pytest capture —
+    # build a stub that does.
+    class _RealStream:
+        def fileno(self) -> int:
+            return 1
+
+    s = _RealStream()
+    assert foreground._safe_std(s, default=None) is s
+    # Reference ``stream`` to keep ruff happy.
+    assert stream is sys.stdout
+
+
+def test_install_signal_forwarders_swallows_value_error(monkeypatch) -> None:
+    """``signal.signal`` raising ValueError → forwarder install is silently skipped."""
+
+    def _refuse(sig, handler):
+        raise ValueError("simulated non-main-thread refusal")
+
+    monkeypatch.setattr(signal, "signal", _refuse)
+
+    # Build a stub Popen-like — we just need ``.send_signal`` to be safe.
+    class _Stub:
+        def send_signal(self, sig: int) -> None:
+            pass
+
+    previous = foreground._install_signal_forwarders(_Stub())  # type: ignore[arg-type]
+    # No handlers were captured because every install raised.
+    assert previous == {}
+
+
+def test_restore_signal_handlers_swallows_value_error(monkeypatch) -> None:
+    """``_restore_signal_handlers`` survives a flaky ``signal.signal``."""
+
+    def _refuse(sig, handler):
+        raise ValueError("simulated refusal")
+
+    monkeypatch.setattr(signal, "signal", _refuse)
+    foreground._restore_signal_handlers({int(signal.SIGINT): None})  # must not raise
+
+
+def test_forward_signal_factory_swallows_lookup_error() -> None:
+    """The forwarder handler swallows ProcessLookupError from a dead child."""
+
+    class _DeadChild:
+        def send_signal(self, sig: int) -> None:
+            raise ProcessLookupError
+
+    handler = foreground._forward_signal_factory(_DeadChild())  # type: ignore[arg-type]
+    # Calling the handler with a fake (signum, frame) should not raise.
+    handler(int(signal.SIGINT), None)
+
+
+def test_run_attached_foreground_handles_keyboard_interrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When ``proc.wait()`` raises KeyboardInterrupt, the inner wait returns the rc."""
+
+    _isolate_state_dir(monkeypatch, tmp_path)
+
+    class _FakeProc:
+        def __init__(self) -> None:
+            self.pid = 999
+            self._waited = 0
+
+        def wait(self, timeout: float | None = None):
+            self._waited += 1
+            if self._waited == 1:
+                raise KeyboardInterrupt
+            # Second call (inside the KI handler) returns the child code.
+            return 130
+
+        def kill(self) -> None:
+            pass
+
+        def send_signal(self, sig: int) -> None:
+            pass
+
+    fake = _FakeProc()
+
+    def _fake_popen(*args, **kwargs):
+        return fake
+
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+    # Defang the signal installer so we don't touch the real handler table.
+    monkeypatch.setattr(foreground, "_install_signal_forwarders", lambda _proc: {})
+    monkeypatch.setattr(foreground, "_restore_signal_handlers", lambda _prev: None)
+
+    rc = foreground.run_attached(
+        [sys.executable, "-c", "pass"], component="ki-test", background=False
+    )
+    assert rc == 130
+
+
+def test_run_attached_foreground_kills_child_after_keyboard_interrupt_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the post-SIGINT wait times out, ``proc.kill()`` runs and we return its rc."""
+
+    _isolate_state_dir(monkeypatch, tmp_path)
+
+    class _StubbornProc:
+        def __init__(self) -> None:
+            self.pid = 1234
+            self._calls = 0
+            self.killed = False
+
+        def wait(self, timeout: float | None = None):
+            self._calls += 1
+            if self._calls == 1:
+                # First call (no timeout) — interrupt.
+                raise KeyboardInterrupt
+            if self._calls == 2:
+                # Second call (with timeout) — child still alive.
+                raise subprocess.TimeoutExpired(cmd="x", timeout=timeout or 0.0)
+            # Third call (after kill) — finally returns.
+            return 137
+
+        def kill(self) -> None:
+            self.killed = True
+
+        def send_signal(self, sig: int) -> None:
+            pass
+
+    fake = _StubbornProc()
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: fake)
+    monkeypatch.setattr(foreground, "_install_signal_forwarders", lambda _proc: {})
+    monkeypatch.setattr(foreground, "_restore_signal_handlers", lambda _prev: None)
+
+    rc = foreground.run_attached(
+        [sys.executable, "-c", "pass"], component="ki-kill-test", background=False
+    )
+    assert rc == 137
+    assert fake.killed
+
+
 @pytest.mark.skipif(
     sys.platform.startswith("win"),
     reason="POSIX-only signal forwarding; Windows has different semantics.",
