@@ -96,7 +96,7 @@ _AGENT_ENV_VARS = (
 
 
 @pytest.fixture(autouse=True)
-def _reset_agent_state() -> "Generator[None, None, None]":
+def _reset_agent_state():
     """Wave 9 — per-test reset of agent detection state.
 
     The import-time scrub above only fires once.  ``mcp serve --transport
@@ -116,12 +116,10 @@ def _reset_agent_state() -> "Generator[None, None, None]":
         os.environ.pop(k, None)
 
     try:
-        from corpus_forge.ui import agent as _agent_mod  # noqa: PLC0415
+        from corpus_forge.ui import agent as _agent_mod
 
         _agent_mod.set_current(
-            _agent_mod.Detection(
-                client=_agent_mod.AgentClient.HUMAN, signal="", raw_value=""
-            )
+            _agent_mod.Detection(client=_agent_mod.AgentClient.HUMAN, signal="", raw_value="")
         )
     except ImportError:  # pragma: no cover — defensive (Wave 1 may not be loaded yet)
         pass
