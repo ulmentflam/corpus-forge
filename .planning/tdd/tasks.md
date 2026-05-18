@@ -59,8 +59,8 @@ Dispatch input: orchestrator brief, Phase L / Wave 3 kickoff after Wave 2 landed
 
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
-| W3-01 | `setup --quick` + banner on setup | — | `corpus_forge/setup/wizard.py`, `corpus_forge/setup/__init__.py`, `corpus_forge/cli.py` (setup command), `tests/cli/test_setup_quick.py` (new), `tests/cli/test_banner.py` (new) | med | pending | — | Wizard gets `QUICK_QUESTIONS` subset + Ollama probe. CLI grows `--quick` flag + banner. |
-| W3-02 | `doctor --json` + `to_json()` + banner on doctor | — | `corpus_forge/doctor/checks.py`, `corpus_forge/cli.py` (doctor command), `tests/cli/test_doctor_json.py` (new), `tests/cli/test_doctor_banner_in_json_mode.py` (new) | low | pending | — | New `DoctorReport.to_json() -> dict`; `--json` flag suppresses banner + prints JSON; exit codes 0/1/2 by summary. |
+| W3-01 | `setup --quick` + banner on setup | — | `corpus_forge/setup/wizard.py`, `corpus_forge/setup/__init__.py`, `corpus_forge/cli.py` (setup command), `tests/cli/test_setup_quick.py` (new), `tests/cli/test_banner.py` (new) | med | done | tdd-principal | Wizard gets `QUICK_QUESTIONS` subset + Ollama probe (urlopen-based, mockable via `_urlopen_compat`). CLI grows `--quick` flag + banner-on-non-non-interactive. Config round-trips through `Config.load()`. |
+| W3-02 | `doctor --json` + `to_json()` + banner on doctor | — | `corpus_forge/doctor/checks.py`, `corpus_forge/cli.py` (doctor command), `tests/cli/test_doctor_json.py` (new), `tests/cli/test_doctor_banner_in_json_mode.py` (new) | low | done | tdd-principal | `DoctorReport.to_json()` returns `{checks, summary, version, ts}`. `--json` flag suppresses banner + styled render, prints one JSON line via bare `print()`, exits 0 (ok) / 1 (fail) / 2 (warn-only). |
 
 ## Acceptance details
 
@@ -322,6 +322,46 @@ test-write contention between W3-01 and W3-02 workers). One test:
 - Wave 0: W3-01 and W3-02 in parallel. Surface overlap on `cli.py` is on
   disjoint functions (setup vs doctor) so the two coders' diffs do not
   conflict in practice — the orchestrator commits each separately.
+
+## Summary
+
+**Files changed (production):**
+- `corpus_forge/cli.py` — `setup` command grows `--quick` + banner;
+  `doctor` command grows `--json` + banner + exit-code-by-summary.
+- `corpus_forge/doctor/checks.py` — adds `DoctorReport._summary()`
+  + `DoctorReport.to_json()` (UTC ISO8601 ts).
+- `corpus_forge/setup/wizard.py` — adds `QUICK_QUESTIONS`,
+  `_probe_ollama`, `_urlopen_compat`, `_render_quick_config_toml`,
+  `_collect_quick_answers`, `_write_quick_config`, `run_quick`.
+- `corpus_forge/setup/__init__.py` — re-exports `run_quick`.
+
+**Files added (tests):**
+- `tests/cli/test_setup_quick.py` (9 tests)
+- `tests/cli/test_banner.py` (5 tests)
+- `tests/cli/test_doctor_json.py` (9 tests)
+- `tests/cli/test_doctor_banner_in_json_mode.py` (1 test)
+
+**Gates:**
+- New tests: 24/24 green.
+- CLI + doctor + wizard regression: 101/101 green.
+- `tests/cli/test_no_typer_echo.py` static regression: still green
+  (no new `typer.echo`/`secho`/`prompt`/`confirm` outside `ui/`).
+- `uv run ruff check <touched>` — clean.
+- `uv run ruff format --check <touched>` — clean.
+- Baseline pre-existing failures (`tests/unit/test_cli_rechunk.py`,
+  `tests/unit/test_pdf_extractor_escalation.py`,
+  `tests/unit/test_extractor_html.py`, etc.) unchanged — not introduced
+  by Wave 3.
+
+**Live smoke:**
+- `python -m corpus_forge doctor --json` → one parseable JSON line,
+  exit 0.
+- `python -m corpus_forge doctor` → rounded-box banner + colored OK
+  pills on stderr.
+- `CF_BACKEND=sqlite CF_EMBEDDER_MODEL_ID=qwen3:8b python -m
+  corpus_forge setup --quick --non-interactive --config-dir <tmp>`
+  → valid `config.toml` (Config.load round-trip), no banner, info
+  hint about empty scan_root.
 
 ## Notes for Wave 4+
 - The `--quick` config shape is intentionally minimal — Wave 4's

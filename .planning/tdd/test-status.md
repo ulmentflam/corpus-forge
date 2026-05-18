@@ -3,6 +3,8 @@
 Record of test suites written by tdd-tester.
 | task-id | status | notes |
 |---------|--------|-------|
+| W3-01   | red    | `tests/cli/test_setup_quick.py` (9 tests) + `tests/cli/test_banner.py` (5 tests). All 14 fail at RED (missing `run_quick`, `_probe_ollama`, `_urlopen_compat`, `--quick` flag, banner-on-setup). Ready for GREEN. |
+| W3-02   | red    | `tests/cli/test_doctor_json.py` (10 tests) + `tests/cli/test_doctor_banner_in_json_mode.py` (1 test). All 11 fail at RED (missing `DoctorReport.to_json`, `--json` flag, banner-on-doctor, exit-code mapping). Ready for GREEN. |
 | J4-01   | red    | 47 tests in `tests/unit/test_curation_selector.py` covering score primitives, dataclass discipline, batch grouping, and generic-walk fallback. Suite went green against the implementation in the same task — see code-status.md. |
 | J4-02   | pending | tester dispatched — RED suite for 3 new MCP tool dispatches. |
 | J4-03   | pending | tester dispatched — RED suite asserts presence + frontmatter of the three new skill assets. |
