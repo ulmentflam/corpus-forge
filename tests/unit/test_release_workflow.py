@@ -285,8 +285,7 @@ def test_brew_bump_checks_out_tap_repo(jobs: dict, release_text: str) -> None:
             tap_checkout = s
             break
     assert tap_checkout is not None, (
-        "brew-bump must include an actions/checkout step targeting "
-        "ulmentflam/homebrew-tap"
+        "brew-bump must include an actions/checkout step targeting ulmentflam/homebrew-tap"
     )
     # The token MUST be HOMEBREW_TAP_TOKEN; never the default GITHUB_TOKEN
     # (which has no cross-repo write).
@@ -319,8 +318,7 @@ def test_brew_bump_commits_and_pushes_formula(jobs: dict) -> None:
     )
     # No-op guard: don't push when the formula is already current.
     assert "diff --cached --quiet" in blob, (
-        "brew-bump must skip the push when the formula is unchanged "
-        "(re-run protection)"
+        "brew-bump must skip the push when the formula is unchanged (re-run protection)"
     )
 
 
