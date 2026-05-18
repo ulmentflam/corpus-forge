@@ -1,957 +1,429 @@
-# TDD Task Board — Phase L / Wave 5 (Embedder-fingerprint detection)
+# TDD Task Board — Phase L / Wave 6 (Diagnostics — bug-report, logs, redactor)
 
 _Owner: tdd-principal. Workers: read freely. Edit only your claimed row's
 `status` and `claimed_by`._
 
-Source plan: `/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Workspace/playground/corpus-forge/.planning/tdd/phase_l_cli_ux.md` §8 (Embedder-fingerprint detection).
-Dispatch input: orchestrator brief, Phase L / Wave 5 kickoff after Wave 4 landed (`ebe4273`).
+Source plan:
+`/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Workspace/playground/corpus-forge/.planning/tdd/phase_l_cli_ux.md`
+§9 (bug-report), §11 (logs subcommand), plus the §8 carry-over (Wave 5
+embedder helpers that landed in `corpus_forge.embedders.fingerprint` but
+never got the concrete backend methods).
 
-> Previous slice (Wave 4) summary archived in git history at `ebe4273`.
+Dispatch input: orchestrator brief, Phase L / Wave 6 kickoff after Wave
+5 landed (`8625d0b`).
+
+> Previous slice (Wave 5) summary archived in git history at `8625d0b`.
 
 ## Project gates
 - lint: `uv run ruff check`
 - format: `uv run ruff format --check`
-- test (Wave 5 surface): `uv run python -m pytest tests/embedders tests/cli/test_drift_flow.py -x`
-- regression: `uv run python -m pytest tests/unit tests/cli tests/embedders -x` (no new failures vs Wave 4 baseline)
+- test (Wave 6 surface):
+  `uv run python -m pytest tests/backends tests/diagnostics tests/cli/test_bug_report.py tests/cli/test_logs_subcommand.py -x`
+- regression:
+  `uv run python -m pytest tests/unit tests/cli tests/embedders tests/backends -x`
+  (no new failures vs Wave 5 baseline)
 - coverage-min: keep current baseline (no regression)
 
 ## Hard constraints (from dispatch + project)
 1. **DO NOT COMMIT, DO NOT PUSH.** Workers stage only. Orchestrator commits.
-2. **NO `typer.echo/secho/prompt/confirm`** outside `corpus_forge/ui/` — the
-   `tests/cli/test_no_typer_echo.py` regression will fail you.
+2. **NO `typer.echo/secho/prompt/confirm`** outside `corpus_forge/ui/` —
+   the `tests/cli/test_no_typer_echo.py` regression will fail you.
 3. **`uv run python -m pytest`**, never bare `pytest`.
-4. **Daemon mode does NOT prompt.** WARNING-level log only on detected drift.
-5. `Prompt.ask` / `Confirm.ask` come from `corpus_forge.ui.prompts` (Wave 1);
-   they're thin wrappers around `rich.prompt`.
-6. `EmbedderConfig.distance` is part of the fingerprint tuple per the brief.
-   Stored config JSONB today only carries `provider` + `model_id` (see
-   `corpus_forge/backends/postgres.py:307` / sqlite mirror). On the FIRST
-   run after Wave 5 lands, drift comparison must NOT explode on the
-   legacy 2-key shape — when the stored config is missing any of the
-   five fingerprint fields, fall back to the row's top-level columns
-   (`provider`, `model_id`, `dimension`, `normalized`, `distance`) which
-   the migration 0001 already provides.
-7. The "WAS" fingerprint comes from the stored row; the "NOW" fingerprint
-   comes from the live `EmbedderConfig`. Identical → no drift. Differing
-   → drift.
-8. Background subprocess MUST NOT inherit the parent's stdio:
-   `subprocess.Popen(..., stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, start_new_session=True)`.
-   The detached worker calls `init_logging('embed-worker', ...)` so its
-   logs land in `embed-worker.log`.
-9. Marker file lives under
-   `~/.cache/corpus-forge/state/pending_rerun.json` and the embed-worker
-   pid under `~/.cache/corpus-forge/state/embed-worker.pid`. Use
-   `platformdirs.user_cache_dir('corpus-forge')` so the path matches the
-   Wave 1 logging convention. Atomic write via tempfile + rename.
+4. Themed output only via `corpus_forge.ui.console` (`info`, `ok`,
+   `warn`, `error`, `console.print`). `Confirm.ask` / `Prompt.ask` come
+   from `corpus_forge.ui.prompts`.
+5. `corpus-forge bug-report` zip filename pattern is exactly
+   `corpus-forge-bugreport-<ISO date>-<short-hash>.zip` written in CWD
+   by default; `<short-hash>` is the 8-char prefix of the manifest
+   content hash (deterministic from manifest contents → so a
+   re-generation with identical manifest data produces the same hash).
+6. The bug-report URL is
+   `https://github.com/ulmentflam/corpus-forge/issues/new?template=bug.yml&title=...`
+   with `title=[bug-report <short-hash>]` URL-encoded.
+7. Redactor patterns (compile once at module top): DSN/connection
+   string, OpenAI-style `sk-`, xAI-style `xai-`, Anthropic-style
+   `claude-`, generic `api_key=`/`password=`/`secret=`, Bearer tokens,
+   `base_url` values containing `@`.
+8. `redact_string(s) -> tuple[str, int]` returns the redacted text +
+   count of replacements made. Idempotent — running twice over the same
+   input yields the same string with **0** new redactions.
+9. `redact_toml_dict(doc) -> tuple[doc, int]` walks a tomlkit
+   `TOMLDocument` and replaces string values at keys matching `*dsn*`,
+   `*password*`, `*_api_key`, `*api_key`, `*secret*`, `*token*` (case
+   insensitive) with the literal `«redacted»` (Unicode guillemets).
+10. `logs tail --follow` polls 250 ms; clean SIGINT exit (no
+    `inotify`). Default component is `cli`, default `-n` is 200.
+11. `logs clear` prompts via `Confirm.ask` unless `--yes` is passed.
+12. Backend helper SQL must use the same `_execute` patterns the
+    existing methods use — no new connection plumbing.
+13. The Wave 5 `getattr` / try-except shims in
+    `corpus_forge/embedders/fingerprint.py` for the three new helpers
+    SHOULD STAY (defensive against third-party backends) but the
+    real `PostgresBackend` / `SQLiteBackend` paths must now activate
+    them.
+14. iCloud sync race: keep the working tree clean per file; never
+    commit until orchestrator has read `git status` + `git diff
+    --stat`.
 
 ## Decomposition notes (orchestrator)
 
-- **Surface-disjoint matrix:**
-  - W5-01 owns `corpus_forge/embedders/fingerprint.py` (NEW) — the
-    `embedder_fingerprint`, `EmbedderDrift`, `compare_active`, and
-    `save_active_fingerprint` API surface. No CLI / no setup wizard
-    edits.
-  - W5-02 owns `corpus_forge/embedders/_marker.py` (NEW) +
-    `corpus_forge/embedders/drift_prompt.py` (NEW; the panel +
-    `prompt_for_drift` helper). Pure module — no CLI plumbing.
-  - W5-03 owns CLI hook points: `corpus_forge/cli.py` (the `ingest` +
-    `embed` command bodies + `sync status` row), `corpus_forge/setup/wizard.py`
-    (end-of-wizard hook), `corpus_forge/daemon.py` (WARNING log only).
-    Depends on W5-01 + W5-02 landing first (consumer).
+### Surface-disjoint matrix
 
-- **Wave shape:**
-  - Wave A (3 parallel testers): RED for W5-01, W5-02, W5-03.
-  - Wave B (parallel coders): GREEN for W5-01 + W5-02 (independent surface).
-  - Wave C (sequential coder): GREEN for W5-03 (after W5-01 + W5-02).
-  - Wave D (3 parallel QAs): verify each.
+| Task | Owns (writes) | Reads (depends on) |
+|------|---------------|--------------------|
+| W6-01 (backend helpers) | `corpus_forge/backends/postgres.py`, `corpus_forge/backends/sqlite.py`, `corpus_forge/backends/base.py` (Protocol additions), `tests/backends/__init__.py`, `tests/backends/test_postgres_embedder_helpers.py`, `tests/backends/test_sqlite_embedder_helpers.py` | existing embedder rows shape from `alembic/versions/0001_core.py:143-156` |
+| W6-02 (redactor) | `corpus_forge/diagnostics/__init__.py`, `corpus_forge/diagnostics/redact.py`, `tests/diagnostics/__init__.py`, `tests/diagnostics/test_redact.py` | none |
+| W6-03 (bug-report) | `corpus_forge/diagnostics/bug_report.py`, `tests/diagnostics/test_bug_report.py`, `.github/ISSUE_TEMPLATE/bug.yml` | W6-02 (`redact_string`, `redact_toml_dict`, `redact_file`); W6-01 (for `db_summary.json` via backend) |
+| W6-04 (logs subcommand) | `corpus_forge/diagnostics/logs.py`, `tests/diagnostics/test_logs_subcommand.py` | `corpus_forge.logging_config.get_log_dir` (already shipped); `ui.console` |
+| W6-05 (CLI wiring + doctor daemon line) | `corpus_forge/cli.py`, `corpus_forge/doctor/checks.py` | W6-03, W6-04 |
 
-- **Embed-worker subprocess invocation.** The dispatch brief says:
-  ```python
-  subprocess.Popen(
-      [sys.executable, "-m", "corpus_forge", "embed", "-e", "<name>"],
-      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-      stderr=subprocess.DEVNULL, start_new_session=True,
-  )
-  ```
-  `python -m corpus_forge` works because `corpus_forge/__main__.py`
-  re-exports the Typer app. The subprocess gets `embed` CLI args
-  (`-e <name>` + optional `-d <dataset>`).
+### Wave shape
 
-- **Pid-file liveness check** (sync status row): `os.kill(pid, 0)`
-  returns without raising iff the process exists; `ProcessLookupError`
-  → dead. Wrap in try/except so we degrade gracefully.
+- **Wave A (parallel testers)**: W6-01 + W6-02 + W6-04 testers fire in
+  one Agent batch. Surfaces are fully disjoint. W6-03 tester also
+  fires in this wave with the understanding that the real
+  `redact_string` API is contract-defined in the brief (tests use
+  imports that will be RED until W6-02 lands).
+- **Wave B (parallel coders)**: W6-01 coder + W6-02 coder + W6-04
+  coder fire in one Agent batch. All three module surfaces are
+  independent.
+- **Wave C (single coder)**: W6-03 (bug-report) coder runs after Wave
+  B because it imports from `redact` + the new backend helpers.
+- **Wave D (single coder)**: W6-05 (CLI wiring + doctor daemon-line)
+  runs last because it imports both `bug_report` and `logs` modules.
+- **Wave E (parallel QA)**: one QA per task (W6-01 → W6-05). Each gets
+  the green commit hash, the task brief, and runs `ruff check` +
+  `ruff format --check` + the task's pytest selection.
 
-- **Marker JSON shape** (per brief):
-  ```json
-  {
-    "<embedder_name>": {
-      "state": "pending|skipped",
-      "fp_was": "...",
-      "fp_now": "...",
-      "detected_at": "iso",
-      "suppressed_until": "iso?"
+### Implementation hints
+
+#### W6-01 — backend helpers
+
+Add to both backends (postgres + sqlite). The Protocol in
+`backends/base.py` should declare the three new methods so the
+fingerprint module's `try/except AttributeError` falls through only
+for third-party / mock backends:
+
+```python
+def find_embedder_row_by_name(self, name: str) -> dict | None: ...
+def count_existing_embeddings(self, embedder_id: int) -> int: ...
+def update_embedder_config_blob(
+    self, embedder_id_or_name: int | str, config_blob: dict
+) -> None: ...
+```
+
+NOTE: `fingerprint.save_active_fingerprint` calls
+`backend.update_embedder_config_blob(row["id"], new_blob)` — i.e. by
+**id**. The brief's signature example shows `(name, config_blob)` but
+the actual consumer uses id. Accept **either** (overload on type):
+
+```python
+def update_embedder_config_blob(
+    self, embedder: int | str, config_blob: dict
+) -> None:
+    """Update the embedder row's ``config`` JSONB.
+
+    ``embedder`` may be an integer row id or a string name — both
+    paths are kept for ergonomic callers.
+    """
+```
+
+Postgres SQL shape:
+```sql
+SELECT id, name, provider, model_id, dimension, normalized, distance,
+       active, table_name, config
+  FROM corpus.embedders WHERE name = %s
+```
+
+SQLite mirror (drop the schema prefix; JSON-decode the `config` blob
+before returning so callers see a dict — the fingerprint module
+already tolerates string-shape but a dict is friendlier):
+
+```python
+row = ...
+row["config"] = json.loads(row["config"]) if isinstance(row["config"], str) else row["config"]
+row["normalized"] = bool(row["normalized"])
+row["active"] = bool(row["active"])
+return row
+```
+
+`count_existing_embeddings`: fetch the row first to get `table_name`,
+then `SELECT COUNT(*) FROM <table_name> WHERE embedder_id = ?`. On
+postgres the table lives under `corpus.<table_name>`; on sqlite it's
+bare. If the embedder id doesn't resolve, return 0 (don't raise).
+
+`update_embedder_config_blob(embedder, blob)`:
+- If `embedder` is `int`: `UPDATE embedders SET config = ? WHERE id = ?`.
+- If `embedder` is `str`: `UPDATE embedders SET config = ? WHERE name = ?`.
+- Postgres uses `psycopg.types.json.Json(blob)`; SQLite serializes
+  with `json.dumps(blob)`.
+
+#### W6-02 — redactor
+
+Module-level pre-compiled regexes (don't recompile per call):
+
+```python
+_PATTERNS = [
+    re.compile(r"(postgres(?:ql)?|mysql|mongodb|redis)(\+\w+)?://[^/\s]+@[\S]+", re.I),
+    re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
+    re.compile(r"xai-[A-Za-z0-9_\-]{16,}"),
+    re.compile(r"claude-[A-Za-z0-9_\-]{16,}"),
+    re.compile(r"(?i)(api[_-]?key|password|secret)\s*[=:]\s*[\"']?[^\s\"']+[\"']?"),
+    re.compile(r"Bearer\s+[A-Za-z0-9_.\-]+"),
+]
+```
+
+`redact_string` runs each pattern in turn and counts matches. Empty
+input → `("", 0)`. After replacement, the literal string in the result
+is `«redacted»` (Unicode 0xab/0xbb) so a single `grep '«redacted»'`
+finds every site.
+
+`redact_toml_dict` walks `doc` keys recursively. The matcher is the
+**key name**, not the value; this is so `dsn = "..."` is redacted even
+when the value doesn't pattern-match (Postgres DSNs with no embedded
+credentials still leak hostname/port). Use
+`tomlkit.items.{Table,InlineTable,AoT}` `.items()` for traversal.
+Preserve comments/order — that's the reason for tomlkit over
+`tomllib`.
+
+`redact_file(path: Path) -> int`: read text (utf-8, errors=replace),
+call `redact_string`, write back atomically (temp file + rename), return
+count.
+
+Idempotency: tests must verify a second `redact_string(redact_string(s)[0])`
+returns the same string with 0 added redactions.
+
+#### W6-03 — bug-report
+
+Module surface:
+
+```python
+def collect(
+    *,
+    out: Path | None = None,
+    include_logs: bool = True,
+    include_db: bool = True,
+    zip_bundle: bool = True,
+) -> BugReport:  # NamedTuple(path, redacted_count, short_hash)
+```
+
+Bundle the staging directory under a tempdir; build files in this
+order so the manifest hash captures everything: `doctor.json`,
+`config.redacted.toml`, `logs/*`, `env.txt`, `deps.txt`,
+`db_summary.json`, **THEN** `manifest.json` (which lists the
+files), **THEN** compute short hash of `manifest.json` content,
+**THEN** write `README.txt` referencing the hash. Rename the zip
+last.
+
+`manifest.json` keys (per brief):
+
+```python
+{
+    "corpus_forge_version": str,
+    "os": str,                       # platform.system()
+    "os_version": str,               # platform.release() or platform.mac_ver/win32_ver
+    "python_version": str,           # platform.python_version()
+    "arch": str,                     # platform.machine()
+    "ts_utc": str,                   # iso ms
+    "hostname_hash": str,            # sha256(socket.gethostname())[:16]
+    "tool_path": str,                # shutil.which('corpus-forge') or sys.argv[0]
+    "redaction_log": list[str],      # category names with redactions
+    "agent_mode_at_time_of_capture": str,  # 'human' for Wave 6 (Wave 9 fills)
+}
+```
+
+`env.txt` filtering: keep keys whose prefix matches one of `CF_`,
+`OLLAMA_`, `CLAUDECODE`, `AI_AGENT`, `OPENCODE`, `GEMINI_CLI`,
+`COPILOT_CLI`, `CODEX_`. Run values through `redact_string`.
+
+`deps.txt`: try `subprocess.run([sys.executable, '-m', 'pip', 'list',
+'--format=freeze'], capture_output=True, text=True, timeout=10)`. On
+failure, fall back to `importlib.metadata.distributions()` →
+`name==version` lines. On both failure, write a 1-line note.
+
+`db_summary.json`:
+
+```python
+try:
+    config = Config.load()
+    backend = _get_any_backend(config)  # reuse cli helper or inline
+    summary = {
+        "datasets": backend._execute("SELECT COUNT(*) AS n FROM datasets")[0]["n"],
+        "documents": ...,
+        "chunks": ...,
+        "embedders": [
+            {"name": r["name"], "dimension": r["dimension"], "count": ...}
+            for r in backend._execute("SELECT name, dimension, table_name FROM embedders")
+        ],
     }
-  }
-  ```
-  `mark_skipped` writes `suppressed_until = now + 7 days`. The check
-  helper returns `"skipped"` while now < suppressed_until, else `"none"`
-  (the suppression has expired — caller re-prompts).
+except Exception as exc:
+    summary = {"unavailable": str(exc)}
+```
 
-- **Re-prompt sticky on "later".** The marker file is the bridge between
-  invocations. Next foreground command's `compare_active` returns the
-  same drift; the prompt UI reads the marker and either:
-  - "skipped" + not expired → no prompt (skip silently)
-  - "pending" → re-prompt (the user said "later")
-  - "none" (no entry / expired) → fresh prompt
+`recent_events.txt`: flush the `MemoryHandler` ring buffer (Wave 1
+exposes `logging_config.get_ring_buffer()`). Iterate
+`ring.buffer` list; format `<ts> [<level>] <logger>: <msg>` per record,
+trim to 200 lines.
 
-- **Fingerprint canonicalization.** The brief asks for stable hashing.
-  Concatenate the five fields with a `|` separator after `.strip()` on
-  each string field (`provider`, `model_id`, `distance`) and
-  `repr(bool)` / `repr(int)` for the others. Hash with `hashlib.sha256`.
-  Return a NamedTuple `Fingerprint(short, full)` where `short = full[:16]`.
+Console output after writing:
 
-- **`compare_active` signature.** Returns `list[EmbedderDrift]` (empty
-  list, NEVER None, per brief). Iterates `[e for e in config.embedders
-  if e.active]`. For each, looks up the stored row (via
-  `backend.find_embedder_row_by_name(name)`); on miss (new embedder
-  never registered), treats as "no drift" (the embedder hasn't been
-  used yet — nothing to migrate). On hit, computes both fingerprints
-  and compares.
+```python
+ui_ok(f"Wrote {zip_path.name} ({_human_bytes(zip_path.stat().st_size)})")
+ui_ok(f"{redacted_count} secrets redacted")
+console.print("")
+console.print("Attach this file to a new issue at:")
+console.print(f"  [accent.path]{issue_url}[/accent.path]")
+```
 
-- **Helper `backend.find_embedder_row_by_name(name)`.** Does NOT exist
-  today. Add a thin one on both backends (postgres + sqlite) that runs
-  `SELECT id, name, provider, model_id, dimension, normalized,
-  distance, config FROM corpus.embedders WHERE name = %s` (postgres) /
-  `... FROM embedders WHERE name = ?` (sqlite) and returns the row
-  dict (or `None` on miss). Centralizes the lookup; W5-01 owns this
-  helper because W5-01 is the only consumer.
+URL build: use `urllib.parse.quote("[bug-report a3f9]")` for the title
+value.
 
-- **chunks_to_rerun calculation.**
-  - "chunks already embedded by the OLD fingerprint that need
-    re-embedding" = `SELECT COUNT(*) FROM corpus.embeddings_<table_name>`
-    (no missing-embedding gate; ALL existing rows must be
-    re-embedded because the model changed). Use the row's
-    `table_name` column to pick the right table.
-  - PLUS `backend.count_chunks_missing_embedding(embedder_id)` (chunks
-    that never got embedded by the old model either).
-  - Sum the two.
+`.github/ISSUE_TEMPLATE/bug.yml` is a standard GitHub form YAML:
+```yaml
+name: Bug report
+description: Report a problem with corpus-forge
+title: "[bug-report <short-hash>]"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please attach the
+        `corpus-forge-bugreport-*.zip` produced by
+        `corpus-forge bug-report` so a triager can reproduce.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I ran `corpus-forge doctor`
+        - label: I attached the `corpus-forge-bugreport-*.zip`
+```
 
-- **`est_seconds` constant.** Use module-level
-  `_DEFAULT_SECONDS_PER_CHUNK = 0.034` with env override
-  `CF_REEMBED_SECONDS_PER_CHUNK`. Document the constant in the
-  module docstring.
+#### W6-04 — logs subcommand
 
-- **`prompt_for_drift` decision matrix.**
-  | non_interactive | background | result |
-  |---|---|---|
-  | True | True | "now" |
-  | True | False | "later" |
-  | False | * | Render panel + `Prompt.ask(choices=["now", "later", "skip"], default="now")` |
+`typer.Typer` sub-app with `path`, `tail`, `clear`. Module exports the
+sub-app + the underlying helpers (so tests can unit-test the
+non-CLI surface without spawning subprocesses).
 
-- **Panel render.** Use `ui.panel(message, title="Embedder changed")` or
-  the lower-level `Panel(..., border_style="brand.forge")` for one-off
-  styling. The text body is multi-line; render each drift as a small
-  block separated by a blank line. Example (single drift):
-  ```
-  Was:  qwen3_8b (1024-dim)   fp=abc123def4567890…
-  Now:  bge_m3   (1024-dim)   fp=def456abc7890123…
-  12,481 chunks need re-embedding (~7 min)
-  ```
-  The 7-min estimate is `est_seconds // 60` (integer minutes).
+`tail`:
+- Resolve the file: `logging_config.get_log_dir() / f"{component}.log"`.
+- If missing: `ui_warn(f"{file} does not exist yet")`, return.
+- `--follow`: open + seek to end of file (or `-n` lines back if
+  asked), then loop `time.sleep(0.25)` and read new bytes. Handle
+  `KeyboardInterrupt` by returning 0 cleanly. Yes, this is a
+  blocking implementation — that's fine; the only tests we need are
+  "happy path read" and "SIGINT clean exit" (we'll fire a thread
+  that calls `os.kill(os.getpid(), signal.SIGINT)` after ~150 ms).
 
-- **Setup wizard hook.** After `run_wizard` / `run_quick` /
-  `run_non_interactive` returns in `setup()` (cli.py:280), if the
-  freshly-written config can be loaded AND a backend is reachable, call
-  `compare_active` and act on the result. Skip this entirely under
-  `--non-interactive` unless `CF_BACKGROUND=1` is set — then run "now"
-  background.
+`clear`:
+- `--all` or `--component <name>` required (mutually exclusive).
+- Without `--yes`, call `Confirm.ask("Clear logs?")`. Tests must
+  patch this.
+- For each target, `path.write_text("")` after `path.rename(path.with_suffix(path.suffix + ".rotated"))` (or simply truncate; rotation is optional — keep it simple, truncate is fine).
 
-- **Pyrefly / mypy.** The `Literal["now", "later", "skip"]` return type
-  on `prompt_for_drift` should use `typing.Literal`. The brief asks
-  for a small `namedtuple` for the fingerprint — use
-  `NamedTuple` from `typing` (subscriptable, type-stable).
+Theme log levels via the existing UI colors:
+```python
+_LEVEL_STYLE = {
+    "DEBUG":   "muted",
+    "INFO":    "info",
+    "WARNING": "warn",
+    "WARN":    "warn",
+    "ERROR":   "error",
+    "CRITICAL":"error",
+}
+```
+
+Parse the standard log format `YYYY-MM-DD HH:MM:SS.ms [LEVEL  ] logger: msg`
+using a regex; on parse miss, print the line as `muted`.
+
+#### W6-05 — CLI wiring + doctor daemon line
+
+- `corpus_forge/cli.py`: register `bug-report` as `@app.command("bug-report")`
+  + a `logs_app = typer.Typer(...)` with `app.add_typer(logs_app, name="logs")`.
+- `corpus_forge/doctor/checks.py`: add `_check_last_daemon_activity()`
+  that reads the tail of `<log_dir>/daemon.log`, finds the most
+  recent INFO line, and returns a `CheckResult` with the human-friendly
+  "12s ago — <msg>" detail (or `SKIP` when the file doesn't exist).
+  Wire into `_CHECKS`.
+
+The doctor surface is rendered via `DoctorReport.render_styled` already
+(Wave 3); the new check just appends to `_CHECKS`.
+
+### Acceptance
+
+- W6-01: `find_embedder_row_by_name` returns dict for known embedder /
+  `None` for unknown. `count_existing_embeddings` matches a seeded
+  embedding count. `update_embedder_config_blob` round-trips and the
+  fingerprint compare sees the new blob next call.
+- W6-02: `redact_string` redacts every pattern, idempotent, 0-count on
+  innocuous strings. `redact_toml_dict` preserves comments/order. The
+  full Wave 6 zip's grep finds 0 raw secret patterns from the
+  redactor's pattern set.
+- W6-03: `corpus-forge bug-report` exits 0; zip in CWD; `manifest.json`
+  has all 10 keys; `--no-zip` writes the staging directory;
+  `--no-logs` / `--no-db` omit those sections; short hash is
+  deterministic from manifest content (i.e. two runs with identical
+  contents produce identical hashes — tested by injecting a frozen
+  clock + frozen hostname).
+- W6-04: `logs path` prints the platformdirs path; `logs tail -n 5`
+  shows the last 5 lines; `logs tail --follow` exits 0 on SIGINT;
+  `logs clear --component cli --yes` truncates the file.
+- W6-05: `bug-report` + `logs` appear in `corpus-forge --help`;
+  `doctor` lists a "Last daemon activity" check; existing tests
+  unaffected (run `test_no_typer_echo.py` + the global flags suite).
+
+### Definition of done
+
+1. New tests pass under
+   `uv run python -m pytest tests/backends tests/diagnostics
+   tests/cli/test_bug_report.py tests/cli/test_logs_subcommand.py -x`.
+2. Regression: `uv run python -m pytest tests/unit tests/cli
+   tests/embedders tests/backends -x` is green (no new failures vs
+   Wave 5 baseline).
+3. `uv run ruff check` clean on touched files.
+4. `uv run ruff format --check` clean on touched files.
+5. Manual smoke: `uv run corpus-forge bug-report --no-db` produces a
+   zip; `unzip -l` shows expected files; `unzip -p <zip>
+   config.redacted.toml | grep -i dsn` shows `«redacted»`.
+6. `uv run corpus-forge logs path` prints the cache log directory.
 
 ## Tasks
 
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
-| W5-01 | Fingerprint module + backend drift compare | — | `corpus_forge/embedders/fingerprint.py` (NEW), `tests/embedders/test_fingerprint.py` (NEW), `tests/embedders/test_drift_detect.py` (NEW) | med | done | tdd-principal | `embedder_fingerprint` + `EmbedderDrift` + `compare_active` + `save_active_fingerprint` shipped. Backend lookup goes via duck-typed `find_embedder_row_by_name` / `count_existing_embeddings` / `update_embedder_config_blob` — kept the production backend helpers OUT of this wave to land the algorithm + tests fast; CLI hook stub-mocks the backend. Real backend helpers can land in a thin follow-up alongside the Wave 6 sync-status integration. 16/16 tests green (test_fingerprint.py 7 + test_drift_detect.py 9). |
-| W5-02 | Marker file + drift prompt helper | — | `corpus_forge/embedders/_marker.py` (NEW), `corpus_forge/embedders/drift_prompt.py` (NEW), `tests/embedders/test_marker.py` (NEW), `tests/embedders/test_drift_prompt.py` (NEW) | low | done | tdd-principal | `mark_pending`/`mark_skipped`/`check_pending_or_skipped`/`clear_marker` + atomic tempfile-+-rename writer. 7-day suppression honoured; re-changed fingerprints invalidate the suppression. `prompt_for_drift` honours `non_interactive` × `background` matrix; interactive path renders a Rich `Panel` with `border_style="brand.forge"` and asks via `corpus_forge.ui.prompts.Prompt.ask(choices=…)`. 15/15 tests green (test_marker.py 8 + test_drift_prompt.py 7). |
-| W5-03 | CLI/setup/daemon hook points + sync status row | W5-01, W5-02 | `corpus_forge/cli.py` (ingest/embed/sync status/setup), `corpus_forge/daemon.py` (WARNING log), `tests/cli/test_drift_flow.py` (NEW) | high | done | tdd-principal | `_maybe_handle_drift(ctx)` threaded into `ingest` + `embed` command bodies. `setup` runs `_maybe_handle_post_setup_drift` after `run_wizard`/`run_quick`/`run_non_interactive`; non-interactive setup only proceeds when `CF_BACKGROUND=1`. `sync status` appends a `Background embed-worker: …` data line (alive PID via `os.kill(pid, 0)`). `daemon.main` emits a WARNING-level log on `corpus_forge.embedders.fingerprint` — never prompts. Background dispatch uses `subprocess.Popen([sys.executable, '-m', 'corpus_forge', 'embed', '-e', name], stdin/stdout/stderr=DEVNULL, start_new_session=True)` and writes the pid under `~/.cache/corpus-forge/state/embed-worker.pid`. 11/11 tests green. |
-
-## Acceptance details
-
-### W5-01 — Fingerprint module + backend drift compare
-
-**`corpus_forge/embedders/fingerprint.py` (new):**
-
-```python
-"""Embedder-fingerprint detection (Phase L Wave 5).
-
-Computes a stable hash over the five embedder identity fields
-(``provider``, ``model_id``, ``dimension``, ``normalize``, ``distance``)
-and compares it to the fingerprint stored in ``corpus.embedders.config``
-to detect when the user has swapped a model and the existing embeddings
-need a re-encode pass.
-
-Public API:
-- ``embedder_fingerprint(cfg: EmbedderConfig) -> Fingerprint``
-- ``compare_active(config: Config, backend) -> list[EmbedderDrift]``
-- ``save_active_fingerprint(config: Config, backend) -> None``
-
-The per-chunk re-embed time estimate (``est_seconds``) defaults to
-``0.034 s / chunk`` and can be tuned via ``CF_REEMBED_SECONDS_PER_CHUNK``.
-"""
-
-from __future__ import annotations
-
-import hashlib
-import logging
-import os
-from dataclasses import dataclass
-from typing import NamedTuple
-
-from corpus_forge.config import Config, EmbedderConfig
-
-logger = logging.getLogger(__name__)
-
-_DEFAULT_SECONDS_PER_CHUNK = 0.034
-
-
-class Fingerprint(NamedTuple):
-    short: str  # 16-char hex prefix
-    full: str   # full sha256 hex
-
-
-@dataclass(frozen=True)
-class EmbedderDrift:
-    name: str
-    was_model_id: str
-    was_dimension: int
-    now_model_id: str
-    now_dimension: int
-    chunks_to_rerun: int
-    est_seconds: float
-    fingerprint_was: str  # short form
-    fingerprint_now: str  # short form
-
-
-def _seconds_per_chunk() -> float:
-    raw = os.environ.get("CF_REEMBED_SECONDS_PER_CHUNK")
-    if not raw:
-        return _DEFAULT_SECONDS_PER_CHUNK
-    try:
-        return float(raw)
-    except ValueError:
-        return _DEFAULT_SECONDS_PER_CHUNK
-
-
-def embedder_fingerprint(cfg: EmbedderConfig) -> Fingerprint:
-    """Stable SHA-256 over (provider, model_id, dimension, normalize, distance).
-
-    String fields are stripped; bool/int fields are repr()'d. Returns
-    both the short (16-char) and full hex forms.
-    """
-    canonical = "|".join([
-        cfg.provider.strip(),
-        cfg.model_id.strip(),
-        repr(int(cfg.dimension)),
-        repr(bool(cfg.normalize)),
-        cfg.distance.strip(),
-    ])
-    full = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    return Fingerprint(short=full[:16], full=full)
-
-
-def _stored_fingerprint(row: dict) -> Fingerprint:
-    """Recompute the fingerprint from a stored embedder row.
-
-    Falls back to top-level columns when ``config`` JSONB is missing
-    fields (the legacy 2-key shape pre-Wave-5).
-    """
-    cfg_blob = row.get("config") or {}
-    # Stored config may be a JSON string in sqlite — coerce.
-    if isinstance(cfg_blob, str):
-        import json
-        try:
-            cfg_blob = json.loads(cfg_blob)
-        except (json.JSONDecodeError, ValueError):
-            cfg_blob = {}
-    provider = cfg_blob.get("provider") or row["provider"]
-    model_id = cfg_blob.get("model_id") or row["model_id"]
-    dimension = cfg_blob.get("dimension", row["dimension"])
-    normalize = cfg_blob.get("normalize", row.get("normalized", True))
-    distance = cfg_blob.get("distance", row.get("distance", "cosine"))
-    canonical = "|".join([
-        provider.strip(),
-        model_id.strip(),
-        repr(int(dimension)),
-        repr(bool(normalize)),
-        distance.strip(),
-    ])
-    full = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    return Fingerprint(short=full[:16], full=full)
-
-
-def compare_active(config: Config, backend) -> list[EmbedderDrift]:
-    """For each active EmbedderConfig, return drift info iff fingerprint diverges."""
-    drifts: list[EmbedderDrift] = []
-    for cfg in config.embedders:
-        if not getattr(cfg, "active", True):
-            continue
-        row = backend.find_embedder_row_by_name(cfg.name)
-        if row is None:
-            # Never registered — no drift to report.
-            continue
-        fp_was = _stored_fingerprint(row)
-        fp_now = embedder_fingerprint(cfg)
-        if fp_was.full == fp_now.full:
-            continue
-        # Count chunks needing rerun: existing embeddings table + missing chunks.
-        embedder_id = row["id"]
-        existing = 0
-        try:
-            existing = backend.count_existing_embeddings(embedder_id)
-        except AttributeError:
-            # Fallback: query via embeddings table name directly.
-            existing = 0
-        try:
-            missing = backend.count_chunks_missing_embedding(embedder_id)
-        except (AttributeError, TypeError):
-            missing = 0
-        chunks_to_rerun = int(existing) + int(missing)
-        est_seconds = chunks_to_rerun * _seconds_per_chunk()
-        drifts.append(EmbedderDrift(
-            name=cfg.name,
-            was_model_id=row["model_id"],
-            was_dimension=int(row["dimension"]),
-            now_model_id=cfg.model_id,
-            now_dimension=int(cfg.dimension),
-            chunks_to_rerun=chunks_to_rerun,
-            est_seconds=est_seconds,
-            fingerprint_was=fp_was.short,
-            fingerprint_now=fp_now.short,
-        ))
-    return drifts
-
-
-def save_active_fingerprint(config: Config, backend) -> None:
-    """After a successful re-embed, persist the new fingerprint."""
-    import json as _json
-    for cfg in config.embedders:
-        if not getattr(cfg, "active", True):
-            continue
-        row = backend.find_embedder_row_by_name(cfg.name)
-        if row is None:
-            continue
-        fp = embedder_fingerprint(cfg)
-        new_config_blob = {
-            "provider": cfg.provider,
-            "model_id": cfg.model_id,
-            "dimension": int(cfg.dimension),
-            "normalize": bool(cfg.normalize),
-            "distance": cfg.distance,
-            "fingerprint": fp.full,
-        }
-        # Both backends accept the raw dict via _execute parameter binding
-        # (postgres adapts via psycopg.types.json.Json; sqlite needs a
-        # JSON string).
-        backend.update_embedder_config_blob(row["id"], new_config_blob)
-
-
-__all__ = [
-    "EmbedderDrift",
-    "Fingerprint",
-    "compare_active",
-    "embedder_fingerprint",
-    "save_active_fingerprint",
-]
-```
-
-**Backend additions (BOTH `corpus_forge/backends/postgres.py` and
-`corpus_forge/backends/sqlite.py`):**
-
-```python
-def find_embedder_row_by_name(self, name: str) -> dict | None:
-    """Return the embedders row for ``name`` (None if not registered)."""
-    rows = self._execute(
-        "SELECT id, name, provider, model_id, dimension, normalized,"
-        " distance, table_name, config FROM corpus.embedders WHERE name = %s",
-        (name,),
-    )
-    return dict(rows[0]) if rows else None
-
-def count_existing_embeddings(self, embedder_id: int) -> int:
-    """Return total rows in the per-embedder embeddings table."""
-    info = self._execute(
-        "SELECT table_name FROM corpus.embedders WHERE id = %s", (embedder_id,)
-    )
-    if not info:
-        return 0
-    table_name = info[0]["table_name"]
-    rows = self._execute(f"SELECT COUNT(*) AS n FROM corpus.{table_name}")
-    return int(rows[0]["n"]) if rows else 0
-
-def update_embedder_config_blob(self, embedder_id: int, blob: dict) -> None:
-    """Replace the config JSONB for ``embedder_id``."""
-    self._execute(
-        "UPDATE corpus.embedders SET config = %s WHERE id = %s",
-        (psycopg.types.json.Json(blob), embedder_id),
-    )
-```
-
-SQLite mirror: drop `corpus.` prefix, use `?` placeholders, store
-`json.dumps(blob)` instead of `Json(blob)`. Be careful with table_name
-column existence — sqlite mirror schema also carries it (see existing
-`register_embedder` which writes to `table_name` per chunks_missing_embedding
-implementation).
-
-**Tests** (`tests/embedders/test_fingerprint.py` + `test_drift_detect.py`):
-
-1. `test_fingerprint_identical_configs` — two identical `EmbedderConfig`s →
-   same `.full` and same `.short`.
-2. `test_fingerprint_changes_with_dimension` — flip `dimension=1024` →
-   `dimension=768`, fingerprint differs.
-3. `test_fingerprint_changes_with_model_id` — flip `model_id` value,
-   fingerprint differs.
-4. `test_fingerprint_whitespace_stable` — leading/trailing whitespace
-   on `model_id` does NOT change the fingerprint (we strip).
-5. `test_fingerprint_short_is_prefix_of_full` — `.short == .full[:16]`.
-6. `test_compare_active_no_stored_row_returns_empty` — backend returns
-   None for the lookup → no drift.
-7. `test_compare_active_matching_fingerprint_returns_empty` — stored row
-   matches → empty list.
-8. `test_compare_active_diverging_fingerprint_returns_drift` — stored
-   row differs → one `EmbedderDrift` with correct was/now ids + sum of
-   existing + missing chunks.
-9. `test_compare_active_handles_multiple_actives` — two active embedders
-   with mixed drift state → only the diverging ones returned.
-10. `test_compare_active_inactive_skipped` — `active=False` → skipped.
-11. `test_save_active_fingerprint_writes_config_blob` — after call,
-    backend.update_embedder_config_blob was invoked with the new
-    fingerprint embedded.
-
-Use `MagicMock` for the backend; no real Postgres / SQLite needed for
-the W5-01 unit suite. (The integration QA pass can re-verify on a
-real sqlite backend if desired.)
-
-### W5-02 — Marker file + drift prompt helper
-
-**`corpus_forge/embedders/_marker.py` (new):**
-
-```python
-"""Pending / skipped re-embed marker (~/.cache/corpus-forge/state/pending_rerun.json).
-
-Atomic-write via tempfile + rename. JSON shape:
-
-    {
-      "<embedder_name>": {
-        "state": "pending|skipped",
-        "fp_was": "...", "fp_now": "...",
-        "detected_at": "iso",
-        "suppressed_until": "iso?"
-      }
-    }
-"""
-
-from __future__ import annotations
-
-import json
-import os
-import tempfile
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Literal
-
-import platformdirs
-
-_SUPPRESSION_DAYS = 7
-
-
-def _state_dir() -> Path:
-    base = Path(platformdirs.user_cache_dir("corpus-forge")) / "state"
-    base.mkdir(parents=True, exist_ok=True)
-    return base
-
-
-def _marker_path() -> Path:
-    return _state_dir() / "pending_rerun.json"
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def _read() -> dict:
-    p = _marker_path()
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
-def _atomic_write(payload: dict) -> None:
-    p = _marker_path()
-    fd, tmp = tempfile.mkstemp(prefix=".pending_rerun.", dir=str(p.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, sort_keys=True)
-        os.replace(tmp, p)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-
-def mark_pending(name: str, *, fp_was: str, fp_now: str) -> None:
-    payload = _read()
-    payload[name] = {
-        "state": "pending",
-        "fp_was": fp_was,
-        "fp_now": fp_now,
-        "detected_at": _now_iso(),
-    }
-    _atomic_write(payload)
-
-
-def mark_skipped(name: str, *, fp_was: str, fp_now: str) -> None:
-    payload = _read()
-    suppress_until = (datetime.now(timezone.utc) + timedelta(days=_SUPPRESSION_DAYS))
-    payload[name] = {
-        "state": "skipped",
-        "fp_was": fp_was,
-        "fp_now": fp_now,
-        "detected_at": _now_iso(),
-        "suppressed_until": suppress_until.replace(microsecond=0).isoformat(),
-    }
-    _atomic_write(payload)
-
-
-def check_pending_or_skipped(
-    name: str, fp_now: str
-) -> Literal["pending", "skipped", "none"]:
-    payload = _read()
-    entry = payload.get(name)
-    if entry is None:
-        return "none"
-    # If the user re-changed fingerprints, the marker is stale.
-    if entry.get("fp_now") and entry["fp_now"] != fp_now:
-        return "none"
-    state = entry.get("state")
-    if state == "skipped":
-        suppressed = entry.get("suppressed_until")
-        if not suppressed:
-            return "none"
-        try:
-            until = datetime.fromisoformat(suppressed)
-        except ValueError:
-            return "none"
-        if datetime.now(timezone.utc) >= until:
-            return "none"
-        return "skipped"
-    if state == "pending":
-        return "pending"
-    return "none"
-
-
-def clear_marker(name: str) -> None:
-    payload = _read()
-    if name in payload:
-        del payload[name]
-        _atomic_write(payload)
-
-
-__all__ = [
-    "check_pending_or_skipped",
-    "clear_marker",
-    "mark_pending",
-    "mark_skipped",
-]
-```
-
-**`corpus_forge/embedders/drift_prompt.py` (new):**
-
-```python
-"""Render the embedder-drift panel and prompt the user for action."""
-
-from __future__ import annotations
-
-from typing import Literal
-
-from rich.panel import Panel
-
-from corpus_forge.embedders.fingerprint import EmbedderDrift
-from corpus_forge.ui.console import console as _console
-from corpus_forge.ui.prompts import Prompt
-
-
-def _format_drift_line(d: EmbedderDrift) -> str:
-    minutes = max(1, int(d.est_seconds // 60))
-    return (
-        f"Was:  {d.name} ({d.was_dimension}-dim, model={d.was_model_id})  fp={d.fingerprint_was}…\n"
-        f"Now:  {d.name} ({d.now_dimension}-dim, model={d.now_model_id})  fp={d.fingerprint_now}…\n"
-        f"{d.chunks_to_rerun:,} chunks need re-embedding (~{minutes} min)"
-    )
-
-
-def prompt_for_drift(
-    drifts: list[EmbedderDrift],
-    *,
-    background: bool,
-    non_interactive: bool,
-    console=None,
-) -> Literal["now", "later", "skip"]:
-    """Render the drift panel and prompt the user (or auto-resolve)."""
-    if not drifts:
-        return "skip"
-    if non_interactive and background:
-        return "now"
-    if non_interactive and not background:
-        return "later"
-    body = "\n\n".join(_format_drift_line(d) for d in drifts)
-    target = console if console is not None else _console
-    panel = Panel(body, title="Embedder changed", border_style="brand.forge")
-    target.print(panel)
-    answer = Prompt.ask(
-        "Rerun now, later, or skip?",
-        choices=["now", "later", "skip"],
-        default="now",
-        console=target,
-    )
-    return answer  # type: ignore[return-value]
-
-
-__all__ = ["prompt_for_drift"]
-```
-
-**Tests** (`tests/embedders/test_marker.py` + `test_drift_prompt.py`):
-
-1. `test_mark_pending_writes_json` — `mark_pending("e1", fp_was="a",
-   fp_now="b")`; `check_pending_or_skipped("e1", "b") == "pending"`.
-2. `test_mark_skipped_with_ttl` — `mark_skipped("e1", fp_was="a",
-   fp_now="b")` → returns "skipped" now; monkeypatch the clock to
-   8 days ahead → returns "none".
-3. `test_check_returns_none_on_unknown` — fresh state dir; check returns
-   "none".
-4. `test_marker_re-change_fingerprint_invalidates_skip` — mark_skipped
-   for fp_now=b, then check with fp_now=c → "none" (user changed
-   fingerprints again; the suppression no longer applies).
-5. `test_clear_marker_removes_entry` — mark + clear; check returns "none".
-6. `test_atomic_write_doesnt_race` — open the file in read mode in
-   parallel via `Path.read_text()` while `mark_pending` is in flight;
-   no exception, no torn write. (Simulate with two threads + 100
-   iterations.)
-7. `test_prompt_for_drift_non_interactive_background_returns_now` —
-   `prompt_for_drift([drift], background=True, non_interactive=True)`
-   → "now"; no panel rendered.
-8. `test_prompt_for_drift_non_interactive_foreground_returns_later` —
-   `prompt_for_drift([drift], background=False, non_interactive=True)`
-   → "later".
-9. `test_prompt_for_drift_interactive_renders_panel_and_returns_choice`
-   — monkeypatch `Prompt.ask` to return "skip"; check that the
-   render captured the drift body AND the return is "skip".
-10. `test_prompt_for_drift_empty_drifts_returns_skip` — drift list
-    empty → "skip" (no prompt).
-
-Use `tmp_path` + monkeypatching of `platformdirs.user_cache_dir` to
-isolate the marker file under the test temp dir (`CF_LOG_DIR` style
-override doesn't exist for state — patch the function instead).
-
-### W5-03 — CLI / setup / daemon hook points
-
-**Action dispatcher.** Create a small private helper in
-`corpus_forge/cli.py` (NOT a new module — keep the CLI's wiring local
-to the CLI surface):
-
-```python
-def _handle_drift(
-    config,
-    backend,
-    *,
-    background: bool,
-    non_interactive: bool,
-) -> None:
-    """End-to-end drift detection + prompt + action dispatch."""
-    from corpus_forge.embedders.fingerprint import (
-        compare_active, save_active_fingerprint,
-    )
-    from corpus_forge.embedders.drift_prompt import prompt_for_drift
-    from corpus_forge.embedders._marker import (
-        check_pending_or_skipped, mark_pending, mark_skipped, clear_marker,
-    )
-    drifts = compare_active(config, backend)
-    if not drifts:
-        return
-    # Filter out suppressed entries.
-    actionable: list = []
-    for d in drifts:
-        state = check_pending_or_skipped(d.name, d.fingerprint_now)
-        if state == "skipped":
-            continue
-        actionable.append(d)
-    if not actionable:
-        return
-    decision = prompt_for_drift(
-        actionable, background=background, non_interactive=non_interactive,
-    )
-    if decision == "now":
-        if background:
-            _spawn_background_embed(actionable)
-        else:
-            _run_foreground_embed(config, backend, actionable)
-            save_active_fingerprint(config, backend)
-            for d in actionable:
-                clear_marker(d.name)
-    elif decision == "later":
-        for d in actionable:
-            mark_pending(d.name, fp_was=d.fingerprint_was, fp_now=d.fingerprint_now)
-    elif decision == "skip":
-        for d in actionable:
-            mark_skipped(d.name, fp_was=d.fingerprint_was, fp_now=d.fingerprint_now)
-
-
-def _spawn_background_embed(drifts):
-    import os
-    import subprocess
-    import sys
-    from pathlib import Path
-    import platformdirs
-
-    state_dir = Path(platformdirs.user_cache_dir("corpus-forge")) / "state"
-    state_dir.mkdir(parents=True, exist_ok=True)
-    pid_file = state_dir / "embed-worker.pid"
-    # Spawn one worker per drifting embedder (sequential within the worker
-    # is acceptable — the user only cares that the foreground returns
-    # immediately).
-    for d in drifts:
-        proc = subprocess.Popen(  # noqa: S603
-            [sys.executable, "-m", "corpus_forge", "embed", "-e", d.name],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        pid_file.write_text(str(proc.pid), encoding="utf-8")
-    ui_info(
-        "Running in background — watch with: "
-        "corpus-forge logs tail --component embed-worker --follow"
-    )
-
-
-def _run_foreground_embed(config, backend, drifts):
-    from corpus_forge.embed import backfill_embedder
-    for d in drifts:
-        backfill_embedder(d.name)
-```
-
-**Hook points:**
-
-1. **`corpus_forge/cli.py` `ingest` command body (cli.py:182)** — before
-   the `main(once=once)` call:
-   ```python
-   from corpus_forge.config import Config
-   from contextlib import suppress
-   try:
-       config = Config.load()
-   except FileNotFoundError:
-       config = None
-   if config is not None:
-       with suppress(Exception):
-           backend = _get_backend(config) if config.backend.kind == "postgres" else _get_sqlite_backend(config)
-           ctx = typer.Context  # — we'll need actual ctx access
-           _handle_drift(config, backend, background=False, non_interactive=False)
-   ```
-   Implementor: thread the typer context's `ctx.obj.background` into the
-   call. Use `ctx: typer.Context` param if not already present.
-
-2. **`corpus_forge/cli.py` `embed` command body (cli.py:200)** — same
-   pattern as ingest.
-
-3. **Setup wizard end-hook (`cli.py:setup` after `run_wizard` /
-   `run_quick` / `run_non_interactive`):** load the just-written
-   config and run `_handle_drift`. Skip if non_interactive AND not
-   CF_BACKGROUND.
-
-4. **Daemon (`corpus_forge/daemon.py`):** in `main()` (line 61), after
-   `setup_signal_handlers()`, add:
-   ```python
-   from contextlib import suppress
-   from corpus_forge.config import Config
-   from corpus_forge.embedders.fingerprint import compare_active
-   drift_logger = logging.getLogger("corpus_forge.embedders.fingerprint")
-   with suppress(Exception):
-       config = Config.load()
-       # Daemon may not have a foreground backend; reuse the helper:
-       from corpus_forge.cli import _get_backend  # imported lazy to avoid cycles
-       backend = _get_backend(config)
-       drifts = compare_active(config, backend)
-       for d in drifts:
-           drift_logger.warning(
-               "Embedder drift detected: %s -> %s (%d chunks affected)",
-               d.was_model_id, d.now_model_id, d.chunks_to_rerun,
-           )
-   ```
-   No prompt. WARNING level.
-
-5. **`sync status` command body (`cli.py:534`)** — at the end of the
-   per-dataset loop, append one line:
-   ```python
-   import os
-   import platformdirs
-   from pathlib import Path
-   pid_path = Path(platformdirs.user_cache_dir("corpus-forge")) / "state" / "embed-worker.pid"
-   worker = "none"
-   log_path = ""
-   if pid_path.exists():
-       try:
-           pid = int(pid_path.read_text(encoding="utf-8").strip())
-           os.kill(pid, 0)
-           log_path = str(Path(platformdirs.user_cache_dir("corpus-forge")) / "logs" / "embed-worker.log")
-           worker = f"pid={pid}, log={log_path}"
-       except (ProcessLookupError, ValueError, PermissionError):
-           worker = "none"
-   print(f"Background embed-worker: {worker}")
-   ```
-
-**Tests** (`tests/cli/test_drift_flow.py`):
-
-1. `test_ingest_drift_prompts_now_runs_in_foreground` — invoke `ingest
-   --once` against a stubbed `compare_active` returning one drift +
-   `Prompt.ask` patched to return `"now"`; assert `backfill_embedder`
-   was called AND `save_active_fingerprint` was called.
-2. `test_ingest_drift_later_writes_marker` — `Prompt.ask` returns
-   `"later"`; assert the marker file under
-   `~/.cache/corpus-forge/state/pending_rerun.json` (redirected via
-   patched `platformdirs.user_cache_dir`) contains `state=pending`.
-3. `test_ingest_drift_skip_writes_suppression` — `Prompt.ask` returns
-   `"skip"`; assert marker has `state=skipped` + `suppressed_until` ≥
-   today + 7d.
-4. `test_ingest_background_flag_spawns_subprocess` — with global
-   `--background` flag set, drift handler runs `decision=="now"` AND
-   `subprocess.Popen` is called (mocked) AND the worker pid file is
-   written.
-5. `test_setup_quick_non_interactive_with_background_env_runs_now` —
-   `setup --quick --non-interactive` + `CF_BACKGROUND=1` env: drift
-   handler returns `"now"` background, `subprocess.Popen` invoked.
-6. `test_daemon_emits_warning_log_on_drift` — call `daemon.main()`
-   (patched to no-op the ingest loop) with a `compare_active` returning
-   one drift; assert a WARNING record on
-   `corpus_forge.embedders.fingerprint` containing
-   "Embedder drift detected".
-7. `test_daemon_does_not_prompt` — monkeypatch `Prompt.ask` to fail
-   loudly; daemon path must NOT invoke it.
-8. `test_sync_status_reports_running_worker_when_pid_alive` — write a
-   pid file with `str(os.getpid())` (definitely alive); invoke
-   `corpus-forge sync status`; stdout contains "pid=" + the current
-   pid.
-9. `test_sync_status_reports_none_when_pid_dead` — write a pid file
-   with `99999999` (unlikely to exist); stdout contains
-   "Background embed-worker: none".
-10. `test_no_drift_no_panel` — `compare_active` returns empty list;
-    drift panel is NOT rendered.
-
-Use `CliRunner(mix_stderr=False)` so we can check stdout vs stderr
-separately. Patch `corpus_forge.embedders.fingerprint.compare_active`
-to control the drift state. Patch `platformdirs.user_cache_dir` to
-point at `tmp_path`.
+| W6-01 | Backend embedder helpers (postgres + sqlite + protocol) | — | corpus_forge/backends/postgres.py, corpus_forge/backends/sqlite.py, corpus_forge/backends/base.py, tests/backends/test_postgres_embedder_helpers.py, tests/backends/test_sqlite_embedder_helpers.py | low | pending | — | activates Wave 5 drift path on real backends |
+| W6-02 | Redactor module | — | corpus_forge/diagnostics/redact.py, corpus_forge/diagnostics/__init__.py, tests/diagnostics/test_redact.py | low | pending | — | pure module, no I/O beyond `redact_file` |
+| W6-03 | bug-report command | W6-01, W6-02 | corpus_forge/diagnostics/bug_report.py, tests/diagnostics/test_bug_report.py, .github/ISSUE_TEMPLATE/bug.yml | med | pending | — | bundle, hash, URL, redaction |
+| W6-04 | logs subcommand | — | corpus_forge/diagnostics/logs.py, tests/diagnostics/test_logs_subcommand.py | low | pending | — | path / tail / clear |
+| W6-05 | CLI wiring + doctor daemon-activity check | W6-03, W6-04 | corpus_forge/cli.py, corpus_forge/doctor/checks.py | low | pending | — | register typer commands, doctor check |
 
 ## DAG
 
-- Wave A (3 parallel testers): W5-01, W5-02, W5-03 testers RED in
-  parallel — all three test surfaces are disjoint.
-- Wave B (2 parallel coders): W5-01 + W5-02 coders GREEN in parallel
-  (independent module surface).
-- Wave C (1 sequential coder): W5-03 coder GREEN (consumes W5-01 +
-  W5-02 APIs).
-- Wave D (3 parallel QAs).
-
-## Summary — Wave 5 close-out
-
-**Files added (production):**
-- `corpus_forge/embedders/fingerprint.py` — `Fingerprint` NamedTuple,
-  `EmbedderDrift` frozen dataclass, `embedder_fingerprint`,
-  `compare_active`, `save_active_fingerprint` (+ private
-  `_stored_fingerprint`, `_seconds_per_chunk` env-tunable estimate).
-- `corpus_forge/embedders/_marker.py` — pending/skipped marker file
-  with atomic tempfile-+-rename writer + 7-day suppression window.
-- `corpus_forge/embedders/drift_prompt.py` — Rich `Panel`-based
-  3-way prompt; honours non-interactive / background matrix.
-
-**Files modified (production):**
-- `corpus_forge/cli.py` — `ingest` + `embed` now accept a `ctx:
-  typer.Context` and call `_maybe_handle_drift(ctx)`. New helpers
-  `_get_any_backend`, `_state_dir_path`, `_spawn_background_embed`,
-  `_run_foreground_embed`, `_handle_drift`, `_maybe_handle_drift`,
-  `_maybe_handle_post_setup_drift`, `_is_non_interactive_runtime`,
-  `_describe_embed_worker`. `sync status` writes a
-  `Background embed-worker: …` data line every run; survives
-  postgres-unreachable on sqlite-only configs.
-- `corpus_forge/daemon.py` — `main()` calls `_log_embedder_drift_warning`
-  which emits a WARNING on `corpus_forge.embedders.fingerprint` and
-  never prompts.
-
-**Files added (tests):**
-- `tests/embedders/__init__.py`
-- `tests/embedders/test_fingerprint.py` (7 tests — identity
-  invariants, sensitivity to each of the five hash fields, short=full[:16]).
-- `tests/embedders/test_drift_detect.py` (9 tests — empty / match /
-  diverge / multi-active / inactive-skip / env override / json-string
-  legacy blob / save_active_fingerprint / list-never-None).
-- `tests/embedders/test_marker.py` (8 tests — mark/check round-trip,
-  TTL expiry, fingerprint re-change invalidates, clear, atomic write
-  under concurrent writers + reader).
-- `tests/embedders/test_drift_prompt.py` (7 tests — non_interactive
-  matrix, empty drift list, panel render, choices, minutes estimate,
-  multiple drifts).
-- `tests/cli/test_drift_flow.py` (11 tests — no-drift / now /
-  later / skip / pre-existing skip / `--background` / pid file /
-  daemon warning / sync status alive / sync status none / sync status dead).
-
-**Gates:**
-- Wave 5 surface: **42/42** tests green
-  (`tests/embedders/` 31 + `tests/cli/test_drift_flow.py` 11).
-- `tests/cli/test_no_typer_echo.py` static regression: green.
-- CLI regression (`tests/cli/`): 66/66 green.
-- Adjacent unit tests (embed / daemon / sync / setup): all green.
-- Full sweep (`tests/unit tests/cli tests/embedders`): **164 failed
-  / 3454 passed** — same 164 baseline failures as Wave 4 (pre-existing
-  missing-extras + integration-only coverage gaps), **zero new
-  regressions**.
-- `uv run ruff check` clean on all 7 touched files.
-- `uv run ruff format --check` clean on all 7 touched files.
-
-**Live smokes:**
-- `python -m corpus_forge --help` boots and renders cleanly (new
-  flags appear as expected).
-- Wave 5 modules import without side effects.
-
-## Notes for Wave 6+
-
-- **Backend helpers landed via duck-typing in Wave 5**: production
-  `find_embedder_row_by_name`, `count_existing_embeddings`, and
-  `update_embedder_config_blob` are NOT yet on `PostgresBackend` /
-  `SQLiteBackend`. The fingerprint module calls them via `getattr` /
-  `try/except AttributeError`, so the live `ingest` / `embed` path
-  silently no-ops drift detection on real backends until the helpers
-  ship. Wave 6 should land thin three-method helpers on both backends
-  (single `SELECT` each + one `UPDATE`) so the live path activates.
-- **CLI `_get_any_backend` is the Wave 5 entry point** for "open the
-  right backend regardless of kind". When the postgres-only `_get_backend`
-  uses get retired in favour of this, the Wave 4 sync-status code path
-  can also degrade gracefully on sqlite-only configs.
-- **`sync status` now always emits the `Background embed-worker` row**
-  even when the postgres backend is unreachable — this is the Wave 5
-  user-visible side effect of the new helper. Worker pid lookup is
-  best-effort: `os.kill(pid, 0)` against a stale pid file returns
-  `none`.
-- **Subprocess detachment.** `_spawn_background_embed` writes only the
-  *last* spawned worker's pid into the pid file (multi-embedder drift
-  is rare; lifting to a list-of-pids json file is a Wave 7 nice-to-have).
-- **`save_active_fingerprint`** now writes a `fingerprint` key into the
-  embedder row's `config` JSONB. `_stored_fingerprint` consults it via
-  the standard five-field reconstruction path; the embedded full-hex
-  key is for audit / debug only.
+- Wave A (3 RED testers in parallel): W6-01, W6-02, W6-04
+- Wave B (3 GREEN coders in parallel): W6-01, W6-02, W6-04
+- Wave C (1 RED tester): W6-03 (after W6-02 + W6-01)
+- Wave D (1 GREEN coder): W6-03
+- Wave E (1 RED tester): W6-05 (after W6-03 + W6-04)
+- Wave F (1 GREEN coder): W6-05
+- Wave G (5 QAs in parallel): W6-01 .. W6-05
