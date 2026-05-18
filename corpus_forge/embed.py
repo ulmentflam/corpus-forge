@@ -22,6 +22,7 @@ from pathlib import Path
 from .backends.postgres import PostgresBackend
 from .config import Config
 from .embedders.registry import registry
+from .ui.progress import make_progress
 
 logger = logging.getLogger(__name__)
 
@@ -133,58 +134,75 @@ def backfill_embedder(
             raise ValueError(f"Dataset '{dataset_name}' not found")
         logger.info(f"Limiting backfill to dataset: {dataset_name} (ID: {dataset_id})")
 
-    # Backfill embeddings
-    logger.info(f"Starting backfill for embedder: {embedder_name}")
+    # Backfill embeddings — Phase L Wave 4: pre-count the work so the
+    # progress bar carries an ETA, and wrap the loop in the shared
+    # ``make_progress`` factory which auto-emits INFO bookends + ~every-
+    # 10% milestones to the rotating log. Coerce to int defensively so
+    # mock backends returning MagicMock() don't crash the wrapper.
+    try:
+        total_missing = int(backend.count_chunks_missing_embedding(embedder_id))
+    except (TypeError, AttributeError):
+        total_missing = 0
+    logger.info(f"Backfilling {embedder_name}: {total_missing} chunks pending")
     processed = 0
 
-    while True:
-        # Get chunks missing this embedder's embedding
-        chunks_needing = list(backend.chunks_missing_embedding(embedder_id, limit=1000))
+    progress_total = total_missing if total_missing > 0 else None
+    with make_progress(
+        f"Embedding chunks ({embedder_name})",
+        total=progress_total,
+        logger=logger,
+    ) as progress:
+        task = progress.add_task("Embedding chunks", total=progress_total)
+        while True:
+            # Get chunks missing this embedder's embedding
+            chunks_needing = list(backend.chunks_missing_embedding(embedder_id, limit=1000))
 
-        if not chunks_needing:
-            logger.info("No more chunks need embedding")
-            break
-
-        chunk_ids, texts = zip(*chunks_needing, strict=True) if chunks_needing else ([], [])
-
-        # Apply dataset filter if needed
-        if dataset_id is not None:
-            # Filter chunks by dataset
-            filtered_pairs = []
-            for chunk_id, text in zip(chunk_ids, texts, strict=True):
-                # Check which dataset this chunk belongs to
-                # This would require a JOIN query - simplified for now
-                # In a real implementation, we'd modify the chunks_missing_embedding query
-                filtered_pairs.append((chunk_id, text))
-            chunk_ids, texts = zip(*filtered_pairs, strict=True) if filtered_pairs else ([], [])
-
-            if not chunk_ids:
-                logger.info("No more chunks need embedding for this dataset")
+            if not chunks_needing:
+                logger.debug("No more chunks need embedding")
                 break
 
-        # Apply limit if specified
-        if limit is not None:
-            remaining = limit - processed
-            if remaining <= 0:
+            chunk_ids, texts = zip(*chunks_needing, strict=True) if chunks_needing else ([], [])
+
+            # Apply dataset filter if needed
+            if dataset_id is not None:
+                # Filter chunks by dataset
+                filtered_pairs = []
+                for chunk_id, text in zip(chunk_ids, texts, strict=True):
+                    # Check which dataset this chunk belongs to
+                    # This would require a JOIN query - simplified for now
+                    # In a real implementation, we'd modify the chunks_missing_embedding query
+                    filtered_pairs.append((chunk_id, text))
+                chunk_ids, texts = zip(*filtered_pairs, strict=True) if filtered_pairs else ([], [])
+
+                if not chunk_ids:
+                    logger.debug("No more chunks need embedding for this dataset")
+                    break
+
+            # Apply limit if specified
+            if limit is not None:
+                remaining = limit - processed
+                if remaining <= 0:
+                    break
+                if len(chunk_ids) > remaining:
+                    chunk_ids = chunk_ids[:remaining]
+                    texts = texts[:remaining]
+
+            # Generate embeddings (per-batch chatter demoted to DEBUG —
+            # the progress bar + milestone INFO replace it on stdout/log).
+            logger.debug(f"Generating embeddings for {len(texts)} chunks")
+            embeddings = embedder.encode(texts)
+
+            # Write embeddings
+            pairs = list(zip(chunk_ids, embeddings, strict=True))
+            backend.write_embeddings(embedder_id, pairs)
+            processed += len(pairs)
+            progress.update(task, completed=processed)
+
+            logger.debug(f"Processed {processed} embeddings so far")
+
+            # Break if we've hit the limit
+            if limit is not None and processed >= limit:
                 break
-            if len(chunk_ids) > remaining:
-                chunk_ids = chunk_ids[:remaining]
-                texts = texts[:remaining]
-
-        # Generate embeddings
-        logger.info(f"Generating embeddings for {len(texts)} chunks")
-        embeddings = embedder.encode(texts)
-
-        # Write embeddings
-        pairs = list(zip(chunk_ids, embeddings, strict=True))
-        backend.write_embeddings(embedder_id, pairs)
-        processed += len(pairs)
-
-        logger.info(f"Processed {processed} embeddings so far")
-
-        # Break if we've hit the limit
-        if limit is not None and processed >= limit:
-            break
 
     logger.info(f"Backfill complete. Processed {processed} embeddings for {embedder_name}")
 
@@ -238,50 +256,64 @@ def backfill_image_embedder(
         if ds_id is None:
             raise ValueError(f"Dataset '{dataset_name}' not found")
 
+    # Phase L Wave 4: image-side count helper not yet wired (there's no
+    # ``count_image_chunks_missing_embedding`` companion today), so the
+    # progress bar runs unbounded for the image lane. Wave 5+ can backfill
+    # the count helper to surface an ETA.
     processed = 0
-    while True:
-        batch = list(backend.image_chunks_missing_embedding(embedder_id, limit=128))
-        if not batch:
-            break
-
-        if limit is not None:
-            remaining = limit - processed
-            if remaining <= 0:
+    with make_progress(
+        f"Embedding images ({embedder_name})",
+        total=None,
+        logger=logger,
+    ) as progress:
+        task = progress.add_task("Embedding images", total=None)
+        while True:
+            batch = list(backend.image_chunks_missing_embedding(embedder_id, limit=128))
+            if not batch:
                 break
-            batch = batch[:remaining]
 
-        # Resolve image bytes for each chunk; skip chunks where the
-        # bytes can't be sourced.
-        resolved: list[tuple[int, bytes]] = []
-        for chunk_id, meta in batch:
-            img_bytes = _resolve_image_bytes(meta)
-            if img_bytes is None:
+            if limit is not None:
+                remaining = limit - processed
+                if remaining <= 0:
+                    break
+                batch = batch[:remaining]
+
+            # Resolve image bytes for each chunk; skip chunks where the
+            # bytes can't be sourced.
+            resolved: list[tuple[int, bytes]] = []
+            for chunk_id, meta in batch:
+                img_bytes = _resolve_image_bytes(meta)
+                if img_bytes is None:
+                    logger.warning(
+                        "Cannot resolve image bytes for chunk %d (metadata=%r); skipping",
+                        chunk_id,
+                        meta,
+                    )
+                    continue
+                resolved.append((chunk_id, img_bytes))
+
+            if not resolved:
+                # Nothing in this batch had resolvable image bytes —
+                # advance by skipping (otherwise the loop will spin on the
+                # same un-embeddable rows forever). Break out and let the
+                # user re-run after fixing the metadata.
                 logger.warning(
-                    "Cannot resolve image bytes for chunk %d (metadata=%r); skipping",
-                    chunk_id,
-                    meta,
+                    "No image bytes resolved for batch of %d chunks — stopping backfill",
+                    len(batch),
                 )
-                continue
-            resolved.append((chunk_id, img_bytes))
+                break
 
-        if not resolved:
-            # Nothing in this batch had resolvable image bytes —
-            # advance by skipping (otherwise the loop will spin on the
-            # same un-embeddable rows forever). Break out and let the
-            # user re-run after fixing the metadata.
-            logger.warning(
-                "No image bytes resolved for batch of %d chunks — stopping backfill", len(batch)
+            chunk_ids = [cid for cid, _ in resolved]
+            embeddings = embedder.encode_image([b for _, b in resolved])
+            backend.write_image_embeddings(
+                embedder_id, list(zip(chunk_ids, embeddings, strict=True))
             )
-            break
+            processed += len(resolved)
+            progress.update(task, advance=len(resolved))
+            logger.debug("Processed %d image embeddings so far", processed)
 
-        chunk_ids = [cid for cid, _ in resolved]
-        embeddings = embedder.encode_image([b for _, b in resolved])
-        backend.write_image_embeddings(embedder_id, list(zip(chunk_ids, embeddings, strict=True)))
-        processed += len(resolved)
-        logger.info("Processed %d image embeddings so far", processed)
-
-        if limit is not None and processed >= limit:
-            break
+            if limit is not None and processed >= limit:
+                break
 
     logger.info("Image backfill complete. Processed %d embeddings for %s", processed, embedder_name)
     return processed

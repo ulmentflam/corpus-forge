@@ -10,6 +10,7 @@ from pathlib import Path
 from corpus_forge.identity import file_content_hash
 from corpus_forge.sync.conflicts import conflict_filename
 from corpus_forge.sync.fs import atomic_write_text, move_to_trash
+from corpus_forge.ui.progress import make_progress
 
 logger = logging.getLogger(__name__)
 
@@ -84,34 +85,48 @@ class PullPipeline:
             last_pulled_revision_id=self._last_pulled_id if self._last_pulled_id else None,
             self_host=self._host_id,
         )
-        count = 0
-        for rev in pending:
-            source_uri = rev.get("source_uri", "")
-            path = self._resolve_path(source_uri)
-            local_hash: str | None = None
-            try:
-                local_hash = file_content_hash(path)
-            except OSError:
-                local_hash = None
-            parent_hash = rev.get("parent_content_hash")
+        pending_list = list(pending)
+        if not pending_list:
+            return 0
 
-            if rev.get("is_tombstone"):
-                self._handle_tombstone(rev, path)
-                count += 1
-            elif local_hash == rev["content_hash"]:
-                self._handle_already_in_sync(rev, path)
-                count += 1
-            elif local_hash == parent_hash:
-                atomic_write_text(path, rev["text"])
-                self._echo_suppressor.register(path, rev["content_hash"])
-                self._backend.mark_revision_pulled(
-                    source_id=self._self_source_id, revision_id=rev["id"]
-                )
-                self._last_pulled_id = max(self._last_pulled_id, rev["id"])
-                count += 1
-            else:
-                self._handle_conflict(rev, path, local_hash)
-                count += 1
+        # Phase L Wave 4 — wrap the pending-revision apply loop in the
+        # shared progress factory.  Bookend INFO records + ~10%
+        # milestones land in the rotating log automatically.
+        count = 0
+        with make_progress(
+            "Pulling revisions",
+            total=len(pending_list),
+            logger=logger,
+        ) as progress:
+            task = progress.add_task("Pulling revisions", total=len(pending_list))
+            for rev in pending_list:
+                source_uri = rev.get("source_uri", "")
+                path = self._resolve_path(source_uri)
+                local_hash: str | None = None
+                try:
+                    local_hash = file_content_hash(path)
+                except OSError:
+                    local_hash = None
+                parent_hash = rev.get("parent_content_hash")
+
+                if rev.get("is_tombstone"):
+                    self._handle_tombstone(rev, path)
+                    count += 1
+                elif local_hash == rev["content_hash"]:
+                    self._handle_already_in_sync(rev, path)
+                    count += 1
+                elif local_hash == parent_hash:
+                    atomic_write_text(path, rev["text"])
+                    self._echo_suppressor.register(path, rev["content_hash"])
+                    self._backend.mark_revision_pulled(
+                        source_id=self._self_source_id, revision_id=rev["id"]
+                    )
+                    self._last_pulled_id = max(self._last_pulled_id, rev["id"])
+                    count += 1
+                else:
+                    self._handle_conflict(rev, path, local_hash)
+                    count += 1
+                progress.update(task, advance=1)
 
         return count
 

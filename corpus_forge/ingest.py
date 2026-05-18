@@ -11,8 +11,16 @@ from .embedders.base import Embedder
 from .embedders.registry import registry
 from .logging_config import init_logging
 from .sources.base import RawConversation, RawDocument, Source
+from .ui.progress import make_progress
 
 logger = logging.getLogger(__name__)
+
+# Phase L Wave 4 — taxonomy loggers documented in
+# ``.planning/tdd/phase_l_cli_ux.md`` §2. Greppable surface for
+# bug-report attachments and ``corpus-forge logs tail``.
+scan_logger = logging.getLogger("corpus_forge.ingest.scan")
+extract_logger = logging.getLogger("corpus_forge.ingest.extract")
+chunk_logger = logging.getLogger("corpus_forge.ingest.chunk")
 
 
 #: Maps each class-label value (from ``ALLOWED_CLASS_VALUES``) to the
@@ -455,7 +463,11 @@ def ingest_once(config: Config) -> None:
 
         # Process each source in dataset
         for source_config in dataset.sources:
-            logger.info(f"Processing source: {source_config.plugin}")
+            scan_logger.info(
+                "Scanning source: plugin=%s dataset=%s",
+                source_config.plugin,
+                dataset.name,
+            )
 
             # Instantiate source
             source = _instantiate_source(source_config, config=config)
@@ -472,14 +484,39 @@ def ingest_once(config: Config) -> None:
             # Get chunker for this source
             chunker = get_chunker_for_source(source, config)
 
-            # Scan and ingest
+            # Scan and ingest — Phase L Wave 4 wraps the per-file loop
+            # in the shared progress factory so the user sees motion
+            # and the rotating log captures bookends + 10% milestones.
             raw_items = source.scan()
-            for raw in raw_items:
-                try:
-                    ingest_one(backend, raw, chunker, embedders, dataset_id)
-                except Exception as e:
-                    logger.error(f"Error ingesting {getattr(raw, 'source_uri', 'unknown')}: {e}")
-                    continue
+            docs_chunked = 0
+            with make_progress(
+                f"Ingest ({source.name})",
+                total=None,
+                logger=scan_logger,
+            ) as progress:
+                task = progress.add_task("Ingest", total=None)
+                for raw in raw_items:
+                    try:
+                        ingest_one(backend, raw, chunker, embedders, dataset_id)
+                        docs_chunked += 1
+                        if docs_chunked % 100 == 0:
+                            chunk_logger.info("Chunked %d documents so far", docs_chunked)
+                    except Exception as e:
+                        # Per-file extractor failures are recoverable — log
+                        # INFO on the dedicated extract logger (greppable
+                        # via the documented taxonomy) and keep going.
+                        extract_logger.info(
+                            "Extractor failed on %s: %s",
+                            getattr(raw, "source_uri", "unknown"),
+                            e,
+                        )
+                        continue
+                    progress.update(task, advance=1)
+            scan_logger.info(
+                "Scan complete: %d documents (plugin=%s)",
+                docs_chunked,
+                source_config.plugin,
+            )
 
 
 def _get_or_create_dataset(backend: StorageBackend, dataset_config) -> int:

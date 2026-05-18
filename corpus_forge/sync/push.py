@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import logging
 import threading
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -12,6 +13,12 @@ from watchdog.events import FileSystemEventHandler
 from corpus_forge.identity import chunk_content_hash
 from corpus_forge.sync.cloud import detect_cloud_provider  # noqa: F401
 from corpus_forge.sync.conflicts import conflict_filename, is_cloud_duplicate
+
+# Phase L Wave 4 — module-level logger so the push pipeline writes to
+# the documented ``corpus_forge.sync.push`` taxonomy bucket. Push is
+# observer-driven (no bounded loop) so we ship lifecycle bookends here
+# instead of a progress bar.
+logger = logging.getLogger(__name__)
 
 
 class _DebouncedHandler(FileSystemEventHandler):
@@ -153,6 +160,12 @@ class PushPipeline:
         self._observer = observers.Observer()
         self._observer.schedule(self._handler, str(source_root), recursive=True)
         self._observer.start()
+        logger.info(
+            "Push start: dataset_id=%d root=%s debounce=%.1fs",
+            self._dataset_id,
+            source_root,
+            debounce_seconds,
+        )
 
     def stop(self) -> None:
         if self._observer is None:
@@ -162,6 +175,7 @@ class PushPipeline:
         self._observer.stop()
         self._observer.join()
         self._observer = None
+        logger.info("Push stop: dataset_id=%d", self._dataset_id)
 
     def _should_ignore(self, path: Path) -> bool:
         name = path.name

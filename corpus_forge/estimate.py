@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -45,6 +46,27 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
     from corpus_forge.ignore import IgnoreStack
 
 logger = logging.getLogger(__name__)
+
+# Phase L Wave 4 — taxonomy logger documented in
+# ``.planning/tdd/phase_l_cli_ux.md`` §2. Carries the scan progress
+# bookends emitted by the shared ``make_progress`` factory.
+scan_logger = logging.getLogger("corpus_forge.estimate.scan")
+
+
+# Module-level cache so callers that ran ``estimate_sync`` can retrieve
+# the most recent :class:`ScanStats` without re-walking the tree. The
+# CLI uses this; tests reset it via :func:`get_last_scan_stats`.
+_LAST_SCAN_STATS: ScanStats | None = None
+
+
+def get_last_scan_stats() -> ScanStats | None:
+    """Return the most recent :class:`ScanStats` captured by ``_walk``.
+
+    Phase L Wave 4 — lets ``corpus-forge estimate`` render the new
+    "Scan stats" table without paying for a second walk. Returns
+    ``None`` if no walk has run since import.
+    """
+    return _LAST_SCAN_STATS
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -282,6 +304,23 @@ class EmbedderSizing:
 
 
 @dataclass(frozen=True)
+class ScanStats:
+    """Scan timing + throughput surfaced alongside :class:`SyncEstimate`.
+
+    Phase L Wave 4 — kept as a SIBLING dataclass (not nested into the
+    wire-stable :class:`SyncEstimate`) so the MCP ``estimate_sync_size``
+    tool's JSON shape stays unchanged. The CLI ``estimate`` command
+    renders this in a new "Scan stats" table; ``--json`` mode emits the
+    payload under a top-level ``"scan"`` sibling key.
+    """
+
+    elapsed_s: float
+    scan_rate: float
+    file_count: int
+    dir_count: int
+
+
+@dataclass(frozen=True)
 class SyncEstimate:
     """Result of :func:`estimate_sync`.
 
@@ -365,7 +404,7 @@ def _walk(
     root: Path,
     *,
     ignore: IgnoreStack | None = None,
-) -> tuple[dict[str, _ClassBucket], int, int, int]:
+) -> tuple[dict[str, _ClassBucket], int, int, int, ScanStats]:
     """Walk ``root`` and bucket every file into an extractor class.
 
     The hard-coded ``_SKIP_DIR_NAMES`` / ``_SKIP_FILE_NAMES`` baseline
@@ -373,73 +412,115 @@ def _walk(
     the baseline so a ``!`` negation in any ``.corpusignore`` cannot
     un-skip a baseline entry.
 
-    Returns ``(buckets_by_class, file_count, dir_count, total_raw_bytes)``.
+    Returns ``(buckets_by_class, file_count, dir_count, total_raw_bytes, scan_stats)``.
+
+    Phase L Wave 4 — the inner loop is wrapped in
+    :func:`corpus_forge.ui.progress.make_progress` (unbounded mode) with
+    the ``corpus_forge.estimate.scan`` logger so users see live motion
+    on a TTY and the rotating log captures the start/complete bookends
+    even for long walks.
     """
+    from corpus_forge.ui.progress import make_progress  # noqa: PLC0415
+
     buckets: dict[str, _ClassBucket] = {}
     file_count = 0
     dir_count = 0
     total_raw_bytes = 0
 
+    started = time.perf_counter()
+
     # Iterative walk so we can prune subtrees by directory name.
     stack: list[Path] = [root]
-    while stack:
-        current = stack.pop()
-        try:
-            entries = list(current.iterdir())
-        except (PermissionError, OSError) as exc:
-            logger.debug("estimator: cannot iterate %s: %s", current, exc)
-            continue
-        for entry in entries:
-            name = entry.name
+    with make_progress("Scanning", total=None, logger=scan_logger) as progress:
+        task = progress.add_task("Scanning", total=None)
+        while stack:
+            current = stack.pop()
             try:
-                if entry.is_symlink():
-                    # Don't follow symlinks — keeps the estimator from
-                    # double-counting and from chasing cycles.
-                    continue
-                if entry.is_dir():
-                    if _should_skip_dir(name):
-                        continue
-                    if ignore is not None and ignore.matches(entry, is_dir=True, scan_root=root):
-                        continue
-                    dir_count += 1
-                    stack.append(entry)
-                    continue
-                if not entry.is_file():
-                    continue
-                if _should_skip_file(name):
-                    continue
-                if ignore is not None and ignore.matches(entry, is_dir=False, scan_root=root):
-                    continue
-            except OSError as exc:
-                logger.debug("estimator: stat failed on %s: %s", entry, exc)
+                entries = list(current.iterdir())
+            except (PermissionError, OSError) as exc:
+                logger.debug("estimator: cannot iterate %s: %s", current, exc)
                 continue
+            for entry in entries:
+                name = entry.name
+                try:
+                    if entry.is_symlink():
+                        # Don't follow symlinks — keeps the estimator from
+                        # double-counting and from chasing cycles.
+                        continue
+                    if entry.is_dir():
+                        if _should_skip_dir(name):
+                            continue
+                        if ignore is not None and ignore.matches(
+                            entry, is_dir=True, scan_root=root
+                        ):
+                            continue
+                        dir_count += 1
+                        stack.append(entry)
+                        continue
+                    if not entry.is_file():
+                        continue
+                    if _should_skip_file(name):
+                        continue
+                    if ignore is not None and ignore.matches(entry, is_dir=False, scan_root=root):
+                        continue
+                except OSError as exc:
+                    logger.debug("estimator: stat failed on %s: %s", entry, exc)
+                    continue
 
-            try:
-                size = entry.stat().st_size
-            except OSError as exc:
-                logger.debug("estimator: size lookup failed on %s: %s", entry, exc)
-                continue
+                try:
+                    size = entry.stat().st_size
+                except OSError as exc:
+                    logger.debug("estimator: size lookup failed on %s: %s", entry, exc)
+                    continue
 
-            extractor_class = _classify_extension(entry.suffix.lower())
-            if extractor_class is None:
-                # Filename second-pass fallback for the code extractor.
-                extractor_class = "code" if name in _code_filenames() else "unknown"
+                extractor_class = _classify_extension(entry.suffix.lower())
+                if extractor_class is None:
+                    # Filename second-pass fallback for the code extractor.
+                    extractor_class = "code" if name in _code_filenames() else "unknown"
 
-            if size > 2 * 1024 * 1024 * 1024:  # >2 GiB
-                logger.debug(
-                    "estimator: large file %s (%d bytes) — still counted",
-                    entry,
-                    size,
-                )
+                if size > 2 * 1024 * 1024 * 1024:  # >2 GiB
+                    logger.debug(
+                        "estimator: large file %s (%d bytes) — still counted",
+                        entry,
+                        size,
+                    )
 
-            bucket = buckets.setdefault(extractor_class, _ClassBucket())
-            bucket.file_count += 1
-            bucket.raw_bytes += size
-            bucket.est_chunks += _est_chunks(extractor_class, size)
-            file_count += 1
-            total_raw_bytes += size
+                bucket = buckets.setdefault(extractor_class, _ClassBucket())
+                bucket.file_count += 1
+                bucket.raw_bytes += size
+                bucket.est_chunks += _est_chunks(extractor_class, size)
+                file_count += 1
+                total_raw_bytes += size
+                progress.update(task, advance=1)
 
-    return buckets, file_count, dir_count, total_raw_bytes
+    elapsed_s = max(time.perf_counter() - started, 0.0)
+    scan_rate = (file_count / elapsed_s) if elapsed_s > 0 else 0.0
+    stats = ScanStats(
+        elapsed_s=elapsed_s,
+        scan_rate=scan_rate,
+        file_count=file_count,
+        dir_count=dir_count,
+    )
+
+    # Stash for the CLI's "Scan stats" panel — avoids a second walk.
+    global _LAST_SCAN_STATS  # noqa: PLW0603 — module-level cache, intentional
+    _LAST_SCAN_STATS = stats
+
+    return buckets, file_count, dir_count, total_raw_bytes, stats
+
+
+def walk_with_stats(
+    root: Path,
+    *,
+    ignore: IgnoreStack | None = None,
+) -> tuple[dict[str, _ClassBucket], int, int, int, ScanStats]:
+    """Public 5-tuple-returning variant of :func:`_walk`.
+
+    Phase L Wave 4 — gives CLI and test sites access to the
+    :class:`ScanStats` without having to re-walk. Same contract as
+    :func:`_walk`; exported in ``__all__`` for stability.
+    """
+    return _walk(root, ignore=ignore)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -514,7 +595,7 @@ def estimate_sync(
         by_name = {e.name: e for e in config.embedders}
         chosen = [by_name[name] for name in wanted]
 
-    buckets, file_count, dir_count, total_raw_bytes = _walk(root, ignore=ignore)
+    buckets, file_count, dir_count, total_raw_bytes, _scan_stats = _walk(root, ignore=ignore)
 
     # Stable ordering for the per-class roll-up — match the heuristic
     # table order so tests + CLI tables are deterministic.
@@ -611,6 +692,9 @@ __all__ = [
     "EmbedderSizing",
     "ExtractorClassSummary",
     "ExtractorHeuristic",
+    "ScanStats",
     "SyncEstimate",
     "estimate_sync",
+    "get_last_scan_stats",
+    "walk_with_stats",
 ]

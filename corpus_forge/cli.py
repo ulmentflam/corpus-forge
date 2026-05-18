@@ -1880,6 +1880,129 @@ def _human_count(n: int) -> str:
     return f"{n:,}"
 
 
+def _estimate_pending_files(config, *, embedder_filter=None) -> dict[str, object]:
+    """Phase L Wave 4 — query the backend for pending-files counters.
+
+    Returns a JSON-serialisable dict with::
+
+        {
+            "documents_not_chunked": int,
+            "chunks_missing_embedding": int,
+            "sample_paths": list[str],
+            "embedder": str | None,
+        }
+
+    Best-effort: any backend reachability failure (no migration applied,
+    sqlite db missing, postgres unreachable, embedder helper absent) is
+    swallowed and reported as zero counters so the CLI never crashes on
+    the new section. The first active embedder drives the chunk count
+    so the user mental-model matches "the embedder that would run next."
+    """
+    payload: dict[str, object] = {
+        "documents_not_chunked": 0,
+        "chunks_missing_embedding": 0,
+        "sample_paths": [],
+        "embedder": None,
+    }
+
+    try:
+        # Local import preserves the lazy-load contract of the estimate
+        # command (no heavy backend deps until the user actually opts in).
+        if config.backend.kind == "sqlite":
+            from corpus_forge.backends.sqlite import SQLiteBackend
+
+            backend = SQLiteBackend(path=config.backend.dsn, schema=config.backend.schema)
+        else:
+            from corpus_forge.backends.postgres import PostgresBackend
+
+            backend = PostgresBackend(dsn=config.backend.dsn, schema=config.backend.schema)
+    except Exception as exc:
+        # Backend unreachable — degrade gracefully (no Pending section).
+        import logging
+
+        logging.getLogger(__name__).debug(
+            "estimate: backend unreachable for pending counts (%s)", exc
+        )
+        return payload
+
+    try:
+        count, samples = backend.pending_documents(limit=5)
+        payload["documents_not_chunked"] = count
+        payload["sample_paths"] = samples
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).debug("estimate: pending_documents failed (%s)", exc)
+
+    # Pick first active embedder configured (the one ``backfill_embedder``
+    # would target next). embedder_filter is the explicit --embedder list
+    # if set; otherwise fall back to the first ``active=True`` entry.
+    embedder_name: str | None = None
+    candidates = embedder_filter or [e.name for e in config.embedders if getattr(e, "active", True)]
+    if candidates:
+        embedder_name = candidates[0]
+    payload["embedder"] = embedder_name
+
+    if embedder_name is not None:
+        try:
+            rows = backend._execute(
+                "SELECT id FROM corpus.embedders WHERE name = %s"
+                if config.backend.kind == "postgres"
+                else "SELECT id FROM embedders WHERE name = ?",
+                (embedder_name,),
+            )
+            if rows:
+                embedder_id = int(rows[0]["id"])
+                payload["chunks_missing_embedding"] = backend.count_chunks_missing_embedding(
+                    embedder_id
+                )
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "estimate: count_chunks_missing_embedding failed (%s)", exc
+            )
+
+    return payload
+
+
+def _render_scan_stats_table(scan_stats) -> None:
+    """Render the "Scan stats" table (skip silently if no stats available)."""
+    if scan_stats is None:
+        return
+    print("Scan stats:")
+    print(f"  {'Elapsed':<14} {scan_stats.elapsed_s:.2f}s")
+    print(f"  {'Rate':<14} {scan_stats.scan_rate:.0f} files/s")
+    print(f"  {'Files seen':<14} {_human_count(scan_stats.file_count)}")
+    print(f"  {'Dirs visited':<14} {_human_count(scan_stats.dir_count)}")
+    print("")
+
+
+def _render_pending_files_table(payload: dict[str, object]) -> None:
+    """Render the "Pending files" table; skip if both counters are zero."""
+    docs = int(payload.get("documents_not_chunked", 0) or 0)
+    chunks = int(payload.get("chunks_missing_embedding", 0) or 0)
+    samples = payload.get("sample_paths") or []
+    embedder = payload.get("embedder")
+
+    if docs == 0 and chunks == 0:
+        return
+
+    print("Pending files:")
+    print(f"  {'Documents not chunked':<28} {_human_count(docs)}")
+    chunk_label = (
+        f"Chunks missing embedding ({embedder})"
+        if embedder is not None
+        else "Chunks missing embedding"
+    )
+    print(f"  {chunk_label:<28} {_human_count(chunks)}")
+    if samples:
+        print("  Sample paths (top 5):")
+        for path in samples[:5]:
+            print(f"    - {path}")
+    print("")
+
+
 @app.command("estimate")
 def estimate(
     path: Path = typer.Argument(
@@ -2038,9 +2161,25 @@ def estimate(
         ui_error(f"estimate error: {exc}")
         raise typer.Exit(code=2) from None
 
+    # Phase L Wave 4 — compute scan stats + pending-files snapshot so the
+    # CLI can render the two new sections regardless of human/JSON mode.
+    from corpus_forge.estimate import get_last_scan_stats
+
+    scan_stats = get_last_scan_stats()
+    pending_payload = _estimate_pending_files(config, embedder_filter=chosen_embedders)
+
     if json_out:
-        # JSON estimate — stdout for piping (no markup mangling).
-        print(_json.dumps(asdict(estimate_result), ensure_ascii=False))
+        # JSON estimate — stdout for piping (no markup mangling). Wave 4
+        # adds two new sibling keys ``"scan"`` + ``"pending"`` alongside
+        # the existing SyncEstimate fields so the shape stays additive.
+        # The MCP ``estimate_sync_size`` tool still consumes
+        # ``asdict(SyncEstimate)`` directly via the corpus_forge.estimate
+        # module — it is NOT affected by this CLI-side wrapping.
+        out_payload: dict[str, object] = {**asdict(estimate_result)}
+        if scan_stats is not None:
+            out_payload["scan"] = asdict(scan_stats)
+        out_payload["pending"] = pending_payload
+        print(_json.dumps(out_payload, ensure_ascii=False))
         return
 
     # Human output. Layout mirrors the brief's example verbatim. The
@@ -2053,6 +2192,7 @@ def estimate(
         f"({_human_bytes(estimate_result.total_raw_bytes)} raw)."
     )
     print("")
+    _render_scan_stats_table(scan_stats)
     print("By extractor:")
     for summary in estimate_result.by_extractor:
         chunk_str = (
@@ -2080,6 +2220,7 @@ def estimate(
     print("  " + "-" * 28)
     print(f"  {'Total':<18} {_human_bytes(estimate_result.total_bytes):>10}")
     print("")
+    _render_pending_files_table(pending_payload)
     print(
         f"Assumed compression ratio: {estimate_result.compression_ratio}. "
         "Pass `--compression-ratio 0.5` to model LZ4-toasted text columns."

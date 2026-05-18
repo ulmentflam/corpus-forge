@@ -1215,6 +1215,68 @@ class SQLiteBackend:
         for row in rows:
             yield (row["id"], row["text"])
 
+    def count_chunks_missing_embedding(self, embedder_id: int) -> int:
+        """Total number of chunks missing an embedding for ``embedder_id``.
+
+        Phase L Wave 4 — mirrors :meth:`PostgresBackend.count_chunks_missing_embedding`.
+        Unknown ``embedder_id`` → 0 (no table to count).
+        """
+        embedder_rows = self._execute(
+            "SELECT table_name FROM embedders WHERE id = ?",
+            (embedder_id,),
+        )
+        if not embedder_rows:
+            return 0
+        table_name = embedder_rows[0]["table_name"]
+        rows = self._execute(
+            f"SELECT COUNT(*) AS n FROM chunks c"
+            f" WHERE NOT EXISTS ("
+            f"   SELECT 1 FROM {table_name} e"
+            f"   WHERE e.chunk_id = c.id AND e.embedder_id = ?"
+            f" )",
+            (embedder_id,),
+        )
+        return int(rows[0]["n"]) if rows else 0
+
+    def pending_documents(
+        self, *, dataset_id: int | None = None, limit: int = 5
+    ) -> tuple[int, list[str]]:
+        """Documents that have no chunks yet — count + sample source URIs.
+
+        Phase L Wave 4 — mirrors :meth:`PostgresBackend.pending_documents`.
+        """
+        if dataset_id is None:
+            count_rows = self._execute(
+                "SELECT COUNT(*) AS n FROM documents d"
+                " WHERE NOT EXISTS ("
+                "   SELECT 1 FROM chunks c WHERE c.document_id = d.id"
+                " )"
+            )
+            sample_rows = self._execute(
+                "SELECT d.source_uri FROM documents d"
+                " WHERE NOT EXISTS ("
+                "   SELECT 1 FROM chunks c WHERE c.document_id = d.id"
+                " ) ORDER BY d.id LIMIT ?",
+                (limit,),
+            )
+        else:
+            count_rows = self._execute(
+                "SELECT COUNT(*) AS n FROM documents d"
+                " WHERE d.dataset_id = ? AND NOT EXISTS ("
+                "   SELECT 1 FROM chunks c WHERE c.document_id = d.id"
+                " )",
+                (dataset_id,),
+            )
+            sample_rows = self._execute(
+                "SELECT d.source_uri FROM documents d"
+                " WHERE d.dataset_id = ? AND NOT EXISTS ("
+                "   SELECT 1 FROM chunks c WHERE c.document_id = d.id"
+                " ) ORDER BY d.id LIMIT ?",
+                (dataset_id, limit),
+            )
+        count = int(count_rows[0]["n"]) if count_rows else 0
+        return count, [r["source_uri"] for r in sample_rows]
+
     # ── Phase G P1 — multi-modal embedding helpers ─────────────────────
 
     def register_multimodal_embedder(

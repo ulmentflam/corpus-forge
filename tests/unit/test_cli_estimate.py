@@ -126,7 +126,7 @@ def test_estimate_json_output_is_parseable_and_has_schema_version(tmp_path: Path
         env={"CORPUS_FORGE_CONFIG": str(cfg_path)},
     )
     assert result.exit_code == 0, result.output
-    payload = _json.loads(result.output)
+    payload = _json.loads(result.stdout)
     assert payload["schema_version"] == 1
     assert "file_count" in payload
     assert "embeddings" in payload
@@ -142,7 +142,7 @@ def test_estimate_json_output_total_matches_parts(tmp_path: Path) -> None:
         env={"CORPUS_FORGE_CONFIG": str(cfg_path)},
     )
     assert result.exit_code == 0
-    payload = _json.loads(result.output)
+    payload = _json.loads(result.stdout)
     embedding_total = sum(e["total_bytes"] for e in payload["embeddings"])
     assert payload["total_bytes"] == (
         payload["documents_bytes"]
@@ -221,8 +221,8 @@ def test_estimate_compression_ratio_flag_overrides_config(tmp_path: Path) -> Non
     )
     assert full.exit_code == 0
     assert half.exit_code == 0
-    f = _json.loads(full.output)
-    h = _json.loads(half.output)
+    f = _json.loads(full.stdout)
+    h = _json.loads(half.stdout)
     assert f["compression_ratio"] == 1.0
     assert h["compression_ratio"] == 0.5
     assert h["chunks_bytes"] < f["chunks_bytes"]
@@ -238,7 +238,7 @@ def test_estimate_embedder_filter_passthrough(tmp_path: Path) -> None:
         env={"CORPUS_FORGE_CONFIG": str(cfg_path)},
     )
     assert result.exit_code == 0
-    payload = _json.loads(result.output)
+    payload = _json.loads(result.stdout)
     assert [e["name"] for e in payload["embeddings"]] == ["fake"]
     assert payload["embedders_active"] == ["fake"]
 
@@ -312,7 +312,7 @@ def test_estimate_honors_ignore_file_flag(tmp_path: Path) -> None:
         env={"CORPUS_FORGE_CONFIG": str(cfg_path)},
     )
     assert no_ignore.exit_code == 0
-    baseline = _count_files(no_ignore.output)
+    baseline = _count_files(no_ignore.stdout)
 
     with_ignore = runner.invoke(
         app,
@@ -327,7 +327,7 @@ def test_estimate_honors_ignore_file_flag(tmp_path: Path) -> None:
         env={"CORPUS_FORGE_CONFIG": str(cfg_path)},
     )
     assert with_ignore.exit_code == 0
-    assert _count_files(with_ignore.output) < baseline
+    assert _count_files(with_ignore.stdout) < baseline
 
 
 def test_estimate_honors_no_ignore_file_flag(tmp_path: Path) -> None:
@@ -347,7 +347,7 @@ def test_estimate_honors_no_ignore_file_flag(tmp_path: Path) -> None:
     # We don't know the exact count without running a sibling no-ignore
     # baseline, but if `--no-ignore-file` is honored, `*.md` files are
     # still counted. Probe by comparing to an auto-detect run.
-    counted_with_disable = _count_files(result.output)
+    counted_with_disable = _count_files(result.stdout)
 
     auto = runner.invoke(
         app,
@@ -355,7 +355,7 @@ def test_estimate_honors_no_ignore_file_flag(tmp_path: Path) -> None:
         env={"CORPUS_FORGE_CONFIG": str(cfg_path)},
     )
     assert auto.exit_code == 0
-    counted_with_auto = _count_files(auto.output)
+    counted_with_auto = _count_files(auto.stdout)
     # When auto-detect is active and `*.md` is ignored, fewer files counted.
     assert counted_with_disable > counted_with_auto
 
@@ -375,7 +375,7 @@ def test_estimate_auto_detects_corpusignore_at_root(tmp_path: Path) -> None:
         ["estimate", str(scan), "--json", "--no-ignore-file", "--no-global-ignore"],
         env={"CORPUS_FORGE_CONFIG": str(cfg_path)},
     )
-    baseline_count = _count_files(baseline.output)
+    baseline_count = _count_files(baseline.stdout)
 
     # Auto-detect: no flags, the `.corpusignore` at the scan root should
     # kick in and prune the `.md` file.
@@ -385,7 +385,7 @@ def test_estimate_auto_detects_corpusignore_at_root(tmp_path: Path) -> None:
         env={"CORPUS_FORGE_CONFIG": str(cfg_path)},
     )
     assert auto.exit_code == 0
-    assert _count_files(auto.output) < baseline_count
+    assert _count_files(auto.stdout) < baseline_count
 
 
 def test_estimate_ignore_file_missing_path_errors(tmp_path: Path) -> None:

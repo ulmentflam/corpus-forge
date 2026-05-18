@@ -1,5 +1,7 @@
 """Sentence Transformers embedder implementation."""
 
+import logging
+import time
 from collections.abc import Sequence
 
 import numpy as np
@@ -12,6 +14,11 @@ except ImportError:
     SENTENCE_TRANSFORMERS_AVAILABLE = False
 
 from .base import BaseEmbedder
+
+# Phase L Wave 4 — dedicated logger so model-load events are greppable
+# in the rotating log under the documented ``corpus_forge.embedders.loader``
+# namespace. INFO at load start + ready; DEBUG-only chatter elsewhere.
+loader_logger = logging.getLogger("corpus_forge.embedders.loader")
 
 # Qwen3-Embedding documented query-side instruction prompt.  Prepended to
 # every query text in `encode_query` for Qwen3-family models.
@@ -62,7 +69,19 @@ class SentenceTransformersEmbedder(BaseEmbedder):
         if self._model is None and SENTENCE_TRANSFORMERS_AVAILABLE:
             from corpus_forge._ml_device import resolve_device  # noqa: PLC0415
 
+            loader_logger.info(
+                "Loading embedder %s (sentence-transformers, %d-dim, device=%s)",
+                self.name,
+                self.dimension,
+                self.device,
+            )
+            started = time.perf_counter()
             self._model = SentenceTransformer(self.model_id, device=resolve_device(self.device))
+            loader_logger.info(
+                "Embedder %s ready in %.1fs",
+                self.name,
+                time.perf_counter() - started,
+            )
 
     def warmup(self) -> None:
         """Warm up the embedder by loading the model."""

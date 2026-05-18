@@ -802,6 +802,70 @@ class PostgresBackend(StorageBackend):
         for row in results:
             yield (row["id"], row["text"])
 
+    def count_chunks_missing_embedding(self, embedder_id: int) -> int:
+        """Total number of chunks missing an embedding for ``embedder_id``.
+
+        Phase L Wave 4 — companion to :meth:`chunks_missing_embedding`
+        (no limit, no row payload). Powers the embed-command progress
+        bar's ``total`` argument so the user sees an ETA.
+        """
+        embedder_info = self._execute(
+            "SELECT name FROM corpus.embedders WHERE id = %s", (embedder_id,)
+        )
+        if not embedder_info:
+            return 0
+        embedder_name = embedder_info[0]["name"]
+        table_name = f"embeddings_{embedder_name.replace('-', '_')}"
+        rows = self._execute(
+            f"SELECT COUNT(*) AS n FROM corpus.chunks c "
+            f"LEFT JOIN corpus.{table_name} e ON e.chunk_id = c.id "
+            f"WHERE e.chunk_id IS NULL"
+        )
+        return int(rows[0]["n"]) if rows else 0
+
+    def pending_documents(
+        self, *, dataset_id: int | None = None, limit: int = 5
+    ) -> tuple[int, list[str]]:
+        """Documents that have no chunks yet — count + sample source URIs.
+
+        Phase L Wave 4 — drives the ``corpus-forge estimate`` "Pending
+        files" section. "Not yet chunked" is defined as
+        ``NOT EXISTS (SELECT 1 FROM chunks WHERE document_id = d.id)``;
+        the corpus schema has no ``documents.state`` column, so absence
+        of chunk rows is the canonical signal.
+        """
+        if dataset_id is None:
+            count_rows = self._execute(
+                "SELECT COUNT(*) AS n FROM corpus.documents d "
+                "WHERE NOT EXISTS ("
+                "  SELECT 1 FROM corpus.chunks c WHERE c.document_id = d.id"
+                ")"
+            )
+            sample_rows = self._execute(
+                "SELECT d.source_uri FROM corpus.documents d "
+                "WHERE NOT EXISTS ("
+                "  SELECT 1 FROM corpus.chunks c WHERE c.document_id = d.id"
+                ") ORDER BY d.id LIMIT %s",
+                (limit,),
+            )
+        else:
+            count_rows = self._execute(
+                "SELECT COUNT(*) AS n FROM corpus.documents d "
+                "WHERE d.dataset_id = %s AND NOT EXISTS ("
+                "  SELECT 1 FROM corpus.chunks c WHERE c.document_id = d.id"
+                ")",
+                (dataset_id,),
+            )
+            sample_rows = self._execute(
+                "SELECT d.source_uri FROM corpus.documents d "
+                "WHERE d.dataset_id = %s AND NOT EXISTS ("
+                "  SELECT 1 FROM corpus.chunks c WHERE c.document_id = d.id"
+                ") ORDER BY d.id LIMIT %s",
+                (dataset_id, limit),
+            )
+        count = int(count_rows[0]["n"]) if count_rows else 0
+        return count, [r["source_uri"] for r in sample_rows]
+
     # ── Phase G P1 — multi-modal embedding helpers ─────────────────────
 
     def register_multimodal_embedder(
