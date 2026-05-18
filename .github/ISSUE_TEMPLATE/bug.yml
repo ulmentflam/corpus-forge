@@ -1,0 +1,77 @@
+name: Bug report
+description: Report a problem with corpus-forge
+title: "[bug-report <short-hash>]"
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report.
+
+        **Please attach the `corpus-forge-bugreport-*.zip` produced by
+        `corpus-forge bug-report` so a triager (human or agent) can
+        reproduce the issue.** The bundle contains a redacted snapshot
+        of your environment, doctor output, logs, and config — no raw
+        DSN passwords, API keys, or bearer tokens.
+
+        See [docs](https://github.com/ulmentflam/corpus-forge#troubleshooting)
+        for what's inside the bundle.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the problem.
+      placeholder: |
+        e.g. `corpus-forge embed -e qwen3_8b` exits with a connection
+        refused error after the first batch.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands you ran and any relevant config.
+      placeholder: |
+        1. corpus-forge setup --quick
+        2. corpus-forge ingest --once
+        3. corpus-forge embed -e qwen3_8b
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you thought would happen.
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened.
+
+  - type: input
+    id: bundle-attachment
+    attributes:
+      label: Bug-report bundle
+      description: |
+        Drag-and-drop the `corpus-forge-bugreport-*.zip` produced by
+        `corpus-forge bug-report` into this issue (GitHub will upload
+        it). Then paste the bundle hash here so we can correlate the
+        attachment with the body.
+      placeholder: "corpus-forge-bugreport-YYYY-MM-DD-<hash>.zip"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I ran `corpus-forge doctor` and reviewed the output.
+          required: true
+        - label: I attached the `corpus-forge-bugreport-*.zip` to this issue.
+          required: true
