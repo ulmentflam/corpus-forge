@@ -15,11 +15,11 @@
 class CorpusForge < Formula
   include Language::Python::Virtualenv
 
-  desc "HF-format corpus + multi-embedder ingestion daemon for personal text and chat data"
+  desc "Chat with your data — forge a living, trainable corpus from notes, code, and chat history"
   homepage "https://github.com/ulmentflam/corpus-forge"
-  url "https://github.com/ulmentflam/corpus-forge/archive/refs/tags/v0.1.0b1.tar.gz"
+  url "https://github.com/ulmentflam/corpus-forge/archive/refs/tags/v0.1.0b2.tar.gz"
   # Update this on each release. ``shasum -a 256 corpus-forge-<version>.tar.gz``
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "62a3757946c2c68aafea883264c138d39e608844b96f5110c02017b9efea2184"
   license "Apache-2.0"
   head "https://github.com/ulmentflam/corpus-forge.git", branch: "main"
 

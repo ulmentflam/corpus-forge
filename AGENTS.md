@@ -36,7 +36,7 @@ uv tool install 'corpus-forge[postgres,hf]'
 curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh | sh
 
 # macOS via Homebrew tap.
-brew install ulmentflam/corpus-forge/corpus-forge
+brew install ulmentflam/tap/corpus-forge
 
 # Windows via Scoop bucket.
 scoop bucket add corpus-forge https://github.com/ulmentflam/scoop-corpus-forge
