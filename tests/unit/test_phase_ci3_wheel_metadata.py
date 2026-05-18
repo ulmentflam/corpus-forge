@@ -122,8 +122,8 @@ def metadata(built_wheel: Path) -> dict:
 class TestWheelIdentity:
     def test_wheel_filename(self, built_wheel: Path) -> None:
         # Either underscore or hyphen normalisation depending on hatchling.
-        assert built_wheel.name.startswith("corpus_forge-0.1.0b2"), (
-            f"Expected wheel name to start with corpus_forge-0.1.0b2; got {built_wheel.name}"
+        assert built_wheel.name.startswith("corpus_forge-0.1.0b3"), (
+            f"Expected wheel name to start with corpus_forge-0.1.0b3; got {built_wheel.name}"
         )
         assert built_wheel.name.endswith("-py3-none-any.whl"), (
             f"Expected universal py3 wheel; got {built_wheel.name}"

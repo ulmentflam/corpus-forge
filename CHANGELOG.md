@@ -8,7 +8,66 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+## [0.1.0b3] - 2026-05-18
+
 ### Added
+
+#### Phase L — CLI beautification & diagnostics
+
+- **`corpus_forge/ui/` package** (theme, console, banner, progress,
+  prompts, agent). Brand palette pinned to the logo's ember (`#ff8a3d`)
+  / deep ember (`#b83205`) with ANSI named state colors. Rounded-box
+  banner on `setup` and `doctor`. `--no-color`, `--light` flags.
+- **Centralized rotating logging** (`corpus_forge/logging_config.py`)
+  — file at `~/.cache/corpus-forge/logs/<component>.log` (10 MB × 5) +
+  themed stderr `RichHandler` + 200-entry in-memory ring buffer for
+  bug-reports. New global flags: `--verbose/-v`, `--quiet/-q`,
+  `--agent`, `--background/-b`.
+- **`corpus-forge setup --quick`** — minimal-prompt wizard (backend,
+  Ollama URL probe, embedder, first dataset).
+- **`corpus-forge doctor --json`** — structured doctor output for
+  agents / scripts. Adds a new `daemon_activity` check.
+- **`corpus-forge estimate`** now reports wall-clock scan time + scan
+  rate + pending-files breakdown (documents-not-chunked,
+  chunks-missing-embedding).
+- **Progress bars on every long op** (`ingest --once`, `embed`,
+  `sync pull --once`, `sync push`, `estimate`) via a shared
+  `ui.progress.make_progress` factory with bookending logger lines.
+- **Embedder fingerprint drift detection**
+  (`corpus_forge/embedders/fingerprint.py`) with a 3-way prompt
+  (now/later/skip) on setup/ingest/embed; daemon emits a warning only.
+  Drift state persisted to `~/.cache/corpus-forge/state/`.
+- **`corpus-forge bug-report`** — zipped diagnostics bundle
+  (manifest.json, doctor.json, redacted config.toml, log tails,
+  recent-events ring buffer flush, env, deps, db summary,
+  service status). Pre-fills a GitHub issue URL. Redactor module
+  (`corpus_forge/diagnostics/redact.py`) covers DSN, API keys, Bearer
+  tokens, password fields.
+- **`corpus-forge logs path|tail|clear`** — sibling diagnostics
+  surface; `tail --follow` polls at 250 ms, themed by log level.
+- **Admin CRUD command groups**: `config`, `embedder`, `ollama`,
+  `dataset`, `source`. Dotted-path config get/set/show/unset/edit via
+  `tomlkit`. Ollama `list/get/pull/set-url/test` (streamed pull progress).
+  Embedder `list/get/add/remove/set-active/test`. Dataset / source CRUD.
+- **`corpus-forge service` lifecycle group**:
+  `status/start/stop/restart/logs/install/uninstall`. Generates user-scope
+  systemd unit (Linux) / launchd plist (macOS) / `schtasks` argv
+  (Windows). The bare `daemon` command is now a deprecated alias for
+  `service start`.
+- **Project-wide "stay attached, unless `-b`" convention**: every
+  long-running side-effect command (rerun-embed, daemon start,
+  ollama pull, source ingest) defaults foreground with live progress
+  and SIGINT forwarding; `-b` / `--background` detaches via
+  `subprocess.Popen` and writes a pid file.
+- **Agent-mode detection + JSONL emission** (`corpus_forge/ui/agent.py`)
+  mirrors `cli/cli`'s `internal/agents/detect.go`. Recognised signals:
+  `AI_AGENT`, `AGENT=amp`, `CODEX_*`, `GEMINI_CLI`, `COPILOT_CLI`,
+  `OPENCODE`, `CLAUDECODE`, plus MCP stdio carve-out and explicit
+  `--agent <type>` / `CF_AGENT`. When active: every command emits one
+  `command.start` and one terminal `result|error` JSONL event on
+  stdout; banners/progress/prompts suppress or emit structured events;
+  logs route through an `AgentLogHandler`. `corpus-forge capabilities`
+  introspects the registered Typer commands for agent discovery.
 
 #### Phase K — .corpusignore
 
@@ -37,10 +96,32 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ### Changed
 
+#### Phase L — CLI beautification & diagnostics
+
+- Every `typer.echo` / `typer.secho` call site in `corpus_forge/cli.py`
+  routes through `corpus_forge.ui.*` helpers. Static test
+  (`tests/cli/test_no_typer_echo.py`) locks the refactor against drift.
+- `corpus-forge sync status` shows the embed-worker pid status.
+- Backends gain `find_embedder_row_by_name`, `count_existing_embeddings`,
+  `update_embedder_config_blob` for the fingerprint flow, and
+  `count_chunks_missing_embedding`, `pending_documents` for the
+  estimate-pending breakdown.
+- `corpus-forge daemon` deprecation alias forwards to `service start`.
+
+#### Phase K — .corpusignore
+
 - README "Install" section moved above "Quickstart" so users land on
   install before being asked to run shell commands. No content edits to
   either section — just an order swap and a "drop a `.corpusignore`"
   one-liner inserted into the Quickstart numbered list.
+
+### Fixed
+
+- Windows portability: `signal.SIGKILL` fallback to `SIGTERM` +
+  `TerminateProcess` for the service-stop escalation path; atomic
+  marker writes use linear backoff against Windows' file-replace deny;
+  redactor reads/writes use explicit `encoding="utf-8"` so the
+  `«redacted»` guillemets round-trip on cp1252 hosts.
 
 ## [0.1.0b2] - 2026-05-17
 
