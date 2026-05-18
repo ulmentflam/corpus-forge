@@ -1,17 +1,37 @@
 """Command-line interface for corpus-forge."""
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from . import __version__
+from .logging_config import init_logging
 
 app = typer.Typer(
     name="corpus-forge",
     help="HF-format corpus + multi-embedder ingestion daemon for personal text and chat data.",
     add_completion=False,
 )
+
+
+@dataclass
+class GlobalState:
+    """State stashed in ``ctx.obj`` by the root callback.
+
+    Wave 1 wires the flag values so downstream commands can read them
+    without re-parsing argv.  Wave 7 reuses ``background``; Wave 9
+    consumes ``agent`` once the detector ships.
+    """
+
+    verbose: int = 0
+    quiet: bool = False
+    no_color: bool = False
+    light: bool = False
+    background: bool = False
+    agent: str = "auto"
+    extras: dict[str, object] = field(default_factory=dict)
 
 
 def _version_callback(value: bool) -> None:
@@ -33,6 +53,7 @@ def _version_callback(value: bool) -> None:
 
 @app.callback()
 def _root(
+    ctx: typer.Context,
     version: Annotated[  # noqa: ARG001 — typer callback signature
         bool,
         typer.Option(
@@ -42,9 +63,69 @@ def _root(
             is_eager=True,
         ),
     ] = False,
+    verbose: Annotated[
+        int,
+        typer.Option(
+            "--verbose",
+            "-v",
+            count=True,
+            min=0,
+            max=2,
+            help="Increase log verbosity (-v for INFO, -vv for DEBUG on stderr).",
+        ),
+    ] = 0,
+    quiet: Annotated[
+        bool,
+        typer.Option(
+            "--quiet",
+            "-q",
+            help="Suppress all but WARNING+ on stderr.",
+        ),
+    ] = False,
+    no_color: Annotated[
+        bool,
+        typer.Option(
+            "--no-color",
+            help="Disable ANSI colors and use ASCII glyphs ([OK]/[WARN]/[ERR]).",
+        ),
+    ] = False,
+    light: Annotated[
+        bool,
+        typer.Option(
+            "--light",
+            help="Swap the brand palette for light-themed terminals.",
+        ),
+    ] = False,
+    background: Annotated[
+        bool,
+        typer.Option(
+            "--background",
+            "-b",
+            help="Detach long-running side-effects from the terminal (Wave 7).",
+        ),
+    ] = False,
+    agent: Annotated[
+        str,
+        typer.Option(
+            "--agent",
+            help="Agent-mode hint: 'auto', 'off', 'claude-code', 'opencode', etc.",
+        ),
+    ] = "auto",
 ) -> None:
-    """Root callback that wires ``--version`` onto the app entry point."""
-    return None
+    """Root callback that wires ``--version`` + global flags onto the app entry point."""
+
+    # Bootstrap logging before any subcommand runs so every command site
+    # gets a configured ``corpus_forge`` logger.
+    init_logging("cli", verbose=verbose >= 1, quiet=quiet)
+
+    ctx.obj = GlobalState(
+        verbose=verbose,
+        quiet=quiet,
+        no_color=no_color,
+        light=light,
+        background=background,
+        agent=agent,
+    )
 
 
 migrate_app = typer.Typer(

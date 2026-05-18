@@ -50,6 +50,13 @@ dependencies = [
   "python-dotenv>=1.0",
   "tenacity>=8.2",
   "alembic>=1.13",
+  # Phase L Wave 1: promote `rich` (transitive via Typer) + `platformdirs`
+  # (transitive via Pydantic) to direct deps. `rich` drives the new
+  # `corpus_forge/ui/` package (theme, console, banner, progress,
+  # prompts); `platformdirs` resolves the rotating-log directory in
+  # `corpus_forge/logging_config.py`.
+  "rich>=13.0",
+  "platformdirs>=4.0",
 ]
 
 [project.optional-dependencies]

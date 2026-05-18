@@ -9,6 +9,7 @@ from .chunkers.base import Chunker, PassthroughChunker, TextChunk
 from .config import Config
 from .embedders.base import Embedder
 from .embedders.registry import registry
+from .logging_config import init_logging
 from .sources.base import RawConversation, RawDocument, Source
 
 logger = logging.getLogger(__name__)
@@ -615,11 +616,12 @@ def main(once: bool = False) -> None:
     # Load config
     config = Config.load()
 
-    # Setup logging
-    logging.basicConfig(
-        level=getattr(logging, config.daemon.log_level.upper()),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
+    # Phase L Wave 1: route through the central ``init_logging`` helper
+    # instead of the bare ``logging.basicConfig`` call this site used to
+    # carry.  The rotating file lands at ``<cache>/corpus-forge/logs/
+    # ingest.log``; the stderr level honors ``config.daemon.log_level``
+    # via the ``CF_LOG_LEVEL`` env override path used by the helper.
+    init_logging("ingest", verbose=False, quiet=False)
 
     if once:
         ingest_once(config)

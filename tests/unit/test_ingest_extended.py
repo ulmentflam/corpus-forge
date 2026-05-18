@@ -537,6 +537,14 @@ active = true
             mock_config.daemon.log_level = "INFO"
             mock_load.return_value = mock_config
 
-            with patch("corpus_forge.ingest.logging") as mock_logging:
+            # Phase L Wave 1: ``ingest.main`` no longer calls
+            # ``logging.basicConfig``; it routes through the central
+            # ``corpus_forge.logging_config.init_logging`` helper instead.
+            # The symbol is imported at the top of ``ingest.py`` so the
+            # patch must target the ``corpus_forge.ingest`` namespace.
+            with patch("corpus_forge.ingest.init_logging") as mock_init:
                 main(once=False)
-                mock_logging.basicConfig.assert_called_once()
+                mock_init.assert_called_once()
+                args, _ = mock_init.call_args
+                # First positional is the component name.
+                assert args and args[0] == "ingest"
