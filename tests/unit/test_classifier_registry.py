@@ -382,3 +382,124 @@ class TestRegisterDefaultClassifiers:
         llm = reg.get("llm")
         assert llm is not None
         assert llm.api_key is None
+
+
+# ── coverage backfill — _load_classifier error paths + LLM kwargs forwarding ──
+
+
+class TestLoadClassifierErrorPaths:
+    """The two synthetic ImportError paths inside ``_load_classifier``.
+
+    Both surface as ``ValueError`` (config error, not environmental) so
+    callers can treat them as user-facing configuration problems.
+    """
+
+    def test_module_import_failure_raises_value_error(self) -> None:
+        """Submodule fails to import → wrapped as ValueError naming the
+        unavailable module + the underlying ImportError message.
+        """
+        from unittest.mock import patch
+
+        from corpus_forge.classifiers import _load_classifier
+
+        with (
+            patch(
+                "corpus_forge.classifiers.importlib.import_module",
+                side_effect=ImportError("synthetic: optional dep missing"),
+            ),
+            pytest.raises(ValueError, match="unknown classifier") as excinfo,
+        ):
+            _load_classifier("rule")
+        msg = str(excinfo.value)
+        # Names the module path so the user can debug.
+        assert "corpus_forge.classifiers.rule_based" in msg
+        # Preserves the ImportError chain.
+        assert isinstance(excinfo.value.__cause__, ImportError)
+
+    def test_class_missing_from_module_raises_value_error(self) -> None:
+        """Submodule imports but the expected class isn't there →
+        ValueError naming the missing class.
+        """
+        from types import ModuleType
+        from unittest.mock import patch
+
+        from corpus_forge.classifiers import _load_classifier
+
+        empty_module = ModuleType("corpus_forge.classifiers.rule_based")
+        # Deliberately do NOT attach RuleBasedClassifier.
+        with (
+            patch(
+                "corpus_forge.classifiers.importlib.import_module",
+                return_value=empty_module,
+            ),
+            pytest.raises(ValueError, match="unknown classifier") as excinfo,
+        ):
+            _load_classifier("rule")
+        msg = str(excinfo.value)
+        assert "RuleBasedClassifier" in msg
+        assert "not found" in msg
+
+
+class TestLoadClassifierLLMKwargsForwarding:
+    """Exercises the ``for cfg_attr, kwarg in (...)`` loop body.
+
+    Existing tests pass configs that have ONLY ``chain`` (and sometimes
+    ``llm_api_key_env``), so the LLM-fields forwarding block sits dark
+    in coverage. This test passes every LLM field and verifies the
+    forwarded kwargs land on the LLMClassifier instance.
+    """
+
+    def test_full_llm_config_forwards_every_kwarg(self) -> None:
+        from corpus_forge.classifiers import _load_classifier
+
+        class _Cfg:
+            llm_model: ClassVar[str] = "qwen2.5:14b-instruct"
+            llm_url: ClassVar[str] = "http://hosted.example.com:8080"
+            llm_timeout_s: ClassVar[float] = 30.0
+            llm_temperature: ClassVar[float] = 0.2
+            llm_excerpt_chars: ClassVar[int] = 4096
+
+        llm = _load_classifier("llm", _Cfg())
+        # The LLMClassifier exposes its kwargs as instance attrs (per
+        # the existing P1 implementation).
+        assert llm.model == "qwen2.5:14b-instruct"
+        # Trailing-slash stripping happens inside the classifier; we
+        # just need to confirm the URL was forwarded as a string.
+        assert "hosted.example.com" in llm.llm_url
+        assert llm.timeout_s == 30.0
+        assert llm.temperature == 0.2
+        assert llm.excerpt_chars == 4096
+
+    def test_anyhttpurl_is_cast_to_str(self) -> None:
+        """Pydantic's ``AnyHttpUrl`` is not a plain ``str`` — the loader
+        must coerce it so the backend's ``.rstrip('/')`` works.
+        """
+        from pydantic import AnyHttpUrl
+
+        from corpus_forge.classifiers import _load_classifier
+
+        class _Cfg:
+            llm_url: ClassVar[AnyHttpUrl] = AnyHttpUrl("http://localhost:11434")
+
+        llm = _load_classifier("llm", _Cfg())
+        # Must be a plain str by the time it lands on the classifier.
+        assert isinstance(llm.llm_url, str)
+        assert llm.llm_url.startswith("http://localhost:11434")
+
+    def test_partial_llm_config_uses_class_defaults_for_missing(self) -> None:
+        """Only ``llm_model`` set → other fields fall back to LLMClassifier
+        constructor defaults (no AttributeError raised).
+        """
+        from corpus_forge.classifiers import _load_classifier
+        from corpus_forge.classifiers.llm import LLMClassifier
+
+        class _Cfg:
+            llm_model: ClassVar[str] = "tinydolphin:latest"
+
+        llm = _load_classifier("llm", _Cfg())
+        assert llm.model == "tinydolphin:latest"
+        # Other fields default to LLMClassifier's own defaults.
+        defaults = LLMClassifier()
+        assert llm.timeout_s == defaults.timeout_s
+        assert llm.temperature == defaults.temperature
+        assert llm.excerpt_chars == defaults.excerpt_chars

@@ -226,3 +226,50 @@ class TestHfTemplateOfflineGuard:
 
         with pytest.raises((OSError, ValueError, RuntimeError)):
             hf_mod.hf_template("some/model-not-cached")
+
+
+# ── coverage backfill — public clear_cache + missing-transformers ────────
+
+
+class TestClearCachePublic:
+    """Exercises the public ``clear_cache()`` wrapper."""
+
+    def test_clear_cache_empties_module_cache(self) -> None:
+        import corpus_forge.templates.hf as hf_mod
+
+        hf_mod._TEMPLATE_CACHE["dummy/model"] = "{{ test }}"  # type: ignore[attr-defined]
+        assert hf_mod._TEMPLATE_CACHE  # type: ignore[attr-defined]
+        hf_mod.clear_cache()
+        assert hf_mod._TEMPLATE_CACHE == {}  # type: ignore[attr-defined]
+
+    def test_clear_cache_is_idempotent(self) -> None:
+        import corpus_forge.templates.hf as hf_mod
+
+        hf_mod.clear_cache()
+        hf_mod.clear_cache()  # no exception on already-empty cache
+        assert hf_mod._TEMPLATE_CACHE == {}  # type: ignore[attr-defined]
+
+
+class TestTransformersMissing:
+    """The [hf] extra isn't installed → helpful RuntimeError, not ImportError."""
+
+    def test_raises_runtime_error_with_install_hint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+
+        import corpus_forge.templates.hf as hf_mod
+
+        hf_mod._TEMPLATE_CACHE.clear()  # type: ignore[attr-defined]
+
+        # Force the lazy `import transformers` inside hf_template to fail.
+        # patch.dict won't propagate inside the function's local import unless
+        # the module is genuinely missing — use monkeypatch on sys.modules.
+        monkeypatch.setitem(sys.modules, "transformers", None)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            hf_mod.hf_template("any/model")
+        msg = str(excinfo.value)
+        assert "transformers not installed" in msg
+        # Error names the install incantation so the user can act.
+        assert "corpus-forge[hf]" in msg
+        # And it preserves the underlying ImportError for `raise … from exc`.
+        assert isinstance(excinfo.value.__cause__, ImportError)

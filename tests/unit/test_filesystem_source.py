@@ -572,3 +572,119 @@ def test_discover_exclude_component_match(tmp_path: Path):
     src = _make_source(tmp_path, exclude_globs=[".*"])
     names = {p.name for p in src.discover()}
     assert names == {"keep.md"}
+
+
+# ── coverage backfill — error paths + edge cases ─────────────────────────
+
+
+class TestIsExcludedRelativeFallback:
+    """The ``ValueError`` branch in ``_is_excluded`` — path outside root."""
+
+    def test_path_outside_root_falls_back_to_full_path(self, tmp_path: Path):
+        """When ``path.relative_to(root)`` raises ValueError, the helper
+        matches against the absolute path string. This is a defensive
+        branch: in practice ``discover()`` only yields paths under root.
+        """
+        from corpus_forge.sources.filesystem import _is_excluded
+
+        root = tmp_path / "vault"
+        root.mkdir()
+        # An absolute path *not* under root.
+        outside = tmp_path / "elsewhere" / "secret.md"
+        # Glob matches anywhere → True.
+        assert _is_excluded(outside, root, ["*secret*"]) is True
+        # No match → False.
+        assert _is_excluded(outside, root, ["*.txt"]) is False
+
+
+class TestParseStatFailures:
+    """OSError on the two ``path.stat()`` calls — disk vanished mid-walk."""
+
+    def test_initial_stat_oserror_returns_none(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        """If the file disappears between discover() and parse(), the
+        size check's stat() fails — parse() must return None and log DEBUG.
+        """
+        from unittest.mock import patch
+
+        src = _make_source(tmp_path)
+        ghost = tmp_path / "ghost.md"
+        ghost.write_text("about to vanish")
+        with (
+            patch.object(Path, "stat", side_effect=OSError("ENOENT")),
+            caplog.at_level(logging.DEBUG, logger="corpus_forge.sources.filesystem"),
+        ):
+            doc = src.parse(ghost)
+        assert doc is None
+        assert any("Cannot stat" in rec.message for rec in caplog.records)
+
+    def test_modified_at_stat_oserror_defaults_to_zero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The *second* stat (for ``mtime``) fails after extraction
+        succeeded — RawDocument is still built, but ``modified_at == 0.0``.
+        """
+        src = _make_source(tmp_path)
+        p = tmp_path / "transient.md"
+        p.write_text("# Title\nbody")
+        monkeypatch.setattr(src, "_registry", _StubRegistry({".md": _StubExtractor()}))
+
+        # First call (size check) succeeds; second call (mtime) raises.
+        real_stat = Path.stat
+        calls = {"n": 0}
+
+        def _flaky_stat(self):
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                raise OSError("stat failed after extraction")
+            return real_stat(self)
+
+        monkeypatch.setattr(Path, "stat", _flaky_stat)
+        doc = src.parse(p)
+        assert doc is not None
+        assert doc.modified_at == 0.0
+
+
+class TestParseExtractorReturnsNone:
+    """Phase G: audio/video extractors return ``None`` when no transcription
+    backend is configured. parse() must treat that as a silent skip.
+    """
+
+    class _NoneExtractor:
+        """Returns ``None`` instead of an ExtractedDocument."""
+
+        def extract(self, path: Path):
+            return None
+
+    def test_extractor_none_returns_none_and_logs_debug(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ):
+        src = _make_source(tmp_path)
+        wav = tmp_path / "song.wav"
+        wav.write_bytes(b"\x00\x01")
+        monkeypatch.setattr(
+            src,
+            "_registry",
+            _StubRegistry({".wav": TestParseExtractorReturnsNone._NoneExtractor()}),
+        )
+        with caplog.at_level(logging.DEBUG, logger="corpus_forge.sources.filesystem"):
+            doc = src.parse(wav)
+        assert doc is None
+        # Helpful debug-log line for the operator who'd expect a doc.
+        assert any("returned None" in rec.message for rec in caplog.records)
+
+
+class TestTitleForCodePathOutsideRoot:
+    """The ``ValueError`` branch in ``_title_for`` (code chunker_hint, path
+    not under root). Defensive: the production walker won't actually yield
+    such a path, but the helper is public-by-default and must be safe.
+    """
+
+    def test_code_title_falls_back_to_name_when_relative_fails(self, tmp_path: Path):
+        src = _make_source(tmp_path)
+        outside = tmp_path.parent / "outside" / "main.py"
+        # We don't need the file to exist — _title_for is pure.
+        title = src._title_for(outside, "print('hi')", "code")
+        # relative_to(root) would raise ValueError → fall back to basename.
+        assert title == "main.py"
