@@ -217,10 +217,13 @@ def test_render_status_no_config_shows_none_label(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _isolate(monkeypatch, tmp_path)
-    # No CF_CONFIG, no ~/.config/corpus-forge/config.toml → Config.load
-    # raises FileNotFoundError, which the helper swallows.
-    monkeypatch.delenv("CORPUS_FORGE_CONFIG", raising=False)
-    monkeypatch.delenv("CF_CONFIG", raising=False)
+    # Force the ``_active_datasets`` helper to return [] (mirrors what
+    # happens when ``Config.load`` raises FileNotFoundError on a fresh
+    # install). We patch the helper directly rather than relying on
+    # environment isolation — the developer's actual config file at
+    # ``~/.config/corpus-forge/config.toml`` would otherwise be picked
+    # up by ``Config.load`` on the local box.
+    monkeypatch.setattr(svc, "_active_datasets", lambda: [])
     out = _render()
     assert "none configured" in out
 
