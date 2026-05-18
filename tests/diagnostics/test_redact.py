@@ -249,12 +249,16 @@ class TestRedactFile:
         from corpus_forge.diagnostics.redact import redact_file
 
         src = tmp_path / "config.txt"
-        src.write_text("dsn = postgresql://u:p@h/db\nplain = ok\n")
+        # Explicit utf-8 on both sides — the REDACTED marker is the Unicode
+        # guillemet «…»; Windows defaults to cp1252 for ``write_text`` /
+        # ``read_text`` which mangles those bytes round-trip and breaks the
+        # assertion on Windows runners.
+        src.write_text("dsn = postgresql://u:p@h/db\nplain = ok\n", encoding="utf-8")
 
         count = redact_file(src)
 
         assert count >= 1
-        new_text = src.read_text()
+        new_text = src.read_text(encoding="utf-8")
         assert "p@h" not in new_text
         assert "«redacted»" in new_text
         assert "plain = ok" in new_text  # untouched lines preserved
@@ -263,7 +267,7 @@ class TestRedactFile:
         from corpus_forge.diagnostics.redact import redact_file
 
         src = tmp_path / "config.txt"
-        src.write_text("api_key=sk-abcdefghij1234567890abc\n")
+        src.write_text("api_key=sk-abcdefghij1234567890abc\n", encoding="utf-8")
 
         first = redact_file(src)
         second = redact_file(src)
@@ -275,11 +279,11 @@ class TestRedactFile:
 
         src = tmp_path / "ok.txt"
         original = "no secrets here, just words\n"
-        src.write_text(original)
+        src.write_text(original, encoding="utf-8")
 
         count = redact_file(src)
         assert count == 0
-        assert src.read_text() == original
+        assert src.read_text(encoding="utf-8") == original
 
 
 if __name__ == "__main__":  # pragma: no cover

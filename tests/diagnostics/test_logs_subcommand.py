@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import signal
+import sys
 import threading
 import time
 from pathlib import Path
@@ -117,6 +118,14 @@ class TestLogsTail:
 
 
 class TestLogsTailFollow:
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason=(
+            "Windows xdist workers don't survive os.kill(getpid, SIGINT) — "
+            "SIGINT delivery to the current process under pytest crashes the worker "
+            "rather than waking the poll loop. The follow path is exercised on POSIX runners."
+        ),
+    )
     def test_follow_exits_cleanly_on_sigint(self, isolated_log_dir: Path) -> None:
         from corpus_forge.diagnostics import logs as logs_mod
 

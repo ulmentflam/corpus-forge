@@ -131,7 +131,15 @@ def test_atomic_write_doesnt_race():
         try:
             for _ in range(50):
                 if _marker_path().exists():
-                    text = _marker_path().read_text(encoding="utf-8")
+                    # On Windows the writer's ``os.replace`` briefly invalidates
+                    # the path between unlink + rename; ``read_text`` then
+                    # surfaces FileNotFoundError / PermissionError.  Those are
+                    # not "torn JSON" — they're just lost-handshakes — so we
+                    # tolerate them and only treat parse failures as bugs.
+                    try:
+                        text = _marker_path().read_text(encoding="utf-8")
+                    except (FileNotFoundError, PermissionError, OSError):
+                        continue
                     if text.strip():
                         json.loads(text)  # must always parse
         except BaseException as exc:

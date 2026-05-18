@@ -26,7 +26,9 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import sys
 import tempfile
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -34,6 +36,13 @@ from typing import Literal
 import platformdirs
 
 _SUPPRESSION_DAYS = 7
+
+# Windows-only: ``os.replace`` raises ``PermissionError`` (WinError 5 /
+# ERROR_ACCESS_DENIED) when another handle has the target file open for
+# read.  Concurrent reader/writer threads can race; we retry the rename a
+# few times so a stray reader doesn't tear a write.
+_RENAME_RETRY_ATTEMPTS: int = 8 if sys.platform == "win32" else 1
+_RENAME_RETRY_BACKOFF: float = 0.01  # seconds; grows linearly per attempt
 
 
 def _state_dir() -> Path:
@@ -66,6 +75,32 @@ def _read() -> dict:
         return {}
 
 
+def _atomic_replace(src: Path, dst: Path) -> None:
+    """``src.replace(dst)`` with a tiny retry loop on Windows.
+
+    POSIX ``rename`` succeeds even when readers hold the destination open.
+    Windows ``MoveFileExW`` denies the rename when another handle has the
+    target file open; that's a perfectly normal race against the reader
+    side of our writer-multiple-readers contract.  Retrying for a few
+    tens of ms is enough to let the reader release its handle.
+    """
+
+    last_exc: PermissionError | OSError | None = None
+    for attempt in range(_RENAME_RETRY_ATTEMPTS):
+        try:
+            src.replace(dst)
+            return
+        except PermissionError as exc:  # Windows ERROR_ACCESS_DENIED on open handle
+            last_exc = exc
+            time.sleep(_RENAME_RETRY_BACKOFF * (attempt + 1))
+        except OSError as exc:
+            last_exc = exc
+            time.sleep(_RENAME_RETRY_BACKOFF * (attempt + 1))
+    # All retries exhausted — re-raise the last error.
+    assert last_exc is not None  # for type-checkers
+    raise last_exc
+
+
 def _atomic_write(payload: dict) -> None:
     """Write the marker JSON via tempfile + atomic rename."""
 
@@ -75,7 +110,7 @@ def _atomic_write(payload: dict) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, sort_keys=True)
-        tmp_path.replace(p)
+        _atomic_replace(tmp_path, p)
     except Exception:
         with contextlib.suppress(OSError):
             tmp_path.unlink()

@@ -66,6 +66,14 @@ DAEMON_COMPONENT: str = "daemon"
 _STOP_TIMEOUT_SECS: float = 30.0
 _STOP_POLL_INTERVAL_SECS: float = 0.2
 
+# ``signal.SIGKILL`` does not exist on Windows — Python's ``signal`` module
+# only exposes ``SIGTERM`` / ``SIGINT`` / ``CTRL_*`` on win32.  ``os.kill``
+# on Windows treats ``signal.SIGTERM`` as a graceful ``TerminateProcess``
+# shim, which is the closest analog the platform has to SIGKILL.  We
+# resolve the constant at module-import time so the escalation path
+# becomes a no-op equivalent on Windows.
+_SIGKILL: int = getattr(signal, "SIGKILL", signal.SIGTERM)
+
 # Default tail for the "last INFO line" in `service status`.
 _LAST_LINE_TAIL_LINES: int = 200
 
@@ -421,10 +429,12 @@ def stop_daemon() -> int:
         # the pid is still live.  Sleep a bit and re-probe.
         time.sleep(_STOP_POLL_INTERVAL_SECS)
 
-    # SIGKILL escalation.
+    # SIGKILL escalation (on Windows ``_SIGKILL`` collapses to SIGTERM —
+    # ``os.kill`` then issues a ``TerminateProcess`` under the hood, which
+    # is the strongest stop signal the platform offers).
     ui_warn(f"Daemon did not exit within {_STOP_TIMEOUT_SECS:.0f}s; sending SIGKILL")
     with contextlib.suppress(ProcessLookupError):
-        os.kill(pid, signal.SIGKILL)
+        os.kill(pid, _SIGKILL)
     _fg.clear_pid(DAEMON_COMPONENT)
     ui_ok(f"Killed daemon (pid={pid})")
     return 0

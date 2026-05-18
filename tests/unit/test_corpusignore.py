@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -146,6 +147,10 @@ class TestFromFile:
         with pytest.raises(FileNotFoundError):
             CorpusIgnore.from_file(tmp_path / "no-such-file")
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX permission semantics: Windows ignores chmod(0) for the file owner",
+    )
     def test_from_file_permission_error_propagates(self, tmp_path: Path) -> None:
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             pytest.skip("running as root; chmod 000 doesn't restrict")

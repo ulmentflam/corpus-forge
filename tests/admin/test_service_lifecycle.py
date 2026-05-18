@@ -195,7 +195,11 @@ def test_stop_daemon_escalates_to_sigkill_after_timeout(
     rc = svc.stop_daemon()
     assert rc == 0
     assert (fake_pid, signal.SIGTERM) in sent
-    assert (fake_pid, signal.SIGKILL) in sent
+    # On Windows ``signal.SIGKILL`` is absent and the production code
+    # collapses the escalation to ``signal.SIGTERM`` (resolved at import
+    # time into ``svc._SIGKILL``).  Assert against the abstracted constant
+    # so the test passes on every platform.
+    assert (fake_pid, svc._SIGKILL) in sent
 
 
 def test_stop_daemon_already_dead_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
