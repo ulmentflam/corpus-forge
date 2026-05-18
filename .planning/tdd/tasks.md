@@ -412,11 +412,20 @@ The doctor surface is rendered via `DoctorReport.render_styled` already
 
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
-| W6-01 | Backend embedder helpers (postgres + sqlite + protocol) | — | corpus_forge/backends/postgres.py, corpus_forge/backends/sqlite.py, corpus_forge/backends/base.py, tests/backends/test_postgres_embedder_helpers.py, tests/backends/test_sqlite_embedder_helpers.py | low | pending | — | activates Wave 5 drift path on real backends |
-| W6-02 | Redactor module | — | corpus_forge/diagnostics/redact.py, corpus_forge/diagnostics/__init__.py, tests/diagnostics/test_redact.py | low | pending | — | pure module, no I/O beyond `redact_file` |
-| W6-03 | bug-report command | W6-01, W6-02 | corpus_forge/diagnostics/bug_report.py, tests/diagnostics/test_bug_report.py, .github/ISSUE_TEMPLATE/bug.yml | med | pending | — | bundle, hash, URL, redaction |
-| W6-04 | logs subcommand | — | corpus_forge/diagnostics/logs.py, tests/diagnostics/test_logs_subcommand.py | low | pending | — | path / tail / clear |
-| W6-05 | CLI wiring + doctor daemon-activity check | W6-03, W6-04 | corpus_forge/cli.py, corpus_forge/doctor/checks.py | low | pending | — | register typer commands, doctor check |
+| W6-01 | Backend embedder helpers (postgres + sqlite + protocol) | — | corpus_forge/backends/postgres.py, corpus_forge/backends/sqlite.py, corpus_forge/backends/base.py, tests/backends/test_postgres_embedder_helpers.py, tests/backends/test_sqlite_embedder_helpers.py | low | done | tdd-principal | 20 tests green; activates Wave 5 drift path on real backends |
+| W6-02 | Redactor module | — | corpus_forge/diagnostics/redact.py, corpus_forge/diagnostics/__init__.py, tests/diagnostics/test_redact.py | low | done | tdd-principal | 24 tests green; tomlkit promoted to direct dep |
+| W6-03 | bug-report command | W6-01, W6-02 | corpus_forge/diagnostics/bug_report.py, tests/diagnostics/test_bug_report.py, .github/ISSUE_TEMPLATE/bug.yml | med | done | tdd-principal | 10 tests green; deterministic short hash; issue template added |
+| W6-04 | logs subcommand | — | corpus_forge/diagnostics/logs.py, tests/diagnostics/test_logs_subcommand.py | low | done | tdd-principal | 9 tests green incl. SIGINT clean-exit |
+| W6-05 | CLI wiring + doctor daemon-activity check | W6-03, W6-04 | corpus_forge/cli.py, corpus_forge/doctor/checks.py | low | done | tdd-principal | bug-report + logs in --help; daemon_activity check ships SKIP/OK |
+
+## Summary
+
+- Files changed: 7 modified, 8 new (+ 2 new test dirs).
+- Modified: `corpus_forge/backends/{base,postgres,sqlite}.py`, `corpus_forge/cli.py`, `corpus_forge/doctor/checks.py`, `pyproject.toml`, `uv.lock`.
+- New: `corpus_forge/diagnostics/{__init__,redact,bug_report,logs}.py`, `.github/ISSUE_TEMPLATE/bug.yml`, `tests/backends/{__init__,test_postgres_embedder_helpers,test_sqlite_embedder_helpers}.py`, `tests/diagnostics/{__init__,test_redact,test_bug_report,test_logs_subcommand}.py`, `tests/cli/{test_bug_report,test_logs_subcommand}.py`, `tests/unit/test_doctor_daemon_activity.py`.
+- Gates: 237 W6+neighbor tests passing, 0 new regressions vs Wave 5 baseline (164 pre-existing missing-dep failures unchanged).
+- Lint clean, format clean on every touched file.
+- Manual smoke: `corpus-forge bug-report --no-db` writes a valid zip with 8 deterministic files; `corpus-forge logs path` prints the platformdirs dir; `corpus-forge doctor --json` includes the new `daemon_activity` check.
 
 ## DAG
 
