@@ -8,7 +8,11 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
-## [0.1.0b3] - 2026-05-18
+## [0.1.0b4] - 2026-05-18
+
+(Reissue of `0.1.0b3` — that tag's release pipeline failed on a missed
+test version-string pin. No code differences vs the failed b3 tag other
+than the version bump and the corrected wheel-metadata test.)
 
 ### Added
 
