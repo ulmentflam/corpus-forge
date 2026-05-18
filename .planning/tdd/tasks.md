@@ -101,12 +101,19 @@ Dispatch input: orchestrator brief, Phase L / Wave 3 kickoff after Wave 2 landed
     whichever shape `Config.load()` accepts — verify by round-tripping a
     tmp config in the tester's RED tests before writing it as a
     fixture.
-  - `[[embedders]]` with one entry whose `model_id` is the quick answer
-    (provider hardcoded to `ollama` since the quick path always uses
-    Ollama, dimension `1024`, normalize=true, distance=cosine,
-    active=true). If `Config.load()` requires `dimension` to match the
-    actual model dim and 1024 is wrong for a chosen quick default, pick
-    a reasonable safe default and document why in code comments.
+  - `[[embedders]]` with one entry whose `model_id` is the quick answer.
+    **Constraint:** `EmbedderConfig.provider` is constrained by a Pydantic
+    `pattern="^(sentence_transformers|openai)$"` validator. The quick
+    wizard's Ollama URL maps cleanly to `provider = "openai"` +
+    `base_url = "<ollama_url>/v1"` (Ollama exposes an OpenAI-compatible
+    endpoint), so use that mapping. `dimension` defaults to `1024` (safe
+    for most Ollama embedding models — qwen3:8b/embed family is 4096,
+    bge-m3 is 1024, nomic-embed-text is 768; 1024 is a defensible
+    middle-ground that Wave 5's embedder-fingerprint detection will
+    correct later. Document the choice in a code comment). Set
+    `normalize = true`, `distance = "cosine"`, `active = true`,
+    `api_key_env = "OLLAMA_API_KEY"` (the env var is harmless if unset
+    against a local Ollama).
   - Other sections (retrieval / classifier / VLM / whisper / code) are
     omitted — Pydantic supplies safe defaults.
   - The resulting config MUST round-trip through `Config.load()` — i.e.
