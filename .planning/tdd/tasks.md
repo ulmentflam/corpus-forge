@@ -1,12 +1,12 @@
-# TDD Task Board — Phase L / Wave 3 (setup --quick, doctor --json, banner)
+# TDD Task Board — Phase L / Wave 4 (estimate stats + progress bars + logger discipline)
 
 _Owner: tdd-principal. Workers: read freely. Edit only your claimed row's
 `status` and `claimed_by`._
 
-Source plan: `/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Workspace/playground/corpus-forge/.planning/tdd/phase_l_cli_ux.md` (§ Sequencing 3 — "Setup/doctor polish").
-Dispatch input: orchestrator brief, Phase L / Wave 3 kickoff after Wave 2 landed in commit `9d80be9`.
+Source plan: `/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Workspace/playground/corpus-forge/.planning/tdd/phase_l_cli_ux.md` (§6 Estimate upgrades + §7 Progress bars on long ops).
+Dispatch input: orchestrator brief, Phase L / Wave 4 kickoff after Wave 3 landed in commit `bbb213e`.
 
-> Previous slice (Wave 2) record preserved under `## Archive — Wave 2` at the bottom.
+> Previous slice (Wave 3) record archived in git history at `bbb213e`.
 
 ## Project gates
 - lint: `uv run ruff check`
@@ -16,369 +16,561 @@ Dispatch input: orchestrator brief, Phase L / Wave 3 kickoff after Wave 2 landed
 
 ## Hard constraints (from dispatch)
 1. **DO NOT COMMIT, DO NOT PUSH.** Workers stage only. Orchestrator commits.
-2. **DO NOT TOUCH** `corpus_forge/estimate.py`, `corpus_forge/ignore.py`,
-   `tests/unit/test_corpusignore.py` — iCloud-sync noise.
-3. **NO `typer.echo/secho/prompt/confirm`** outside `corpus_forge/ui/` — the
-   `tests/cli/test_no_typer_echo.py` regression will fail you. Use
-   `ok/warn/error/info/title/print` + `Prompt.ask`/`Confirm.ask`.
-4. **`uv run python -m pytest`**, never bare `pytest`.
-5. Existing `setup --non-interactive` behavior is byte-identical
-   (no wording rewrites; existing wizard tests must stay green).
-6. Wizard keeps its `stream_in`/`stream_out` injection model. The `--quick`
-   path layers on top — it does NOT migrate to `Prompt.ask` for the
-   stream-driven prompts (that's Wave 9+ territory).
-7. `DoctorReport.render()` plain-text method stays as-is for the existing
-   `test_render_includes_status_markers` unit test.
+2. **NO `typer.echo/secho/prompt/confirm`** outside `corpus_forge/ui/` — the
+   `tests/cli/test_no_typer_echo.py` regression will fail you.
+3. **`uv run python -m pytest`**, never bare `pytest`.
+4. Daemon mode does NOT show progress bars — gate on `once=True` for
+   `ingest`. Sync push `start()` is observer-driven (never one-shot, never
+   bounded total), so its bookend is a one-shot info pair + N=0 progress
+   (or skipped); see W4-04 acceptance for the exact shape.
+5. Existing `SyncEstimate` dataclass shape is wire-protocol stable for the
+   MCP `estimate_sync_size` tool (schema_version=1). DO NOT add new
+   *required* fields to `SyncEstimate` — put scan stats on a NEW dataclass
+   `ScanStats` exposed via the CLI command, not on `SyncEstimate`.
+   `--json` mode must preserve the existing top-level shape; add scan
+   stats as a NEW sibling key (e.g. nested under a top-level `"scan"`).
+6. `backend.chunks_missing_embedding(embedder_id)` exists today. A
+   *count* helper does NOT — W4-02 adds a thin `count_chunks_missing_embedding`
+   method on both `PostgresBackend` + `SQLiteBackend` (one-line
+   `SELECT COUNT(*)` companion).
+7. Pending-docs query: there is no `documents.state` column. Define
+   "documents not yet chunked" as documents with zero chunks rows
+   (`NOT EXISTS (SELECT 1 FROM chunks WHERE document_id = documents.id)`).
+   The schema also has no top-level `dataset_id` on chunks — chunks
+   live under documents which carry dataset_id. Add new backend method
+   `pending_documents(dataset_id=None, limit=5)` returning
+   `(count: int, sample_uris: list[str])` on both backends.
+8. CLI estimate today renders human output via bare `print(...)` for the
+   data lines (intentional — see existing comments). Keep that idiom for
+   the new tables (use `rich.table.Table` rendered through `console` for
+   the styled path BUT also write a plain fallback when running under
+   `NO_COLOR=1`/`TERM=dumb` conftest so existing assertions stay
+   readable). Pragmatic: rely on `ui_console.print(table)` — Rich already
+   degrades to plain text under `NO_COLOR=1`.
 
 ## Decomposition notes (orchestrator)
 
-- T1 and T2 both touch `corpus_forge/cli.py` but on disjoint functions
-  (T1 owns `setup`, T2 owns `doctor`). Workers stage their hunks; the
-  orchestrator commits each task separately. Run testers + coders in
-  parallel; QA runs in parallel.
-- Banner integration is folded into each task (not split into a third
-  task): T1 owns the banner-on-setup + non-interactive suppression rule;
-  T2 owns the banner-on-doctor + --json suppression rule. The new
-  `tests/cli/test_banner.py` covers both behaviors but is split into two
-  parts (banner-on-setup tests under T1, banner-on-doctor tests under T2).
-  To avoid file-write contention, the banner tests live in a single file
-  authored by T1's tester; T2's tester adds doctor-specific banner
-  assertions to that file in a second pass. To keep this simple and
-  parallel, the banner test file is owned by T1's tester end-to-end and
-  T2's tester adds the doctor-specific assertion in its own
-  `tests/cli/test_doctor_banner_in_json_mode.py` (single file, single
-  writer). See acceptance details below for the exact split.
-- Ollama probe: tests mock at the `urllib.request.urlopen` layer (the
-  same pattern `corpus_forge/update/version_check.py` already uses).
-  No new HTTP dep — keep using stdlib.
-- `Config.load()` round-trip is what validates `--quick` output. Use
-  `Config.load(config_path=..., secrets_path=...)` with absolute paths
-  in tmp_path so we don't touch the user's real config.
+- **Surface-disjoint matrix:**
+  - W4-01 owns `corpus_forge/estimate.py` + `cli.py` `estimate` function
+    body (lines ~1851-2087). Adds new `ScanStats` dataclass and threads
+    `pending_documents` + `chunks_missing_embedding` (read-only) into the
+    CLI render.
+  - W4-02 owns `corpus_forge/embed.py` (`backfill_embedder` +
+    `backfill_image_embedder`), `corpus_forge/embedders/sentence_transformers.py`
+    (loader INFO), AND the new backend method
+    `count_chunks_missing_embedding` on `corpus_forge/backends/postgres.py`
+    + `corpus_forge/backends/sqlite.py`. W4-01 also reads from
+    `chunks_missing_embedding` but the count helper is owned by W4-02 —
+    serialize: tester W4-02 produces the helper first; W4-01 reads it
+    via a stub when fingerprint testing.
+  - W4-03 owns `corpus_forge/ingest.py` (the `ingest_once` function +
+    audit of `scan/extract/chunk` logger taxonomy).
+  - W4-04 owns `corpus_forge/sync/pull.py` + `corpus_forge/sync/push.py`
+    plus the sync CLI command bodies (`pull`/`push` in `cli.py`).
+  - All four tasks touch `cli.py` but on disjoint command bodies
+    (estimate vs embed vs ingest vs sync pull/push). Workers stage; the
+    orchestrator commits separately per task.
+
+- **W4-02 is the bottleneck for W4-01:** W4-01's pending-files-render
+  needs `count_chunks_missing_embedding` to exist on both backends.
+  Resolution: testers produce their RED suites in parallel, but W4-01's
+  coder waits for W4-02's coder to land the helper. Two-wave shape:
+  - Wave A (parallel): all four testers RED; W4-02 coder GREEN; W4-03 coder GREEN; W4-04 coder GREEN.
+  - Wave B (after W4-02 coder): W4-01 coder GREEN.
+  - Wave C (after all coders): QA in parallel.
+
+- **Documents-pending-count:** add new `backend.pending_documents(dataset_id=None,
+  limit=5) -> tuple[int, list[str]]` on both backends. Logic:
+  `WHERE NOT EXISTS (SELECT 1 FROM chunks WHERE document_id = documents.id)`.
+  Owned by W4-01 (since W4-01 is the only consumer).
+
+- **Embedder selection for the "Pending files" pending-embedding count:**
+  estimate already resolves the active embedder list via
+  `Config.load().embedders` filtered on `active=True`. For the chunks-
+  missing-embedding count, sum across all active embedders OR pick the
+  first (cheapest). Pick FIRST active embedder (simplest, matches the
+  user mental model of "the embedder that would run next"). Document
+  the choice in a code comment + a CLI footnote.
+
+- **Sync push is observer-driven:** `push.start()` schedules a watchdog
+  observer and returns immediately — there's no bounded loop to wrap.
+  W4-04 ships a single `logger.info` bookend pair around `start()` (and
+  a separate one around the optional `handle_change(path)` per-event
+  trigger). No progress bar for the push start path. (The brief notes
+  "Pending push count" — there is no such count in the current push
+  pipeline because push is event-driven, not pending-queue-driven; we
+  document this discrepancy in the W4-04 acceptance details and ship
+  bookends only, no bar.)
+
+- **Logger taxonomy audit:**
+  - `corpus_forge.embedders.loader` — owned by W4-02. Add INFO at model
+    load start/finish in `embedders/sentence_transformers.py`
+    `_load_model()`.
+  - `corpus_forge.embedders.batch` — owned by W4-02. DEBUG per batch
+    (already present via `logger.info`-as-debug at embed.py:175 — demote
+    to DEBUG). INFO milestone via the progress factory is free.
+  - `corpus_forge.ingest.scan` — owned by W4-03. INFO at start/end of
+    each source-root scan in `ingest_once()`.
+  - `corpus_forge.ingest.extract` — owned by W4-03. INFO on extractor
+    failure (the existing `logger.error` at ingest.py:481 is on the
+    correct taxonomy logger; rename if not).
+  - `corpus_forge.ingest.chunk` — owned by W4-03. INFO on aggregate
+    every 100 docs (use a local counter in the loop).
+  - `corpus_forge.sync.scan` / `corpus_forge.sync.push` /
+    `corpus_forge.sync.pull` — owned by W4-04. INFO bookends on
+    `PullPipeline.start()` + `PushPipeline.start()`. The existing
+    `corpus_forge.sync.pull` logger is on a per-module basis (already
+    correctly namespaced as `corpus_forge.sync.pull` via
+    `logger = logging.getLogger(__name__)` at `pull.py:14`); the push
+    module is missing its module-level logger entirely (uses `logging`
+    inline). Add a module-level
+    `logger = logging.getLogger(__name__)` to `push.py`.
+
+- **Config-loading in tests:** for the embed-progress test, stub
+  `Config.load()` to return a minimal config with one embedder. The
+  backend can be a `unittest.mock.MagicMock` with
+  `chunks_missing_embedding` returning `[]` on the second call to
+  exit the loop, and `count_chunks_missing_embedding` returning a
+  known integer. Drive via direct call to `backfill_embedder`, not
+  through the Typer CLI runner — the CLI wrapper is a 2-line shim.
+
+- **Sample-of-5-paths in estimate "Pending files":** call
+  `backend.pending_documents(dataset_id=None, limit=5)` once and render
+  count + the sample list. Skip the section entirely if both pending
+  docs == 0 AND pending chunks == 0 (no "Pending: 0 files" noise).
 
 ## Tasks
 
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
-| W3-01 | `setup --quick` + banner on setup | — | `corpus_forge/setup/wizard.py`, `corpus_forge/setup/__init__.py`, `corpus_forge/cli.py` (setup command), `tests/cli/test_setup_quick.py` (new), `tests/cli/test_banner.py` (new) | med | done | tdd-principal | Wizard gets `QUICK_QUESTIONS` subset + Ollama probe (urlopen-based, mockable via `_urlopen_compat`). CLI grows `--quick` flag + banner-on-non-non-interactive. Config round-trips through `Config.load()`. |
-| W3-02 | `doctor --json` + `to_json()` + banner on doctor | — | `corpus_forge/doctor/checks.py`, `corpus_forge/cli.py` (doctor command), `tests/cli/test_doctor_json.py` (new), `tests/cli/test_doctor_banner_in_json_mode.py` (new) | low | done | tdd-principal | `DoctorReport.to_json()` returns `{checks, summary, version, ts}`. `--json` flag suppresses banner + styled render, prints one JSON line via bare `print()`, exits 0 (ok) / 1 (fail) / 2 (warn-only). |
+| W4-01 | Estimate scan stats + pending files | W4-02 (coder) | `corpus_forge/estimate.py`, `corpus_forge/cli.py` (estimate command), `corpus_forge/backends/postgres.py` (+pending_documents), `corpus_forge/backends/sqlite.py` (+pending_documents), `tests/test_estimate.py` (extend), `tests/cli/test_estimate_progress.py` (new) | med | pending | — | New `ScanStats` dataclass; wrap `_walk` in `time.perf_counter()` + `make_progress` unbounded with logger; CLI renders new `rich.table.Table` for Scan stats + Pending files. `--json` mode preserves existing `SyncEstimate` shape; adds new sibling key `"scan"` under the JSON document. |
+| W4-02 | Embed progress + count helper + loader INFO | — | `corpus_forge/embed.py`, `corpus_forge/embedders/sentence_transformers.py`, `corpus_forge/backends/postgres.py` (+count_chunks_missing_embedding), `corpus_forge/backends/sqlite.py` (+count_chunks_missing_embedding), `tests/cli/test_embed_progress.py` (new) | med | pending | — | Wrap `backfill_embedder` main loop in `make_progress("Embedding chunks", total=n, logger=logger)`. Add count helper to both backends. Add INFO at load start/finish in `_load_model`. Demote per-batch INFO to DEBUG. |
+| W4-03 | Ingest --once progress + logger taxonomy | — | `corpus_forge/ingest.py`, `tests/cli/test_ingest_progress.py` (new) | med | pending | — | Wrap the `for raw in raw_items:` loop in `make_progress("Ingest", total=None, logger=...)` (unbounded; sources don't pre-count). Add INFO bookends "Scanning <source>" + "Scan complete" via `corpus_forge.ingest.scan` logger. Audit + add the taxonomy loggers listed in the brief. |
+| W4-04 | Sync pull/push progress + logger bookends | — | `corpus_forge/sync/pull.py`, `corpus_forge/sync/push.py`, `corpus_forge/cli.py` (sync pull / sync push command bodies), `tests/cli/test_sync_progress.py` (new) | low | pending | — | Pull `--once` wraps the `for rev in pending` loop in `make_progress("Pulling revisions", total=len(pending), logger=...)`. Push start logs INFO bookend; per-change handler stays log-only (no bar). Add module-level logger to `push.py`. |
 
 ## Acceptance details
 
-### W3-01 — `setup --quick` + banner on setup
+### W4-01 — Estimate scan stats + pending files
 
-**Wizard changes (`corpus_forge/setup/wizard.py`):**
-- Add `QUICK_QUESTIONS` — module-level constant list of the 6 quick
-  questions (backend, postgres_dsn, ollama_url, embedder_model_id,
-  dataset_name, scan_root). Each is a `Question` with the env vars
-  documented below.
-- Quick env vars (used by `--non-interactive` + `--quick` combo):
-  - `CF_BACKEND` (existing) — `sqlite` | `postgres`, default `sqlite`
-  - `CF_BACKEND_DSN` (NEW for quick) — required iff backend=postgres
-  - `CF_OLLAMA_URL` (NEW) — default `http://localhost:11434`
-  - `CF_EMBEDDER_MODEL_ID` (NEW) — default `qwen3:8b` or first probed
-    model
-  - `CF_DATASET_NAME` (NEW) — default `default`
-  - `CF_SCAN_ROOT` (NEW) — default empty (no source root)
-- New function: `_probe_ollama(base_url: str, *, timeout_s: float = 1.0)
-  -> str | None` — best-effort `GET <base_url>/api/tags`. Returns the
-  name of the first embedding-capable model (containing `embed`, `bge`,
-  `qwen`, or `nomic`) or `None` on any failure (TimeoutError,
-  URLError, OSError, JSON parse error). Uses `urllib.request` (same
-  idiom as `corpus_forge/update/version_check.py`). Strictly fire-and-
-  forget — no side effects, no logging at WARN+.
-- New function: `_render_quick_config_toml(answers, db_path)` — emits a
-  minimal config keyed off the 6 quick answers:
-  - `[backend]` block with kind + dsn (sqlite=local file path, postgres=
-    answer)
-  - `[[datasets]]` with `name = answers["dataset_name"]`, `kind = "text"`,
-    and `sources = [{plugin = "filesystem", root = "<scan_root>",
-    chunker = "markdown"}]` ONLY IF `scan_root` is non-empty; otherwise
-    `sources = []` (empty list, valid per the model — verify against
-    `DatasetConfig` and adjust if the validator requires at least one).
-    If the model REQUIRES a source, omit the dataset entry entirely and
-    add a `[[datasets]]` block with the bare name + no sources by
-    appending an explicit empty TOML array. The implementor should pick
-    whichever shape `Config.load()` accepts — verify by round-tripping a
-    tmp config in the tester's RED tests before writing it as a
-    fixture.
-  - `[[embedders]]` with one entry whose `model_id` is the quick answer.
-    **Constraint:** `EmbedderConfig.provider` is constrained by a Pydantic
-    `pattern="^(sentence_transformers|openai)$"` validator. The quick
-    wizard's Ollama URL maps cleanly to `provider = "openai"` +
-    `base_url = "<ollama_url>/v1"` (Ollama exposes an OpenAI-compatible
-    endpoint), so use that mapping. `dimension` defaults to `1024` (safe
-    for most Ollama embedding models — qwen3:8b/embed family is 4096,
-    bge-m3 is 1024, nomic-embed-text is 768; 1024 is a defensible
-    middle-ground that Wave 5's embedder-fingerprint detection will
-    correct later. Document the choice in a code comment). Set
-    `normalize = true`, `distance = "cosine"`, `active = true`,
-    `api_key_env = "OLLAMA_API_KEY"` (the env var is harmless if unset
-    against a local Ollama).
-  - Other sections (retrieval / classifier / VLM / whisper / code) are
-    omitted — Pydantic supplies safe defaults.
-  - The resulting config MUST round-trip through `Config.load()` — i.e.
-    `Config.load(config_path=<written_path>)` returns a valid Config
-    object without raising. Test this explicitly.
-- New entry points:
-  - `run_quick(*, config_dir, env=None, stream_in=None, stream_out=None,
-    interactive=True) -> tuple[Path, Path, dict[str, str]]` —
-    the quick wizard. Interactive uses stream injection (same pattern
-    as the full wizard); non-interactive reads from `env`. Probes
-    Ollama once after the URL prompt and uses the probed model as the
-    embedder default if the env var is unset and the probe succeeded.
-- `corpus_forge/setup/__init__.py` re-exports `run_quick`.
+**`corpus_forge/estimate.py` changes:**
 
-**CLI changes (`corpus_forge/cli.py`):**
-- `setup` command grows `--quick` flag:
-  ```python
-  quick: bool = typer.Option(
-      False, "--quick", envvar="CF_QUICK",
-      help="Run the abbreviated setup (6 questions, safe defaults).",
-  )
-  ```
-- Banner: render `render_banner("corpus-forge", subtitle="Chat with your
-  data.")` at the top of the function body UNLESS `non_interactive` is
-  True. The banner shows for both full and `--quick` interactive paths.
-- Dispatch:
-  - `non_interactive=True` + `quick=True` → `run_quick(interactive=False,
-    config_dir=..., env=os.environ)`.
-  - `non_interactive=True` + `quick=False` → existing `run_non_interactive`.
-  - `non_interactive=False` + `quick=True` → `run_quick(interactive=True,
-    config_dir=...)`.
-  - `non_interactive=False` + `quick=False` → existing `run_wizard`.
-- The "Wrote …" `ui_ok` / `ui_info` summary lines stay as-is.
-- If `quick=True` and the user did NOT provide a scan root (empty),
-  print a one-line `ui_info(...)` hint:
-  `"No source root configured — add one later via `corpus-forge config set datasets[0].sources …`."`
+1. New frozen dataclass `ScanStats`:
+   ```python
+   @dataclass(frozen=True)
+   class ScanStats:
+       elapsed_s: float
+       scan_rate: float   # files / second
+       file_count: int
+       dir_count: int
+   ```
+2. Refactor `_walk()` (lines 364-442) to return a `(buckets, file_count,
+   dir_count, total_raw_bytes, ScanStats)` 5-tuple. Existing callers
+   (just `estimate_sync`) updated to unpack the 5-tuple; the extra
+   element is ignored by `estimate_sync` itself (the CLI will reach in
+   for it separately via a new helper).
+3. New module-level `scan_logger = logging.getLogger("corpus_forge.estimate.scan")`.
+4. Wrap the existing iterative walk's `while stack:` loop in:
+   ```python
+   from corpus_forge.ui.progress import make_progress
+   started = time.perf_counter()
+   with make_progress("Scanning", total=None, logger=scan_logger) as progress:
+       task = progress.add_task("Scanning", total=None)
+       while stack:
+           ...
+           # at the end of each file processed:
+           progress.update(task, advance=1)
+   elapsed_s = time.perf_counter() - started
+   scan_rate = (file_count / elapsed_s) if elapsed_s > 0 else 0.0
+   stats = ScanStats(elapsed_s=elapsed_s, scan_rate=scan_rate, file_count=file_count, dir_count=dir_count)
+   ```
+5. New public function `walk_with_stats(root, *, ignore=None) -> tuple[..., ScanStats]`
+   that exposes the 5-tuple. `estimate_sync` calls the internal `_walk`
+   (which now also returns the stats) and uses them when rendering.
+6. Export `ScanStats` + `walk_with_stats` in `__all__`.
 
-**Tests:**
+**Backend additions (W4-01 owns these because pending_documents is read-
+only for estimate; W4-02 owns the count_chunks_missing_embedding):**
 
-`tests/cli/test_setup_quick.py` — uses `CliRunner` + `tmp_path` +
-`monkeypatch.setenv`:
+In `corpus_forge/backends/postgres.py` (new method near
+`chunks_missing_embedding`):
+```python
+def pending_documents(
+    self, *, dataset_id: int | None = None, limit: int = 5
+) -> tuple[int, list[str]]:
+    """Return (count, sample_source_uris) of documents not yet chunked.
 
-1. `test_quick_non_interactive_sqlite_minimal`:
-   - Env: `CF_BACKEND=sqlite`, `CF_EMBEDDER_MODEL_ID=qwen3:8b`.
-   - Runs `setup --quick --non-interactive --config-dir <tmp_path>`.
-   - Asserts exit 0.
-   - Asserts the written config.toml round-trips through
-     `Config.load(config_path=...)` cleanly.
-   - Asserts the rendered config has `backend.kind == "sqlite"` and one
-     embedder named appropriately with `model_id == "qwen3:8b"`.
+    Defined as documents with zero rows in the ``chunks`` table.
+    """
+    where_clause = "" if dataset_id is None else " AND d.dataset_id = %s"
+    params: tuple = () if dataset_id is None else (dataset_id,)
+    count_rows = self._execute(
+        f"SELECT COUNT(*) AS n FROM corpus.documents d "
+        f"WHERE NOT EXISTS (SELECT 1 FROM corpus.chunks c WHERE c.document_id = d.id)"
+        f"{where_clause}",
+        params,
+    )
+    count = int(count_rows[0]["n"]) if count_rows else 0
+    sample_rows = self._execute(
+        f"SELECT d.source_uri FROM corpus.documents d "
+        f"WHERE NOT EXISTS (SELECT 1 FROM corpus.chunks c WHERE c.document_id = d.id)"
+        f"{where_clause} ORDER BY d.id LIMIT %s",
+        (*params, limit),
+    )
+    return count, [r["source_uri"] for r in sample_rows]
+```
 
-2. `test_quick_sqlite_does_not_prompt_for_dsn`:
-   - In interactive mode (use stream injection): provide `\n` for every
-     prompt except the explicit backend answer of `sqlite`. The DSN
-     prompt MUST NOT appear in `stream_out.getvalue()` (the postgres
-     branch is skipped entirely when backend is sqlite).
-   - Drive this by calling `run_quick(interactive=True, ...)` directly
-     and inspecting the captured `stream_out` — no need to round-trip
-     through Typer.
+Mirror for `corpus_forge/backends/sqlite.py` (no `corpus.` schema prefix,
+`?` placeholders).
 
-3. `test_quick_postgres_writes_dsn_through`:
-   - Env: `CF_BACKEND=postgres`, `CF_BACKEND_DSN=postgresql://u:p@h/db`,
-     `CF_EMBEDDER_MODEL_ID=qwen3:8b`.
-   - Runs `setup --quick --non-interactive --config-dir <tmp_path>`.
-   - Asserts the written config has `backend.kind == "postgres"` and
-     `backend.dsn == "postgresql://u:p@h/db"`.
-   - Asserts `Config.load(...)` round-trip succeeds.
+**CLI changes (`corpus_forge/cli.py` `estimate` command body):**
 
-4. `test_quick_probes_ollama_and_picks_first_embed_model`:
-   - Mock `urllib.request.urlopen` (in the wizard's namespace) to return
-     a fake response with body
-     `{"models":[{"name":"qwen3:8b"},{"name":"llama3.2"},{"name":"bge-m3"}]}`.
-     The probe should pick `qwen3:8b` (first model with `embed/bge/qwen/
-     nomic` substring — qwen wins by position).
-   - Call `_probe_ollama("http://localhost:11434")` directly and assert
-     the result is `"qwen3:8b"`.
-   - Add a second case: response with NO embedding-capable model →
-     returns `"llama3.2"` (first listed) OR `None` (no fallback).
-     Acceptable behavior — pin whichever the implementor chooses.
-   - Add a third case: probe raises `URLError`/`TimeoutError`/`OSError`
-     → returns `None` without raising.
-   - Add a fourth integration-style test: in interactive mode with no
-     `CF_EMBEDDER_MODEL_ID` env var, the probed model becomes the
-     default offered to the user. (Drive via stream injection +
-     mocked urlopen.)
+After the existing `estimate_sync` call:
+1. Compute `scan_stats = estimate_result.scan_stats` (new attribute, see
+   below — or call `walk_with_stats` separately to avoid breaking the
+   `SyncEstimate` ABI).
+   
+   **DECISION:** keep `SyncEstimate` ABI clean. Run the walk twice? No —
+   call `walk_with_stats` ONCE before `estimate_sync` and pass the
+   pre-walked buckets into `estimate_sync` via a new kwarg `_prewalked:
+   tuple | None = None` (private/escape-hatch). Or simpler: change
+   `estimate_sync` to internally use the new walk and stash `ScanStats`
+   on a NEW non-frozen sibling result the CLI assembles. Implementor's
+   choice — pick the path with smallest diff and document.
+2. Build a `rich.table.Table` for "Scan stats":
+   ```
+   Scan stats
+   ──────────────────────────
+   Elapsed       3.2s
+   Rate          385 files/s
+   Files seen    1,234
+   Dirs visited  87
+   ```
+   Use `rich.box.SIMPLE` for clean look; render via `ui_console.print(table)`.
+3. Open the backend ONLY if `--json` is False AND the user did not
+   pass a flag like `--no-pending` (no need to add a flag; just degrade
+   gracefully if the backend doesn't open — wrap in try/except OSError,
+   ConnectionError, RuntimeError, ImportError; on failure skip the
+   "Pending files" section silently). Pseudocode:
+   ```python
+   backend = None
+   try:
+       backend = _get_backend(config)  # existing helper
+   except Exception as exc:
+       logger.debug("estimate: backend unreachable for pending counts (%s)", exc)
+   ```
+4. If `backend is not None`, compute:
+   - `pending_doc_count, pending_doc_samples = backend.pending_documents(limit=5)`
+   - For the first active embedder (or None if none configured), call
+     `embedder_id = backend.find_embedder_id_by_name(<first active.name>)`
+     (if that helper doesn't exist, fall back to skipping). Then
+     `pending_chunk_count = backend.count_chunks_missing_embedding(embedder_id)`.
+     Catch and log-debug on any exception.
+5. Render "Pending files" table:
+   ```
+   Pending files
+   ──────────────────────────────
+   Documents not chunked   12
+   Chunks missing embedding 481
+   
+   Sample paths (top 5):
+     - /path/to/foo.md
+     - ...
+   ```
+   Skip the entire section if BOTH counters are zero.
+6. `--json` mode: the existing `print(_json.dumps(asdict(estimate_result), ensure_ascii=False))`
+   stays UNCHANGED. The new `scan` key is added as a sibling — wrap the
+   final json object in `{"sync_estimate": asdict(...), "scan": asdict(scan_stats), "pending": {"documents": N, "chunks_missing_embedding": N, "sample_paths": [...]}}`.
 
-`tests/cli/test_banner.py` — uses `CliRunner`:
-
-1. `test_doctor_renders_banner_by_default`:
-   - Runs `runner.invoke(app, ["doctor"])`.
-   - Output contains `"corpus-forge"` AND at least one rounded-box
-     character (`╭`, `╮`, `╯`, `╰`, `─`, `│`). Conftest sets
-     `NO_COLOR=1`/`TERM=dumb` — under that env Rich's `box.ROUNDED`
-     still renders box-drawing characters in `force_terminal` paths.
-     If `NO_COLOR=1` strips the box characters, assert the banner's
-     text content (`"corpus-forge"` + the subtitle `"Chat with your
-     data."`) appears in the stderr output instead. The tester should
-     pick whichever signal is stable under the conftest's
-     ANSI-strip + `TERM=dumb` env.
-
-2. `test_setup_non_interactive_does_not_render_banner`:
-   - Runs `setup --non-interactive --config-dir <tmp_path>`.
-   - Output does NOT contain the banner subtitle `"Chat with your
-     data."`.
-
-3. `test_setup_quick_non_interactive_does_not_render_banner`:
-   - Runs `setup --quick --non-interactive --config-dir <tmp_path>`.
-   - Output does NOT contain the banner subtitle. (Non-interactive is
-     always banner-free, even under `--quick`.)
-
-4. `test_setup_quick_interactive_renders_banner`:
-   - Drive `setup --quick` in interactive mode by using stream
-     injection (run `run_quick(interactive=True, ...)` directly OR pipe
-     input through the runner with `input="\n" * 20`).
-   - The captured output (whichever stream the banner is rendered to —
-     by default `ui.console.console` which is `stderr=True`) contains
-     `"corpus-forge"` + the subtitle.
-   - Note: the `setup` command's banner render is in the CLI wrapper,
-     not in `run_quick`. So this test goes through the CLI runner
-     with stream-feed input.
-
-### W3-02 — `doctor --json` + `to_json()` + banner on doctor
-
-**`corpus_forge/doctor/checks.py` changes:**
-
-- Add `DoctorReport.to_json(self) -> dict[str, object]`:
-  ```python
-  def to_json(self) -> dict[str, object]:
-      return {
-          "checks": [
-              {"name": r.name, "status": r.status.value, "detail": r.detail}
-              for r in self.results
-          ],
-          "summary": self._summary(),
-          "version": __version__,
-          "ts": _utc_now_iso(),
-      }
-  ```
-  - `_summary()` is a new private helper on the class returning `"fail"`
-    if any check is FAIL, else `"warn"` if any is WARN, else `"ok"`.
-    (SKIP and OK both count as ok.)
-  - `_utc_now_iso()` is a module-level helper returning
-    `datetime.now(UTC).isoformat(timespec="milliseconds")` (or similar
-    fixed-precision shape). Pure function, no test injection needed —
-    tests assert on shape (`"T"` and `"Z"` or `+00:00` substring) not
-    exact value.
-
-**CLI changes (`corpus_forge/cli.py`):**
-- `doctor` grows `--json` flag:
-  ```python
-  json_output: bool = typer.Option(
-      False, "--json", help="Emit a single JSON document (suppresses banner).",
-  )
-  ```
-- Banner: render `render_banner("corpus-forge", subtitle="Chat with your
-  data.")` at the top UNLESS `json_output` is True.
-- When `json_output` is True:
-  - Skip the banner.
-  - Skip `report.render_styled(...)`.
-  - Print `json.dumps(report.to_json(), default=str)` once to **stdout**
-    (use bare `print()` — this is a data line, not a status line).
-  - Exit code: `0` if `summary == "ok"`, `2` if `summary == "warn"`,
-    `1` if `summary == "fail"`. Use `raise typer.Exit(code=...)`.
-- When `json_output` is False (existing path): unchanged except for the
-  new banner at the top.
+   **Wire compat:** this IS a JSON schema bump. The MCP `estimate_sync_size`
+   tool consumes `asdict(SyncEstimate)` directly (per the J1 brief +
+   `tests/unit/test_mcp_estimate.py`). DO NOT change that tool's shape.
+   The CLI `--json` mode gets the wrapped shape (sibling keys). Add a
+   `--legacy-json` flag for the old shape if needed, OR put the new
+   data UNDER a top-level `scan` + `pending` while keeping the existing
+   keys at the top level (additive — safer). **Pick the additive shape:**
+   `{...existing SyncEstimate fields..., "scan": {...}, "pending": {...}}`.
+   Add the new keys via `{**asdict(estimate_result), "scan": ..., "pending": ...}`.
 
 **Tests:**
 
-`tests/cli/test_doctor_json.py` — uses `CliRunner` + `tmp_path`:
+`tests/test_estimate.py` extend (or add new file `tests/estimate/test_scan_stats.py`):
+1. `test_walk_with_stats_returns_scanstats` — synthetic tmp_path with
+   3 files; assert `stats.file_count == 3`, `stats.elapsed_s > 0`,
+   `stats.scan_rate > 0`.
+2. `test_scan_logger_emits_bookends` — use `caplog` at INFO level on
+   `corpus_forge.estimate.scan`; assert "Scanning started" + "Scanning
+   complete" in the captured records after one walk.
 
-1. `test_doctor_json_prints_single_json_document`:
-   - Patches `run_doctor` to return a known-shape `DoctorReport`
-     (one OK check, one WARN check).
-   - Runs `runner.invoke(app, ["doctor", "--json"])`.
-   - Parses stdout as JSON (one document, single line OR pretty-printed
-     — accept either; assert `json.loads(result.output.strip())` works).
-   - Asserts keys: `"checks"`, `"summary"`, `"version"`, `"ts"`.
+`tests/cli/test_estimate_progress.py` new:
+1. `test_estimate_renders_scan_stats_table` — `runner.invoke(app, ["estimate", str(tmp_path)])`;
+   assert "Scan stats" header appears in stdout AND a regex matching
+   `\d+\.\d+s` (elapsed) appears.
+2. `test_estimate_renders_pending_files_when_backend_available` —
+   patch `_get_backend` to return a `MagicMock` with
+   `pending_documents.return_value = (3, ["/a.md", "/b.md"])` and
+   `count_chunks_missing_embedding.return_value = 17`; assert
+   "Pending files" + "3" + "17" in stdout.
+3. `test_estimate_skips_pending_section_when_backend_unreachable` —
+   patch `_get_backend` to raise; assert "Pending files" NOT in stdout.
+4. `test_estimate_json_includes_scan_and_pending` — `runner.invoke(app,
+   ["estimate", str(tmp_path), "--json"])`; parse stdout as JSON;
+   assert `"scan"` key present with `"elapsed_s"`, `"scan_rate"`,
+   `"file_count"`, `"dir_count"`; assert top-level SyncEstimate fields
+   like `"schema_version"`, `"file_count"`, `"total_raw_bytes"` are STILL
+   present (additive shape).
 
-2. `test_doctor_json_summary_shape`:
-   - For (all OK + SKIP) → `summary == "ok"`.
-   - For (one WARN, no FAIL) → `summary == "warn"`.
-   - For (one FAIL, plus other statuses) → `summary == "fail"`.
-   - Drive each by patching `run_doctor` to inject the right
-     `DoctorReport`.
+### W4-02 — Embed progress + count helper + loader INFO
 
-3. `test_doctor_json_exit_codes`:
-   - All-OK → exit 0.
-   - One WARN → exit 2.
-   - One FAIL → exit 1.
+**Backend additions (BOTH `corpus_forge/backends/postgres.py` and
+`corpus_forge/backends/sqlite.py`):**
 
-4. `test_doctor_json_does_not_render_banner`:
-   - Run `doctor --json`. Assert the subtitle `"Chat with your data."`
-     does NOT appear in stdout/stderr.
+```python
+def count_chunks_missing_embedding(self, embedder_id: int) -> int:
+    """Return the total number of chunks missing an embedding for ``embedder_id``.
 
-`tests/cli/test_doctor_banner_in_json_mode.py` — single regression
-file (split out because it's a banner-specific assertion paired with
-the json path, and keeping it separate from `test_banner.py` avoids
-test-write contention between W3-01 and W3-02 workers). One test:
+    Companion to ``chunks_missing_embedding``; no limit, no row payload.
+    """
+    embedder_info = self._execute(
+        "SELECT name FROM corpus.embedders WHERE id = %s", (embedder_id,)
+    )
+    if not embedder_info:
+        return 0
+    name = embedder_info[0]["name"]
+    table_name = f"embeddings_{name.replace('-', '_')}"
+    rows = self._execute(
+        f"SELECT COUNT(*) AS n FROM corpus.chunks c "
+        f"LEFT JOIN corpus.{table_name} e ON e.chunk_id = c.id "
+        f"WHERE e.chunk_id IS NULL"
+    )
+    return int(rows[0]["n"]) if rows else 0
+```
 
-1. `test_doctor_human_render_has_banner_but_json_does_not`:
-   - Two `runner.invoke` calls: `doctor` and `doctor --json`.
-   - Human run output contains the banner subtitle.
-   - JSON run output does NOT contain the banner subtitle.
+Mirror in sqlite (no `corpus.` prefix, `?` placeholder for embedder_id
+lookup; the embedder name lookup also reads `embedders.table_name`
+column directly in sqlite per the existing `chunks_missing_embedding`
+implementation — match that pattern). For unknown embedder_id, return 0.
+
+**`corpus_forge/embed.py` changes:**
+
+1. Add `from corpus_forge.ui.progress import make_progress` at module top.
+2. Inside `backfill_embedder` (line 73), after `embedder_id = backend.register_embedder(embedder)`:
+   ```python
+   total = backend.count_chunks_missing_embedding(embedder_id)
+   logger.info(f"Backfilling {embedder_name}: {total} chunks pending")
+   ```
+3. Wrap the `while True:` loop (line 140) in:
+   ```python
+   with make_progress(
+       f"Embedding chunks ({embedder_name})",
+       total=total,
+       logger=logger,
+   ) as progress:
+       task = progress.add_task("Embedding chunks", total=total)
+       while True:
+           ...
+           processed += len(pairs)
+           progress.update(task, completed=processed)
+           if limit is not None and processed >= limit:
+               break
+   ```
+4. Demote per-batch `logger.info(f"Generating embeddings for ...")` (line
+   175) and `logger.info(f"Processed {processed} embeddings so far")`
+   (line 183) to `logger.debug`. The progress factory's bookends +
+   milestone INFO lines replace them in the default INFO stream.
+5. Mirror in `backfill_image_embedder` (line 192). For the image path,
+   `total` falls back to `None` (unbounded) since
+   `image_chunks_missing_embedding` doesn't have a count helper today —
+   document the gap in a code comment; Wave 5 can backfill the helper.
+
+**`corpus_forge/embedders/sentence_transformers.py` changes:**
+
+1. Add module-level `loader_logger = logging.getLogger("corpus_forge.embedders.loader")`
+   (NOT `logger = ...` to avoid clashing with the `import logging`
+   namespace).
+2. In `_load_model()` (line 60):
+   ```python
+   def _load_model(self):
+       if self._model is None and SENTENCE_TRANSFORMERS_AVAILABLE:
+           from corpus_forge._ml_device import resolve_device
+           import time
+           started = time.perf_counter()
+           loader_logger.info(
+               "Loading embedder %s (sentence-transformers, %d-dim, device=%s)",
+               self.name, self.dimension, self.device,
+           )
+           self._model = SentenceTransformer(self.model_id, device=resolve_device(self.device))
+           loader_logger.info(
+               "Embedder %s ready in %.1fs", self.name, time.perf_counter() - started,
+           )
+   ```
+
+**Tests:**
+
+`tests/cli/test_embed_progress.py` new:
+1. `test_backfill_embedder_emits_bookends` — stub `Config.load`, stub
+   the backend (`MagicMock`) with:
+   - `register_embedder.return_value = 1`
+   - `chunks_missing_embedding.side_effect = [
+       [(1, "text-a"), (2, "text-b")],
+       [],  # exit loop
+     ]`
+   - `count_chunks_missing_embedding.return_value = 2`
+   Stub the embedder registry to return a `MagicMock` embedder whose
+   `encode` returns a 2x4 numpy array. Call `backfill_embedder("e1")`.
+   Use `caplog` at INFO; assert "Embedding chunks" appears in at least
+   one bookend record (the progress factory's auto-emitted "started"
+   + "complete" lines).
+2. `test_count_chunks_missing_embedding_postgres` — *NEW BACKEND TEST*
+   skip if no Docker / Postgres unavailable (use existing pg_backend
+   fixture pattern); insert known docs+chunks (no embeddings); assert
+   count matches.
+3. `test_count_chunks_missing_embedding_sqlite` — same against
+   sqlite_backend.
+4. `test_loader_logs_on_model_load` — instantiate
+   `SentenceTransformersEmbedder` and call `_load_model()` with the
+   sentence-transformers package patched to a stub. `caplog` on
+   `corpus_forge.embedders.loader` shows "Loading embedder" + "ready in".
+
+### W4-03 — Ingest --once progress + logger taxonomy
+
+**`corpus_forge/ingest.py` changes:**
+
+1. Add new module-level loggers (in addition to the existing
+   `logger = logging.getLogger(__name__)`):
+   ```python
+   scan_logger = logging.getLogger("corpus_forge.ingest.scan")
+   extract_logger = logging.getLogger("corpus_forge.ingest.extract")
+   chunk_logger = logging.getLogger("corpus_forge.ingest.chunk")
+   ```
+2. Inside `ingest_once()` (line 422), after `source = _instantiate_source(...)`:
+   ```python
+   scan_logger.info("Scanning %s (%s source)…", source_config.plugin, source.name)
+   ```
+3. Wrap the `for raw in raw_items:` loop in `make_progress("Ingest",
+   total=None, logger=scan_logger)`:
+   ```python
+   from corpus_forge.ui.progress import make_progress
+   raw_items = source.scan()
+   with make_progress(
+       f"Ingest ({source.name})",
+       total=None,
+       logger=scan_logger,
+   ) as progress:
+       task = progress.add_task("Ingest", total=None)
+       docs_chunked = 0
+       for raw in raw_items:
+           try:
+               ingest_one(backend, raw, chunker, embedders, dataset_id)
+               docs_chunked += 1
+               if docs_chunked % 100 == 0:
+                   chunk_logger.info("Chunked %d documents so far", docs_chunked)
+           except Exception as e:
+               extract_logger.info(
+                   "Extractor failed on %s: %s",
+                   getattr(raw, "source_uri", "unknown"),
+                   e,
+               )
+               continue
+           progress.update(task, advance=1)
+       scan_logger.info("Scan complete: %d documents", docs_chunked)
+   ```
+   Note: the existing `logger.error(...)` at line 481 stays as a fallback
+   but the user-facing log line moves to `extract_logger` (downgrade
+   level from ERROR to INFO since the extractor failure is recoverable
+   per-file).
+4. **Daemon mode gating:** `main()` at line 613 already branches on
+   `once`. The progress wrapping lives inside `ingest_once`, which is
+   only called when `once=True`. The daemon-mode branch (line 629) is
+   stub today — no progress changes needed.
+
+**Tests:**
+
+`tests/cli/test_ingest_progress.py` new:
+1. `test_ingest_once_emits_bookend_logs` — stub `Config.load` returning
+   a minimal config with one filesystem source pointed at `tmp_path`
+   containing 2 markdown files. Stub the backend (`MagicMock` covering
+   `migrate`, `get_or_create_dataset`, `register_source`, `upsert_document`,
+   `register_embedder`, etc.). Call `corpus_forge.ingest.main(once=True)`.
+   `caplog` at INFO on `corpus_forge.ingest.scan` and on the root
+   `corpus_forge.ui.progress`-bookend records — assert "Ingest started"
+   AND "Ingest complete" appear AND "Scan complete:" appears.
+2. `test_extract_failure_logs_at_info` — same stub but `ingest_one`
+   patched to raise on one of the two files; `caplog` on
+   `corpus_forge.ingest.extract` shows "Extractor failed".
+3. `test_chunk_milestone_emitted_every_100_docs` — patch source to
+   yield 250 raw items; assert at least 2 `chunk_logger` INFO records
+   ("Chunked 100 …", "Chunked 200 …"). Patch `ingest_one` to a no-op
+   so the loop is fast.
+
+### W4-04 — Sync pull/push progress + logger bookends
+
+**`corpus_forge/sync/pull.py` changes:**
+
+1. Inside `PullPipeline.tick()` (line 81), wrap the `for rev in pending`
+   loop in progress (after computing `pending` so `len(pending)` is known):
+   ```python
+   from corpus_forge.ui.progress import make_progress
+   pending_list = list(pending)
+   if not pending_list:
+       return 0
+   with make_progress(
+       "Pulling revisions",
+       total=len(pending_list),
+       logger=logger,
+   ) as progress:
+       task = progress.add_task("Pulling revisions", total=len(pending_list))
+       count = 0
+       for rev in pending_list:
+           ...  # existing loop body
+           progress.update(task, advance=1)
+   return count
+   ```
+   Note: `pending` from `pending_remote_revisions` is already a list in
+   the existing tests — confirm via spot-read; the conversion is a
+   defensive no-op for iterators.
+
+**`corpus_forge/sync/push.py` changes:**
+
+1. Add module-level `logger = logging.getLogger(__name__)` at top.
+2. In `PushPipeline.start()` (line 142): add INFO bookend BEFORE
+   `self._observer.start()`:
+   ```python
+   logger.info(
+       "Push start: dataset_id=%d root=%s debounce=%.1fs",
+       self._dataset_id, source_root, debounce_seconds,
+   )
+   ```
+3. In `PushPipeline.stop()`: add INFO bookend after the observer joins:
+   ```python
+   logger.info("Push stop: dataset_id=%d", self._dataset_id)
+   ```
+
+**CLI changes (`corpus_forge/cli.py`):**
+
+1. `sync pull --once` body (`cli.py:401`-ish): after the `count = pl.tick()`
+   line, the existing `ui_ok(f"Pulled {count} revision(s)")` stays.
+   Progress bar lives inside `tick()` — CLI is unchanged.
+2. `sync push` body (`cli.py:446`-ish): no change. Bookends are inside
+   `PushPipeline.start`/`stop`.
+
+**Tests:**
+
+`tests/cli/test_sync_progress.py` new:
+1. `test_pull_tick_emits_bookend_when_pending` — instantiate
+   `PullPipeline` with a `MagicMock` backend whose
+   `pending_remote_revisions.return_value = [<3 fake revs>]`. Call
+   `pipeline.tick()`. `caplog` on `corpus_forge.sync.pull` shows
+   "Pulling revisions started: 3 items" + "complete: 3 items".
+2. `test_pull_tick_no_pending_skips_bookend` — same with empty pending;
+   no bookend records emitted (early-return guards the wrap).
+3. `test_push_start_logs_bookend` — instantiate `PushPipeline` with a
+   mock backend + a real `EchoSuppressor`; call `start(tmp_path)`;
+   `caplog` on `corpus_forge.sync.push` shows "Push start:".
+4. `test_push_stop_logs_bookend` — same, call `stop()` after `start()`;
+   assert "Push stop:" recorded.
 
 ## DAG
-- Wave 0: W3-01 and W3-02 in parallel. Surface overlap on `cli.py` is on
-  disjoint functions (setup vs doctor) so the two coders' diffs do not
-  conflict in practice — the orchestrator commits each separately.
 
-## Summary
-
-**Files changed (production):**
-- `corpus_forge/cli.py` — `setup` command grows `--quick` + banner;
-  `doctor` command grows `--json` + banner + exit-code-by-summary.
-- `corpus_forge/doctor/checks.py` — adds `DoctorReport._summary()`
-  + `DoctorReport.to_json()` (UTC ISO8601 ts).
-- `corpus_forge/setup/wizard.py` — adds `QUICK_QUESTIONS`,
-  `_probe_ollama`, `_urlopen_compat`, `_render_quick_config_toml`,
-  `_collect_quick_answers`, `_write_quick_config`, `run_quick`.
-- `corpus_forge/setup/__init__.py` — re-exports `run_quick`.
-
-**Files added (tests):**
-- `tests/cli/test_setup_quick.py` (9 tests)
-- `tests/cli/test_banner.py` (5 tests)
-- `tests/cli/test_doctor_json.py` (9 tests)
-- `tests/cli/test_doctor_banner_in_json_mode.py` (1 test)
-
-**Gates:**
-- New tests: 24/24 green.
-- CLI + doctor + wizard regression: 101/101 green.
-- `tests/cli/test_no_typer_echo.py` static regression: still green
-  (no new `typer.echo`/`secho`/`prompt`/`confirm` outside `ui/`).
-- `uv run ruff check <touched>` — clean.
-- `uv run ruff format --check <touched>` — clean.
-- Baseline pre-existing failures (`tests/unit/test_cli_rechunk.py`,
-  `tests/unit/test_pdf_extractor_escalation.py`,
-  `tests/unit/test_extractor_html.py`, etc.) unchanged — not introduced
-  by Wave 3.
-
-**Live smoke:**
-- `python -m corpus_forge doctor --json` → one parseable JSON line,
-  exit 0.
-- `python -m corpus_forge doctor` → rounded-box banner + colored OK
-  pills on stderr.
-- `CF_BACKEND=sqlite CF_EMBEDDER_MODEL_ID=qwen3:8b python -m
-  corpus_forge setup --quick --non-interactive --config-dir <tmp>`
-  → valid `config.toml` (Config.load round-trip), no banner, info
-  hint about empty scan_root.
-
-## Notes for Wave 4+
-- The `--quick` config shape is intentionally minimal — Wave 4's
-  embedder-fingerprint detection (Wave 5) will need to confirm that
-  the quick path's hardcoded embedder name is one Wave 5 can fingerprint
-  cleanly. If the chosen `provider = "ollama"` doesn't match an existing
-  `EmbedderConfig.provider` literal, the implementor should pick the
-  right provider string and document.
-- The `to_json()` shape established here is what Wave 6's
-  `bug-report` will serialize. The schema (`checks`/`summary`/`version`/
-  `ts`) is stable for downstream consumers.
-- Banner rendering goes through `ui.render_banner` which already
-  consults the Wave 9 `_agent_mode_active()` placeholder — when Wave 9
-  ships, agent mode will suppress the banner globally, no further code
-  changes needed.
-
-## Archive — Wave 2
-
-Wave 2 task board archived to git history at commit `9d80be9`.
-See `git show 9d80be9 -- .planning/tdd/tasks.md` for the full record.
+- **Wave A** (5 parallel): testers W4-01, W4-02, W4-03, W4-04; coder W4-02; coder W4-03; coder W4-04.
+- **Wave B** (1 sequential): coder W4-01 (after W4-02 lands `count_chunks_missing_embedding`).
+- **Wave C** (4 parallel): QA W4-01, W4-02, W4-03, W4-04.
