@@ -57,6 +57,10 @@ dependencies = [
   # `corpus_forge/logging_config.py`.
   "rich>=13.0",
   "platformdirs>=4.0",
+  # Phase L Wave 6: redactor walks a tomlkit document so comments and key
+  # order survive the `bug-report` config snapshot. tomlkit is also the
+  # forward foundation for the Wave 7 `config edit` round-trip CRUD.
+  "tomlkit>=0.13",
 ]
 
 [project.optional-dependencies]
