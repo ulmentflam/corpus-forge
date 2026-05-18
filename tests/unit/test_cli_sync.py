@@ -37,7 +37,9 @@ class TestSyncResolve:
     def test_sync_resolve_merge_strategy_raises_friendly_error(self):
         result = runner.invoke(app, ["sync", "resolve", "conflict.md", "--strategy", "merge"])
         assert result.exit_code != 0
-        assert "not yet implemented" in result.stdout.lower()
+        # Phase L Wave 2: warning routed through ui.warn → stderr. CliRunner
+        # default mixes both streams into result.output; assert there.
+        assert "not yet implemented" in result.output.lower()
 
     def test_sync_resolve_ours_succeeds(self):
         result = runner.invoke(app, ["sync", "resolve", "conflict.md", "--strategy", "ours"])

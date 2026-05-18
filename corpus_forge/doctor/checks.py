@@ -10,8 +10,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from corpus_forge import __version__
+
+if TYPE_CHECKING:
+    from rich.console import Console
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "corpus-forge" / "config.toml"
 
@@ -21,6 +25,17 @@ class CheckStatus(StrEnum):
     WARN = "WARN"
     FAIL = "FAIL"
     SKIP = "SKIP"
+
+
+# Wave-2 mapping from check status to Rich theme style.  Lives alongside
+# the enum so a new status auto-fails (KeyError) until the mapping is
+# explicit — easier than silently rendering it muted.
+_STYLE_BY_STATUS: dict[CheckStatus, str] = {
+    CheckStatus.OK: "success",
+    CheckStatus.WARN: "warn",
+    CheckStatus.FAIL: "error",
+    CheckStatus.SKIP: "muted",
+}
 
 
 @dataclass(frozen=True)
@@ -39,12 +54,46 @@ class DoctorReport:
         return all(r.status in (CheckStatus.OK, CheckStatus.SKIP) for r in self.results)
 
     def render(self) -> str:
+        """Return the plain-text report.
+
+        Kept stable across Phase L Wave 2 because
+        ``tests/unit/test_doctor.py::test_render_includes_status_markers``
+        and any downstream consumers bind to the ``[OK  ]`` /
+        ``[WARN]`` / ``[FAIL]`` / ``[SKIP]`` substring contract.  Wave 3
+        will split this into ``render_human(console)`` + ``to_json()``
+        and may demote ``render`` to a deprecation shim.
+        """
         lines = [f"corpus-forge doctor — version {__version__}", ""]
         for r in self.results:
             lines.append(f"  [{r.status.value:4}] {r.name}: {r.detail}")
         lines.append("")
         lines.append("Healthy" if self.healthy else "Issues detected — see above.")
         return "\n".join(lines)
+
+    def render_styled(self, console: Console) -> None:
+        """Print the report to ``console`` with semantic Rich styling.
+
+        Same line content as :meth:`render` — status pills keep the
+        ``[OK  ]`` / ``[WARN]`` / ``[FAIL]`` / ``[SKIP]`` shape so
+        substring assertions still bind under ``NO_COLOR=1`` — but the
+        pill prefix carries a semantic style (success / warn / error /
+        info) and the heading + summary are dimmed, so the human
+        terminal output gets color.
+        """
+        console.print(f"[muted]corpus-forge doctor — version {__version__}[/muted]")
+        console.print("")
+        for r in self.results:
+            style = _STYLE_BY_STATUS[r.status]
+            pill = f"[{r.status.value:4}]"
+            # Markup must escape literal brackets in the detail so a
+            # path like ``[ocr]`` does not get parsed as Rich markup.
+            safe_detail = r.detail.replace("[", r"\[")
+            console.print(f"  [{style}]{pill}[/{style}] {r.name}: {safe_detail}")
+        console.print("")
+        if self.healthy:
+            console.print("[success]Healthy[/success]")
+        else:
+            console.print("[error]Issues detected — see above.[/error]")
 
 
 # ── individual checks ─────────────────────────────────────────────────

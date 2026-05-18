@@ -8,6 +8,11 @@ import typer
 
 from . import __version__
 from .logging_config import init_logging
+from .ui import error as ui_error
+from .ui import info as ui_info
+from .ui import ok as ui_ok
+from .ui import warn as ui_warn
+from .ui.console import console as ui_console
 
 app = typer.Typer(
     name="corpus-forge",
@@ -38,7 +43,8 @@ def _version_callback(value: bool) -> None:
     """Print the package version (+ optional newer-version notice) and exit."""
     if not value:
         return
-    typer.echo(f"corpus-forge version {__version__}")
+    # Version output is a data line — keep it on stdout for piping.
+    print(f"corpus-forge version {__version__}")
     # Phase I-11: daily PyPI ping. Strictly anonymous, 24h cached,
     # silent on offline / DNS / 5xx. Opt out via CF_NO_VERSION_CHECK=1.
     try:
@@ -47,7 +53,7 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit() from None
     result = check_for_update()
     if result and result.notice():
-        typer.echo(result.notice())
+        ui_info(result.notice())
     raise typer.Exit()
 
 
@@ -231,7 +237,8 @@ def daemon():
 @app.command()
 def version():
     """Print version and exit."""
-    typer.echo(f"corpus-forge version {__version__}")
+    # Data line — stdout for piping.
+    print(f"corpus-forge version {__version__}")
 
 
 @app.command()
@@ -265,19 +272,17 @@ def setup(
     # terminal); the Python CLI stays cross-platform safe.
     if non_interactive:
         config_path, secrets_path, answers = run_non_interactive(config_dir=config_dir)
-        typer.echo(f"[OK] Wrote {config_path} (non-interactive)")
+        ui_ok(f"Wrote {config_path} (non-interactive)")
     else:
         config_path, secrets_path, answers = run_wizard(config_dir=config_dir)
-        typer.echo(f"[OK] Wrote {config_path}")
+        ui_ok(f"Wrote {config_path}")
 
     if secrets_path.exists() and secrets_path.stat().st_size > 0:
-        typer.echo(
-            f"[OK] Secrets template at {secrets_path} — fill in real values before first use."
-        )
+        ui_ok(f"Secrets template at {secrets_path} — fill in real values before first use.")
     # Echo a short selection summary so the user can sanity-check.
     backend = answers.get("backend", "sqlite")
     embedder = answers.get("embedder", "st")
-    typer.echo(f"  backend={backend!r}  embedder={embedder!r}")
+    ui_info(f"backend={backend!r}  embedder={embedder!r}")
 
 
 @app.command()
@@ -311,29 +316,31 @@ def update(
     if channel is not None:
         ch = channel  # type: ignore[assignment] — validated inside run_update
     result = run_update(channel=ch, dry_run=dry_run)
-    typer.echo(f"channel: {result.channel}")
-    typer.echo(f"command: {' '.join(result.command)}")
+    ui_info(f"channel: {result.channel}")
+    ui_info(f"command: {' '.join(result.command)}")
     if result.stdout:
-        typer.echo(result.stdout)
+        # Subprocess stdout is data; print raw to stdout for visibility.
+        print(result.stdout)
     if result.stderr:
-        typer.echo(result.stderr, err=True)
+        # Subprocess stderr passes through as an info breadcrumb.
+        ui_info(result.stderr)
     if not result.succeeded:
         raise typer.Exit(code=result.returncode or 1)
     if dry_run:
         return
     if not skip_migrate:
-        typer.echo("[OK] Running migrations...")
+        ui_ok("Running migrations...")
         try:
             from .schema.migrate import main as migrate_main
 
             migrate_main()
         except Exception as exc:
-            typer.echo(f"[WARN] migrate failed (continue manually): {exc}", err=True)
+            ui_warn(f"migrate failed (continue manually): {exc}")
     if not skip_doctor:
         from .doctor import run_doctor
 
         report = run_doctor()
-        typer.echo(report.render())
+        report.render_styled(ui_console)
 
 
 @app.command()
@@ -347,7 +354,7 @@ def doctor() -> None:
     from .doctor import run_doctor
 
     report = run_doctor()
-    typer.echo(report.render())
+    report.render_styled(ui_console)
     if not report.healthy:
         raise typer.Exit(code=1)
 
@@ -394,7 +401,7 @@ def export_chat_cmd(
         custom_jinja=custom_jinja,
         push=push,
     )
-    typer.echo(f"exported to {out}", err=True)
+    ui_info(f"exported to {out}")
 
 
 @export_app.command("feedback-pairs")
@@ -423,7 +430,7 @@ def export_feedback_pairs_cmd(
         model_id=model_id,
         custom_jinja=custom_jinja,
     )
-    typer.echo(f"exported to {out}", err=True)
+    ui_info(f"exported to {out}")
 
 
 # ── sync subcommand group ────────────────────────────────────────────────
@@ -458,7 +465,7 @@ def status(
     try:
         config = Config.load()
     except FileNotFoundError:
-        typer.echo("No configuration found; run 'corpus-forge migrate' to initialise.")
+        ui_warn("No configuration found; run 'corpus-forge migrate' to initialise.")
         raise typer.Exit() from None
     try:
         backend = _get_backend(config)
@@ -467,15 +474,16 @@ def status(
                 continue
             ds_id = _get_dataset_id(backend, ds.name)
             if not ds_id:
-                typer.echo(f"Dataset {ds.name}: not found")
+                ui_warn(f"Dataset {ds.name}: not found")
                 continue
             pending = backend.pending_remote_revisions(ds_id, None, config.host_id(), limit=1)
-            typer.echo(
+            # Per-dataset sync status — data line on stdout so callers can pipe.
+            print(
                 f"Dataset {ds.name}: sync={'enabled' if ds.sync_enabled else 'disabled'},"
                 f" pending={len(pending)}"
             )
     except Exception as exc:
-        typer.echo(f"Error: {exc}")
+        ui_error(f"{exc}")
         raise typer.Exit() from None
 
 
@@ -491,7 +499,7 @@ def pull(
     try:
         config = Config.load()
     except FileNotFoundError:
-        typer.echo("No configuration found.")
+        ui_warn("No configuration found.")
         raise typer.Exit() from None
     try:
         backend = _get_backend(config)
@@ -502,7 +510,7 @@ def pull(
         echo = EchoSuppressor()
         dataset_id = _get_dataset_id(backend, dataset)
         if not dataset_id:
-            typer.echo(f"Dataset {dataset}: not found")
+            ui_warn(f"Dataset {dataset}: not found")
             raise typer.Exit()
         for ds in config.datasets:
             if ds.name != dataset:
@@ -512,15 +520,15 @@ def pull(
                 pl = PullPipeline(backend, dataset_id, source.root, echo, config.host_id())
                 if once:
                     count = pl.tick()
-                    typer.echo(f"Pulled {count} revision(s)")
+                    ui_ok(f"Pulled {count} revision(s)")
                 else:
                     pl.start(
                         source.root,
                         poll_interval_s=config.daemon.sync_poll_interval_s,
                     )
-                    typer.echo(f"Continuous pull started for {ds.name}/{src_cfg.plugin}")
+                    ui_ok(f"Continuous pull started for {ds.name}/{src_cfg.plugin}")
     except Exception as exc:
-        typer.echo(f"Error: {exc}")
+        ui_error(f"{exc}")
         raise typer.Exit() from None
 
 
@@ -534,7 +542,7 @@ def push(
     try:
         config = Config.load()
     except FileNotFoundError:
-        typer.echo("No configuration found.")
+        ui_warn("No configuration found.")
         raise typer.Exit() from None
     try:
         backend = _get_backend(config)
@@ -545,7 +553,7 @@ def push(
         echo = EchoSuppressor()
         dataset_id = _get_dataset_id(backend, dataset)
         if not dataset_id:
-            typer.echo(f"Dataset {dataset}: not found")
+            ui_warn(f"Dataset {dataset}: not found")
             raise typer.Exit()
         for ds in config.datasets:
             if ds.name != dataset:
@@ -558,9 +566,9 @@ def push(
                     exclude_globs=src_cfg.exclude_globs or [],
                     debounce_seconds=0.1,
                 )
-                typer.echo(f"Push started for {ds.name}/{src_cfg.plugin}")
+                ui_ok(f"Push started for {ds.name}/{src_cfg.plugin}")
     except Exception as exc:
-        typer.echo(f"Error: {exc}")
+        ui_error(f"{exc}")
         raise typer.Exit() from None
 
 
@@ -571,10 +579,9 @@ def resolve(
 ):
     """Resolve a sync conflict."""
     if strategy == "merge":
-        typer.secho(
+        ui_warn(
             "Merge-based conflict resolution is not yet implemented. "
             "Use --strategy ours or --strategy theirs as a workaround.",
-            fg=typer.colors.YELLOW,
         )
         raise typer.Exit(code=1)
 
@@ -582,18 +589,18 @@ def resolve(
     if strategy == "theirs":
         if path.exists():
             path.unlink()
-            typer.echo(f"Removed conflict file {conflict_file} (keeping remote)")
+            ui_ok(f"Removed conflict file {conflict_file} (keeping remote)")
         else:
-            typer.echo(f"Nothing to resolve: {conflict_file} not found")
+            ui_warn(f"Nothing to resolve: {conflict_file} not found")
     elif strategy == "ours":
         if path.exists():
             dest = Path(str(path).split(".conflict-")[0])
             path.rename(dest)
-            typer.echo(f"Restored local version to {dest}")
+            ui_ok(f"Restored local version to {dest}")
         else:
-            typer.echo(f"Nothing to resolve: {conflict_file} not found")
+            ui_warn(f"Nothing to resolve: {conflict_file} not found")
     else:
-        typer.secho(f"Unknown resolution strategy: {strategy}", err=True)
+        ui_error(f"Unknown resolution strategy: {strategy}")
         raise typer.Exit(code=1)
 
 
@@ -608,7 +615,7 @@ def history(
     try:
         config = Config.load()
     except FileNotFoundError:
-        typer.echo("No configuration found.")
+        ui_warn("No configuration found.")
         raise typer.Exit() from None
     try:
         backend = _get_backend(config)
@@ -625,17 +632,18 @@ def history(
             (source_uri, limit),
         )
         if not rows:
-            typer.echo(f"No revisions for {source_uri}")
+            ui_info(f"No revisions for {source_uri}")
             return
         for row in rows:
             status = "deleted" if row["is_tombstone"] else "alive"
-            typer.echo(
+            # Per-revision history is data — keep on stdout for piping.
+            print(
                 f"#{row['revision_number']} id={row['id']} "
                 f"hash={row['content_hash'][:12]}... "
                 f"host={row['author_host']} {status} {row['created_at']}"
             )
     except Exception as exc:
-        typer.echo(f"Error: {exc}")
+        ui_error(f"{exc}")
         raise typer.Exit() from None
 
 
@@ -830,7 +838,7 @@ def _do_eval(
     try:
         gold_path = _resolve_dataset(dataset)
     except FileNotFoundError as exc:
-        typer.echo(str(exc), err=True)
+        ui_error(str(exc))
         raise typer.Exit(code=2) from None
 
     k_values = _parse_csv_ints(k)
@@ -850,10 +858,7 @@ def _do_eval(
         try:
             reranker, rerank_top_n = _build_reranker_for_eval(fusion=fusion, alpha=alpha)
         except FileNotFoundError:
-            typer.echo(
-                "No configuration found; run 'corpus-forge migrate' to initialise.",
-                err=True,
-            )
+            ui_error("No configuration found; run 'corpus-forge migrate' to initialise.")
             raise typer.Exit(code=2) from None
 
     # Build the retriever; Config.load is inside this builder so tests
@@ -868,10 +873,12 @@ def _do_eval(
         rerank=rerank,
         rerank_top_n=rerank_top_n,
     )
-    typer.echo(report(metrics))
+    # The retrieval report is data — keep it on stdout so callers can
+    # pipe / capture / diff.
+    print(report(metrics))
     if json_out is not None:
         dump_json(metrics, json_out)
-        typer.echo(f"Wrote metrics -> {json_out}", err=True)
+        ui_info(f"Wrote metrics -> {json_out}")
 
 
 def _load_eval_config(fusion: str | None = None, alpha: float | None = None):
@@ -881,7 +888,7 @@ def _load_eval_config(fusion: str | None = None, alpha: float | None = None):
     try:
         config = Config.load()
     except FileNotFoundError:
-        typer.echo("No configuration found; run 'corpus-forge migrate' to initialise.", err=True)
+        ui_error("No configuration found; run 'corpus-forge migrate' to initialise.")
         raise typer.Exit(code=2) from None
     if fusion is not None:
         config.retrieval.fusion = fusion  # type: ignore[assignment]
@@ -1053,10 +1060,7 @@ def search(
         try:
             reranker, rerank_top_n = _build_reranker_for_eval(fusion=fusion, alpha=alpha)
         except FileNotFoundError:
-            typer.echo(
-                "No configuration found; run 'corpus-forge migrate' to initialise.",
-                err=True,
-            )
+            ui_error("No configuration found; run 'corpus-forge migrate' to initialise.")
             raise typer.Exit(code=2) from None
 
     retriever = _build_retriever_for_eval(fusion=fusion, alpha=alpha, reranker=reranker)
@@ -1081,11 +1085,11 @@ def search(
             "hits": [_hit_to_jsonable(h) for h in hits],
         }
         json_out.write_text(_json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        typer.echo(f"Wrote {len(hits)} hits -> {json_out}", err=True)
+        ui_info(f"Wrote {len(hits)} hits -> {json_out}")
         return
 
     if not hits:
-        typer.echo(f"No hits for {query!r}.")
+        ui_info(f"No hits for {query!r}.")
         return
 
     for rank, hit in enumerate(hits, start=1):
@@ -1102,9 +1106,10 @@ def search(
             header_bits.append(f"title={title!r}")
         if source_uri:
             header_bits.append(source_uri)
-        typer.echo("  ".join(header_bits))
-        typer.echo(f"    {body}")
-        typer.echo("")
+        # Search hits are data — stdout for piping.
+        print("  ".join(header_bits))
+        print(f"    {body}")
+        print("")
 
 
 # ── classify command (Phase E / C-05) ───────────────────────────────────
@@ -1194,10 +1199,7 @@ def classify(
     try:
         config = Config.load()
     except FileNotFoundError:
-        typer.echo(
-            "No configuration found; run 'corpus-forge migrate' to initialise.",
-            err=True,
-        )
+        ui_error("No configuration found; run 'corpus-forge migrate' to initialise.")
         raise typer.Exit(code=2) from None
 
     # Build the chain. ``--classifier`` filters down to a single named
@@ -1206,17 +1208,16 @@ def classify(
     try:
         registry: ClassifierRegistry = register_default_classifiers(config.classifier)
     except ValueError as exc:
-        typer.echo(f"Classifier-config error: {exc}", err=True)
+        ui_error(f"Classifier-config error: {exc}")
         raise typer.Exit(code=2) from None
 
     if classifier is not None:
         filtered = ClassifierRegistry()
         target = registry.get(classifier)
         if target is None:
-            typer.echo(
+            ui_error(
                 f"--classifier {classifier!r} is not in the configured chain "
                 f"({registry.names()}). Available classifiers: ['rule', 'llm'].",
-                err=True,
             )
             raise typer.Exit(code=2)
         filtered.register(target)
@@ -1232,7 +1233,7 @@ def classify(
         for name in dataset:
             ds_id = backend.find_dataset_id_by_name(name)
             if ds_id is None:
-                typer.echo(f"Dataset not found: {name}", err=True)
+                ui_error(f"Dataset not found: {name}")
                 raise typer.Exit(code=2)
             dataset_ids.append(ds_id)
     else:
@@ -1247,23 +1248,16 @@ def classify(
         )
 
     chain_names = registry.names()
-    typer.echo(
-        f"Classifying {total_to_process} document(s) via chain={chain_names}.",
-        err=True,
-    )
+    ui_info(f"Classifying {total_to_process} document(s) via chain={chain_names}.")
     if "llm" in chain_names:
-        typer.echo(
+        ui_info(
             f"Worst-case LLM cost: up to {total_to_process} LLM call(s) "
             f"(~5-10 s/doc on qwen2.5:7b-instruct, M-series). "
             f"Rule classifier short-circuits high-confidence docs "
             f"(confidence >= {threshold:.2f}).",
-            err=True,
         )
     else:
-        typer.echo(
-            "Rule classifier only — microseconds per document.",
-            err=True,
-        )
+        ui_info("Rule classifier only — microseconds per document.")
 
     processed = 0
     applied = 0
@@ -1301,10 +1295,12 @@ def classify(
                     "applied": bool(write_now),
                     "classifier": winner_name,
                 }
-                typer.echo(_json.dumps(payload, ensure_ascii=False))
+                # JSON line — stdout, no markup mangling.
+                print(_json.dumps(payload, ensure_ascii=False))
             else:
                 action = "would assign" if dry_run else "assigned"
-                typer.echo(
+                # Per-doc human result — stdout for piping.
+                print(
                     f"{doc.source_uri} -> {action} class={result.value} "
                     f"({result.confidence:.2f}) [{winner_name}: {result.rationale}]"
                 )
@@ -1312,10 +1308,7 @@ def classify(
         if limit is not None and processed >= limit:
             break
 
-    typer.echo(
-        f"Processed {processed} document(s); applied {applied}.",
-        err=True,
-    )
+    ui_info(f"Processed {processed} document(s); applied {applied}.")
 
 
 # ── rechunk command (Phase F / F-04) ────────────────────────────────────
@@ -1434,10 +1427,7 @@ def rechunk(
     try:
         config = Config.load()
     except FileNotFoundError:
-        typer.echo(
-            "No configuration found; run 'corpus-forge migrate' to initialise.",
-            err=True,
-        )
+        ui_error("No configuration found; run 'corpus-forge migrate' to initialise.")
         raise typer.Exit(code=2) from None
 
     backend = _build_backend_from_config(config)
@@ -1450,7 +1440,7 @@ def rechunk(
         for name in dataset:
             ds_id = backend.find_dataset_id_by_name(name)
             if ds_id is None:
-                typer.echo(f"Dataset not found: {name}", err=True)
+                ui_error(f"Dataset not found: {name}")
                 raise typer.Exit(code=2)
             dataset_ids.append(ds_id)
     else:
@@ -1479,10 +1469,7 @@ def rechunk(
             try:
                 chunker = dispatcher.for_class(class_value)
             except ValueError as exc:
-                typer.echo(
-                    f"Skipping {doc.source_uri}: {exc}",
-                    err=True,
-                )
+                ui_warn(f"Skipping {doc.source_uri}: {exc}")
                 continue
 
             # Run the chunker. We feed ``doc.text`` directly; the chunker
@@ -1493,10 +1480,7 @@ def rechunk(
             try:
                 new_chunks = chunker.chunk(doc.text)
             except Exception as exc:  # pragma: no cover — defensive
-                typer.echo(
-                    f"Chunker error on {doc.source_uri}: {exc}; skipping.",
-                    err=True,
-                )
+                ui_warn(f"Chunker error on {doc.source_uri}: {exc}; skipping.")
                 continue
 
             # Idempotency check: skip the upsert when the stored chunks
@@ -1529,7 +1513,7 @@ def rechunk(
                 skipped_noop += 1
                 processed += 1
                 if json_out:
-                    typer.echo(
+                    print(
                         _json.dumps(
                             {
                                 "doc_id": doc.document_id,
@@ -1543,7 +1527,7 @@ def rechunk(
                         )
                     )
                 else:
-                    typer.echo(
+                    print(
                         f"{doc.source_uri} -> noop ({len(new_texts)} chunks unchanged) "
                         f"[class={class_value}]"
                     )
@@ -1563,7 +1547,7 @@ def rechunk(
                 applied += 1
 
             if json_out:
-                typer.echo(
+                print(
                     _json.dumps(
                         {
                             "doc_id": doc.document_id,
@@ -1577,7 +1561,7 @@ def rechunk(
                 )
             else:
                 action = "would rechunk" if dry_run else "rechunked"
-                typer.echo(
+                print(
                     f"{doc.source_uri} -> {action} into {len(new_texts)} chunks "
                     f"[class={class_value}]"
                 )
@@ -1585,10 +1569,9 @@ def rechunk(
         if limit is not None and processed >= limit:
             break
 
-    typer.echo(
+    ui_info(
         f"Processed {processed} document(s); applied {applied}; "
         f"noop {skipped_noop}; unclassified {skipped_unclassified}.",
-        err=True,
     )
 
 
@@ -1656,10 +1639,7 @@ def enrich(
     try:
         config = Config.load()
     except FileNotFoundError:
-        typer.echo(
-            "No configuration found; run 'corpus-forge migrate' to initialise.",
-            err=True,
-        )
+        ui_error("No configuration found; run 'corpus-forge migrate' to initialise.")
         raise typer.Exit(code=2) from None
 
     # Optional --backend override: build the enricher directly without
@@ -1686,25 +1666,23 @@ def enrich(
                 temperature=config.code_enricher.temperature,
             )
         else:
-            typer.echo(
+            ui_error(
                 f"--backend {backend!r} is not a known enricher backend. "
                 f"Available: ['qwen-local', 'qwen-remote'].",
-                err=True,
             )
             raise typer.Exit(code=2)
     else:
         try:
             enricher = get_active_enricher(config)
         except EnricherUnavailableError as exc:
-            typer.echo(f"Enricher unavailable: {exc}", err=True)
+            ui_error(f"Enricher unavailable: {exc}")
             raise typer.Exit(code=2) from None
 
     if enricher.name == "noop":
-        typer.echo(
+        ui_error(
             "Code enricher is disabled (config.code_enricher.backend == 'none'). "
             "Set backend to 'local' or 'remote' in config.toml, or pass --backend "
             "qwen-local / --backend qwen-remote to force a specific backend.",
-            err=True,
         )
         raise typer.Exit(code=2)
 
@@ -1724,7 +1702,7 @@ def enrich(
         for name in dataset:
             ds_id = storage.find_dataset_id_by_name(name)
             if ds_id is None:
-                typer.echo(f"Dataset not found: {name}", err=True)
+                ui_error(f"Dataset not found: {name}")
                 raise typer.Exit(code=2)
             dataset_ids.append(ds_id)
     else:
@@ -1739,15 +1717,13 @@ def enrich(
     for ds_id in dataset_ids:
         total_to_process += sum(1 for _ in storage.iter_code_chunks_for_enrichment(iter_tag, ds_id))
 
-    typer.echo(
+    ui_info(
         f"Enriching {total_to_process} code chunk(s) with {enricher.name} (model={model_tag}).",
-        err=True,
     )
-    typer.echo(
+    ui_info(
         f"Estimated wall-clock: ~{total_to_process * 5:d}-{total_to_process * 8:d} s "
         f"(3-8 s per chunk on M-series for qwen3.6:35b-a3b-instruct; "
         f"MoE active params ~3B keep this fast).",
-        err=True,
     )
 
     processed = 0
@@ -1763,10 +1739,7 @@ def enrich(
             except EnricherError as exc:
                 failed += 1
                 processed += 1
-                typer.echo(
-                    f"chunk {chunk_id}: enricher failed ({exc}); skipping.",
-                    err=True,
-                )
+                ui_warn(f"chunk {chunk_id}: enricher failed ({exc}); skipping.")
                 continue
 
             write_now = not dry_run
@@ -1785,11 +1758,11 @@ def enrich(
                     "confidence": float(enrichment.confidence),
                     "applied": bool(write_now),
                 }
-                typer.echo(_json.dumps(payload, ensure_ascii=False))
+                print(_json.dumps(payload, ensure_ascii=False))
             else:
                 action = "would enrich" if dry_run else "enriched"
                 summary_snippet = (enrichment.summary or "").split("\n", 1)[0][:80]
-                typer.echo(
+                print(
                     f"chunk {chunk_id} [{language}] -> {action} "
                     f"({enrichment.confidence:.2f}): {summary_snippet}"
                 )
@@ -1797,10 +1770,7 @@ def enrich(
         if limit is not None and processed >= limit:
             break
 
-    typer.echo(
-        f"Processed {processed} chunk(s); applied {applied}; failed {failed}.",
-        err=True,
-    )
+    ui_info(f"Processed {processed} chunk(s); applied {applied}; failed {failed}.")
 
 
 # ── estimate command (Phase J / J1) ─────────────────────────────────────
@@ -1932,19 +1902,13 @@ def estimate(
 
     # Mutual-exclusivity guard.
     if no_ignore_file and ignore_file is not None:
-        typer.echo(
-            "--ignore-file and --no-ignore-file are mutually exclusive.",
-            err=True,
-        )
+        ui_error("--ignore-file and --no-ignore-file are mutually exclusive.")
         raise typer.Exit(code=2)
 
     try:
         config = Config.load()
     except FileNotFoundError:
-        typer.echo(
-            "No configuration found; run 'corpus-forge migrate' to initialise.",
-            err=True,
-        )
+        ui_error("No configuration found; run 'corpus-forge migrate' to initialise.")
         raise typer.Exit(code=2) from None
 
     # Embedder selection precedence:
@@ -1963,10 +1927,9 @@ def estimate(
         if dataset is not None:
             configured_names = {d.name for d in config.datasets}
             if dataset not in configured_names:
-                typer.echo(
+                ui_info(
                     f"note: --dataset {dataset!r} is not in the configured datasets "
                     f"({sorted(configured_names)}); using all active embedders.",
-                    err=True,
                 )
         chosen_embedders = None  # signal "all active" to estimate_sync
 
@@ -1980,7 +1943,7 @@ def estimate(
         try:
             local_set = load_local_ignore(resolved_root, override=ignore_file)
         except FileNotFoundError as exc:
-            typer.echo(f"--ignore-file not found: {exc}", err=True)
+            ui_error(f"--ignore-file not found: {exc}")
             raise typer.Exit(code=2) from None
     global_set = CorpusIgnore.empty(Path.home()) if no_global_ignore else load_global_ignore()
     ignore_stack = IgnoreStack((global_set, local_set))
@@ -1994,52 +1957,55 @@ def estimate(
             ignore=ignore_stack,
         )
     except (FileNotFoundError, NotADirectoryError) as exc:
-        typer.echo(str(exc), err=True)
+        ui_error(str(exc))
         raise typer.Exit(code=2) from None
     except ValueError as exc:
-        typer.echo(f"estimate error: {exc}", err=True)
+        ui_error(f"estimate error: {exc}")
         raise typer.Exit(code=2) from None
 
     if json_out:
-        typer.echo(_json.dumps(asdict(estimate_result), ensure_ascii=False))
+        # JSON estimate — stdout for piping (no markup mangling).
+        print(_json.dumps(asdict(estimate_result), ensure_ascii=False))
         return
 
-    # Human output. Layout mirrors the brief's example verbatim.
-    typer.echo(
+    # Human output. Layout mirrors the brief's example verbatim. The
+    # report itself is the command's data product, so it stays on
+    # stdout for piping; status lines (ui_*) are stderr.
+    print(
         f"corpus-forge estimate {estimate_result.scanned_path}\n"
         f"Scanned {_human_count(estimate_result.file_count)} files "
         f"across {_human_count(estimate_result.dir_count)} directories "
         f"({_human_bytes(estimate_result.total_raw_bytes)} raw)."
     )
-    typer.echo("")
-    typer.echo("By extractor:")
+    print("")
+    print("By extractor:")
     for summary in estimate_result.by_extractor:
         chunk_str = (
             "skipped"
             if summary.est_chunks == 0 and summary.extractor_class in ("image", "unknown")
             else f"~{_human_count(summary.est_chunks)} chunks"
         )
-        typer.echo(
+        print(
             f"  {summary.extractor_class:<12} "
             f"{_human_count(summary.file_count):>10} files     "
             f"{_human_bytes(summary.raw_bytes):>9}    ->  {chunk_str}"
         )
-    typer.echo("")
-    typer.echo("Estimated Postgres footprint (purely additive):")
-    typer.echo(f"  {'documents':<18} {_human_bytes(estimate_result.documents_bytes):>10}")
-    typer.echo(f"  {'chunks':<18} {_human_bytes(estimate_result.chunks_bytes):>10}")
+    print("")
+    print("Estimated Postgres footprint (purely additive):")
+    print(f"  {'documents':<18} {_human_bytes(estimate_result.documents_bytes):>10}")
+    print(f"  {'chunks':<18} {_human_bytes(estimate_result.chunks_bytes):>10}")
     if estimate_result.embeddings:
-        typer.echo("  embeddings")
+        print("  embeddings")
         for e in estimate_result.embeddings:
-            typer.echo(
+            print(
                 f"    {e.name:<16} {_human_bytes(e.total_bytes):>10}   "
                 f"({_human_count(e.n_chunks)} x {e.dim} x 4 B + 35% HNSW)"
             )
-    typer.echo(f"  {'btree indexes':<18} {_human_bytes(estimate_result.btree_index_bytes):>10}")
-    typer.echo("  " + "-" * 28)
-    typer.echo(f"  {'Total':<18} {_human_bytes(estimate_result.total_bytes):>10}")
-    typer.echo("")
-    typer.echo(
+    print(f"  {'btree indexes':<18} {_human_bytes(estimate_result.btree_index_bytes):>10}")
+    print("  " + "-" * 28)
+    print(f"  {'Total':<18} {_human_bytes(estimate_result.total_bytes):>10}")
+    print("")
+    print(
         f"Assumed compression ratio: {estimate_result.compression_ratio}. "
         "Pass `--compression-ratio 0.5` to model LZ4-toasted text columns."
     )
