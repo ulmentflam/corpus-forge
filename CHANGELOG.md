@@ -8,6 +8,8 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+## [0.1.0b2] - 2026-05-17
+
 ### Added
 
 #### Phase J — Living Corpus

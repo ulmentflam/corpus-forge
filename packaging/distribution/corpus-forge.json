@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/ScoopInstaller/Scoop/master/schemas/scoop-manifest.schema.json",
-  "version": "0.1.0b1",
-  "description": "HF-format corpus + multi-embedder ingestion daemon for personal text and chat data",
+  "version": "0.1.0b2",
+  "description": "Chat with your data. Forge a living, trainable corpus from your notes, code, and chat history.",
   "homepage": "https://github.com/ulmentflam/corpus-forge",
   "license": "Apache-2.0",
   "depends": ["python", "uv"],
@@ -9,7 +9,7 @@
     "ffmpeg": "main/ffmpeg"
   },
   "_comment": "Phase I-13 — Scoop manifest scaffold. Deploy to ulmentflam/scoop-corpus-forge (or to the ulmentflam tap's `bucket/` directory). Update `version`, `url`, `hash` on each release; a release-CI job can automate via `scoop bucket update` patterns.",
-  "url": "https://github.com/ulmentflam/corpus-forge/releases/download/v0.1.0b1/corpus_forge-0.1.0b1-py3-none-any.whl",
+  "url": "https://github.com/ulmentflam/corpus-forge/releases/download/v0.1.0b2/corpus_forge-0.1.0b2-py3-none-any.whl",
   "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   "installer": {
     "script": [
