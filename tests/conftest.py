@@ -75,6 +75,66 @@ for _agent_env in (
     "CF_MCP_TRANSPORT",
 ):
     os.environ.pop(_agent_env, None)
+
+
+_AGENT_ENV_VARS = (
+    "AI_AGENT",
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_SESSION_ID",
+    "OPENCODE",
+    "GEMINI_CLI",
+    "COPILOT_CLI",
+    "CODEX_SANDBOX",
+    "CODEX_CI",
+    "CODEX_THREAD_ID",
+    "AGENT",
+    "CF_AGENT",
+    "CF_MCP_TRANSPORT",
+)
+
+
+@pytest.fixture(autouse=True)
+def _reset_agent_state() -> "Generator[None, None, None]":
+    """Wave 9 — per-test reset of agent detection state.
+
+    The import-time scrub above only fires once.  ``mcp serve --transport
+    stdio`` (line 1489 of cli.py) sets ``CF_MCP_TRANSPORT=stdio`` in
+    ``os.environ`` and any reentrant test in the same xdist worker
+    inherits it, flipping commands like ``enrich --json`` into agent-mode
+    JSONL output and breaking single-JSON assertions.
+
+    Snapshot the agent-relevant env vars before each test, restore them
+    after.  Tests that *want* agent mode use ``monkeypatch.setenv`` which
+    auto-restores anyway.  Also reset the agent.py module-level
+    ``_DETECTION`` singleton so a previous test's ``set_current()`` call
+    doesn't leak.
+    """
+    saved = {k: os.environ.get(k) for k in _AGENT_ENV_VARS}
+    for k in _AGENT_ENV_VARS:
+        os.environ.pop(k, None)
+
+    try:
+        from corpus_forge.ui import agent as _agent_mod  # noqa: PLC0415
+
+        _agent_mod.set_current(
+            _agent_mod.Detection(
+                client=_agent_mod.AgentClient.HUMAN, signal="", raw_value=""
+            )
+        )
+    except ImportError:  # pragma: no cover — defensive (Wave 1 may not be loaded yet)
+        pass
+
+    try:
+        yield
+    finally:
+        for k in _AGENT_ENV_VARS:
+            os.environ.pop(k, None)
+            if saved[k] is not None:
+                os.environ[k] = saved[k]
+
+
 del _agent_env
 
 
