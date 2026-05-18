@@ -156,12 +156,17 @@ this once):
 
 1. Create a fine-grained PAT at
    <https://github.com/settings/personal-access-tokens/new>:
+   - Token name: `corpus-forge → homebrew-tap (brew-bump)`
+   - Expiration: **1 year** (the maximum GitHub allows). GitHub emails
+     you 7 days before it expires; regenerate from the same UI.
    - Resource owner: `ulmentflam`
    - Repository access: Only select repositories → `homebrew-tap`
-   - Permissions: Repository → Contents: Read and write
+   - Permissions: Repository → Contents: Read and write (only this
+     one — least privilege)
 2. Store it as a repo secret on `ulmentflam/corpus-forge`:
    ```bash
-   gh secret set HOMEBREW_TAP_TOKEN < token.txt
+   gh secret set HOMEBREW_TAP_TOKEN
+   # paste the github_pat_… value at the prompt; Ctrl-D to commit
    ```
 
 **Manual recovery** (if `brew-bump` ever soft-fails — the GH release is
