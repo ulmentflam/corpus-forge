@@ -420,6 +420,22 @@ def collect(
         # 6. manifest.json — written AFTER everything else so it can
         #    reference the redaction log + so its content hash captures
         #    the same redactions across runs.
+        # Phase L Wave 9 — record the live agent-mode detection so a
+        # triaging agent can tell which surface produced these logs.
+        try:
+            from corpus_forge.ui.agent import (  # noqa: PLC0415
+                current_detection as _agent_current,
+            )
+
+            _det = _agent_current()
+            agent_mode_payload: dict[str, str] | str = {
+                "client": _det.client.value,
+                "signal": _det.signal,
+                "raw_value": _det.raw_value,
+            }
+        except Exception:  # pragma: no cover — defensive
+            agent_mode_payload = "human"
+
         manifest = {
             "corpus_forge_version": __version__,
             "os": platform.system(),
@@ -430,7 +446,7 @@ def collect(
             "hostname_hash": _hostname_hash(),
             "tool_path": shutil.which("corpus-forge") or sys.argv[0],
             "redaction_log": redaction_log,
-            "agent_mode_at_time_of_capture": "human",
+            "agent_mode_at_time_of_capture": agent_mode_payload,
         }
         manifest_bytes = json.dumps(manifest, default=str, indent=2).encode("utf-8")
         (staging_dir / "manifest.json").write_bytes(manifest_bytes)

@@ -51,6 +51,33 @@ _ACTIVE_HYPOTHESIS_PROFILE = os.environ.get("HYPOTHESIS_PROFILE", "dev")
 hypothesis_settings.load_profile(_ACTIVE_HYPOTHESIS_PROFILE)
 
 
+# Phase L Wave 9 — every test that doesn't explicitly opt into agent
+# mode (by setting CF_AGENT or one of the canonical env signals) must
+# see the human surface.  pytest is often invoked from inside an AI
+# coding agent's shell, which leaks ``AI_AGENT``, ``CLAUDECODE``, etc.
+# into the test environment and flips corpus-forge into JSONL mode by
+# accident.  Scrub the lot at conftest import — individual tests that
+# need agent mode set CF_AGENT explicitly via monkeypatch.
+for _agent_env in (
+    "AI_AGENT",
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_SESSION_ID",
+    "OPENCODE",
+    "GEMINI_CLI",
+    "COPILOT_CLI",
+    "CODEX_SANDBOX",
+    "CODEX_CI",
+    "CODEX_THREAD_ID",
+    "AGENT",
+    "CF_AGENT",
+    "CF_MCP_TRANSPORT",
+):
+    os.environ.pop(_agent_env, None)
+del _agent_env
+
+
 def _docker_available() -> bool:
     """Check if Docker (or Docker-compatible runtime) is available."""
     import subprocess
@@ -95,6 +122,31 @@ def _ci_no_docker() -> bool:
 # Lazy import — only when Docker is available
 if _docker_available() and _testcontainers_available():
     from testcontainers.postgres import PostgresContainer
+
+
+@pytest.fixture(autouse=True)
+def _reset_agent_detection_after_test():
+    """Force the agent-mode singleton back to HUMAN around every test.
+
+    CliRunner invocations that flip the global ``ui.agent.set_current``
+    via the root callback leak that state into the next test, causing
+    spurious failures in ui/console + ui/progress tests that assume
+    human mode.  The fixture both PRE- and POST-resets so a test that
+    inherits agent mode from a prior leak still starts clean.
+
+    Tests that need agent mode set their own ``set_current`` inside the
+    test body (or via the ``agent_mode_on`` fixture in
+    ``tests/cli/test_agent_prompts.py``).
+    """
+
+    from corpus_forge.ui import agent as _agent
+
+    human = _agent.Detection(client=_agent.AgentClient.HUMAN, signal="", raw_value="")
+    _agent.set_current(human)
+    try:
+        yield
+    finally:
+        _agent.set_current(human)
 
 
 @pytest.fixture

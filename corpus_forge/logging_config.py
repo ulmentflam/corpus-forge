@@ -36,12 +36,37 @@ from rich.console import Console
 from rich.logging import RichHandler
 
 from .ui import theme as _theme
+from .ui.agent import current_detection as _current_detection
+from .ui.agent import emit as _agent_emit
+from .ui.agent import is_agent_mode as _is_agent_mode
 
 ROOT_LOGGER_NAME: Final[str] = "corpus_forge"
 
 
 _RING_BUFFER: MemoryHandler | None = None
 _LOG_DIR: Path | None = None
+
+
+class AgentLogHandler(logging.Handler):
+    """Phase L Wave 9 — agent-mode replacement for the stderr RichHandler.
+
+    Renders every record above the configured level as a structured
+    ``{"event":"log",...}`` JSONL line on stdout, so an agent reading the
+    wire sees logger output without ANSI noise.  The rotating-file
+    handler is unchanged: durable narrative still lives there.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:  # type: ignore[override]
+        try:
+            msg = record.getMessage()
+        except Exception:  # pragma: no cover — defensive
+            msg = str(record.msg)
+        _agent_emit(
+            "log",
+            level=record.levelname.lower(),
+            logger=record.name,
+            msg=msg,
+        )
 
 
 def _resolve_log_dir() -> Path:
@@ -98,11 +123,37 @@ def _clear_handlers(logger: logging.Logger) -> None:
             handler.close()
 
 
+def _resolve_agent_log_level(
+    *,
+    override: str | None,
+    verbose: bool,
+    quiet: bool,
+) -> int:
+    """Resolve the stderr handler level under agent mode.
+
+    Default is ``WARNING`` (so a quiet agent run is truly quiet).  An
+    explicit ``--agent-logs <level>`` widens or tightens it; ``-v`` and
+    ``-q`` still apply secondarily so human-mode toggles compose.
+    """
+
+    if override:
+        return logging._nameToLevel.get(override.upper(), logging.WARNING)
+    env_level = os.environ.get("CF_LOG_LEVEL")
+    if env_level:
+        return logging._nameToLevel.get(env_level.upper(), logging.WARNING)
+    if verbose:
+        return logging.INFO
+    if quiet:
+        return logging.ERROR
+    return logging.WARNING
+
+
 def init_logging(
     component: str,
     *,
     verbose: bool = False,
     quiet: bool = False,
+    agent_logs: str | None = None,
 ) -> None:
     """Install the three corpus-forge log handlers.
 
@@ -140,24 +191,37 @@ def init_logging(
     file_handler.setFormatter(file_formatter)
     root.addHandler(file_handler)
 
-    # (2) Stderr RichHandler -- unless we're the MCP stdio adapter.
+    # (2) Stderr handler — RichHandler in human mode, AgentLogHandler in
+    #     agent mode.  MCP stdio still gets nothing (the wire is owned
+    #     by JSON-RPC).
     if not _is_mcp_stdio(component):
-        stderr_console = Console(
-            theme=_theme.build_theme(),
-            stderr=True,
-            file=sys.stderr,
-            no_color="NO_COLOR" in os.environ,
-            highlight=False,
-        )
-        rich_handler = RichHandler(
-            console=stderr_console,
-            show_time=False,
-            show_path=False,
-            markup=True,
-            rich_tracebacks=False,
-        )
-        rich_handler.setLevel(_resolve_stderr_level(verbose=verbose, quiet=quiet))
-        root.addHandler(rich_handler)
+        if _is_agent_mode(_current_detection()):
+            agent_handler = AgentLogHandler()
+            agent_handler.setLevel(
+                _resolve_agent_log_level(
+                    override=agent_logs,
+                    verbose=verbose,
+                    quiet=quiet,
+                )
+            )
+            root.addHandler(agent_handler)
+        else:
+            stderr_console = Console(
+                theme=_theme.build_theme(),
+                stderr=True,
+                file=sys.stderr,
+                no_color="NO_COLOR" in os.environ,
+                highlight=False,
+            )
+            rich_handler = RichHandler(
+                console=stderr_console,
+                show_time=False,
+                show_path=False,
+                markup=True,
+                rich_tracebacks=False,
+            )
+            rich_handler.setLevel(_resolve_stderr_level(verbose=verbose, quiet=quiet))
+            root.addHandler(rich_handler)
 
     # (3) In-memory ring buffer for bug-report (cap 200, target=NullHandler).
     ring = MemoryHandler(capacity=200, target=NullHandler())
@@ -186,6 +250,7 @@ def get_ring_buffer() -> MemoryHandler:
 
 __all__ = [
     "ROOT_LOGGER_NAME",
+    "AgentLogHandler",
     "get_log_dir",
     "get_ring_buffer",
     "init_logging",

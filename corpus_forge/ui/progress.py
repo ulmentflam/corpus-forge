@@ -26,6 +26,8 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
+from .agent import ProgressEmitter as _ProgressEmitter
+from .console import _agent_mode_active
 from .console import console as _default_console
 
 
@@ -125,6 +127,35 @@ def make_progress(
 
     bounded = total is not None
     target_console = console if console is not None else _default_console
+
+    # Agent-mode branch: replace the Rich progress with a JSONL emitter.
+    # The emitter keeps the ``add_task`` / ``advance`` / ``update`` shape
+    # so call sites stay unchanged.  Logger bookends still fire so the
+    # rotating file mirrors human runs.
+    if _agent_mode_active():
+        emitter = _ProgressEmitter(description, total=total)
+        started = time.perf_counter()
+        if logger is not None:
+            items = str(total) if total is not None else "unbounded"
+            logger.info(f"{description} started: {items} items")
+        try:
+            with emitter:
+                yield emitter
+        finally:
+            elapsed = time.perf_counter() - started
+            if logger is not None:
+                done = 0
+                try:
+                    done = int(getattr(emitter, "_completed", 0))
+                except Exception:  # pragma: no cover — defensive
+                    done = 0
+                rate = (done / elapsed) if elapsed > 0 else 0.0
+                logger.info(
+                    f"{description} complete: {done} items in {elapsed:.1f}s "
+                    f"(rate {rate:.0f}/s)"
+                )
+        return
+
     columns = _build_columns(bounded=bounded)
     listener = _MilestoneListener(logger, description) if logger is not None else None
     progress = _LoggingProgress(

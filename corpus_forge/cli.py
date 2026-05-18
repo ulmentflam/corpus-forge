@@ -8,11 +8,13 @@ import typer
 
 from . import __version__
 from .logging_config import init_logging
+from .ui import agent as ui_agent
 from .ui import error as ui_error
 from .ui import info as ui_info
 from .ui import ok as ui_ok
 from .ui import warn as ui_warn
 from .ui.console import console as ui_console
+from .ui.console import set_detection as _ui_set_detection
 
 app = typer.Typer(
     name="corpus-forge",
@@ -26,8 +28,9 @@ class GlobalState:
     """State stashed in ``ctx.obj`` by the root callback.
 
     Wave 1 wires the flag values so downstream commands can read them
-    without re-parsing argv.  Wave 7 reuses ``background``; Wave 9
-    consumes ``agent`` once the detector ships.
+    without re-parsing argv.  Wave 7 reuses ``background``.  Wave 9
+    consumes ``agent`` + ``agent_logs`` after the detector resolves a
+    :class:`ui.agent.Detection` into the agent-mode singleton.
     """
 
     verbose: int = 0
@@ -36,6 +39,14 @@ class GlobalState:
     light: bool = False
     background: bool = False
     agent: str = "auto"
+    agent_logs: str | None = None
+    detection: ui_agent.Detection = field(
+        default_factory=lambda: ui_agent.Detection(
+            client=ui_agent.AgentClient.HUMAN,
+            signal="",
+            raw_value="",
+        )
+    )
     extras: dict[str, object] = field(default_factory=dict)
 
 
@@ -117,12 +128,43 @@ def _root(
             help="Agent-mode hint: 'auto', 'off', 'claude-code', 'opencode', etc.",
         ),
     ] = "auto",
+    agent_logs: Annotated[
+        str,
+        typer.Option(
+            "--agent-logs",
+            help=(
+                "Under agent mode, set the stderr log threshold "
+                "(debug|info|warning|error). Default: warning."
+            ),
+        ),
+    ] = "",
 ) -> None:
     """Root callback that wires ``--version`` + global flags onto the app entry point."""
 
+    # Phase L Wave 9 — resolve agent-mode detection BEFORE init_logging
+    # so the logger handler set respects the chosen mode.
+    detection = ui_agent.detect(explicit=agent)
+    ui_agent.set_current(detection)
+    _ui_set_detection(detection)
+
+    agent_logs_value = agent_logs or None
+
     # Bootstrap logging before any subcommand runs so every command site
     # gets a configured ``corpus_forge`` logger.
-    init_logging("cli", verbose=verbose >= 1, quiet=quiet)
+    init_logging(
+        "cli",
+        verbose=verbose >= 1,
+        quiet=quiet,
+        agent_logs=agent_logs_value,
+    )
+
+    # One-shot log line so bug-reports show which detection path fired.
+    import logging as _logging
+
+    _cli_logger = _logging.getLogger("corpus_forge.cli")
+    _cli_logger.info(
+        f"agent_mode={detection.client.value} (signal={detection.signal})"
+    )
 
     ctx.obj = GlobalState(
         verbose=verbose,
@@ -131,6 +173,8 @@ def _root(
         light=light,
         background=background,
         agent=agent,
+        agent_logs=agent_logs_value,
+        detection=detection,
     )
 
 
@@ -467,6 +511,22 @@ def doctor(
 
     report = run_doctor()
 
+    # Phase L Wave 9 — agent mode treats `--json` as implicit.
+    if ui_agent.is_agent_mode():
+        ui_agent.emit(
+            "command.start",
+            cmd="doctor",
+            args={"json": True},
+            version=__version__,
+            agent=ui_agent.current_detection().client.value,
+        )
+        payload = report.to_json()
+        ui_agent.emit("result", cmd="doctor", status="ok", data=payload)
+        summary = report._summary()
+        if summary == "ok":
+            return
+        raise typer.Exit(code=1 if summary == "fail" else 2)
+
     if json_output:
         # Data line on stdout, no banner, no styled render. Use bare
         # print() — the same idiom every other JSON-emitting command
@@ -528,12 +588,29 @@ def bug_report_cmd(
 
     from corpus_forge.diagnostics.bug_report import collect
 
-    collect(
+    report = collect(
         out=out,
         include_logs=not no_logs,
         include_db=not no_db,
         zip_bundle=not no_zip,
     )
+
+    if ui_agent.is_agent_mode() and report is not None:
+        try:
+            size_bytes = int(report.path.stat().st_size) if report.path.exists() else 0
+        except OSError:
+            size_bytes = 0
+        ui_agent.emit(
+            "result",
+            cmd="bug-report",
+            status="ok",
+            data={
+                "zip": str(report.path),
+                "bytes": size_bytes,
+                "redacted_count": int(report.redacted_count),
+                "issue_url": report.issue_url,
+            },
+        )
 
 
 # Mount the ``logs`` sub-app (path / tail / clear).
@@ -1395,6 +1472,8 @@ def mcp_serve(
     ``get_chunk`` (chunk lookup by id), and ``list_datasets`` (catalogue
     enumeration).  See ``corpus_forge.mcp.server`` for the schemas.
     """
+    import os as _os
+
     from corpus_forge.mcp.transport import Transport
 
     try:
@@ -1402,6 +1481,12 @@ def mcp_serve(
     except ValueError as exc:
         valid = ", ".join(t.value for t in Transport)
         raise typer.BadParameter(f"unknown transport {transport!r}; valid: {valid}") from exc
+
+    # Phase L Wave 9 — stdio MCP carries JSON-RPC on stdout.  Set the
+    # env var so the agent-mode detector forces structured output for
+    # any reentrant call sites that re-detect mid-process.
+    if chosen is Transport.STDIO:
+        _os.environ.setdefault("CF_MCP_TRANSPORT", "stdio")
 
     # Wave 2/3 wires the server through; Wave 1 only pins help + flag
     # validation.  When the server module lands the body below will
@@ -1488,6 +1573,32 @@ def search(
     )
 
     hits = retriever.search(query, options)
+
+    # Phase L Wave 9 — agent mode emits a single structured result event.
+    if ui_agent.is_agent_mode():
+        ui_agent.emit(
+            "command.start",
+            cmd="search",
+            args={"query": query, "k": k, "dataset": dataset},
+            version=__version__,
+            agent=ui_agent.current_detection().client.value,
+        )
+        compact = [
+            {
+                "chunk_id": int(h.chunk_id),
+                "score": float(h.score),
+                "text": getattr(h, "text", "") or "",
+                "doc": getattr(h, "source_uri", None) or getattr(h, "title", None) or "",
+            }
+            for h in hits
+        ]
+        ui_agent.emit(
+            "result",
+            cmd="search",
+            status="ok",
+            data={"hits": compact},
+        )
+        return
 
     if json_out is not None:
         payload = {
@@ -2433,6 +2544,17 @@ def estimate(
         load_local_ignore,
     )
 
+    # Phase L Wave 9 — emit ``command.start`` early so the agent wrapper
+    # sees the canonical pair even when an early-exit error path triggers.
+    if ui_agent.is_agent_mode():
+        ui_agent.emit(
+            "command.start",
+            cmd="estimate",
+            args={"path": str(path)},
+            version=__version__,
+            agent=ui_agent.current_detection().client.value,
+        )
+
     # Mutual-exclusivity guard.
     if no_ignore_file and ignore_file is not None:
         ui_error("--ignore-file and --no-ignore-file are mutually exclusive.")
@@ -2503,7 +2625,7 @@ def estimate(
     scan_stats = get_last_scan_stats()
     pending_payload = _estimate_pending_files(config, embedder_filter=chosen_embedders)
 
-    if json_out:
+    if json_out or ui_agent.is_agent_mode():
         # JSON estimate — stdout for piping (no markup mangling). Wave 4
         # adds two new sibling keys ``"scan"`` + ``"pending"`` alongside
         # the existing SyncEstimate fields so the shape stays additive.
@@ -2514,6 +2636,9 @@ def estimate(
         if scan_stats is not None:
             out_payload["scan"] = asdict(scan_stats)
         out_payload["pending"] = pending_payload
+        if ui_agent.is_agent_mode():
+            ui_agent.emit("result", cmd="estimate", status="ok", data=out_payload)
+            return
         print(_json.dumps(out_payload, ensure_ascii=False))
         return
 
@@ -2560,6 +2685,286 @@ def estimate(
         f"Assumed compression ratio: {estimate_result.compression_ratio}. "
         "Pass `--compression-ratio 0.5` to model LZ4-toasted text columns."
     )
+
+
+# ── Phase L Wave 9 — global agent-mode invocation wrapper ──────────────
+
+
+_AGENT_WRAP_INSTALLED: bool = False
+# Commands that emit their own ``command.start`` + ``result`` events.
+# We skip the auto-emission for these to avoid duplicates.
+_AGENT_SELF_EMITTING: frozenset[str] = frozenset(
+    {
+        "search",
+        "doctor",
+        "estimate",
+        "bug-report",
+        "capabilities",
+        # mcp serve: stdio carve-out — DO NOT emit anything to stdout.
+        # The JSON-RPC peer owns the wire.  The command is added to the
+        # self-emitting set so the wrapper's auto-emission is bypassed;
+        # the body itself emits nothing.
+        "mcp serve",
+    }
+)
+
+
+def _install_agent_command_wrapper() -> None:
+    """Wrap every registered Typer command with agent-mode emission.
+
+    The wrap mutates the ``callback`` of each ``CommandInfo`` on the
+    Typer apps directly so ``typer.main.get_command(app)`` picks the
+    wrapped callback up every time it rebuilds the Click group.  The
+    wrapper is a no-op outside agent mode (zero overhead) so human-mode
+    runs pay nothing.
+
+    Critically, the wrapper preserves the original callback's signature
+    via :func:`functools.wraps` — Typer reads ``inspect.signature(cb)``
+    to derive Click parameters, so a wrapper using ``*args, **kwargs``
+    would erase every flag.
+    """
+
+    import functools
+
+    global _AGENT_WRAP_INSTALLED  # noqa: PLW0603
+    if _AGENT_WRAP_INSTALLED:
+        return
+    _AGENT_WRAP_INSTALLED = True
+
+    def _walk(typer_app: typer.Typer, prefix: str) -> None:
+        for cmd_info in list(typer_app.registered_commands):
+            original = cmd_info.callback
+            if original is None or getattr(original, "_cf_agent_wrapped", False):
+                continue
+            name = cmd_info.name or original.__name__
+            full = f"{prefix} {name}".strip() if prefix else name
+            cmd_info.callback = _make_wrapped(original, full, functools)
+
+        for grp in list(typer_app.registered_groups):
+            sub = grp.typer_instance
+            if sub is None:
+                continue
+            grp_name = grp.name or ""
+            child_prefix = f"{prefix} {grp_name}".strip() if prefix else grp_name
+            _walk(sub, child_prefix)
+
+    def _make_wrapped(original, full_name: str, functools_mod):
+        @functools_mod.wraps(original)
+        def _wrapped(*args, _orig=original, _name=full_name, **kwargs):
+            if not ui_agent.is_agent_mode():
+                return _orig(*args, **kwargs)
+            # Self-emitting commands handle their own start/result events
+            # on the success path.  We still translate failures into a
+            # structured error event so the agent sees a terminal pair.
+            if _name in _AGENT_SELF_EMITTING:
+                try:
+                    return _orig(*args, **kwargs)
+                except ui_agent.RequiresInteractiveError as exc:
+                    ui_agent.emit(
+                        "error",
+                        cmd=_name,
+                        kind="requires_interactive",
+                        msg=str(exc),
+                    )
+                    raise typer.Exit(code=2) from exc
+                except (SystemExit, typer.Exit) as exc:
+                    code = getattr(exc, "exit_code", None)
+                    if code is None:
+                        code = getattr(exc, "code", 0)
+                    if code is None:
+                        code = 0
+                    if int(code or 0) != 0:
+                        ui_agent.emit(
+                            "error",
+                            cmd=_name,
+                            kind="exit",
+                            msg=f"exit code {code}",
+                        )
+                    raise
+                except Exception as exc:
+                    ui_agent.emit(
+                        "error",
+                        cmd=_name,
+                        kind=type(exc).__name__,
+                        msg=str(exc),
+                    )
+                    raise
+
+            # Generic wrap: emit start, then a default-OK result on
+            # success, and an error on exception.
+            ui_agent.emit(
+                "command.start",
+                cmd=_name,
+                args={
+                    k: (str(v) if not isinstance(v, (str, int, float, bool, type(None))) else v)
+                    for k, v in kwargs.items()
+                },
+                version=__version__,
+                agent=ui_agent.current_detection().client.value,
+            )
+            try:
+                rv = _orig(*args, **kwargs)
+            except ui_agent.RequiresInteractiveError as exc:
+                ui_agent.emit(
+                    "error",
+                    cmd=_name,
+                    kind="requires_interactive",
+                    msg=str(exc),
+                )
+                raise typer.Exit(code=2) from exc
+            except (SystemExit, typer.Exit) as exc:
+                code = getattr(exc, "exit_code", None)
+                if code is None:
+                    code = getattr(exc, "code", 0)
+                if code is None:
+                    code = 0
+                if int(code or 0) == 0:
+                    ui_agent.emit("result", cmd=_name, status="ok", data={})
+                else:
+                    ui_agent.emit(
+                        "error",
+                        cmd=_name,
+                        kind="exit",
+                        msg=f"exit code {code}",
+                    )
+                raise
+            except Exception as exc:
+                ui_agent.emit(
+                    "error",
+                    cmd=_name,
+                    kind=type(exc).__name__,
+                    msg=str(exc),
+                )
+                raise
+            ui_agent.emit("result", cmd=_name, status="ok", data={})
+            return rv
+
+        _wrapped._cf_agent_wrapped = True  # type: ignore[attr-defined]
+        return _wrapped
+
+    _walk(app, "")
+
+
+# ── Phase L Wave 9 — capabilities subcommand ────────────────────────────
+
+
+def _enumerate_commands() -> list[dict]:
+    """Walk the Typer/Click registry + return one entry per command.
+
+    Each entry carries ``name``, ``help`` (truncated), and the list of
+    parameter names + types.  Used by both the human and agent-mode
+    rendering paths.
+    """
+
+    out: list[dict] = []
+    try:
+        # ``app.get_command`` builds the Click group lazily.  Reuse the
+        # same call typer makes internally — it sees every subapp.
+        click_group = typer.main.get_command(app)
+    except Exception:
+        return out
+
+    def _walk(cmd, prefix: str) -> None:
+        from click import Group as _ClickGroup
+
+        if isinstance(cmd, _ClickGroup):
+            for sub_name in sorted(cmd.commands):
+                child_prefix = f"{prefix} {sub_name}".strip() if prefix else sub_name
+                _walk(cmd.commands[sub_name], child_prefix)
+            return
+        params: list[dict] = []
+        for param in getattr(cmd, "params", []) or []:
+            ptype = type(param).__name__
+            type_name = type(getattr(param, "type", None)).__name__ if param.type else "any"
+            opts = list(getattr(param, "opts", []) or [])
+            secondary = list(getattr(param, "secondary_opts", []) or [])
+            params.append(
+                {
+                    "name": param.name,
+                    "kind": ptype,
+                    "type": type_name,
+                    "opts": opts + secondary,
+                    "required": bool(getattr(param, "required", False)),
+                    "default": (
+                        None
+                        if getattr(param, "default", None) in (None, ())
+                        else str(param.default)
+                    ),
+                }
+            )
+        out.append(
+            {
+                "name": prefix,
+                "help": (cmd.help or "").strip().splitlines()[0] if cmd.help else "",
+                "params": params,
+            }
+        )
+
+    _walk(click_group, "")
+    return out
+
+
+@app.command("capabilities")
+def capabilities() -> None:
+    """List every CLI command + flag + result-schema (Phase L Wave 9).
+
+    Useful for an agent at startup — equivalent to MCP ``list_tools`` for
+    the CLI surface.  Emits a single JSON document under agent mode; in
+    human mode renders a tidy markdown-formatted table.
+    """
+
+    import json as _json
+
+    commands = _enumerate_commands()
+    result_schemas = {
+        "search": {"hits": [{"chunk_id": "int", "score": "float", "text": "str", "doc": "str"}]},
+        "estimate": {
+            "files": "int",
+            "bytes": "int",
+            "scan_elapsed_s": "float",
+            "pending_chunks": "int",
+            "postgres_estimate": "object",
+        },
+        "doctor": {"checks": [{"name": "str", "status": "str", "detail": "str"}], "summary": "str"},
+        "config get": {"key": "str", "value": "any", "type": "str"},
+        "config show": {"config": "object", "redacted_keys": ["str"]},
+        "embedder list": {"embedders": ["object"]},
+        "bug-report": {
+            "zip": "path",
+            "bytes": "int",
+            "redacted_count": "int",
+            "issue_url": "str",
+        },
+    }
+    contract = {
+        "events": ["command.start", "progress", "status", "log", "result", "error"],
+        "exit_codes": {
+            "0": "ok",
+            "1": "generic error",
+            "2": "invalid input / requires_interactive",
+            "3": "config error",
+            "4": "backend error",
+            "5": "agent-interactive-required",
+        },
+    }
+    payload = {
+        "corpus_forge_version": __version__,
+        "agent_mode": ui_agent.current_detection().client.value,
+        "commands": commands,
+        "result_schemas": result_schemas,
+        "agent_mode_contract": contract,
+    }
+
+    if ui_agent.is_agent_mode():
+        ui_agent.emit("result", cmd="capabilities", status="ok", data=payload)
+        return
+
+    print(_json.dumps(payload, indent=2, ensure_ascii=False))
+
+
+# Install the agent-mode wrapper AFTER every command + subapp has been
+# registered so the recursive walk catches them all.  Idempotent.
+_install_agent_command_wrapper()
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 
 The wrappers (``info``/``ok``/``warn``/``error``/``title``/``panel``)
 are what the rest of the CLI calls — they own the glyph fallback rule
-and the (Wave 9-pending) agent-mode placeholder.
+and the agent-mode branch (Wave 9).
 """
 
 from __future__ import annotations
@@ -13,16 +13,29 @@ from rich.console import Console
 from rich.panel import Panel
 
 from . import theme as _theme
+from .agent import Detection as _Detection
+from .agent import current_detection as _current_detection
+from .agent import emit as _emit
+from .agent import is_agent_mode as _is_agent_mode_for
+from .agent import set_current as _agent_set_current
 
 
 def _agent_mode_active() -> bool:
-    """Placeholder for the Wave 9 agent-mode detector.
+    """Phase L Wave 9 — return True iff agent mode is the current contract."""
 
-    Wave 9 replaces the body to consult ``ui/agent.py``.  Wave 1 keeps
-    it as a stable hook so the wrappers don't change shape later.
+    return _is_agent_mode_for(_current_detection())
+
+
+def set_detection(detection: _Detection) -> None:
+    """Update the agent-mode singleton via the console facade.
+
+    Two-step indirection (``ui.console.set_detection`` AND
+    ``ui.agent.set_current``) so callers that only know about the
+    console keep working — the CLI global callback prefers the agent
+    module directly.
     """
 
-    return False
+    _agent_set_current(detection)
 
 
 # The singleton console.  We pin ``stderr=True`` so status lines and
@@ -54,6 +67,7 @@ def info(message: str, *, console: Console | None = None) -> None:
     """Print an informational status line (cyan ``→``)."""
 
     if _agent_mode_active():
+        _emit("status", level="info", msg=message)
         return
     target = _resolve(console)
     glyph = _theme.glyph_for("info", plain=_is_plain(target))
@@ -64,6 +78,7 @@ def ok(message: str, *, console: Console | None = None) -> None:
     """Print a success status line (green ``✓``)."""
 
     if _agent_mode_active():
+        _emit("status", level="ok", msg=message)
         return
     target = _resolve(console)
     glyph = _theme.glyph_for("success", plain=_is_plain(target))
@@ -74,6 +89,7 @@ def warn(message: str, *, console: Console | None = None) -> None:
     """Print a warning status line (yellow ``⚠``)."""
 
     if _agent_mode_active():
+        _emit("status", level="warn", msg=message)
         return
     target = _resolve(console)
     glyph = _theme.glyph_for("warn", plain=_is_plain(target))
@@ -84,6 +100,7 @@ def error(message: str, *, console: Console | None = None) -> None:
     """Print an error status line (red ``✗``)."""
 
     if _agent_mode_active():
+        _emit("status", level="error", msg=message)
         return
     target = _resolve(console)
     glyph = _theme.glyph_for("error", plain=_is_plain(target))
@@ -103,6 +120,10 @@ def panel(message: str, *, title: str | None = None, console: Console | None = N
     """Render ``message`` inside a Rich panel with the brand border."""
 
     if _agent_mode_active():
+        # Panels are mostly decoration but they sometimes carry the only
+        # signal (e.g. embedder drift).  Emit a structured event so an
+        # agent reading the JSONL stream still sees the content.
+        _emit("panel", title=title or "", body=message)
         return
     target = _resolve(console)
     target.print(Panel(message, title=title, border_style="brand.ember"))
@@ -114,6 +135,7 @@ __all__ = [
     "info",
     "ok",
     "panel",
+    "set_detection",
     "title",
     "warn",
 ]

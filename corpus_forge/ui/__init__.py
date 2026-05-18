@@ -12,15 +12,20 @@ The singleton Rich console lives at ``corpus_forge.ui.console.console``
 
 from __future__ import annotations
 
-from . import banner, console, progress
+from . import agent, banner, console, progress
+from .agent import AgentClient, Detection, RequiresInteractiveError
 from .banner import render_banner
 from .console import error, info, ok, panel, title, warn
 from .progress import make_progress
 from .prompts import Confirm, Prompt
 
 __all__ = [
+    "AgentClient",
     "Confirm",
+    "Detection",
     "Prompt",
+    "RequiresInteractiveError",
+    "agent",
     "banner",
     "console",
     "error",
