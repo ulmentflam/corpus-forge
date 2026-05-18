@@ -96,7 +96,7 @@ git tag -s v0.1.0b2 -m "corpus-forge v0.1.0b2 — Living Corpus beta"
 git push origin v0.1.0b2
 ```
 
-Pushing the tag fires `.github/workflows/release.yml`, which runs four
+Pushing the tag fires `.github/workflows/release.yml`, which runs five
 jobs in sequence:
 
 1. **gate** — re-runs the full CI matrix against the exact tag SHA.
@@ -107,6 +107,11 @@ jobs in sequence:
    Gated by the `pypi` GitHub environment for an audit trail.
 4. **publish** — creates the GitHub release, attaches `dist/*`, and
    marks beta/RC tags as `prerelease` automatically.
+5. **brew-bump** — syncs `Formula/corpus-forge.rb` into the
+   [`ulmentflam/homebrew-tap`][tap] repo, rewriting `url` and `sha256`
+   to point at the live source tarball. Soft-fail (`continue-on-error`)
+   so a tap-side hiccup after the GitHub release is already live
+   doesn't redden the workflow — fall back to the manual recipe below.
 
 [tp]: https://docs.pypi.org/trusted-publishers/
 
@@ -138,27 +143,44 @@ needed on subsequent releases.
 
 ### Homebrew tap sync
 
-The `packaging/distribution/corpus-forge.rb` formula in this repo is a
-**scaffold**. On each release, the maintainer copies it (with the
-release-specific `url` and `sha256`) into
-[`ulmentflam/homebrew-tap`][tap]'s `Formula/corpus-forge.rb`.
+The `packaging/distribution/corpus-forge.rb` formula in this repo is the
+**source of truth**. On each release, the `brew-bump` job in
+`release.yml` copies it into [`ulmentflam/homebrew-tap`][tap] as
+`Formula/corpus-forge.rb`, rewriting `url` and `sha256` from the live
+source tarball.
 
 [tap]: https://github.com/ulmentflam/homebrew-tap
+
+**One-time setup** (a fresh `ulmentflam/corpus-forge` checkout needs
+this once):
+
+1. Create a fine-grained PAT at
+   <https://github.com/settings/personal-access-tokens/new>:
+   - Resource owner: `ulmentflam`
+   - Repository access: Only select repositories → `homebrew-tap`
+   - Permissions: Repository → Contents: Read and write
+2. Store it as a repo secret on `ulmentflam/corpus-forge`:
+   ```bash
+   gh secret set HOMEBREW_TAP_TOKEN < token.txt
+   ```
+
+**Manual recovery** (if `brew-bump` ever soft-fails — the GH release is
+already published, so the rest of the pipeline is fine):
 
 ```bash
 # Compute the sha256 of the source tarball for the tag:
 curl -sSL https://github.com/ulmentflam/corpus-forge/archive/refs/tags/v0.1.0b2.tar.gz \
   | shasum -a 256 | awk '{ print $1 }'
 
-# Bump the scaffold's url + sha256, then sync to the tap repo:
+# Bump the scaffold's url + sha256 in this repo, then sync to the tap:
 git -C ../homebrew-tap pull
 cp packaging/distribution/corpus-forge.rb ../homebrew-tap/Formula/corpus-forge.rb
 git -C ../homebrew-tap commit -am "corpus-forge v0.1.0b2"
 git -C ../homebrew-tap push
 ```
 
-Future automation: a `brew bump-formula-pr` step inside `release.yml`
-would close this loop; tracked as a follow-up.
+Or, re-run only the `brew-bump` job from the GitHub Actions UI on the
+failed release run.
 
 ## Reporting vulnerabilities
 

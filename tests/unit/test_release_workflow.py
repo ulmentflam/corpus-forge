@@ -1,7 +1,7 @@
 """Phase BR-04 release.yml workflow pins.
 
 Validates ``.github/workflows/release.yml`` — the tag-triggered release
-pipeline. Four jobs are expected:
+pipeline. Five jobs are expected:
 
 1. ``gate`` — reuses ``ci.yml`` via ``workflow_call``.
 2. ``build`` — needs gate; runs ``uv build``, computes
@@ -15,6 +15,12 @@ pipeline. Four jobs are expected:
    ``softprops/action-gh-release@v3``, passes ``files: dist/*``,
    derives ``prerelease`` from the tag (any tag containing ``b`` or
    ``rc`` is a prerelease), and ``generate_release_notes: true``.
+5. ``brew-bump`` — needs publish; checks out
+   ``ulmentflam/homebrew-tap`` using ``secrets.HOMEBREW_TAP_TOKEN``,
+   syncs the formula scaffold (rewriting ``url`` + ``sha256`` from the
+   live source tarball), and commits + pushes. Soft-fails via
+   ``continue-on-error: true`` so a tap-side hiccup doesn't redden the
+   workflow after the GH release is already live.
 
 Trigger: ``on.push.tags: ['v*']``.
 
@@ -238,6 +244,83 @@ def test_publish_job_needs_pypi_publish(jobs: dict) -> None:
     assert isinstance(needs, list) and "pypi-publish" in needs, (
         f"publish job must `needs:` include `pypi-publish` so the GH release "
         f"doesn't fire on a PyPI upload failure; got needs={needs!r}"
+    )
+
+
+# ── brew-bump job — cross-repo formula sync to ulmentflam/homebrew-tap ────
+
+
+def test_brew_bump_job_exists_and_needs_publish(jobs: dict) -> None:
+    assert "brew-bump" in jobs, "release.yml must define a `brew-bump` job"
+    bb = jobs["brew-bump"]
+    needs = bb.get("needs")
+    assert needs == "publish" or (isinstance(needs, list) and "publish" in needs), (
+        f"brew-bump must `needs: publish` so the source-tarball URL is stable "
+        f"before sha256 is computed; got needs={needs!r}"
+    )
+
+
+def test_brew_bump_job_soft_fails(jobs: dict) -> None:
+    """A tap-side hiccup must not redden the workflow once the GH release is live."""
+    bb = jobs["brew-bump"]
+    assert bb.get("continue-on-error") is True, (
+        "brew-bump must declare `continue-on-error: true` — the GH release is "
+        "already published by this point and a tap-sync failure is recoverable "
+        "via the manual recipe in CONTRIBUTING.md"
+    )
+
+
+def test_brew_bump_checks_out_tap_repo(jobs: dict, release_text: str) -> None:
+    """The job must cross-repo checkout ulmentflam/homebrew-tap with a PAT."""
+    bb = jobs["brew-bump"]
+    steps = bb.get("steps", [])
+    tap_checkout = None
+    for s in steps:
+        if not isinstance(s, dict):
+            continue
+        if "actions/checkout" not in str(s.get("uses", "")):
+            continue
+        with_ = s.get("with", {}) or {}
+        if str(with_.get("repository", "")).endswith("homebrew-tap"):
+            tap_checkout = s
+            break
+    assert tap_checkout is not None, (
+        "brew-bump must include an actions/checkout step targeting "
+        "ulmentflam/homebrew-tap"
+    )
+    # The token MUST be HOMEBREW_TAP_TOKEN; never the default GITHUB_TOKEN
+    # (which has no cross-repo write).
+    assert "HOMEBREW_TAP_TOKEN" in release_text, (
+        "brew-bump must reference secrets.HOMEBREW_TAP_TOKEN for cross-repo push"
+    )
+
+
+def test_brew_bump_computes_sha256_from_source_tarball(jobs: dict) -> None:
+    """Sha256 must derive from the live release tarball, not a cached value."""
+    bb = jobs["brew-bump"]
+    steps = bb.get("steps", [])
+    blob = " ".join(str(s) for s in steps)
+    assert "sha256sum" in blob, "brew-bump must compute sha256 of the source tarball"
+    assert "archive/refs/tags" in blob, (
+        "brew-bump must fetch the GitHub source tarball "
+        "(`archive/refs/tags/${TAG}.tar.gz`) to compute the sha256"
+    )
+
+
+def test_brew_bump_commits_and_pushes_formula(jobs: dict) -> None:
+    bb = jobs["brew-bump"]
+    steps = bb.get("steps", [])
+    blob = " ".join(str(s) for s in steps)
+    assert "Formula/corpus-forge.rb" in blob, (
+        "brew-bump must write Formula/corpus-forge.rb in the tap"
+    )
+    assert "git commit" in blob and "git push" in blob, (
+        "brew-bump must commit + push the formula update to the tap"
+    )
+    # No-op guard: don't push when the formula is already current.
+    assert "diff --cached --quiet" in blob, (
+        "brew-bump must skip the push when the formula is unchanged "
+        "(re-run protection)"
     )
 
 
