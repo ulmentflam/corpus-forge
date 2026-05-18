@@ -297,17 +297,23 @@ def test_resolve_editor_env_with_unknown_binary_falls_through(
 ) -> None:
     """``$EDITOR=ghost-editor`` (not on PATH) skips to the fallback list."""
 
+    import sys as _sys
+
     monkeypatch.setenv("EDITOR", "this-binary-does-not-exist-xyz")
     monkeypatch.delenv("VISUAL", raising=False)
 
-    # Force the fallback list to one known binary so the test is deterministic.
+    # The fallback list is platform-specific: ``notepad.exe`` on Windows,
+    # ``vim`` / ``vi`` / ``nano`` everywhere else.  Pick the right candidate.
+    fallback = "notepad.exe" if _sys.platform.startswith("win") else "vim"
+    fallback_path = "C:\\fake\\notepad.exe" if _sys.platform.startswith("win") else "/fake/vim"
+
     monkeypatch.setattr(
         admin_config.shutil,
         "which",
-        lambda name: "/fake/vim" if name == "vim" else None,
+        lambda name: fallback_path if name == fallback else None,
     )
     result = admin_config._resolve_editor()
-    assert result == ["/fake/vim"]
+    assert result == [fallback_path]
 
 
 # ── _maybe_prompt_side_effect ───────────────────────────────────────────
