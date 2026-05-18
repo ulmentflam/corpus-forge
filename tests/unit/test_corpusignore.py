@@ -187,6 +187,36 @@ class TestIgnoreStack:
         with pytest.raises(ValueError):
             stack.matches(tmp_path.parent / "outside.log", is_dir=False)
 
+    def test_scan_root_overrides_set_root_for_global_match(self, tmp_path: Path) -> None:
+        """Regression: global ignore lives outside the scan tree (e.g.
+        `~/.config/corpus-forge/ignore`) but its patterns must still
+        match files inside the scan tree. ``scan_root`` is the reference
+        frame for relative-path computation when provided.
+        """
+        # Simulate: global file at one location, scan tree at another.
+        global_dir = tmp_path / "config" / "corpus-forge"
+        global_dir.mkdir(parents=True)
+        scan_root = tmp_path / "vault"
+        scan_root.mkdir()
+
+        global_set = CorpusIgnore.from_lines(["*.heic"], root=global_dir)
+        local_set = CorpusIgnore.empty(scan_root)
+        stack = IgnoreStack((global_set, local_set))
+
+        # Without scan_root: the global's root is `tmp_path/config/corpus-forge`
+        # and the scan-tree path isn't under that → ValueError (this is the
+        # bug we're regressing-tested against).
+        scan_path = scan_root / "vacation.heic"
+        with pytest.raises(ValueError, match="not under ignore reference root"):
+            stack.matches(scan_path, is_dir=False)
+
+        # With scan_root: the global pattern matches the scan-tree path.
+        assert stack.matches(scan_path, is_dir=False, scan_root=scan_root) is True
+
+        # And a path that doesn't match the global pattern returns False.
+        scan_path_other = scan_root / "notes.md"
+        assert stack.matches(scan_path_other, is_dir=False, scan_root=scan_root) is False
+
 
 # ── global ignore lookup ─────────────────────────────────────────────────
 

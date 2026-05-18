@@ -399,7 +399,7 @@ def _walk(
                 if entry.is_dir():
                     if _should_skip_dir(name):
                         continue
-                    if ignore is not None and ignore.matches(entry, is_dir=True):
+                    if ignore is not None and ignore.matches(entry, is_dir=True, scan_root=root):
                         continue
                     dir_count += 1
                     stack.append(entry)
@@ -408,7 +408,7 @@ def _walk(
                     continue
                 if _should_skip_file(name):
                     continue
-                if ignore is not None and ignore.matches(entry, is_dir=False):
+                if ignore is not None and ignore.matches(entry, is_dir=False, scan_root=root):
                     continue
             except OSError as exc:
                 logger.debug("estimator: stat failed on %s: %s", entry, exc)

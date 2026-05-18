@@ -220,7 +220,17 @@ class IgnoreStack:
 
     sets: tuple[CorpusIgnore, ...] = field(default_factory=tuple)
 
-    def matches(self, path: Path, *, is_dir: bool) -> bool:
+    def matches(self, path: Path, *, is_dir: bool, scan_root: Path | None = None) -> bool:
+        """True iff ``path`` is ignored by any set in the stack.
+
+        ``scan_root`` (when provided) is the reference frame for ALL
+        sets' relative-path computation. This matters for the *global*
+        ignore file: its on-disk parent (``~/.config/corpus-forge/``)
+        is NOT under the scan tree, so the matcher must use the scan
+        root instead of the set's own root. Without ``scan_root``, each
+        set falls back to its own ``root`` field, which matches the
+        ``CorpusIgnore.matches`` single-set semantics.
+        """
         if not self.sets:
             return False
         # Walk every set; the last one that has a decision (ignore OR
@@ -228,18 +238,15 @@ class IgnoreStack:
         # decision untouched.
         ignored = False
         for s in self.sets:
+            ref_root = scan_root if scan_root is not None else s.root
             for p in s.patterns:
                 if p.dir_only and not is_dir:
                     continue
-                # `matches` here uses the *set's* root for relative
-                # computation. We can't reuse `CorpusIgnore.matches`
-                # directly because we need per-pattern visibility to
-                # honor negation order across sets.
                 try:
-                    rel = path.relative_to(s.root)
+                    rel = path.relative_to(ref_root)
                 except ValueError:
                     raise ValueError(
-                        f"path {path!r} is not under ignore-file root {s.root!r}"
+                        f"path {path!r} is not under ignore reference root {ref_root!r}"
                     ) from None
                 if p.regex.search(rel.as_posix()) is not None:
                     ignored = not p.negate
