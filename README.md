@@ -25,47 +25,6 @@
 - **Local-or-remote, end to end.** Every model client (VLM, classifier, Whisper, code enricher, reranker) accepts a configurable HTTP URL — default is a local Ollama daemon, swap to a hosted endpoint with a one-line config change and no code edit.
 - **Predictable storage.** `corpus-forge estimate <path>` predicts the Postgres footprint of syncing a tree *before* you sync. Same surface available to any MCP-connected assistant via `estimate_sync_size`.
 
-## Quickstart
-
-```bash
-pip install corpus-forge[sqlite,hf]
-
-# 1. Drop in a config (edit paths + embedder choices).
-mkdir -p ~/.config/corpus-forge
-cp $(python -c "import corpus_forge, pathlib; print(pathlib.Path(corpus_forge.__file__).parent.parent / 'config.example.toml')") \
-   ~/.config/corpus-forge/config.toml
-$EDITOR ~/.config/corpus-forge/config.toml
-
-# 2. Initialize the database (SQLite or PostgreSQL).
-corpus-forge migrate
-
-# 3. Estimate the Postgres footprint *before* you sync. No I/O, no model calls.
-corpus-forge estimate ~/Notes
-
-# 4. Run a one-shot ingestion pass.
-corpus-forge ingest --once
-
-# 5. Backfill embeddings for the active embedder(s).
-corpus-forge embed -e qwen3_8b
-
-# 6. (Optional) Classify documents into the 9-value content-class taxonomy.
-corpus-forge classify --dry-run --json
-corpus-forge classify
-
-# 7. (Optional) Re-chunk classified prose with FastCDC + AST-aware code.
-corpus-forge rechunk
-
-# 8. Search the corpus end-to-end.
-corpus-forge search "how does the SQLite lock work" --k 5
-
-# 9. Curate weak entries with an AI assistant (Claude / Gemini / OpenCode).
-#    Wire the MCP server (see "For AI assistants" below), then in your chat:
-#    /corpus-curate    →  next_curation_target → chat → commit_curation
-
-# 10. Export to HuggingFace Datasets format.
-corpus-forge export chat --dataset claude-code --out ./chat.jsonl --template chatml
-```
-
 ## Install
 
 ### One-liner (recommended)
@@ -193,6 +152,51 @@ git clone https://github.com/ulmentflam/corpus-forge
 cd corpus-forge
 make dev    # uv sync --all-extras --group dev + pre-commit install
 make ci     # full local gate (format / lint / typecheck / tests)
+```
+
+## Quickstart
+
+```bash
+pip install corpus-forge[sqlite,hf]
+
+# 1. Drop in a config (edit paths + embedder choices).
+mkdir -p ~/.config/corpus-forge
+cp $(python -c "import corpus_forge, pathlib; print(pathlib.Path(corpus_forge.__file__).parent.parent / 'config.example.toml')") \
+   ~/.config/corpus-forge/config.toml
+$EDITOR ~/.config/corpus-forge/config.toml
+
+# 2. Initialize the database (SQLite or PostgreSQL).
+corpus-forge migrate
+
+# 3. (Optional) Drop a .corpusignore at the scan root to skip noisy
+#    files/dirs. A vendor-neutral starter ships at .corpusignore.example.
+#    User-global rules can live at ~/.config/corpus-forge/ignore.
+
+# 4. Estimate the Postgres footprint *before* you sync. No I/O, no model calls.
+corpus-forge estimate ~/Notes
+
+# 5. Run a one-shot ingestion pass.
+corpus-forge ingest --once
+
+# 6. Backfill embeddings for the active embedder(s).
+corpus-forge embed -e qwen3_8b
+
+# 7. (Optional) Classify documents into the 9-value content-class taxonomy.
+corpus-forge classify --dry-run --json
+corpus-forge classify
+
+# 8. (Optional) Re-chunk classified prose with FastCDC + AST-aware code.
+corpus-forge rechunk
+
+# 9. Search the corpus end-to-end.
+corpus-forge search "how does the SQLite lock work" --k 5
+
+# 10. Curate weak entries with an AI assistant (Claude / Gemini / OpenCode).
+#     Wire the MCP server (see "For AI assistants" below), then in your chat:
+#     /corpus-curate    →  next_curation_target → chat → commit_curation
+
+# 11. Export to HuggingFace Datasets format.
+corpus-forge export chat --dataset claude-code --out ./chat.jsonl --template chatml
 ```
 
 ## What you get — HF export

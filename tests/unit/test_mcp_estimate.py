@@ -183,15 +183,22 @@ def test_estimate_sync_size_passthrough_args_to_estimate_sync(
     real = estimate_mod.estimate_sync
     calls: list[dict[str, Any]] = []
 
-    def fake_estimate(path, config, *, embedders=None, compression_ratio=None):
+    def fake_estimate(path, config, *, embedders=None, compression_ratio=None, ignore=None):
         calls.append(
             {
                 "path": str(path),
                 "embedders": embedders,
                 "compression_ratio": compression_ratio,
+                "ignore": ignore,
             }
         )
-        return real(path, config, embedders=embedders, compression_ratio=compression_ratio)
+        return real(
+            path,
+            config,
+            embedders=embedders,
+            compression_ratio=compression_ratio,
+            ignore=ignore,
+        )
 
     monkeypatch.setattr(estimate_mod, "estimate_sync", fake_estimate)
 
@@ -284,3 +291,122 @@ def test_estimate_sync_size_schema_rejects_missing_path() -> None:
         return
     assert result is not None
     assert getattr(result, "isError", False), "calling estimate_sync_size without 'path' must error"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# K1 — .corpusignore MCP arg coverage
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_estimate_sync_size_honors_ignore_file_arg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_path = _write_config(tmp_path)
+    scan = _scan_dir(tmp_path)
+    monkeypatch.setenv("CORPUS_FORGE_CONFIG", str(cfg_path))
+    # Disable the global lookup for this test so it doesn't matter what
+    # the host machine has at ~/.config/corpus-forge/ignore.
+    monkeypatch.setenv("CF_GLOBAL_IGNORE_FILE", "")
+
+    ignore_path = tmp_path / "custom.ignore"
+    ignore_path.write_text("*.md\n", encoding="utf-8")
+
+    server = _build_server()
+    baseline = _extract_payload(
+        _call_tool_via_handler(
+            server,
+            "estimate_sync_size",
+            {"path": str(scan)},
+        )
+    )
+    with_ignore = _extract_payload(
+        _call_tool_via_handler(
+            server,
+            "estimate_sync_size",
+            {"path": str(scan), "ignore_file": str(ignore_path)},
+        )
+    )
+    assert with_ignore["estimate"]["file_count"] < baseline["estimate"]["file_count"]
+
+
+def test_estimate_sync_size_empty_string_disables_local(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even when a `.corpusignore` exists at the scan root, passing
+    ``ignore_file=""`` disables the lookup entirely.
+    """
+    cfg_path = _write_config(tmp_path)
+    scan = _scan_dir(tmp_path)
+    monkeypatch.setenv("CORPUS_FORGE_CONFIG", str(cfg_path))
+    monkeypatch.setenv("CF_GLOBAL_IGNORE_FILE", "")
+    (scan / ".corpusignore").write_text("*.md\n", encoding="utf-8")
+
+    server = _build_server()
+    auto = _extract_payload(
+        _call_tool_via_handler(server, "estimate_sync_size", {"path": str(scan)})
+    )
+    disabled = _extract_payload(
+        _call_tool_via_handler(
+            server,
+            "estimate_sync_size",
+            {"path": str(scan), "ignore_file": ""},
+        )
+    )
+    # Auto-detect pruned `*.md`; explicit empty-string ignored more files
+    # than the disabled run.
+    assert disabled["estimate"]["file_count"] > auto["estimate"]["file_count"]
+
+
+def test_estimate_sync_size_missing_field_auto_detects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_path = _write_config(tmp_path)
+    scan = _scan_dir(tmp_path)
+    monkeypatch.setenv("CORPUS_FORGE_CONFIG", str(cfg_path))
+    monkeypatch.setenv("CF_GLOBAL_IGNORE_FILE", "")
+    # Pre-create the file in both runs so the file set is identical.
+    (scan / ".corpusignore").write_text("*.md\n", encoding="utf-8")
+
+    server = _build_server()
+    # No `ignore_file` field → auto-detect kicks in.
+    auto = _extract_payload(
+        _call_tool_via_handler(server, "estimate_sync_size", {"path": str(scan)})
+    )
+    # Explicit empty-string → ignore disabled, baseline file count.
+    disabled = _extract_payload(
+        _call_tool_via_handler(
+            server,
+            "estimate_sync_size",
+            {"path": str(scan), "ignore_file": ""},
+        )
+    )
+    assert auto["estimate"]["file_count"] < disabled["estimate"]["file_count"]
+
+
+def test_estimate_sync_size_disable_global_ignore_arg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``disable_global_ignore=True`` skips the user-global lookup even
+    when ``CF_GLOBAL_IGNORE_FILE`` points at a real ignore file.
+    """
+    cfg_path = _write_config(tmp_path)
+    scan = _scan_dir(tmp_path)
+    monkeypatch.setenv("CORPUS_FORGE_CONFIG", str(cfg_path))
+    global_ignore = tmp_path / "global.ignore"
+    global_ignore.write_text("*.md\n", encoding="utf-8")
+    monkeypatch.setenv("CF_GLOBAL_IGNORE_FILE", str(global_ignore))
+
+    server = _build_server()
+    # Global ignore is in effect — `*.md` pruned.
+    with_global = _extract_payload(
+        _call_tool_via_handler(server, "estimate_sync_size", {"path": str(scan)})
+    )
+    # disable_global_ignore=True — full file count.
+    without = _extract_payload(
+        _call_tool_via_handler(
+            server,
+            "estimate_sync_size",
+            {"path": str(scan), "disable_global_ignore": True},
+        )
+    )
+    assert without["estimate"]["file_count"] > with_global["estimate"]["file_count"]

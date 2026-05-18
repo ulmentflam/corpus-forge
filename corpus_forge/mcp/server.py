@@ -177,6 +177,22 @@ _ESTIMATE_SYNC_SIZE_INPUT_SCHEMA: dict[str, Any] = {
                 "Multiplier in (0.0, 1.0] applied to text-heavy columns."
             ),
         },
+        "ignore_file": {
+            "type": "string",
+            "description": (
+                "Optional path to a .corpusignore file. Mirrors --ignore-file. "
+                "Empty string disables the local ignore lookup entirely. "
+                "Absent field falls back to auto-detect at <path>/.corpusignore."
+            ),
+        },
+        "disable_global_ignore": {
+            "type": "boolean",
+            "description": (
+                "If true, skips the user-global ignore file "
+                "(~/.config/corpus-forge/ignore or $CF_GLOBAL_IGNORE_FILE) "
+                "for this call."
+            ),
+        },
     },
     "required": ["path"],
     "additionalProperties": False,
@@ -1025,9 +1041,16 @@ def build_server(
         # `corpus_forge.estimate.estimate_sync` lookup is what test
         # monkeypatches target.
         from dataclasses import asdict
+        from pathlib import Path
 
         import corpus_forge.estimate as _estimate_mod
         from corpus_forge.config import Config
+        from corpus_forge.ignore import (
+            CorpusIgnore,
+            IgnoreStack,
+            load_global_ignore,
+            load_local_ignore,
+        )
 
         try:
             config = Config.load()
@@ -1037,12 +1060,33 @@ def build_server(
         path = arguments["path"]
         embedders = arguments.get("embedders")
         compression_ratio = arguments.get("compression_ratio")
+
+        # Resolve the scan root once so the ignore-stack matcher and
+        # estimate_sync's own resolve_path() see the same absolute path.
+        root = Path(path).expanduser().resolve()
+
+        # Build the ignore stack.
+        ignore_file_arg = arguments.get("ignore_file")
+        disable_global = bool(arguments.get("disable_global_ignore", False))
+        try:
+            if ignore_file_arg is None:
+                local_set = load_local_ignore(root)
+            elif ignore_file_arg == "":
+                local_set = CorpusIgnore.empty(root)
+            else:
+                local_set = load_local_ignore(root, override=Path(ignore_file_arg).expanduser())
+        except FileNotFoundError as exc:
+            return _error_result(f"ignore_file not found: {exc}")
+        global_set = CorpusIgnore.empty(Path.home()) if disable_global else load_global_ignore()
+        ignore_stack = IgnoreStack((global_set, local_set))
+
         try:
             est = _estimate_mod.estimate_sync(
                 path,
                 config,
                 embedders=embedders,
                 compression_ratio=compression_ratio,
+                ignore=ignore_stack,
             )
         except (FileNotFoundError, NotADirectoryError) as exc:
             return _error_result(str(exc))

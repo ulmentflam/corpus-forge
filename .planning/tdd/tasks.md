@@ -707,3 +707,414 @@ J1 shipped in commit `986ac25`. All four J1-01 .. J1-04 rows reached
 `status: done`; gates green at 93.30 % coverage. The historical
 breakdown is preserved in git (`git show 77768fb:.planning/tdd/tasks.md`)
 and elided from this file to keep J4 above the fold.
+
+---
+
+# TDD Task Board — Phase K / Slice K1 (`.corpusignore` in estimator)
+
+_Owner: tdd-principal. Workers: read freely. Edit only your claimed row's
+`status` and `claimed_by`._
+
+Source plan: `/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Workspace/playground/corpus-forge/.planning/tdd/phase_k_corpusignore.md` (§ K1).
+Dispatch input: orchestrator brief, Phase K / K1 kickoff (2026-05-17).
+
+## Project gates (K1)
+- lint: `make lint` (ruff)
+- format: `make format-check`
+- typecheck: `make typecheck` (pyrefly strict)
+- test-unit: `make test-unit` (≥90% coverage)
+- test-integration: `make test-integration`
+- ci: `make ci`
+
+## Hard constraints (from dispatch)
+1. **DO NOT COMMIT, DO NOT PUSH.** Workers stage only. Orchestrator commits.
+2. `make ci` green; coverage ≥90% project; ≥90% on `corpus_forge/ignore.py`.
+3. **K1 surface is bounded:**
+   - new `corpus_forge/ignore.py`
+   - additions to `corpus_forge/estimate.py` (accept `IgnoreStack` kwarg in the walker)
+   - additions to `corpus_forge/cli.py` (three new Typer flags + resolution)
+   - additions to `corpus_forge/mcp/server.py` (two new MCP args + dispatch)
+   - new `tests/unit/test_corpusignore.py` (~25 cases)
+   - additions to `tests/unit/test_cli_estimate.py` (5 cases) and `tests/unit/test_mcp_estimate.py` (3 cases)
+   - additions to `tests/integration/test_estimate_real_tree.py` (1 case)
+   - new `.corpusignore.example` at repo root
+   - CHANGELOG `[Unreleased]` Phase K subhead
+   - One-line touch in CLAUDE.md / GEMINI.md / AGENTS.md First-run sanity
+4. **No drive-by refactors.** Do NOT touch `sources/`, `sync/`, or any other module (K2 wires ignore into ingest).
+5. **Hard-coded `_SKIP_DIR_NAMES` remain absolute.** A `!pattern` negation in any `.corpusignore` cannot un-skip a `_SKIP_DIR_NAMES` entry. Document + test this.
+6. **Local-or-remote URL invariant:** N/A — K1 is pure filesystem; no model clients touched.
+
+## Tasks
+
+| id | title | depends_on | surface | risk | status | claimed_by | notes |
+|----|-------|------------|---------|------|--------|------------|-------|
+| K1-01 | Core ignore module + unit tests | — | `corpus_forge/ignore.py` (new), `tests/unit/test_corpusignore.py` (new) | med | pending | — | Pattern parser + matcher + `IgnoreStack` + `load_global_ignore` + `load_local_ignore`. No estimator/CLI/MCP wiring in this task. |
+| K1-02 | `.corpusignore.example` at repo root | — | `.corpusignore.example` (new) | low | pending | — | Sensible defaults: Apple metadata, Photos library, large media, common backup dirs, etc. Pure content file — no tests. |
+| K1-03 | Estimator wiring (`_walk` accepts `IgnoreStack`) + integration case | K1-01 | `corpus_forge/estimate.py` (modify `_walk` / `estimate_sync` signatures), `tests/integration/test_estimate_real_tree.py` (add 1 case) | med | pending | — | `_walk_tree` accepts `ignore: IgnoreStack | None`. Hard-coded `_SKIP_DIR_NAMES` apply *before* the stack and cannot be un-skipped. Integration test exercises a real `.corpusignore` against the multi-format fixture tree. |
+| K1-04 | CLI flags (`--ignore-file`, `--no-ignore-file`, `--no-global-ignore`) + tests | K1-01, K1-03 | `corpus_forge/cli.py::estimate` (add 3 flags + resolution logic), `tests/unit/test_cli_estimate.py` (5 cases) | low | pending | — | Mutually-exclusive guard on `--ignore-file X --no-ignore-file`. Resolution per brief: local + global legs independent. Missing `--ignore-file` path is an error. |
+| K1-05 | MCP args (`ignore_file`, `disable_global_ignore`) + tests | K1-01, K1-03 | `corpus_forge/mcp/server.py` (`_ESTIMATE_SYNC_SIZE_INPUT_SCHEMA` + `_dispatch_estimate_sync_size`), `tests/unit/test_mcp_estimate.py` (3 cases) | low | pending | — | Mirrors CLI semantics. Empty string disables local; missing field falls back to auto-detect. New optional `disable_global_ignore` bool. |
+| K1-06 | Docs (CHANGELOG + CLAUDE.md / GEMINI.md / AGENTS.md First-run sanity) | K1-01, K1-02, K1-03, K1-04, K1-05 | `CHANGELOG.md`, `CLAUDE.md`, `GEMINI.md`, `AGENTS.md` | low | pending | — | CHANGELOG `[Unreleased]` gains a `#### Phase K — .corpusignore` subhead. First-run sanity in all three docs gets a one-line nudge to `.corpusignore` (local + global). |
+
+## Acceptance details
+
+### K1-01 — Core ignore module
+
+**File:** `corpus_forge/ignore.py`
+
+**Required public API (per brief § "Module surface"):**
+
+```python
+@dataclass(frozen=True)
+class CorpusIgnore:
+    root: Path
+    patterns: tuple[_Pattern, ...]
+    def matches(self, path: Path, *, is_dir: bool) -> bool: ...
+    @classmethod
+    def empty(cls, root: Path) -> "CorpusIgnore": ...
+    @classmethod
+    def from_file(cls, path: Path, *, root: Path | None = None) -> "CorpusIgnore": ...
+    @classmethod
+    def from_lines(cls, lines: Iterable[str], *, root: Path) -> "CorpusIgnore": ...
+
+@dataclass(frozen=True)
+class IgnoreStack:
+    sets: tuple[CorpusIgnore, ...]
+    def matches(self, path: Path, *, is_dir: bool) -> bool: ...
+
+def load_global_ignore() -> CorpusIgnore: ...
+def load_local_ignore(root: Path, *, override: Path | None = None) -> CorpusIgnore: ...
+```
+
+`_Pattern` is an internal `@dataclass(frozen=True)` holding `pattern_str` (the original glob), a compiled regex, `negate: bool`, `dir_only: bool`, `anchored: bool`.
+
+**Gitignore-subset rules (pin in tests):**
+- One pattern per line. Blank lines ignored.
+- `#` at the *very start* of a line is a comment. Trailing `#` is not.
+- Leading `/` anchors to ignore-file root.
+- Trailing `/` is directory-only (skips matching directories AND prunes the walk; does not match files of the same name).
+- `*` matches any chars except `/`. `**` matches any number of path components. `?` matches one char.
+- `!pattern` negates an earlier ignore. Order matters; later wins.
+- `\#` escapes a literal `#` at line start. `\!` escapes a literal `!` at line start.
+- Patterns are matched against the path *relative to the ignore-file root*, using POSIX separators (`/`) regardless of platform.
+
+**Path normalisation:**
+- `CorpusIgnore.matches(path, is_dir=...)` expects an absolute path under `self.root`. It computes the POSIX-relative path internally. Paths outside `self.root` raise `ValueError`.
+
+**Composition (IgnoreStack):**
+- Sets are consulted in order. Last set wins ties (later sets can un-ignore earlier matches via `!`).
+- An empty stack matches nothing.
+
+**`load_global_ignore`:**
+1. If env var `CF_GLOBAL_IGNORE_FILE` is set:
+   - Empty string → `CorpusIgnore.empty(root=Path.home())`.
+   - Non-empty → load that path; missing → empty (do NOT raise).
+2. Else if `~/.config/corpus-forge/ignore` exists → load.
+3. Else → empty.
+
+**`load_local_ignore(root, override=...)`:**
+1. If `override` is not None → `CorpusIgnore.from_file(override, root=root)`; missing path **raises** `FileNotFoundError` (explicit override = required).
+2. Else auto-detect `root / ".corpusignore"`; if missing → empty.
+
+**Tests `tests/unit/test_corpusignore.py` (~25 cases minimum) — REQUIRED scenarios:**
+
+1. `test_empty_file_matches_nothing`.
+2. `test_comments_only_file_matches_nothing` — `# foo\n# bar`.
+3. `test_blank_lines_only_file_matches_nothing`.
+4. `test_trailing_hash_is_not_a_comment` — `*.log#tmp` should match `foo.log#tmp` not the literal `*.log`.
+5. `test_single_glob_matches_extension` — `*.heic` matches `vacation.heic` at any depth.
+6. `test_anchored_pattern_matches_only_at_root` — `/Backups/` matches `<root>/Backups/` but NOT `<root>/nested/Backups/`.
+7. `test_unanchored_pattern_matches_any_depth` — `Backups/` matches both `<root>/Backups/` and `<root>/nested/Backups/`.
+8. `test_directory_only_pattern_does_not_match_file` — `Backups/` does NOT match `<root>/Backups` (a file with that name).
+9. `test_directory_only_pattern_matches_dir` — `Backups/` matches `<root>/Backups/` as a directory.
+10. `test_negation_un_ignores_later_match` — `*.log\n!important.log` → `foo.log` matches, `important.log` does not.
+11. `test_negation_order_matters_later_wins` — `!important.log\n*.log` → `important.log` matches (the bare `*.log` re-ignores it).
+12. `test_double_star_matches_recursive_components` — `**/foo.txt` matches at any depth.
+13. `test_single_star_does_not_match_slash` — `foo*bar` matches `fooXbar` but not `foo/X/bar`.
+14. `test_question_mark_matches_single_char` — `file?.txt` matches `fileA.txt` not `fileAB.txt`.
+15. `test_escape_hash_matches_literal_hash` — `\#hashed` matches a file literally called `#hashed`.
+16. `test_escape_bang_matches_literal_bang` — `\!important` matches a file literally called `!important`.
+17. `test_posix_separator_normalisation` — calling `matches` with a Windows-style path (passed via the `Path` API normaliser) still matches the gitignore-style pattern using `/`.
+18. `test_from_file_missing_raises_file_not_found`.
+19. `test_from_file_permission_error_propagates` — chmod 000 a file, assert `OSError` raised (skip on platforms that don't honor chmod, e.g. some CI containers — gate via `pytest.skip()` if `os.geteuid() == 0`).
+20. `test_from_lines_round_trip_preserves_pattern_str` — parse `["*.log", "!keep.log"]` → assert `patterns[i].pattern_str == "*.log"` etc.
+21. `test_ignore_stack_global_then_local_local_wins` — global `*.log`, local `!important.log` → `important.log` not ignored.
+22. `test_ignore_stack_empty_matches_nothing`.
+23. `test_load_global_ignore_honors_env_var_path`.
+24. `test_load_global_ignore_env_empty_string_disables` — `CF_GLOBAL_IGNORE_FILE=""` → empty CorpusIgnore.
+25. `test_load_global_ignore_default_path` — `monkeypatch.setenv` to point HOME at a tmp dir with `.config/corpus-forge/ignore`; assert loaded.
+26. `test_load_global_ignore_missing_returns_empty`.
+27. `test_load_local_ignore_override_missing_raises`.
+28. `test_load_local_ignore_auto_detect_present`.
+29. `test_load_local_ignore_auto_detect_absent_returns_empty`.
+30. `test_corpusignore_frozen_dataclass` — mutation raises.
+31. `test_ignore_stack_frozen_dataclass` — mutation raises.
+32. `test_matches_rejects_path_outside_root` — `ValueError`.
+
+(Coverage gate: ≥90% on `corpus_forge/ignore.py`.)
+
+### K1-02 — `.corpusignore.example`
+
+**File:** `.corpusignore.example` (repo root).
+
+Sensible defaults grouped + commented. The full content is provided to
+the coder; sample shape (illustrative, coder finalises):
+
+```gitignore
+# corpus-forge .corpusignore — gitignore-style patterns.
+# Drop a copy at the root of any tree you scan, or globally at
+#   ~/.config/corpus-forge/ignore
+# Patterns are matched relative to this file's directory using POSIX
+# separators (/), regardless of host platform.
+
+# ── Apple / macOS metadata ─────────────────────────────────────────
+.DS_Store
+._*
+.Spotlight-V100/
+.Trashes/
+.fseventsd/
+
+# ── Photos / image libraries ───────────────────────────────────────
+*.photoslibrary/
+*.aplibrary/
+
+# ── Heavy media ────────────────────────────────────────────────────
+*.heic
+*.HEIC
+*.cr2
+*.nef
+*.dng
+*.mov
+*.mp4
+*.mkv
+
+# ── Common backup directories (anchored: root-only) ────────────────
+/Backups/
+/backups/
+
+# ── Generated artefacts (every depth) ──────────────────────────────
+node_modules/
+__pycache__/
+.venv/
+venv/
+dist/
+build/
+target/
+
+# ── Lockfiles / very large data ────────────────────────────────────
+*.lock
+*.parquet
+```
+
+No tests — the file is a sample, not loaded by default.
+
+### K1-03 — Estimator wiring + integration test
+
+**File modified:** `corpus_forge/estimate.py`
+
+Changes:
+1. `estimate_sync(...)` accepts a new keyword arg `ignore: IgnoreStack | None = None`.
+2. `_walk(...)` accepts a new keyword arg `ignore: IgnoreStack | None = None` and threads it through.
+3. Before recursing into a child directory: if `ignore is not None and ignore.matches(child, is_dir=True)` → prune (do not recurse, do not bump `dir_count`).
+4. For each candidate file: if `ignore is not None and ignore.matches(child, is_dir=False)` → skip (do not bump `file_count`, do not bucket).
+5. The hard-coded `_SKIP_DIR_NAMES` / `_SKIP_FILE_NAMES` short-circuit stays as the **baseline** and runs **before** the `IgnoreStack`. Negations in any `.corpusignore` cannot un-skip a `_SKIP_DIR_NAMES` entry. Add a module-level comment + the integration assertion below to pin this.
+
+**Integration test:** add ONE case to `tests/integration/test_estimate_real_tree.py`.
+
+Test name: `test_estimate_honors_corpusignore_against_multi_format_fixture`.
+
+Steps:
+1. Create a temporary directory mirroring a slice of the multi-format fixture (or copy a small subset). Include at least: `Backups/big.bin`, `vacation.heic`, `notes.md`, a `.git/` dir (to verify it's still skipped via the absolute baseline), and one `node_modules/foo.js`.
+2. Write a `.corpusignore` at the root containing:
+   ```
+   Backups/
+   *.heic
+   !notes.md
+   ```
+3. Load `IgnoreStack((empty_global, local))` via the new `load_local_ignore` helper.
+4. Call `estimate_sync(root, config, ignore=stack)`.
+5. Assert:
+   - `notes.md` is counted (not in any ignored set).
+   - `Backups/big.bin` is NOT counted (`Backups/` pruned).
+   - `vacation.heic` is NOT counted (matched by `*.heic`).
+   - `.git/` directory pruned (absolute baseline — proves coexistence).
+   - `node_modules/foo.js` pruned (absolute baseline).
+
+Smoke assertion: re-run the same fixture WITHOUT the ignore stack and confirm `file_count` is higher (regression sentinel for the wiring).
+
+### K1-04 — CLI flags + tests
+
+**File modified:** `corpus_forge/cli.py::estimate`.
+
+Three new Typer options:
+
+```python
+ignore_file: Path | None = typer.Option(
+    None,
+    "--ignore-file",
+    help=(
+        "Path to a .corpusignore file. Overrides auto-detection of "
+        "<path>/.corpusignore. Pass a non-existent path → error."
+    ),
+),
+no_ignore_file: bool = typer.Option(
+    False,
+    "--no-ignore-file",
+    help=(
+        "Disable the local .corpusignore lookup entirely. Mutually "
+        "exclusive with --ignore-file."
+    ),
+),
+no_global_ignore: bool = typer.Option(
+    False,
+    "--no-global-ignore",
+    help=(
+        "Disable the user-global ignore file (~/.config/corpus-forge/ignore "
+        "or $CF_GLOBAL_IGNORE_FILE) for this invocation."
+    ),
+),
+```
+
+**Resolution logic (per brief § "CLI implementation notes"):**
+
+- **Local leg:**
+  1. `--no-ignore-file` AND `--ignore-file` both set → `typer.echo("--ignore-file and --no-ignore-file are mutually exclusive", err=True)`; exit 2.
+  2. `--no-ignore-file` → `local = CorpusIgnore.empty(root)`.
+  3. `--ignore-file PATH` → `local = load_local_ignore(root, override=PATH)`. Missing → caught `FileNotFoundError` → exit 2 with friendly message.
+  4. Neither → `local = load_local_ignore(root)` (auto-detect; missing → empty).
+- **Global leg:**
+  1. `--no-global-ignore` → `global_set = CorpusIgnore.empty(Path.home())`.
+  2. Otherwise → `global_set = load_global_ignore()`.
+- Compose: `stack = IgnoreStack((global_set, local))`.
+- Pass to `estimate_sync(..., ignore=stack)`.
+
+**Tests `tests/unit/test_cli_estimate.py` — 5 ADDITIONAL cases:**
+
+1. `test_estimate_honors_ignore_file_flag` — write `.corpusignore` to a custom path, pass via `--ignore-file`, assert files matching its patterns are pruned (compare `file_count` against the no-ignore baseline).
+2. `test_estimate_honors_no_ignore_file_flag` — write a `.corpusignore` at root, pass `--no-ignore-file`, assert it's IGNORED (`file_count` matches no-ignore baseline).
+3. `test_estimate_auto_detects_corpusignore_at_root` — drop `.corpusignore` at the scan root, no flags, assert it's auto-honored.
+4. `test_estimate_ignore_file_missing_path_errors` — `--ignore-file /nonexistent`, assert exit code 2 and stderr contains "not found" or similar.
+5. `test_estimate_ignore_file_and_no_ignore_file_mutex` — both flags, assert exit 2 with mutual-exclusivity error message.
+
+### K1-05 — MCP args + tests
+
+**File modified:** `corpus_forge/mcp/server.py`.
+
+Schema additions to `_ESTIMATE_SYNC_SIZE_INPUT_SCHEMA["properties"]`:
+
+```python
+"ignore_file": {
+    "type": "string",
+    "description": (
+        "Optional path to a .corpusignore file. Mirrors --ignore-file. "
+        "Empty string disables the local ignore lookup entirely. "
+        "Absent field falls back to auto-detect at <path>/.corpusignore."
+    ),
+},
+"disable_global_ignore": {
+    "type": "boolean",
+    "description": (
+        "If true, skips the user-global ignore file "
+        "(~/.config/corpus-forge/ignore or $CF_GLOBAL_IGNORE_FILE) "
+        "for this call."
+    ),
+},
+```
+
+Dispatcher additions in `_dispatch_estimate_sync_size`:
+
+```python
+ignore_file_arg = arguments.get("ignore_file")
+disable_global = bool(arguments.get("disable_global_ignore", False))
+
+from corpus_forge.ignore import (
+    CorpusIgnore,
+    IgnoreStack,
+    load_global_ignore,
+    load_local_ignore,
+)
+
+root = Path(path).expanduser().resolve()  # mirror estimate_sync()
+
+# Local leg
+if ignore_file_arg is None:
+    local = load_local_ignore(root)
+elif ignore_file_arg == "":
+    local = CorpusIgnore.empty(root)
+else:
+    try:
+        local = load_local_ignore(root, override=Path(ignore_file_arg).expanduser())
+    except FileNotFoundError as exc:
+        return _error_result(str(exc))
+
+# Global leg
+global_set = CorpusIgnore.empty(Path.home()) if disable_global else load_global_ignore()
+
+stack = IgnoreStack((global_set, local))
+# ... pass `ignore=stack` to estimate_sync
+```
+
+NOTE: `estimate_sync` may also need to accept the root resolution at one point of truth. If the dispatcher resolves `root` for the `load_local_ignore` call, the estimator should still re-resolve internally (no behaviour change there). The coder may DRY this in the dispatcher by computing the root once.
+
+**Tests `tests/unit/test_mcp_estimate.py` — 3 ADDITIONAL cases:**
+
+1. `test_estimate_sync_size_honors_ignore_file_arg` — call with `ignore_file=<temp path>`, assert pruning.
+2. `test_estimate_sync_size_empty_string_disables_local` — pass `ignore_file=""` even when a `.corpusignore` exists at root; assert NOT honored.
+3. `test_estimate_sync_size_missing_field_auto_detects` — drop `.corpusignore` at root, omit `ignore_file` arg, assert pruning.
+
+(Optional bonus case if coder has bandwidth: `test_estimate_sync_size_disable_global_ignore_arg`.)
+
+### K1-06 — Docs
+
+**`CHANGELOG.md`** — under `## [Unreleased]`, add:
+
+```markdown
+### Added
+
+#### Phase K — .corpusignore
+
+- `corpus-forge estimate` now honors a gitignore-subset `.corpusignore`
+  file at the scan root (or `--ignore-file PATH`). New flags
+  `--ignore-file`, `--no-ignore-file`, `--no-global-ignore`. The MCP
+  `estimate_sync_size` tool gains `ignore_file` (string; empty disables)
+  and `disable_global_ignore` (bool) args.
+- New global ignore lookup at `~/.config/corpus-forge/ignore`
+  (mirrors git's `~/.config/git/ignore` convention). Override via the
+  `CF_GLOBAL_IGNORE_FILE` env var.
+- Hard-coded `_SKIP_DIR_NAMES` (`.git`, `node_modules`, ...) remain
+  absolute — `.corpusignore` negations cannot un-skip them.
+- `.corpusignore.example` ships at the repo root with sensible defaults
+  (Apple metadata, Photos libraries, large media, common backup dirs).
+- New module `corpus_forge/ignore.py` exposes `CorpusIgnore`,
+  `IgnoreStack`, `load_global_ignore`, `load_local_ignore` for callers
+  that want the same matcher (K2 will wire this into `FilesystemSource`
+  and `MarkdownVaultSource`).
+```
+
+**`CLAUDE.md` / `GEMINI.md` / `AGENTS.md`** — in each "First-run sanity" section, add one line after the `estimate ~/Notes` command:
+
+```bash
+corpus-forge estimate ~/Notes --ignore-file ~/.config/corpus-forge/ignore   # NEW in 0.1.0b3 — gitignore-style skip list
+```
+
+(or equivalent comment-suffixed line in the existing shell block; the
+coder picks the precise placement so the shell block still parses.)
+
+No tests for this task. Rot-detectors live in the smoke suite for tool
+counts only — `.corpusignore` is not a tool surface.
+
+## DAG
+
+- **Wave 0** (RED→GREEN, parallel): K1-01 + K1-02.
+  - K1-01 surface: `corpus_forge/ignore.py` + `tests/unit/test_corpusignore.py` (disjoint from K1-02).
+  - K1-02 surface: `.corpusignore.example` (pure content file; no tests).
+  - Fire one tester (K1-01); K1-02 has no test surface and goes straight to coder.
+  - Then fire one coder per task in parallel (K1-02 is a single-step "write the example file" job — dispatched to tdd-coder directly with empty test surface).
+- **Wave 1** (RED→GREEN): K1-03 alone — depends on `IgnoreStack` from K1-01.
+- **Wave 2** (RED→GREEN, parallel): K1-04 + K1-05.
+  - Disjoint surfaces (`cli.py` + `test_cli_estimate.py` vs `mcp/server.py` + `test_mcp_estimate.py`).
+  - Fire two testers in one message; fire two coders in one message.
+- **Wave 3**: K1-06 — pure docs. No tester; direct to coder.
+- **QA gate** at end of Wave 3: independent re-run of full `make ci` +
+  coverage delta check + regression sweep on adjacent surfaces
+  (`estimate.py` walker behaviour without `ignore` kwarg must be
+  unchanged; CLI default behaviour without flags must be unchanged).

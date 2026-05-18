@@ -151,3 +151,62 @@ def test_estimate_against_multi_format_fixture_tree() -> None:
     assert est.total_bytes > 0
     assert est.total_raw_bytes > 0
     assert est.schema_version == 1
+
+
+def test_estimate_honors_corpusignore_against_multi_format_fixture(tmp_path: Path) -> None:
+    """K1 integration: a real `.corpusignore` prunes the walker.
+
+    Builds a small heterogeneous tree mirroring slices the estimator
+    cares about (markdown, heic, a Backups dir, and the hard-coded
+    baseline tells `.git/` + `node_modules/` to be skipped regardless),
+    drops a `.corpusignore`, and asserts the predicted exclusions hold
+    while the negation also lands.
+    """
+    from corpus_forge.ignore import CorpusIgnore, IgnoreStack, load_local_ignore
+
+    config = _two_embedder_config()
+
+    # Tree shape
+    #   tmp_path/
+    #     notes.md           ← kept (no pattern)
+    #     vacation.heic      ← ignored (`*.heic` pattern)
+    #     Backups/big.bin    ← ignored (`Backups/` pattern)
+    #     .git/HEAD          ← baseline-skipped (cannot be un-ignored)
+    #     node_modules/foo.js  ← baseline-skipped
+    (tmp_path / "notes.md").write_text("# notes\nbody")
+    (tmp_path / "vacation.heic").write_bytes(b"fake heic bytes" * 100)
+    (tmp_path / "Backups").mkdir()
+    (tmp_path / "Backups" / "big.bin").write_bytes(b"\x00" * 4096)
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "foo.js").write_text("module.exports = {};")
+
+    # `.corpusignore` rules: Backups dir, all .heic; nothing un-ignored.
+    (tmp_path / ".corpusignore").write_text(
+        "\n".join(["Backups/", "*.heic", "!notes.md", ""]),
+        encoding="utf-8",
+    )
+
+    # No-ignore baseline first — sentinel for the wiring change.
+    baseline = estimate_sync(tmp_path, config)
+
+    # With `.corpusignore`:
+    local = load_local_ignore(tmp_path)
+    stack = IgnoreStack((CorpusIgnore.empty(tmp_path), local))
+    filtered = estimate_sync(tmp_path, config, ignore=stack)
+
+    # file_count drops by at least 2 (`vacation.heic` + `Backups/big.bin`).
+    # `notes.md` is in neither set (the `!notes.md` negation is a no-op
+    # because nothing was ignoring it). `.git/` and `node_modules/` are
+    # baseline-skipped in BOTH runs, so they don't contribute to the diff.
+    assert filtered.file_count <= baseline.file_count - 2
+    assert filtered.total_raw_bytes < baseline.total_raw_bytes
+
+    # Predicted-extractor classes after filtering: `markdown` only (heic +
+    # Backups bytes are gone, and the baseline skips .git/node_modules).
+    classes = {s.extractor_class for s in filtered.by_extractor if s.file_count > 0}
+    assert "markdown" in classes
+    assert "image" not in classes, "vacation.heic should have been pruned"
+    # The Backups/big.bin file is an unknown extractor; we just need its
+    # bytes excluded from total_raw_bytes (asserted above).

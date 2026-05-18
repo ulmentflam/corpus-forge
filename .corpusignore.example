@@ -1,0 +1,102 @@
+# corpus-forge .corpusignore — gitignore-style patterns.
+#
+# Drop a copy at the root of any tree you scan, or globally at
+#   ~/.config/corpus-forge/ignore
+# Patterns are matched relative to this file's directory using POSIX
+# separators (/) regardless of host platform.
+#
+# Syntax (gitignore subset):
+#   - One pattern per line. Blank lines and `# comments` are skipped.
+#   - Leading `/` anchors to this file's root.
+#   - Trailing `/` is directory-only.
+#   - `*` matches any chars except `/`. `**` matches any number of
+#     path components. `?` matches one char.
+#   - `!pattern` un-ignores an earlier match. Order matters — later wins.
+#   - `\#` / `\!` escape a literal `#` or `!` at line start.
+#
+# The hard-coded baseline (.git, node_modules, __pycache__, dist, build,
+# .venv, .pytest_cache, etc.) is ALWAYS skipped and cannot be un-ignored
+# via this file.
+
+
+# ── Apple / macOS metadata ──────────────────────────────────────────
+.DS_Store
+._*
+.Spotlight-V100/
+.Trashes/
+.TemporaryItems/
+.fseventsd/
+*.icloud
+
+
+# ── Photos / image libraries ────────────────────────────────────────
+*.photoslibrary/
+*.aplibrary/
+*.imovielibrary/
+*.musiclibrary/
+*.tvlibrary/
+
+
+# ── Heavy media — drop these lines if you wire a CLIP embedder or
+#    Whisper backend in config.toml.
+*.heic
+*.HEIC
+*.heif
+*.cr2
+*.nef
+*.dng
+*.raw
+*.tif
+*.tiff
+*.psd
+*.mov
+*.MOV
+*.mp4
+*.mkv
+*.avi
+*.webm
+*.mp3
+*.m4a
+*.wav
+*.flac
+*.ogg
+
+
+# ── Common backup directories (anchored: scan-root only) ────────────
+/Backups/
+/backups/
+/Time\ Machine\ Backups/
+
+
+# ── Archives ────────────────────────────────────────────────────────
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+*.dmg
+*.iso
+*.bz2
+*.xz
+
+
+# ── Lockfiles and very large data formats ───────────────────────────
+*.lock
+*.parquet
+*.arrow
+*.feather
+
+
+# ── Misc generated artefacts ────────────────────────────────────────
+target/
+out/
+.next/
+.nuxt/
+coverage/
+.coverage
+htmlcov/
+
+
+# ── Example: keep one important note out of an ignored sweep ────────
+# !Backups/important-notes-vault/

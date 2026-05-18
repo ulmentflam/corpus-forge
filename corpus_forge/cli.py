@@ -1797,6 +1797,30 @@ def estimate(
         "--verbose",
         help="Print per-file detail (reserved for future use).",
     ),
+    ignore_file: Path | None = typer.Option(
+        None,
+        "--ignore-file",
+        help=(
+            "Path to a .corpusignore file. Overrides auto-detection of "
+            "<path>/.corpusignore. Passing a non-existent path is an error."
+        ),
+    ),
+    no_ignore_file: bool = typer.Option(
+        False,
+        "--no-ignore-file",
+        help=(
+            "Disable the local .corpusignore lookup entirely. Mutually "
+            "exclusive with --ignore-file."
+        ),
+    ),
+    no_global_ignore: bool = typer.Option(
+        False,
+        "--no-global-ignore",
+        help=(
+            "Disable the user-global ignore file "
+            "(~/.config/corpus-forge/ignore or $CF_GLOBAL_IGNORE_FILE)."
+        ),
+    ),
 ) -> None:
     """Predict the Postgres storage footprint of syncing a folder.
 
@@ -1818,6 +1842,20 @@ def estimate(
 
     from corpus_forge.config import Config
     from corpus_forge.estimate import estimate_sync
+    from corpus_forge.ignore import (
+        CorpusIgnore,
+        IgnoreStack,
+        load_global_ignore,
+        load_local_ignore,
+    )
+
+    # Mutual-exclusivity guard.
+    if no_ignore_file and ignore_file is not None:
+        typer.echo(
+            "--ignore-file and --no-ignore-file are mutually exclusive.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
 
     try:
         config = Config.load()
@@ -1851,12 +1889,28 @@ def estimate(
                 )
         chosen_embedders = None  # signal "all active" to estimate_sync
 
+    # Build the ignore stack (local + global). Path resolution mirrors
+    # what estimate_sync does internally so the matcher's relative-path
+    # math agrees with the walker's.
+    resolved_root = Path(path).expanduser().resolve()
+    if no_ignore_file:
+        local_set = CorpusIgnore.empty(resolved_root)
+    else:
+        try:
+            local_set = load_local_ignore(resolved_root, override=ignore_file)
+        except FileNotFoundError as exc:
+            typer.echo(f"--ignore-file not found: {exc}", err=True)
+            raise typer.Exit(code=2) from None
+    global_set = CorpusIgnore.empty(Path.home()) if no_global_ignore else load_global_ignore()
+    ignore_stack = IgnoreStack((global_set, local_set))
+
     try:
         estimate_result = estimate_sync(
             path,
             config,
             embedders=chosen_embedders,
             compression_ratio=compression_ratio,
+            ignore=ignore_stack,
         )
     except (FileNotFoundError, NotADirectoryError) as exc:
         typer.echo(str(exc), err=True)

@@ -283,3 +283,145 @@ def test_estimate_verbose_flag_does_not_crash(tmp_path: Path) -> None:
         env={"CORPUS_FORGE_CONFIG": str(cfg_path)},
     )
     assert result.exit_code == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# K1 — .corpusignore flag coverage
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _count_files(out: str) -> int:
+    """Extract the file_count from the `--json` output."""
+    payload = _json.loads(out)
+    return int(payload["file_count"])
+
+
+def test_estimate_honors_ignore_file_flag(tmp_path: Path) -> None:
+    cfg_path = _build_test_config(tmp_path)
+    scan = _scan_dir(tmp_path)
+    # Drop a custom ignore file OUTSIDE the scan dir so auto-detect
+    # doesn't kick in. (`.corpusignore` at the scan root would be
+    # auto-detected; we want to prove the flag works on its own.)
+    ignore_path = tmp_path / "custom-ignore"
+    ignore_path.write_text("*.md\n", encoding="utf-8")
+    runner = CliRunner()
+
+    no_ignore = runner.invoke(
+        app,
+        ["estimate", str(scan), "--json", "--no-ignore-file", "--no-global-ignore"],
+        env={"CORPUS_FORGE_CONFIG": str(cfg_path)},
+    )
+    assert no_ignore.exit_code == 0
+    baseline = _count_files(no_ignore.output)
+
+    with_ignore = runner.invoke(
+        app,
+        [
+            "estimate",
+            str(scan),
+            "--json",
+            "--ignore-file",
+            str(ignore_path),
+            "--no-global-ignore",
+        ],
+        env={"CORPUS_FORGE_CONFIG": str(cfg_path)},
+    )
+    assert with_ignore.exit_code == 0
+    assert _count_files(with_ignore.output) < baseline
+
+
+def test_estimate_honors_no_ignore_file_flag(tmp_path: Path) -> None:
+    """`--no-ignore-file` must skip an auto-detected `.corpusignore`."""
+    cfg_path = _build_test_config(tmp_path)
+    scan = _scan_dir(tmp_path)
+    # Auto-detect file at the scan root — would normally be honored.
+    (scan / ".corpusignore").write_text("*.md\n", encoding="utf-8")
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        ["estimate", str(scan), "--json", "--no-ignore-file", "--no-global-ignore"],
+        env={"CORPUS_FORGE_CONFIG": str(cfg_path)},
+    )
+    assert result.exit_code == 0
+    # We don't know the exact count without running a sibling no-ignore
+    # baseline, but if `--no-ignore-file` is honored, `*.md` files are
+    # still counted. Probe by comparing to an auto-detect run.
+    counted_with_disable = _count_files(result.output)
+
+    auto = runner.invoke(
+        app,
+        ["estimate", str(scan), "--json", "--no-global-ignore"],
+        env={"CORPUS_FORGE_CONFIG": str(cfg_path)},
+    )
+    assert auto.exit_code == 0
+    counted_with_auto = _count_files(auto.output)
+    # When auto-detect is active and `*.md` is ignored, fewer files counted.
+    assert counted_with_disable > counted_with_auto
+
+
+def test_estimate_auto_detects_corpusignore_at_root(tmp_path: Path) -> None:
+    cfg_path = _build_test_config(tmp_path)
+    scan = _scan_dir(tmp_path)
+    # Pre-create the auto-detect file in the scan dir so the file set is
+    # identical in both invocations — the ONLY difference is whether the
+    # ignore is honored.
+    (scan / ".corpusignore").write_text("*.md\n", encoding="utf-8")
+    runner = CliRunner()
+
+    # Baseline: explicitly disable both ignore legs.
+    baseline = runner.invoke(
+        app,
+        ["estimate", str(scan), "--json", "--no-ignore-file", "--no-global-ignore"],
+        env={"CORPUS_FORGE_CONFIG": str(cfg_path)},
+    )
+    baseline_count = _count_files(baseline.output)
+
+    # Auto-detect: no flags, the `.corpusignore` at the scan root should
+    # kick in and prune the `.md` file.
+    auto = runner.invoke(
+        app,
+        ["estimate", str(scan), "--json", "--no-global-ignore"],
+        env={"CORPUS_FORGE_CONFIG": str(cfg_path)},
+    )
+    assert auto.exit_code == 0
+    assert _count_files(auto.output) < baseline_count
+
+
+def test_estimate_ignore_file_missing_path_errors(tmp_path: Path) -> None:
+    cfg_path = _build_test_config(tmp_path)
+    scan = _scan_dir(tmp_path)
+    missing = tmp_path / "no-such-file"
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["estimate", str(scan), "--ignore-file", str(missing)],
+        env={"CORPUS_FORGE_CONFIG": str(cfg_path)},
+    )
+    assert result.exit_code == 2
+    # The error path message should mention the missing file or be
+    # actionable for the user.
+    combined = (result.output or "") + (result.stderr or "")
+    assert "not found" in combined.lower() or "no such" in combined.lower()
+
+
+def test_estimate_ignore_file_and_no_ignore_file_mutex(tmp_path: Path) -> None:
+    cfg_path = _build_test_config(tmp_path)
+    scan = _scan_dir(tmp_path)
+    placeholder = tmp_path / "any.ignore"
+    placeholder.write_text("*.tmp\n", encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "estimate",
+            str(scan),
+            "--ignore-file",
+            str(placeholder),
+            "--no-ignore-file",
+        ],
+        env={"CORPUS_FORGE_CONFIG": str(cfg_path)},
+    )
+    assert result.exit_code == 2
+    combined = (result.output or "") + (result.stderr or "")
+    assert "mutually exclusive" in combined.lower()

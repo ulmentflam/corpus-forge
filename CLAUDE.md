@@ -120,7 +120,9 @@ There's also a research-librarian subagent at `.claude/agents/corpus-forge-resea
 
 ```bash
 corpus-forge doctor                              # checks Python, backend, embedders, model endpoints
-corpus-forge estimate ~/Notes                    # NEW in 0.1.0b2 — Postgres footprint estimate, no sync
+corpus-forge estimate ~/Notes                    # Postgres footprint estimate, no sync
+                                                 # Honors <root>/.corpusignore AND ~/.config/corpus-forge/ignore
+                                                 # (gitignore syntax; NEW in 0.1.0b3)
 corpus-forge ingest --once                       # one-shot sync of the configured roots
 corpus-forge embed -e qwen3_8b                   # backfill embeddings
 corpus-forge search "what does the daemon log on startup" --k 5

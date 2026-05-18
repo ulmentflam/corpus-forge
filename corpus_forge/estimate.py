@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from corpus_forge.config import Config
+    from corpus_forge.ignore import IgnoreStack
 
 logger = logging.getLogger(__name__)
 
@@ -360,8 +361,17 @@ class _ClassBucket:
     est_chunks: int = 0
 
 
-def _walk(root: Path) -> tuple[dict[str, _ClassBucket], int, int, int]:
+def _walk(
+    root: Path,
+    *,
+    ignore: IgnoreStack | None = None,
+) -> tuple[dict[str, _ClassBucket], int, int, int]:
     """Walk ``root`` and bucket every file into an extractor class.
+
+    The hard-coded ``_SKIP_DIR_NAMES`` / ``_SKIP_FILE_NAMES`` baseline
+    applies first; the optional ``ignore`` stack is consulted *after*
+    the baseline so a ``!`` negation in any ``.corpusignore`` cannot
+    un-skip a baseline entry.
 
     Returns ``(buckets_by_class, file_count, dir_count, total_raw_bytes)``.
     """
@@ -389,12 +399,16 @@ def _walk(root: Path) -> tuple[dict[str, _ClassBucket], int, int, int]:
                 if entry.is_dir():
                     if _should_skip_dir(name):
                         continue
+                    if ignore is not None and ignore.matches(entry, is_dir=True):
+                        continue
                     dir_count += 1
                     stack.append(entry)
                     continue
                 if not entry.is_file():
                     continue
                 if _should_skip_file(name):
+                    continue
+                if ignore is not None and ignore.matches(entry, is_dir=False):
                     continue
             except OSError as exc:
                 logger.debug("estimator: stat failed on %s: %s", entry, exc)
@@ -439,6 +453,7 @@ def estimate_sync(
     *,
     embedders: list[str] | None = None,
     compression_ratio: float | None = None,
+    ignore: IgnoreStack | None = None,
 ) -> SyncEstimate:
     """Estimate the Postgres storage footprint of syncing ``path``.
 
@@ -499,7 +514,7 @@ def estimate_sync(
         by_name = {e.name: e for e in config.embedders}
         chosen = [by_name[name] for name in wanted]
 
-    buckets, file_count, dir_count, total_raw_bytes = _walk(root)
+    buckets, file_count, dir_count, total_raw_bytes = _walk(root, ignore=ignore)
 
     # Stable ordering for the per-class roll-up — match the heuristic
     # table order so tests + CLI tables are deterministic.

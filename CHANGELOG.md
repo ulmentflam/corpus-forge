@@ -8,6 +8,40 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Added
+
+#### Phase K — .corpusignore
+
+- `corpus-forge estimate` now honors a gitignore-subset `.corpusignore`
+  file at the scan root (auto-detect) or at a path passed via the new
+  `--ignore-file PATH`. New CLI flags: `--ignore-file`, `--no-ignore-file`
+  (disable local), `--no-global-ignore` (disable global). `--ignore-file`
+  and `--no-ignore-file` are mutually exclusive.
+- The MCP `estimate_sync_size` tool gains `ignore_file` (string; empty
+  string disables local; absent → auto-detect) and `disable_global_ignore`
+  (boolean) args. Same semantics as the CLI flags.
+- Global ignore file at `~/.config/corpus-forge/ignore` (mirrors
+  git's `~/.config/git/ignore` convention). Overridable via the
+  `CF_GLOBAL_IGNORE_FILE` env var; empty-string value disables the
+  global lookup.
+- Hard-coded `_SKIP_DIR_NAMES` (`.git`, `node_modules`, `__pycache__`,
+  `.venv`, …) remain absolute — `.corpusignore` negations cannot un-skip
+  a baseline entry.
+- `.corpusignore.example` ships at the repo root with sensible
+  defaults (Apple metadata, Photos libraries, large media, common
+  backup dirs).
+- New module `corpus_forge/ignore.py` exposes `CorpusIgnore`,
+  `IgnoreStack`, `load_global_ignore`, `load_local_ignore` for callers
+  that want the same matcher (K2 will wire this into `FilesystemSource`
+  and `MarkdownVaultSource` so estimate and ingest agree).
+
+### Changed
+
+- README "Install" section moved above "Quickstart" so users land on
+  install before being asked to run shell commands. No content edits to
+  either section — just an order swap and a "drop a `.corpusignore`"
+  one-liner inserted into the Quickstart numbered list.
+
 ## [0.1.0b2] - 2026-05-17
 
 ### Added
