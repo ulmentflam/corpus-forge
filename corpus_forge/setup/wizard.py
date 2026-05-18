@@ -22,9 +22,12 @@ Test scope:
 
 from __future__ import annotations
 
+import json as _json
 import os
 import sys
 import tomllib
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
@@ -435,4 +438,330 @@ def run_non_interactive(
         env=env or dict(os.environ),
     )
     config_path, secrets_path = _write_config(config_dir or DEFAULT_CONFIG_DIR, answers)
+    return config_path, secrets_path, answers
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Quick wizard (Phase L Wave 3)
+# ───────────────────────────────────────────────────────────────────────────
+
+
+# Six-question subset. ``depends_on`` is honored so the postgres DSN
+# prompt is skipped when backend=sqlite. The ``ollama_url`` answer
+# drives the model probe; the probed pick becomes the default for
+# ``embedder_model_id`` unless the user (or env var) overrides it.
+QUICK_QUESTIONS: list[Question] = [
+    Question(
+        id="backend",
+        prompt="Storage backend",
+        type="choice",
+        choices=["sqlite", "postgres"],
+        default="sqlite",
+        env="CF_BACKEND",
+    ),
+    Question(
+        id="backend_dsn",
+        prompt="PostgreSQL DSN (e.g. postgresql://user:pass@localhost:5432/corpus_forge)",
+        type="text",
+        default="postgresql://localhost:5432/corpus_forge",
+        env="CF_BACKEND_DSN",
+        depends_on="backend=postgres",
+    ),
+    Question(
+        id="ollama_url",
+        prompt="Ollama base URL",
+        type="text",
+        default="http://localhost:11434",
+        env="CF_OLLAMA_URL",
+    ),
+    Question(
+        id="embedder_model_id",
+        prompt="Embedder model",
+        type="text",
+        default="qwen3:8b",
+        env="CF_EMBEDDER_MODEL_ID",
+    ),
+    Question(
+        id="dataset_name",
+        prompt="First dataset name",
+        type="text",
+        default="default",
+        env="CF_DATASET_NAME",
+    ),
+    Question(
+        id="scan_root",
+        prompt="Scan root directory (leave blank to add later)",
+        type="text",
+        default="",
+        env="CF_SCAN_ROOT",
+    ),
+]
+
+
+# Tokens that mark a model as embedding-capable on Ollama.
+_EMBED_TOKENS = ("embed", "bge", "qwen", "nomic")
+
+
+def _urlopen_compat(req: urllib.request.Request, *, timeout: float):
+    """Thin wrapper so tests can patch a single named symbol.
+
+    Calls ``urllib.request.urlopen`` with the given request + timeout.
+    Existing test patterns (`corpus_forge.update.version_check`) patch
+    `urllib.request.urlopen` directly; the wizard adds one layer of
+    indirection so the test surface is stable across Python versions.
+    """
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _probe_ollama(base_url: str, *, timeout_s: float = 1.0) -> str | None:
+    """Best-effort GET ``<base_url>/api/tags`` → first embed-capable model.
+
+    Returns the chosen model's ``name`` field, or ``None`` on any
+    failure (network error, malformed JSON, empty list). Fire-and-
+    forget; the wizard treats ``None`` as "no probe signal" and falls
+    back to whatever default the caller already had.
+    """
+    url = base_url.rstrip("/") + "/api/tags"
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with _urlopen_compat(req, timeout=timeout_s) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+    except (TimeoutError, urllib.error.URLError, OSError, ValueError):
+        return None
+
+    models = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(models, list) or not models:
+        return None
+
+    names: list[str] = []
+    for entry in models:
+        if isinstance(entry, dict):
+            name = entry.get("name")
+            if isinstance(name, str) and name:
+                names.append(name)
+    if not names:
+        return None
+
+    # Prefer first embed-capable model; otherwise None (caller keeps
+    # whatever default they had).
+    for name in names:
+        lowered = name.lower()
+        if any(tok in lowered for tok in _EMBED_TOKENS):
+            return name
+    return None
+
+
+def _read_quick_answer_interactive(
+    q: Question,
+    *,
+    stream_in: IO[str],
+    stream_out: IO[str],
+    default_override: str | None = None,
+) -> str:
+    """Quick-path prompt: tighter formatting than the full wizard.
+
+    Honors ``default_override`` (used by the Ollama-probe default-pick
+    flow). Identical stream-injection contract as
+    :func:`_read_answer_interactive` so existing test patterns still
+    work.
+    """
+    hint = ""
+    if q.type == "choice":
+        hint = f" [{'/'.join(q.choices)}]"
+    default = default_override if default_override is not None else q.default
+    stream_out.write(f"{q.prompt}{hint} (default: {default}) ")
+    stream_out.flush()
+    raw = stream_in.readline().rstrip("\n").rstrip("\r")
+    answer = raw or default
+    if q.type == "choice" and answer not in q.choices:
+        # Mirror the full wizard's behavior: re-prompt once, but for
+        # the quick path we simply accept the default to avoid loops
+        # on stream-driven tests.
+        return default
+    return answer
+
+
+def _render_quick_config_toml(answers: dict[str, str], db_path: Path) -> str:
+    """Render the minimal config produced by the quick wizard.
+
+    The Ollama URL maps to ``provider = "openai"`` + ``base_url =
+    "<ollama_url>/v1"`` because ``EmbedderConfig.provider`` is
+    constrained to ``sentence_transformers|openai`` and Ollama exposes
+    an OpenAI-compatible endpoint under ``/v1``.
+
+    ``dimension`` defaults to 1024 — a defensible middle-ground for
+    the common Ollama embedding models (bge-m3=1024,
+    nomic-embed-text=768, qwen3-embed=4096). Wave 5's embedder-
+    fingerprint detection will surface a drift warning if the live
+    model returns a different dim, so a fixed value here is fine for
+    the quick path.
+    """
+    backend = answers.get("backend", "sqlite")
+    ollama_url = answers.get("ollama_url", "http://localhost:11434").rstrip("/")
+    base_url = f"{ollama_url}/v1"
+    model_id = answers.get("embedder_model_id", "qwen3:8b") or "qwen3:8b"
+    dataset_name = answers.get("dataset_name", "default") or "default"
+    scan_root = (answers.get("scan_root") or "").strip()
+
+    out: list[str] = []
+    out.append("# Generated by `corpus-forge setup --quick`. Edit freely.")
+    out.append("")
+
+    # Top-level keys MUST appear before any `[section]` header — TOML
+    # binds bare keys to the most-recent table. We emit `datasets = []`
+    # at the top when the user skipped the scan root so it stays at
+    # root scope.
+    if not scan_root:
+        # `Config.datasets` is a required `list[DatasetConfig]`; the
+        # empty list is valid (no per-dataset validators fire).
+        out.append("datasets = []")
+        out.append("")
+
+    # ── [backend] ──────────────────────────────────────────────────────
+    out.append("[backend]")
+    if backend == "sqlite":
+        out.append('kind = "sqlite"')
+        out.append(f"dsn  = {_quote_toml_str(db_path.as_posix())}")
+    else:
+        out.append('kind = "postgres"')
+        dsn = answers.get("backend_dsn", "postgresql://localhost:5432/corpus_forge")
+        out.append(f"dsn  = {_quote_toml_str(dsn)}")
+    out.append("")
+    out.append("[daemon]")
+    out.append("")
+
+    # ── [[datasets]] ───────────────────────────────────────────────────
+    # When the user gave a scan root, emit a single filesystem source.
+    if scan_root:
+        out.append("[[datasets]]")
+        out.append(f"name = {_quote_toml_str(dataset_name)}")
+        out.append('kind = "text"')
+        out.append(
+            'sources = [{plugin = "filesystem", '
+            f"root = {_quote_toml_str(scan_root)}, "
+            'chunker = "markdown"}]'
+        )
+        out.append("")
+
+    # ── [[embedders]] ──────────────────────────────────────────────────
+    # Embedder name: derive from the model_id (lowercased, non-alpha
+    # collapsed to underscores) so two quick configs with different
+    # models don't both name themselves "default".
+    name = "".join(c if c.isalnum() else "_" for c in model_id.lower()).strip("_")
+    name = name or "default_embedder"
+    out.append("[[embedders]]")
+    out.append(f"name      = {_quote_toml_str(name)}")
+    out.append('provider  = "openai"')
+    out.append(f"model_id  = {_quote_toml_str(model_id)}")
+    out.append("dimension = 1024")
+    out.append("normalize = true")
+    out.append('distance  = "cosine"')
+    out.append("active    = true")
+    out.append('api_key_env = "OLLAMA_API_KEY"')
+    out.append(f"base_url = {_quote_toml_str(base_url)}")
+    out.append("")
+
+    return "\n".join(out) + "\n"
+
+
+def _collect_quick_answers(
+    *,
+    interactive: bool,
+    env: dict[str, str],
+    stream_in: IO[str] | None = None,
+    stream_out: IO[str] | None = None,
+) -> dict[str, str]:
+    """Walk QUICK_QUESTIONS once with the Ollama probe wired in."""
+    answers: dict[str, str] = {}
+    in_stream = stream_in or sys.stdin
+    out_stream = stream_out or sys.stdout
+    probed_model: str | None = None
+    probed_for_url: str | None = None
+
+    for q in QUICK_QUESTIONS:
+        if not q.is_relevant(answers):
+            continue
+
+        # Probe Ollama right after the URL is settled — the probed
+        # model becomes the embedder default below.
+        if q.id == "embedder_model_id" and probed_for_url is None:
+            ollama_url = answers.get("ollama_url", q.default)
+            probed_model = _probe_ollama(ollama_url)
+            probed_for_url = ollama_url
+
+        if interactive:
+            override = probed_model if (q.id == "embedder_model_id" and probed_model) else None
+            answers[q.id] = _read_quick_answer_interactive(
+                q,
+                stream_in=in_stream,
+                stream_out=out_stream,
+                default_override=override,
+            )
+        else:
+            raw = env.get(q.env, "")
+            if not raw:
+                if q.id == "embedder_model_id" and probed_model:
+                    answers[q.id] = probed_model
+                else:
+                    answers[q.id] = q.default
+            elif q.type == "choice" and raw not in q.choices:
+                answers[q.id] = q.default
+            else:
+                answers[q.id] = raw
+
+    return answers
+
+
+def _write_quick_config(
+    config_dir: Path,
+    answers: dict[str, str],
+) -> tuple[Path, Path]:
+    """Write the quick wizard's config.toml + secrets.env stub."""
+    config_dir.mkdir(parents=True, exist_ok=True)
+    db_path = (config_dir / "corpus.db").resolve()
+    config_path = config_dir / "config.toml"
+    secrets_path = config_dir / "secrets.env"
+
+    config_path.write_text(_render_quick_config_toml(answers, db_path), encoding="utf-8")
+    if not secrets_path.exists():
+        # The quick path uses the Ollama OpenAI shim — the api_key_env
+        # is `OLLAMA_API_KEY` which is harmless if unset against a
+        # local Ollama.
+        secrets_path.write_text(
+            "# Generated by `corpus-forge setup --quick`. Fill in real values; do NOT commit.\n"
+            "# OLLAMA_API_KEY=...\n",
+            encoding="utf-8",
+        )
+    return config_path, secrets_path
+
+
+def run_quick(
+    *,
+    config_dir: Path | None = None,
+    env: dict[str, str] | None = None,
+    interactive: bool = True,
+    stream_in: IO[str] | None = None,
+    stream_out: IO[str] | None = None,
+) -> tuple[Path, Path, dict[str, str]]:
+    """Quick wizard — 6 questions + Ollama probe.
+
+    Args:
+        config_dir: Output directory; defaults to ``~/.config/corpus-forge``.
+        env: Env-var lookup (non-interactive path); defaults to ``os.environ``.
+        interactive: When True, prompts via ``stream_in``/``stream_out``.
+            When False, reads answers from ``env`` and falls back to
+            question defaults.
+        stream_in/stream_out: Stream injection for interactive testing.
+
+    Returns:
+        ``(config_path, secrets_path, answers)`` — same shape as the
+        full wizard.
+    """
+    answers = _collect_quick_answers(
+        interactive=interactive,
+        env=env or dict(os.environ),
+        stream_in=stream_in,
+        stream_out=stream_out,
+    )
+    config_path, secrets_path = _write_quick_config(config_dir or DEFAULT_CONFIG_DIR, answers)
     return config_path, secrets_path, answers

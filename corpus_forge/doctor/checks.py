@@ -8,6 +8,7 @@ import sys
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -69,6 +70,36 @@ class DoctorReport:
         lines.append("")
         lines.append("Healthy" if self.healthy else "Issues detected — see above.")
         return "\n".join(lines)
+
+    def _summary(self) -> str:
+        """Aggregate status: ``"fail"`` > ``"warn"`` > ``"ok"``.
+
+        SKIP and OK both count as ``"ok"`` for the purpose of the
+        summary — they're explicit "this check did not block".
+        """
+        statuses = {r.status for r in self.results}
+        if CheckStatus.FAIL in statuses:
+            return "fail"
+        if CheckStatus.WARN in statuses:
+            return "warn"
+        return "ok"
+
+    def to_json(self) -> dict[str, object]:
+        """Serialize the report as a JSON-friendly dict.
+
+        Wave 3 shape, intended to be the same payload ``bug-report``
+        (Wave 6) snapshots. Status values stay UPPERCASE (matching the
+        ``CheckStatus`` enum literals) so downstream consumers can
+        switch on the same strings the human render shows.
+        """
+        return {
+            "checks": [
+                {"name": r.name, "status": r.status.value, "detail": r.detail} for r in self.results
+            ],
+            "summary": self._summary(),
+            "version": __version__,
+            "ts": datetime.now(UTC).isoformat(timespec="milliseconds"),
+        }
 
     def render_styled(self, console: Console) -> None:
         """Print the report to ``console`` with semantic Rich styling.

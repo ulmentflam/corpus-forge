@@ -22,6 +22,7 @@ from .wizard import (
     load_questions,
     render_config_toml,
     run_non_interactive,
+    run_quick,
     run_wizard,
 )
 
@@ -30,5 +31,6 @@ __all__ = [
     "load_questions",
     "render_config_toml",
     "run_non_interactive",
+    "run_quick",
     "run_wizard",
 ]

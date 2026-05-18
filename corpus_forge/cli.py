@@ -248,6 +248,12 @@ def setup(
         "--non-interactive",
         help="Read answers from CF_* env vars instead of prompting. Use for CI.",
     ),
+    quick: bool = typer.Option(
+        False,
+        "--quick",
+        envvar="CF_QUICK",
+        help="Run the abbreviated 6-question setup with safe defaults.",
+    ),
     config_dir: Path = typer.Option(
         Path.home() / ".config" / "corpus-forge",
         "--config-dir",
@@ -261,28 +267,64 @@ def setup(
     where possible, and renders ``config.toml`` + ``secrets.env`` under
     ``--config-dir`` (defaults to ``~/.config/corpus-forge/``).
 
+    ``--quick`` runs an abbreviated 6-question subset (backend, optional
+    Postgres DSN, Ollama URL, embedder model, dataset name, scan root)
+    with a one-shot probe of Ollama's ``/api/tags`` to auto-suggest an
+    embedder model. Useful for first-run setups; the full wizard
+    remains the supported path for tuning OCR / Whisper / classifier
+    chains.
+
     Re-running the wizard overwrites ``config.toml`` — back up local edits
     first. ``secrets.env`` is preserved if it already exists.
     """
-    from .setup import run_non_interactive, run_wizard
+    from .setup import run_non_interactive, run_quick, run_wizard
+
+    # Banner: show in every interactive entry (full or quick). The
+    # `--non-interactive` path stays silent — it's the machine-driven
+    # surface and the banner would just pollute CI logs.
+    if not non_interactive:
+        from .ui import render_banner
+
+        render_banner("corpus-forge", subtitle="Chat with your data.")
 
     # Use ASCII glyphs for status markers. Windows consoles default to
     # cp1252 / cp437 and choke on ✓ / ⚠ / ✗ at write time. The shell
     # installers use the fancy glyphs (their output goes to a POSIX
     # terminal); the Python CLI stays cross-platform safe.
     if non_interactive:
-        config_path, secrets_path, answers = run_non_interactive(config_dir=config_dir)
-        ui_ok(f"Wrote {config_path} (non-interactive)")
+        if quick:
+            config_path, secrets_path, answers = run_quick(
+                config_dir=config_dir,
+                interactive=False,
+            )
+            ui_ok(f"Wrote {config_path} (--quick, non-interactive)")
+        else:
+            config_path, secrets_path, answers = run_non_interactive(config_dir=config_dir)
+            ui_ok(f"Wrote {config_path} (non-interactive)")
+    elif quick:
+        config_path, secrets_path, answers = run_quick(
+            config_dir=config_dir,
+            interactive=True,
+        )
+        ui_ok(f"Wrote {config_path} (--quick)")
     else:
         config_path, secrets_path, answers = run_wizard(config_dir=config_dir)
         ui_ok(f"Wrote {config_path}")
 
     if secrets_path.exists() and secrets_path.stat().st_size > 0:
         ui_ok(f"Secrets template at {secrets_path} — fill in real values before first use.")
+
     # Echo a short selection summary so the user can sanity-check.
     backend = answers.get("backend", "sqlite")
-    embedder = answers.get("embedder", "st")
-    ui_info(f"backend={backend!r}  embedder={embedder!r}")
+    embedder_summary = answers.get("embedder_model_id") or answers.get("embedder", "st")
+    ui_info(f"backend={backend!r}  embedder={embedder_summary!r}")
+
+    # Quick path: nudge the user if they skipped the scan root.
+    if quick and not (answers.get("scan_root") or "").strip():
+        ui_info(
+            "No source root configured — add one later by editing "
+            f"{config_path} (set datasets[0].sources)."
+        )
 
 
 @app.command()
@@ -344,16 +386,49 @@ def update(
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit a single JSON document (suppresses banner + human render).",
+    ),
+) -> None:
     """Run a post-install health check (Python, config, system deps).
 
-    Exit code 0 iff every check passes (``OK`` or ``SKIP``). Issues are
-    printed to stdout for inspection. Read-only — never writes config,
-    never changes state.
+    Default (human) render shows the corpus-forge banner + a colored
+    status table on stderr. Exit code 0 iff every check passes
+    (``OK`` or ``SKIP``).
+
+    With ``--json``, the banner + human render are suppressed and a
+    single JSON document is printed on stdout. Exit code maps from the
+    aggregate summary:
+
+    - ``"ok"``   → 0
+    - ``"warn"`` → 2
+    - ``"fail"`` → 1
+
+    Read-only — never writes config, never changes state.
     """
     from .doctor import run_doctor
 
     report = run_doctor()
+
+    if json_output:
+        # Data line on stdout, no banner, no styled render. Use bare
+        # print() — the same idiom every other JSON-emitting command
+        # uses (see classify --json, rechunk --json, etc.).
+        import json as _json
+
+        print(_json.dumps(report.to_json(), default=str))
+        summary = report._summary()
+        if summary == "ok":
+            return
+        raise typer.Exit(code=1 if summary == "fail" else 2)
+
+    # Human mode: banner + styled render.
+    from .ui import render_banner
+
+    render_banner("corpus-forge", subtitle="Chat with your data.")
     report.render_styled(ui_console)
     if not report.healthy:
         raise typer.Exit(code=1)
