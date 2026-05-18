@@ -143,10 +143,10 @@ Dispatch input: orchestrator brief, Phase L / Wave 4 kickoff after Wave 3 landed
 
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
-| W4-01 | Estimate scan stats + pending files | W4-02 (coder) | `corpus_forge/estimate.py`, `corpus_forge/cli.py` (estimate command), `corpus_forge/backends/postgres.py` (+pending_documents), `corpus_forge/backends/sqlite.py` (+pending_documents), `tests/test_estimate.py` (extend), `tests/cli/test_estimate_progress.py` (new) | med | pending | — | New `ScanStats` dataclass; wrap `_walk` in `time.perf_counter()` + `make_progress` unbounded with logger; CLI renders new `rich.table.Table` for Scan stats + Pending files. `--json` mode preserves existing `SyncEstimate` shape; adds new sibling key `"scan"` under the JSON document. |
-| W4-02 | Embed progress + count helper + loader INFO | — | `corpus_forge/embed.py`, `corpus_forge/embedders/sentence_transformers.py`, `corpus_forge/backends/postgres.py` (+count_chunks_missing_embedding), `corpus_forge/backends/sqlite.py` (+count_chunks_missing_embedding), `tests/cli/test_embed_progress.py` (new) | med | pending | — | Wrap `backfill_embedder` main loop in `make_progress("Embedding chunks", total=n, logger=logger)`. Add count helper to both backends. Add INFO at load start/finish in `_load_model`. Demote per-batch INFO to DEBUG. |
-| W4-03 | Ingest --once progress + logger taxonomy | — | `corpus_forge/ingest.py`, `tests/cli/test_ingest_progress.py` (new) | med | pending | — | Wrap the `for raw in raw_items:` loop in `make_progress("Ingest", total=None, logger=...)` (unbounded; sources don't pre-count). Add INFO bookends "Scanning <source>" + "Scan complete" via `corpus_forge.ingest.scan` logger. Audit + add the taxonomy loggers listed in the brief. |
-| W4-04 | Sync pull/push progress + logger bookends | — | `corpus_forge/sync/pull.py`, `corpus_forge/sync/push.py`, `corpus_forge/cli.py` (sync pull / sync push command bodies), `tests/cli/test_sync_progress.py` (new) | low | pending | — | Pull `--once` wraps the `for rev in pending` loop in `make_progress("Pulling revisions", total=len(pending), logger=...)`. Push start logs INFO bookend; per-change handler stays log-only (no bar). Add module-level logger to `push.py`. |
+| W4-01 | Estimate scan stats + pending files | W4-02 (coder) | `corpus_forge/estimate.py`, `corpus_forge/cli.py` (estimate command), `corpus_forge/backends/postgres.py` (+pending_documents), `corpus_forge/backends/sqlite.py` (+pending_documents), `tests/test_estimate.py` (extend), `tests/cli/test_estimate_progress.py` (new) | med | done | tdd-principal | `ScanStats` dataclass + `walk_with_stats` + `get_last_scan_stats`. Walk wrapped in `make_progress`. CLI renders "Scan stats" + "Pending files" tables. `--json` adds additive `"scan"` + `"pending"` sibling keys; SyncEstimate shape unchanged. |
+| W4-02 | Embed progress + count helper + loader INFO | — | `corpus_forge/embed.py`, `corpus_forge/embedders/sentence_transformers.py`, `corpus_forge/backends/postgres.py` (+count_chunks_missing_embedding), `corpus_forge/backends/sqlite.py` (+count_chunks_missing_embedding), `tests/cli/test_embed_progress.py` (new) | med | done | tdd-principal | `count_chunks_missing_embedding` added on both backends. `backfill_embedder` wraps loop in `make_progress`. Loader logger added to `_load_model`. Per-batch INFO demoted to DEBUG. |
+| W4-03 | Ingest --once progress + logger taxonomy | — | `corpus_forge/ingest.py`, `tests/cli/test_ingest_progress.py` (new) | med | done | tdd-principal | `corpus_forge.ingest.{scan,extract,chunk}` taxonomy loggers added at module top. Per-source loop wrapped in `make_progress` (unbounded, scan_logger). Extract failures land on extract logger at INFO. Chunk milestones at every 100 docs. |
+| W4-04 | Sync pull/push progress + logger bookends | — | `corpus_forge/sync/pull.py`, `corpus_forge/sync/push.py`, `corpus_forge/cli.py` (sync pull / sync push command bodies), `tests/cli/test_sync_progress.py` (new) | low | done | tdd-principal | Pull `tick()` wraps the apply loop in `make_progress(total=len(pending))`; empty pending early-exits before the wrapper so no bookend noise on idle ticks. Push module gets module-level logger + start/stop bookends. |
 
 ## Acceptance details
 
@@ -574,3 +574,96 @@ implementation — match that pattern). For unknown embedder_id, return 0.
 - **Wave A** (5 parallel): testers W4-01, W4-02, W4-03, W4-04; coder W4-02; coder W4-03; coder W4-04.
 - **Wave B** (1 sequential): coder W4-01 (after W4-02 lands `count_chunks_missing_embedding`).
 - **Wave C** (4 parallel): QA W4-01, W4-02, W4-03, W4-04.
+
+## Summary
+
+**Files changed (production):**
+- `corpus_forge/estimate.py` — new `ScanStats` dataclass; new
+  `walk_with_stats` + `get_last_scan_stats` public helpers; `_walk` now
+  returns a 5-tuple with `ScanStats`, wrapped in `make_progress`
+  (unbounded) under the `corpus_forge.estimate.scan` logger.
+- `corpus_forge/cli.py` — `estimate` command grows "Scan stats" +
+  "Pending files" tables; `--json` mode adds additive `"scan"` +
+  `"pending"` sibling keys (SyncEstimate shape unchanged). New
+  helpers `_estimate_pending_files`, `_render_scan_stats_table`,
+  `_render_pending_files_table`.
+- `corpus_forge/embed.py` — `backfill_embedder` + `backfill_image_embedder`
+  loops wrapped in `make_progress`; per-batch INFO chatter demoted
+  to DEBUG; backend coercion guards against MagicMock surfaces in
+  tests.
+- `corpus_forge/embedders/sentence_transformers.py` — new module-level
+  `corpus_forge.embedders.loader` logger; `_load_model` logs
+  "Loading embedder …" + "Embedder … ready in Xs".
+- `corpus_forge/ingest.py` — new taxonomy loggers
+  (`corpus_forge.ingest.{scan,extract,chunk}`); per-source loop
+  wrapped in `make_progress`; extract failures land on extract logger;
+  chunk milestones every 100 docs.
+- `corpus_forge/backends/postgres.py` — new
+  `count_chunks_missing_embedding` + `pending_documents` methods.
+- `corpus_forge/backends/sqlite.py` — mirrors the same two methods.
+- `corpus_forge/sync/pull.py` — `PullPipeline.tick()` wraps the apply
+  loop in `make_progress(total=len(pending))`; empty-pending early-exit
+  keeps idle ticks quiet.
+- `corpus_forge/sync/push.py` — adds module-level
+  `corpus_forge.sync.push` logger; `start()` + `stop()` emit
+  INFO bookends.
+
+**Files added (tests):**
+- `tests/cli/test_estimate_progress.py` (6 tests)
+- `tests/cli/test_embed_progress.py` (5 tests)
+- `tests/cli/test_ingest_progress.py` (3 tests)
+- `tests/cli/test_sync_progress.py` (4 tests)
+
+**Files updated (tests):**
+- `tests/unit/test_cli_estimate.py` — 9 sites flipped from
+  `result.output` to `result.stdout` (Click 8.2+ merges stdout+stderr
+  into `output`; the new progress INFO bookends on stderr broke the
+  pre-existing JSON-parse assertions). No new tests added.
+
+**Gates:**
+- New tests: 18/18 green (`test_estimate_progress.py` 6 +
+  `test_embed_progress.py` 5 + `test_ingest_progress.py` 3 +
+  `test_sync_progress.py` 4).
+- Existing `tests/unit/test_estimate.py`: 55/55 green (no API breakage).
+- Existing `tests/unit/test_cli_estimate.py`: 18/18 green (after
+  `result.output` → `result.stdout` flip).
+- Existing `tests/unit/test_embed_sqlite_wiring.py`: 15/15 green.
+- `tests/cli/test_no_typer_echo.py`: green (no new Typer echo sites).
+- Full unit+cli regression: **164 failed / 3376 passed** —
+  baseline pre-Wave-4 was **181 failed**, so **17 fewer failures**
+  with **zero new failures or errors** introduced.
+- `uv run ruff check` clean on all 14 touched files.
+- `uv run ruff format --check` clean on all 14 touched files.
+
+**Live smokes:**
+- `python -m corpus_forge estimate /tmp/cf-smoke` renders the new
+  "Scan stats" block (Elapsed / Rate / Files seen / Dirs visited)
+  and shows "Pending files" with documents-not-chunked + sample paths
+  when the sqlite backend has pending docs.
+- `python -m corpus_forge estimate /tmp/cf-smoke --json` emits a JSON
+  document with additive `"scan"` + `"pending"` sibling keys while
+  preserving the existing SyncEstimate top-level fields
+  (`schema_version`, `file_count`, `total_raw_bytes`, ...).
+
+## Notes for Wave 5+
+
+- The CLI `--json` payload now wraps the bare `asdict(SyncEstimate)` in
+  an additive shape. The MCP `estimate_sync_size` tool still consumes
+  `asdict(SyncEstimate)` directly via `corpus_forge.estimate` — that
+  call path is untouched. Any future agent-mode JSON contract (Wave 9)
+  should align with the CLI's wrapped shape, not the bare dataclass.
+- `get_last_scan_stats` is a module-level cache populated by `_walk`.
+  Multi-threaded callers should NOT rely on it; CLI is single-threaded.
+- `_estimate_pending_files` uses `backend._execute` directly to look up
+  the embedder id by name because `find_embedder_id_by_name` doesn't
+  exist on either backend yet. Wave 5+ can promote the lookup to a
+  proper protocol method if it sees broader use.
+- `backfill_image_embedder` runs progress unbounded because
+  `count_image_chunks_missing_embedding` doesn't exist on the backends.
+  Wave 5+ can backfill that companion.
+
+## QA verdict — Wave 4
+
+| task-id | verdict | notes |
+|---------|---------|-------|
+| W4-01..W4-04 | approved | 18/18 new tests green. 91/91 across touched test files. Regression delta: -17 failures (181 → 164), 0 new errors, 0 new failures. Ruff check + format clean on all 14 touched files. `tests/cli/test_no_typer_echo.py` static regression green. Live smokes confirmed: `corpus-forge estimate /tmp/cf-smoke` renders Scan stats + Pending files tables; `--json` mode emits additive `"scan"` + `"pending"` sibling keys. SyncEstimate wire shape unchanged (MCP `estimate_sync_size` consumer path untouched). |
