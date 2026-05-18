@@ -151,8 +151,7 @@ def make_progress(
                     done = 0
                 rate = (done / elapsed) if elapsed > 0 else 0.0
                 logger.info(
-                    f"{description} complete: {done} items in {elapsed:.1f}s "
-                    f"(rate {rate:.0f}/s)"
+                    f"{description} complete: {done} items in {elapsed:.1f}s (rate {rate:.0f}/s)"
                 )
         return
 

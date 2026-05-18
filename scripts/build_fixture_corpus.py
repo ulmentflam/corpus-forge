@@ -33,16 +33,15 @@ from __future__ import annotations
 
 import io
 import os
-import shutil
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # ── Deterministic clock ─────────────────────────────────────────────────────
 # Anything that writes a timestamp into a file we control routes through
 # this constant. Pinned to 2000-01-01 00:00:00 UTC so the repo doesn't
 # accumulate epoch-2026 timestamps that confuse archaeological greps.
-_EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc)
+_EPOCH = datetime(2000, 1, 1, tzinfo=UTC)
 _EPOCH_TUPLE = (2000, 1, 1, 0, 0, 0)
 
 # Force zip-tool writers to use _EPOCH_TUPLE rather than time.time() so the
@@ -392,7 +391,6 @@ def build_office() -> None:
     _write_bytes("office/report.docx", _zip_normalise(docx_buf.getvalue()))
 
     from pptx import Presentation  # noqa: PLC0415
-    from pptx.util import Inches  # noqa: PLC0415
 
     prs = Presentation()
     # Title slide
@@ -458,9 +456,10 @@ def _zip_normalise(zip_bytes: bytes) -> bytes:
 
     in_buf = io.BytesIO(zip_bytes)
     out_buf = io.BytesIO()
-    with zipfile.ZipFile(in_buf, "r") as zin, zipfile.ZipFile(
-        out_buf, "w", zipfile.ZIP_DEFLATED
-    ) as zout:
+    with (
+        zipfile.ZipFile(in_buf, "r") as zin,
+        zipfile.ZipFile(out_buf, "w", zipfile.ZIP_DEFLATED) as zout,
+    ):
         for name in sorted(zin.namelist()):
             data = zin.read(name)
             # Only XML/OPF payloads need timestamp scrubbing — images,

@@ -195,18 +195,17 @@ def test_mcp_stdio_argv_equals_form() -> None:
 # ── CI heuristic fallback ────────────────────────────────────────────
 
 
-def test_ci_no_tty_falls_back_to_generic() -> None:
-    det = detect(env={"CI": "true"}, stdin_tty=False, stdout_tty=False)
-    assert det.client is AgentClient.GENERIC
-    assert det.signal == "CI"
+def test_ci_alone_stays_human() -> None:
+    """``CI=true`` (with or without a TTY) MUST NOT auto-flip into agent
+    mode.  The earlier draft turned every CI run into JSONL, which broke
+    legacy ``--json`` tests and human-substring assertions in pytest under
+    GitHub Actions.  Agent mode now requires an explicit signal."""
 
+    det_no_tty = detect(env={"CI": "true"}, stdin_tty=False, stdout_tty=False)
+    assert det_no_tty.client is AgentClient.HUMAN
 
-def test_ci_with_tty_stays_human() -> None:
-    """A user running ``CI=true corpus-forge ...`` interactively shouldn't
-    flip into agent mode just because the env var leaked."""
-
-    det = detect(env={"CI": "true"}, stdin_tty=True, stdout_tty=True)
-    assert det.client is AgentClient.HUMAN
+    det_with_tty = detect(env={"CI": "true"}, stdin_tty=True, stdout_tty=True)
+    assert det_with_tty.client is AgentClient.HUMAN
 
 
 def test_no_signals_returns_human() -> None:

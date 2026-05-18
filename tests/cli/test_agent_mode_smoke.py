@@ -69,9 +69,7 @@ def test_doctor_agent_mode_zero_ansi_and_clean_jsonl() -> None:
 
     with patch(
         "corpus_forge.doctor.run_doctor",
-        return_value=DoctorReport(
-            results=[CheckResult("python", CheckStatus.OK, "3.12.1")]
-        ),
+        return_value=DoctorReport(results=[CheckResult("python", CheckStatus.OK, "3.12.1")]),
     ):
         result = _runner().invoke(app, ["doctor"], env=_agent_env())
 
@@ -220,9 +218,7 @@ def test_cf_agent_generic_doctor_outputs_only_jsonl() -> None:
 
     with patch(
         "corpus_forge.doctor.run_doctor",
-        return_value=DoctorReport(
-            results=[CheckResult("python", CheckStatus.OK, "3.12.1")]
-        ),
+        return_value=DoctorReport(results=[CheckResult("python", CheckStatus.OK, "3.12.1")]),
     ):
         result = _runner().invoke(app, ["doctor"], env={"CF_AGENT": "generic"})
 

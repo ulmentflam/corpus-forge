@@ -162,9 +162,7 @@ def _root(
     import logging as _logging
 
     _cli_logger = _logging.getLogger("corpus_forge.cli")
-    _cli_logger.info(
-        f"agent_mode={detection.client.value} (signal={detection.signal})"
-    )
+    _cli_logger.info(f"agent_mode={detection.client.value} (signal={detection.signal})")
 
     ctx.obj = GlobalState(
         verbose=verbose,

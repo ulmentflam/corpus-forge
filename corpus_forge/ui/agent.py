@@ -204,8 +204,8 @@ def detect(
     *,
     explicit: str | None = None,
     env: Mapping[str, str] | None = None,
-    stdin_tty: bool | None = None,
-    stdout_tty: bool | None = None,
+    stdin_tty: bool | None = None,  # noqa: ARG001 — kept for API stability + future heuristics
+    stdout_tty: bool | None = None,  # noqa: ARG001
     argv: list[str] | None = None,
 ) -> Detection:
     """Resolve a :class:`Detection` per the §12 precedence ladder.
@@ -287,14 +287,12 @@ def detect(
     if (det := _mcp_stdio_active(env, argv)) is not None:
         return det
 
-    # 11. Heuristic fallback: CI=true AND no TTYs.
-    in_tty = sys.stdin.isatty() if stdin_tty is None else stdin_tty
-    out_tty = sys.stdout.isatty() if stdout_tty is None else stdout_tty
-    ci_flag = env.get("CI", "").strip().lower()
-    if ci_flag in {"1", "true", "yes"} and not in_tty and not out_tty:
-        return Detection(client=AgentClient.GENERIC, signal="CI", raw_value=env.get("CI", ""))
-
-    # 12. Default: HUMAN.
+    # 11. Default: HUMAN. (The earlier plan included a `CI=true && no-TTY` heuristic
+    # but it broke the user's own pytest runs in CI by silently flipping every
+    # CliRunner-invoked command into JSONL mode — `--json` test fixtures and
+    # human-substring assertions both regressed. Agent mode now requires an
+    # explicit signal: `--agent`, `CF_AGENT`, one of the recognized agent env
+    # vars above, or the MCP stdio carve-out.)
     return _HUMAN
 
 
@@ -530,11 +528,7 @@ def cmd_wrap(name: str):
             if not is_agent_mode():
                 return fn(*args, **kwargs)
             # Strip Typer's ctx from args so the emitted payload is JSON-safe.
-            visible_kwargs = {
-                k: v
-                for k, v in kwargs.items()
-                if not _is_context_like(v)
-            }
+            visible_kwargs = {k: v for k, v in kwargs.items() if not _is_context_like(v)}
             try:
                 from corpus_forge import __version__ as _cf_version  # noqa: PLC0415
             except Exception:  # pragma: no cover — defensive
