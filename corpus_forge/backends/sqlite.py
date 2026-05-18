@@ -1215,6 +1215,90 @@ class SQLiteBackend:
         for row in rows:
             yield (row["id"], row["text"])
 
+    # ── Phase L Wave 6 — embedder-fingerprint helpers ─────────────────────
+
+    def find_embedder_row_by_name(self, name: str) -> dict | None:
+        """Return the ``embedders`` row for ``name`` (or None).
+
+        Phase L Wave 6 — mirror of
+        :meth:`PostgresBackend.find_embedder_row_by_name`.  SQLite
+        stores ``config`` as a JSON string and bools as INTEGER 0/1; we
+        decode both shapes on the way out so the helper returns a
+        callable-friendly dict.
+        """
+
+        rows = self._execute(
+            """
+            SELECT id, name, provider, model_id, dimension, normalized,
+                   distance, active, table_name, config
+              FROM embedders
+             WHERE name = ?
+            """,
+            (name,),
+        )
+        if not rows:
+            return None
+        row = dict(rows[0])
+        cfg = row.get("config")
+        if isinstance(cfg, str):
+            try:
+                row["config"] = json.loads(cfg)
+            except (json.JSONDecodeError, ValueError):
+                row["config"] = {}
+        elif cfg is None:
+            row["config"] = {}
+        row["normalized"] = bool(row.get("normalized"))
+        row["active"] = bool(row.get("active"))
+        return row
+
+    def count_existing_embeddings(self, embedder: int | str) -> int:
+        """Count embedding rows already written for ``embedder``.
+
+        Phase L Wave 6 — mirror of
+        :meth:`PostgresBackend.count_existing_embeddings`.  Resolves the
+        per-embedder table via ``embedders.table_name`` then runs
+        ``SELECT COUNT(*) FROM <table> WHERE embedder_id = ?``.  Returns
+        0 when the embedder row is missing (never raises).
+        """
+
+        if isinstance(embedder, int):
+            row_q = "SELECT id, table_name FROM embedders WHERE id = ?"
+        else:
+            row_q = "SELECT id, table_name FROM embedders WHERE name = ?"
+        rows = self._execute(row_q, (embedder,))
+        if not rows:
+            return 0
+        embedder_id = rows[0]["id"]
+        table_name = rows[0]["table_name"]
+        # ``table_name`` is synthesised from a sanitised embedder name in
+        # :meth:`register_embedder` — safe to f-string.
+        count_rows = self._execute(
+            f"SELECT COUNT(*) AS n FROM {table_name} WHERE embedder_id = ?",
+            (embedder_id,),
+        )
+        return int(count_rows[0]["n"]) if count_rows else 0
+
+    def update_embedder_config_blob(self, embedder: int | str, config_blob: dict) -> None:
+        """Update the ``embedders.config`` JSON for ``embedder``.
+
+        Phase L Wave 6 — mirror of
+        :meth:`PostgresBackend.update_embedder_config_blob`.  SQLite
+        stores ``config`` as a JSON-serialised TEXT column so we encode
+        with :func:`json.dumps` here.
+        """
+
+        config_json = json.dumps(config_blob)
+        if isinstance(embedder, int):
+            self._execute(
+                "UPDATE embedders SET config = ? WHERE id = ?",
+                (config_json, embedder),
+            )
+        else:
+            self._execute(
+                "UPDATE embedders SET config = ? WHERE name = ?",
+                (config_json, embedder),
+            )
+
     def count_chunks_missing_embedding(self, embedder_id: int) -> int:
         """Total number of chunks missing an embedding for ``embedder_id``.
 

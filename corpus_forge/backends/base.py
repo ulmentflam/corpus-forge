@@ -63,6 +63,20 @@ class StorageBackend(Protocol):
         self, embedder_id: int, limit: int = 1024
     ) -> Iterator[tuple[int, str]]: ...
 
+    # --- Phase L Wave 6 — embedder-fingerprint helpers --------------------
+
+    def find_embedder_row_by_name(self, name: str) -> "dict | None":
+        """Look up an ``embedders`` row by ``name`` for the fingerprint drift path."""
+        ...
+
+    def count_existing_embeddings(self, embedder: int | str) -> int:
+        """Count embedding rows already written for the given embedder (by id or name)."""
+        ...
+
+    def update_embedder_config_blob(self, embedder: int | str, config_blob: dict) -> None:
+        """Write a fresh ``embedders.config`` JSON blob (by id or name)."""
+        ...
+
     # --- Multi-modal embedding surface (Phase G P1) ----------------------------
 
     def register_multimodal_embedder(

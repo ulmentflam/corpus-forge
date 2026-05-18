@@ -823,6 +823,92 @@ class PostgresBackend(StorageBackend):
         )
         return int(rows[0]["n"]) if rows else 0
 
+    # ── Phase L Wave 6 — embedder-fingerprint helpers ─────────────────────
+
+    def find_embedder_row_by_name(self, name: str) -> dict | None:
+        """Return the ``corpus.embedders`` row for ``name`` (or None).
+
+        Phase L Wave 6 — backs the
+        :func:`corpus_forge.embedders.fingerprint.compare_active` drift
+        path so the Wave-5 module no longer needs its ``getattr`` /
+        ``try/except AttributeError`` shim on real backends.
+
+        The returned dict carries the columns defined in the alembic
+        ``0001_core`` migration plus a parsed ``config`` dict — psycopg
+        normally decodes JSONB to ``dict`` automatically, but defensive
+        decoding of JSON-string payloads (rare; legacy paths) keeps the
+        contract uniform.
+        """
+
+        rows = self._execute(
+            """
+            SELECT id, name, provider, model_id, dimension, normalized,
+                   distance, active, table_name, config
+              FROM corpus.embedders
+             WHERE name = %s
+            """,
+            (name,),
+        )
+        if not rows:
+            return None
+        row = dict(rows[0])
+        cfg = row.get("config")
+        if isinstance(cfg, str):
+            try:
+                row["config"] = json.loads(cfg)
+            except (json.JSONDecodeError, ValueError):
+                row["config"] = {}
+        elif cfg is None:
+            row["config"] = {}
+        return row
+
+    def count_existing_embeddings(self, embedder: int | str) -> int:
+        """Count embedding rows already written for ``embedder``.
+
+        Resolves the per-embedder table via ``embedders.table_name``,
+        then ``SELECT COUNT(*) FROM corpus.<table> WHERE embedder_id = ?``.
+        Returns 0 when the embedder row is missing (never raises).
+        """
+
+        if isinstance(embedder, int):
+            row_q = "SELECT id, table_name FROM corpus.embedders WHERE id = %s"
+        else:
+            row_q = "SELECT id, table_name FROM corpus.embedders WHERE name = %s"
+        rows = self._execute(row_q, (embedder,))
+        if not rows:
+            return 0
+        embedder_id = rows[0]["id"]
+        table_name = rows[0]["table_name"]
+        # ``table_name`` is synthesised from a sanitised embedder name in
+        # :meth:`register_embedder` — safe to f-string.
+        count_rows = self._execute(
+            f"SELECT COUNT(*) AS n FROM corpus.{table_name} WHERE embedder_id = %s",
+            (embedder_id,),
+        )
+        return int(count_rows[0]["n"]) if count_rows else 0
+
+    def update_embedder_config_blob(self, embedder: int | str, config_blob: dict) -> None:
+        """Update the ``embedders.config`` JSONB for ``embedder``.
+
+        Phase L Wave 6 — called by
+        :func:`corpus_forge.embedders.fingerprint.save_active_fingerprint`
+        after a successful re-embed run.  ``embedder`` may be an integer
+        row id (the common path; the fingerprint module looks the row up
+        first) or a string name (ergonomic callers).
+        """
+
+        json_blob = psycopg.types.json.Json(config_blob)
+        if isinstance(embedder, int):
+            self._execute(
+                "UPDATE corpus.embedders SET config = %s WHERE id = %s",
+                (json_blob, embedder),
+            )
+        else:
+            self._execute(
+                "UPDATE corpus.embedders SET config = %s WHERE name = %s",
+                (json_blob, embedder),
+            )
+
     def pending_documents(
         self, *, dataset_id: int | None = None, limit: int = 5
     ) -> tuple[int, list[str]]:
