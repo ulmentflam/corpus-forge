@@ -1,669 +1,870 @@
-# TDD Task Board — Phase L / Wave 4 (estimate stats + progress bars + logger discipline)
+# TDD Task Board — Phase L / Wave 5 (Embedder-fingerprint detection)
 
 _Owner: tdd-principal. Workers: read freely. Edit only your claimed row's
 `status` and `claimed_by`._
 
-Source plan: `/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Workspace/playground/corpus-forge/.planning/tdd/phase_l_cli_ux.md` (§6 Estimate upgrades + §7 Progress bars on long ops).
-Dispatch input: orchestrator brief, Phase L / Wave 4 kickoff after Wave 3 landed in commit `bbb213e`.
+Source plan: `/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Workspace/playground/corpus-forge/.planning/tdd/phase_l_cli_ux.md` §8 (Embedder-fingerprint detection).
+Dispatch input: orchestrator brief, Phase L / Wave 5 kickoff after Wave 4 landed (`ebe4273`).
 
-> Previous slice (Wave 3) record archived in git history at `bbb213e`.
+> Previous slice (Wave 4) summary archived in git history at `ebe4273`.
 
 ## Project gates
 - lint: `uv run ruff check`
 - format: `uv run ruff format --check`
-- test: `uv run python -m pytest tests/ -x`
+- test (Wave 5 surface): `uv run python -m pytest tests/embedders tests/cli/test_drift_flow.py -x`
+- regression: `uv run python -m pytest tests/unit tests/cli tests/embedders -x` (no new failures vs Wave 4 baseline)
 - coverage-min: keep current baseline (no regression)
 
-## Hard constraints (from dispatch)
+## Hard constraints (from dispatch + project)
 1. **DO NOT COMMIT, DO NOT PUSH.** Workers stage only. Orchestrator commits.
 2. **NO `typer.echo/secho/prompt/confirm`** outside `corpus_forge/ui/` — the
    `tests/cli/test_no_typer_echo.py` regression will fail you.
 3. **`uv run python -m pytest`**, never bare `pytest`.
-4. Daemon mode does NOT show progress bars — gate on `once=True` for
-   `ingest`. Sync push `start()` is observer-driven (never one-shot, never
-   bounded total), so its bookend is a one-shot info pair + N=0 progress
-   (or skipped); see W4-04 acceptance for the exact shape.
-5. Existing `SyncEstimate` dataclass shape is wire-protocol stable for the
-   MCP `estimate_sync_size` tool (schema_version=1). DO NOT add new
-   *required* fields to `SyncEstimate` — put scan stats on a NEW dataclass
-   `ScanStats` exposed via the CLI command, not on `SyncEstimate`.
-   `--json` mode must preserve the existing top-level shape; add scan
-   stats as a NEW sibling key (e.g. nested under a top-level `"scan"`).
-6. `backend.chunks_missing_embedding(embedder_id)` exists today. A
-   *count* helper does NOT — W4-02 adds a thin `count_chunks_missing_embedding`
-   method on both `PostgresBackend` + `SQLiteBackend` (one-line
-   `SELECT COUNT(*)` companion).
-7. Pending-docs query: there is no `documents.state` column. Define
-   "documents not yet chunked" as documents with zero chunks rows
-   (`NOT EXISTS (SELECT 1 FROM chunks WHERE document_id = documents.id)`).
-   The schema also has no top-level `dataset_id` on chunks — chunks
-   live under documents which carry dataset_id. Add new backend method
-   `pending_documents(dataset_id=None, limit=5)` returning
-   `(count: int, sample_uris: list[str])` on both backends.
-8. CLI estimate today renders human output via bare `print(...)` for the
-   data lines (intentional — see existing comments). Keep that idiom for
-   the new tables (use `rich.table.Table` rendered through `console` for
-   the styled path BUT also write a plain fallback when running under
-   `NO_COLOR=1`/`TERM=dumb` conftest so existing assertions stay
-   readable). Pragmatic: rely on `ui_console.print(table)` — Rich already
-   degrades to plain text under `NO_COLOR=1`.
+4. **Daemon mode does NOT prompt.** WARNING-level log only on detected drift.
+5. `Prompt.ask` / `Confirm.ask` come from `corpus_forge.ui.prompts` (Wave 1);
+   they're thin wrappers around `rich.prompt`.
+6. `EmbedderConfig.distance` is part of the fingerprint tuple per the brief.
+   Stored config JSONB today only carries `provider` + `model_id` (see
+   `corpus_forge/backends/postgres.py:307` / sqlite mirror). On the FIRST
+   run after Wave 5 lands, drift comparison must NOT explode on the
+   legacy 2-key shape — when the stored config is missing any of the
+   five fingerprint fields, fall back to the row's top-level columns
+   (`provider`, `model_id`, `dimension`, `normalized`, `distance`) which
+   the migration 0001 already provides.
+7. The "WAS" fingerprint comes from the stored row; the "NOW" fingerprint
+   comes from the live `EmbedderConfig`. Identical → no drift. Differing
+   → drift.
+8. Background subprocess MUST NOT inherit the parent's stdio:
+   `subprocess.Popen(..., stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, start_new_session=True)`.
+   The detached worker calls `init_logging('embed-worker', ...)` so its
+   logs land in `embed-worker.log`.
+9. Marker file lives under
+   `~/.cache/corpus-forge/state/pending_rerun.json` and the embed-worker
+   pid under `~/.cache/corpus-forge/state/embed-worker.pid`. Use
+   `platformdirs.user_cache_dir('corpus-forge')` so the path matches the
+   Wave 1 logging convention. Atomic write via tempfile + rename.
 
 ## Decomposition notes (orchestrator)
 
 - **Surface-disjoint matrix:**
-  - W4-01 owns `corpus_forge/estimate.py` + `cli.py` `estimate` function
-    body (lines ~1851-2087). Adds new `ScanStats` dataclass and threads
-    `pending_documents` + `chunks_missing_embedding` (read-only) into the
-    CLI render.
-  - W4-02 owns `corpus_forge/embed.py` (`backfill_embedder` +
-    `backfill_image_embedder`), `corpus_forge/embedders/sentence_transformers.py`
-    (loader INFO), AND the new backend method
-    `count_chunks_missing_embedding` on `corpus_forge/backends/postgres.py`
-    + `corpus_forge/backends/sqlite.py`. W4-01 also reads from
-    `chunks_missing_embedding` but the count helper is owned by W4-02 —
-    serialize: tester W4-02 produces the helper first; W4-01 reads it
-    via a stub when fingerprint testing.
-  - W4-03 owns `corpus_forge/ingest.py` (the `ingest_once` function +
-    audit of `scan/extract/chunk` logger taxonomy).
-  - W4-04 owns `corpus_forge/sync/pull.py` + `corpus_forge/sync/push.py`
-    plus the sync CLI command bodies (`pull`/`push` in `cli.py`).
-  - All four tasks touch `cli.py` but on disjoint command bodies
-    (estimate vs embed vs ingest vs sync pull/push). Workers stage; the
-    orchestrator commits separately per task.
+  - W5-01 owns `corpus_forge/embedders/fingerprint.py` (NEW) — the
+    `embedder_fingerprint`, `EmbedderDrift`, `compare_active`, and
+    `save_active_fingerprint` API surface. No CLI / no setup wizard
+    edits.
+  - W5-02 owns `corpus_forge/embedders/_marker.py` (NEW) +
+    `corpus_forge/embedders/drift_prompt.py` (NEW; the panel +
+    `prompt_for_drift` helper). Pure module — no CLI plumbing.
+  - W5-03 owns CLI hook points: `corpus_forge/cli.py` (the `ingest` +
+    `embed` command bodies + `sync status` row), `corpus_forge/setup/wizard.py`
+    (end-of-wizard hook), `corpus_forge/daemon.py` (WARNING log only).
+    Depends on W5-01 + W5-02 landing first (consumer).
 
-- **W4-02 is the bottleneck for W4-01:** W4-01's pending-files-render
-  needs `count_chunks_missing_embedding` to exist on both backends.
-  Resolution: testers produce their RED suites in parallel, but W4-01's
-  coder waits for W4-02's coder to land the helper. Two-wave shape:
-  - Wave A (parallel): all four testers RED; W4-02 coder GREEN; W4-03 coder GREEN; W4-04 coder GREEN.
-  - Wave B (after W4-02 coder): W4-01 coder GREEN.
-  - Wave C (after all coders): QA in parallel.
+- **Wave shape:**
+  - Wave A (3 parallel testers): RED for W5-01, W5-02, W5-03.
+  - Wave B (parallel coders): GREEN for W5-01 + W5-02 (independent surface).
+  - Wave C (sequential coder): GREEN for W5-03 (after W5-01 + W5-02).
+  - Wave D (3 parallel QAs): verify each.
 
-- **Documents-pending-count:** add new `backend.pending_documents(dataset_id=None,
-  limit=5) -> tuple[int, list[str]]` on both backends. Logic:
-  `WHERE NOT EXISTS (SELECT 1 FROM chunks WHERE document_id = documents.id)`.
-  Owned by W4-01 (since W4-01 is the only consumer).
+- **Embed-worker subprocess invocation.** The dispatch brief says:
+  ```python
+  subprocess.Popen(
+      [sys.executable, "-m", "corpus_forge", "embed", "-e", "<name>"],
+      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+      stderr=subprocess.DEVNULL, start_new_session=True,
+  )
+  ```
+  `python -m corpus_forge` works because `corpus_forge/__main__.py`
+  re-exports the Typer app. The subprocess gets `embed` CLI args
+  (`-e <name>` + optional `-d <dataset>`).
 
-- **Embedder selection for the "Pending files" pending-embedding count:**
-  estimate already resolves the active embedder list via
-  `Config.load().embedders` filtered on `active=True`. For the chunks-
-  missing-embedding count, sum across all active embedders OR pick the
-  first (cheapest). Pick FIRST active embedder (simplest, matches the
-  user mental model of "the embedder that would run next"). Document
-  the choice in a code comment + a CLI footnote.
+- **Pid-file liveness check** (sync status row): `os.kill(pid, 0)`
+  returns without raising iff the process exists; `ProcessLookupError`
+  → dead. Wrap in try/except so we degrade gracefully.
 
-- **Sync push is observer-driven:** `push.start()` schedules a watchdog
-  observer and returns immediately — there's no bounded loop to wrap.
-  W4-04 ships a single `logger.info` bookend pair around `start()` (and
-  a separate one around the optional `handle_change(path)` per-event
-  trigger). No progress bar for the push start path. (The brief notes
-  "Pending push count" — there is no such count in the current push
-  pipeline because push is event-driven, not pending-queue-driven; we
-  document this discrepancy in the W4-04 acceptance details and ship
-  bookends only, no bar.)
+- **Marker JSON shape** (per brief):
+  ```json
+  {
+    "<embedder_name>": {
+      "state": "pending|skipped",
+      "fp_was": "...",
+      "fp_now": "...",
+      "detected_at": "iso",
+      "suppressed_until": "iso?"
+    }
+  }
+  ```
+  `mark_skipped` writes `suppressed_until = now + 7 days`. The check
+  helper returns `"skipped"` while now < suppressed_until, else `"none"`
+  (the suppression has expired — caller re-prompts).
 
-- **Logger taxonomy audit:**
-  - `corpus_forge.embedders.loader` — owned by W4-02. Add INFO at model
-    load start/finish in `embedders/sentence_transformers.py`
-    `_load_model()`.
-  - `corpus_forge.embedders.batch` — owned by W4-02. DEBUG per batch
-    (already present via `logger.info`-as-debug at embed.py:175 — demote
-    to DEBUG). INFO milestone via the progress factory is free.
-  - `corpus_forge.ingest.scan` — owned by W4-03. INFO at start/end of
-    each source-root scan in `ingest_once()`.
-  - `corpus_forge.ingest.extract` — owned by W4-03. INFO on extractor
-    failure (the existing `logger.error` at ingest.py:481 is on the
-    correct taxonomy logger; rename if not).
-  - `corpus_forge.ingest.chunk` — owned by W4-03. INFO on aggregate
-    every 100 docs (use a local counter in the loop).
-  - `corpus_forge.sync.scan` / `corpus_forge.sync.push` /
-    `corpus_forge.sync.pull` — owned by W4-04. INFO bookends on
-    `PullPipeline.start()` + `PushPipeline.start()`. The existing
-    `corpus_forge.sync.pull` logger is on a per-module basis (already
-    correctly namespaced as `corpus_forge.sync.pull` via
-    `logger = logging.getLogger(__name__)` at `pull.py:14`); the push
-    module is missing its module-level logger entirely (uses `logging`
-    inline). Add a module-level
-    `logger = logging.getLogger(__name__)` to `push.py`.
+- **Re-prompt sticky on "later".** The marker file is the bridge between
+  invocations. Next foreground command's `compare_active` returns the
+  same drift; the prompt UI reads the marker and either:
+  - "skipped" + not expired → no prompt (skip silently)
+  - "pending" → re-prompt (the user said "later")
+  - "none" (no entry / expired) → fresh prompt
 
-- **Config-loading in tests:** for the embed-progress test, stub
-  `Config.load()` to return a minimal config with one embedder. The
-  backend can be a `unittest.mock.MagicMock` with
-  `chunks_missing_embedding` returning `[]` on the second call to
-  exit the loop, and `count_chunks_missing_embedding` returning a
-  known integer. Drive via direct call to `backfill_embedder`, not
-  through the Typer CLI runner — the CLI wrapper is a 2-line shim.
+- **Fingerprint canonicalization.** The brief asks for stable hashing.
+  Concatenate the five fields with a `|` separator after `.strip()` on
+  each string field (`provider`, `model_id`, `distance`) and
+  `repr(bool)` / `repr(int)` for the others. Hash with `hashlib.sha256`.
+  Return a NamedTuple `Fingerprint(short, full)` where `short = full[:16]`.
 
-- **Sample-of-5-paths in estimate "Pending files":** call
-  `backend.pending_documents(dataset_id=None, limit=5)` once and render
-  count + the sample list. Skip the section entirely if both pending
-  docs == 0 AND pending chunks == 0 (no "Pending: 0 files" noise).
+- **`compare_active` signature.** Returns `list[EmbedderDrift]` (empty
+  list, NEVER None, per brief). Iterates `[e for e in config.embedders
+  if e.active]`. For each, looks up the stored row (via
+  `backend.find_embedder_row_by_name(name)`); on miss (new embedder
+  never registered), treats as "no drift" (the embedder hasn't been
+  used yet — nothing to migrate). On hit, computes both fingerprints
+  and compares.
+
+- **Helper `backend.find_embedder_row_by_name(name)`.** Does NOT exist
+  today. Add a thin one on both backends (postgres + sqlite) that runs
+  `SELECT id, name, provider, model_id, dimension, normalized,
+  distance, config FROM corpus.embedders WHERE name = %s` (postgres) /
+  `... FROM embedders WHERE name = ?` (sqlite) and returns the row
+  dict (or `None` on miss). Centralizes the lookup; W5-01 owns this
+  helper because W5-01 is the only consumer.
+
+- **chunks_to_rerun calculation.**
+  - "chunks already embedded by the OLD fingerprint that need
+    re-embedding" = `SELECT COUNT(*) FROM corpus.embeddings_<table_name>`
+    (no missing-embedding gate; ALL existing rows must be
+    re-embedded because the model changed). Use the row's
+    `table_name` column to pick the right table.
+  - PLUS `backend.count_chunks_missing_embedding(embedder_id)` (chunks
+    that never got embedded by the old model either).
+  - Sum the two.
+
+- **`est_seconds` constant.** Use module-level
+  `_DEFAULT_SECONDS_PER_CHUNK = 0.034` with env override
+  `CF_REEMBED_SECONDS_PER_CHUNK`. Document the constant in the
+  module docstring.
+
+- **`prompt_for_drift` decision matrix.**
+  | non_interactive | background | result |
+  |---|---|---|
+  | True | True | "now" |
+  | True | False | "later" |
+  | False | * | Render panel + `Prompt.ask(choices=["now", "later", "skip"], default="now")` |
+
+- **Panel render.** Use `ui.panel(message, title="Embedder changed")` or
+  the lower-level `Panel(..., border_style="brand.forge")` for one-off
+  styling. The text body is multi-line; render each drift as a small
+  block separated by a blank line. Example (single drift):
+  ```
+  Was:  qwen3_8b (1024-dim)   fp=abc123def4567890…
+  Now:  bge_m3   (1024-dim)   fp=def456abc7890123…
+  12,481 chunks need re-embedding (~7 min)
+  ```
+  The 7-min estimate is `est_seconds // 60` (integer minutes).
+
+- **Setup wizard hook.** After `run_wizard` / `run_quick` /
+  `run_non_interactive` returns in `setup()` (cli.py:280), if the
+  freshly-written config can be loaded AND a backend is reachable, call
+  `compare_active` and act on the result. Skip this entirely under
+  `--non-interactive` unless `CF_BACKGROUND=1` is set — then run "now"
+  background.
+
+- **Pyrefly / mypy.** The `Literal["now", "later", "skip"]` return type
+  on `prompt_for_drift` should use `typing.Literal`. The brief asks
+  for a small `namedtuple` for the fingerprint — use
+  `NamedTuple` from `typing` (subscriptable, type-stable).
 
 ## Tasks
 
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
-| W4-01 | Estimate scan stats + pending files | W4-02 (coder) | `corpus_forge/estimate.py`, `corpus_forge/cli.py` (estimate command), `corpus_forge/backends/postgres.py` (+pending_documents), `corpus_forge/backends/sqlite.py` (+pending_documents), `tests/test_estimate.py` (extend), `tests/cli/test_estimate_progress.py` (new) | med | done | tdd-principal | `ScanStats` dataclass + `walk_with_stats` + `get_last_scan_stats`. Walk wrapped in `make_progress`. CLI renders "Scan stats" + "Pending files" tables. `--json` adds additive `"scan"` + `"pending"` sibling keys; SyncEstimate shape unchanged. |
-| W4-02 | Embed progress + count helper + loader INFO | — | `corpus_forge/embed.py`, `corpus_forge/embedders/sentence_transformers.py`, `corpus_forge/backends/postgres.py` (+count_chunks_missing_embedding), `corpus_forge/backends/sqlite.py` (+count_chunks_missing_embedding), `tests/cli/test_embed_progress.py` (new) | med | done | tdd-principal | `count_chunks_missing_embedding` added on both backends. `backfill_embedder` wraps loop in `make_progress`. Loader logger added to `_load_model`. Per-batch INFO demoted to DEBUG. |
-| W4-03 | Ingest --once progress + logger taxonomy | — | `corpus_forge/ingest.py`, `tests/cli/test_ingest_progress.py` (new) | med | done | tdd-principal | `corpus_forge.ingest.{scan,extract,chunk}` taxonomy loggers added at module top. Per-source loop wrapped in `make_progress` (unbounded, scan_logger). Extract failures land on extract logger at INFO. Chunk milestones at every 100 docs. |
-| W4-04 | Sync pull/push progress + logger bookends | — | `corpus_forge/sync/pull.py`, `corpus_forge/sync/push.py`, `corpus_forge/cli.py` (sync pull / sync push command bodies), `tests/cli/test_sync_progress.py` (new) | low | done | tdd-principal | Pull `tick()` wraps the apply loop in `make_progress(total=len(pending))`; empty pending early-exits before the wrapper so no bookend noise on idle ticks. Push module gets module-level logger + start/stop bookends. |
+| W5-01 | Fingerprint module + backend drift compare | — | `corpus_forge/embedders/fingerprint.py` (NEW), `corpus_forge/backends/postgres.py` (+find_embedder_row_by_name), `corpus_forge/backends/sqlite.py` (+find_embedder_row_by_name), `tests/embedders/test_fingerprint.py` (NEW), `tests/embedders/test_drift_detect.py` (NEW) | med | pending | — | — |
+| W5-02 | Marker file + drift prompt helper | — | `corpus_forge/embedders/_marker.py` (NEW), `corpus_forge/embedders/drift_prompt.py` (NEW), `tests/embedders/test_marker.py` (NEW), `tests/embedders/test_drift_prompt.py` (NEW) | low | pending | — | — |
+| W5-03 | CLI/setup/daemon hook points + sync status row | W5-01, W5-02 | `corpus_forge/cli.py` (ingest/embed/sync status), `corpus_forge/setup/wizard.py` OR `corpus_forge/cli.py:setup` (post-wizard hook), `corpus_forge/daemon.py` (WARNING log), `tests/cli/test_drift_flow.py` (NEW) | high | pending | — | — |
 
 ## Acceptance details
 
-### W4-01 — Estimate scan stats + pending files
+### W5-01 — Fingerprint module + backend drift compare
 
-**`corpus_forge/estimate.py` changes:**
+**`corpus_forge/embedders/fingerprint.py` (new):**
 
-1. New frozen dataclass `ScanStats`:
-   ```python
-   @dataclass(frozen=True)
-   class ScanStats:
-       elapsed_s: float
-       scan_rate: float   # files / second
-       file_count: int
-       dir_count: int
-   ```
-2. Refactor `_walk()` (lines 364-442) to return a `(buckets, file_count,
-   dir_count, total_raw_bytes, ScanStats)` 5-tuple. Existing callers
-   (just `estimate_sync`) updated to unpack the 5-tuple; the extra
-   element is ignored by `estimate_sync` itself (the CLI will reach in
-   for it separately via a new helper).
-3. New module-level `scan_logger = logging.getLogger("corpus_forge.estimate.scan")`.
-4. Wrap the existing iterative walk's `while stack:` loop in:
-   ```python
-   from corpus_forge.ui.progress import make_progress
-   started = time.perf_counter()
-   with make_progress("Scanning", total=None, logger=scan_logger) as progress:
-       task = progress.add_task("Scanning", total=None)
-       while stack:
-           ...
-           # at the end of each file processed:
-           progress.update(task, advance=1)
-   elapsed_s = time.perf_counter() - started
-   scan_rate = (file_count / elapsed_s) if elapsed_s > 0 else 0.0
-   stats = ScanStats(elapsed_s=elapsed_s, scan_rate=scan_rate, file_count=file_count, dir_count=dir_count)
-   ```
-5. New public function `walk_with_stats(root, *, ignore=None) -> tuple[..., ScanStats]`
-   that exposes the 5-tuple. `estimate_sync` calls the internal `_walk`
-   (which now also returns the stats) and uses them when rendering.
-6. Export `ScanStats` + `walk_with_stats` in `__all__`.
-
-**Backend additions (W4-01 owns these because pending_documents is read-
-only for estimate; W4-02 owns the count_chunks_missing_embedding):**
-
-In `corpus_forge/backends/postgres.py` (new method near
-`chunks_missing_embedding`):
 ```python
-def pending_documents(
-    self, *, dataset_id: int | None = None, limit: int = 5
-) -> tuple[int, list[str]]:
-    """Return (count, sample_source_uris) of documents not yet chunked.
+"""Embedder-fingerprint detection (Phase L Wave 5).
 
-    Defined as documents with zero rows in the ``chunks`` table.
+Computes a stable hash over the five embedder identity fields
+(``provider``, ``model_id``, ``dimension``, ``normalize``, ``distance``)
+and compares it to the fingerprint stored in ``corpus.embedders.config``
+to detect when the user has swapped a model and the existing embeddings
+need a re-encode pass.
+
+Public API:
+- ``embedder_fingerprint(cfg: EmbedderConfig) -> Fingerprint``
+- ``compare_active(config: Config, backend) -> list[EmbedderDrift]``
+- ``save_active_fingerprint(config: Config, backend) -> None``
+
+The per-chunk re-embed time estimate (``est_seconds``) defaults to
+``0.034 s / chunk`` and can be tuned via ``CF_REEMBED_SECONDS_PER_CHUNK``.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+from dataclasses import dataclass
+from typing import NamedTuple
+
+from corpus_forge.config import Config, EmbedderConfig
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_SECONDS_PER_CHUNK = 0.034
+
+
+class Fingerprint(NamedTuple):
+    short: str  # 16-char hex prefix
+    full: str   # full sha256 hex
+
+
+@dataclass(frozen=True)
+class EmbedderDrift:
+    name: str
+    was_model_id: str
+    was_dimension: int
+    now_model_id: str
+    now_dimension: int
+    chunks_to_rerun: int
+    est_seconds: float
+    fingerprint_was: str  # short form
+    fingerprint_now: str  # short form
+
+
+def _seconds_per_chunk() -> float:
+    raw = os.environ.get("CF_REEMBED_SECONDS_PER_CHUNK")
+    if not raw:
+        return _DEFAULT_SECONDS_PER_CHUNK
+    try:
+        return float(raw)
+    except ValueError:
+        return _DEFAULT_SECONDS_PER_CHUNK
+
+
+def embedder_fingerprint(cfg: EmbedderConfig) -> Fingerprint:
+    """Stable SHA-256 over (provider, model_id, dimension, normalize, distance).
+
+    String fields are stripped; bool/int fields are repr()'d. Returns
+    both the short (16-char) and full hex forms.
     """
-    where_clause = "" if dataset_id is None else " AND d.dataset_id = %s"
-    params: tuple = () if dataset_id is None else (dataset_id,)
-    count_rows = self._execute(
-        f"SELECT COUNT(*) AS n FROM corpus.documents d "
-        f"WHERE NOT EXISTS (SELECT 1 FROM corpus.chunks c WHERE c.document_id = d.id)"
-        f"{where_clause}",
-        params,
-    )
-    count = int(count_rows[0]["n"]) if count_rows else 0
-    sample_rows = self._execute(
-        f"SELECT d.source_uri FROM corpus.documents d "
-        f"WHERE NOT EXISTS (SELECT 1 FROM corpus.chunks c WHERE c.document_id = d.id)"
-        f"{where_clause} ORDER BY d.id LIMIT %s",
-        (*params, limit),
-    )
-    return count, [r["source_uri"] for r in sample_rows]
+    canonical = "|".join([
+        cfg.provider.strip(),
+        cfg.model_id.strip(),
+        repr(int(cfg.dimension)),
+        repr(bool(cfg.normalize)),
+        cfg.distance.strip(),
+    ])
+    full = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return Fingerprint(short=full[:16], full=full)
+
+
+def _stored_fingerprint(row: dict) -> Fingerprint:
+    """Recompute the fingerprint from a stored embedder row.
+
+    Falls back to top-level columns when ``config`` JSONB is missing
+    fields (the legacy 2-key shape pre-Wave-5).
+    """
+    cfg_blob = row.get("config") or {}
+    # Stored config may be a JSON string in sqlite — coerce.
+    if isinstance(cfg_blob, str):
+        import json
+        try:
+            cfg_blob = json.loads(cfg_blob)
+        except (json.JSONDecodeError, ValueError):
+            cfg_blob = {}
+    provider = cfg_blob.get("provider") or row["provider"]
+    model_id = cfg_blob.get("model_id") or row["model_id"]
+    dimension = cfg_blob.get("dimension", row["dimension"])
+    normalize = cfg_blob.get("normalize", row.get("normalized", True))
+    distance = cfg_blob.get("distance", row.get("distance", "cosine"))
+    canonical = "|".join([
+        provider.strip(),
+        model_id.strip(),
+        repr(int(dimension)),
+        repr(bool(normalize)),
+        distance.strip(),
+    ])
+    full = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return Fingerprint(short=full[:16], full=full)
+
+
+def compare_active(config: Config, backend) -> list[EmbedderDrift]:
+    """For each active EmbedderConfig, return drift info iff fingerprint diverges."""
+    drifts: list[EmbedderDrift] = []
+    for cfg in config.embedders:
+        if not getattr(cfg, "active", True):
+            continue
+        row = backend.find_embedder_row_by_name(cfg.name)
+        if row is None:
+            # Never registered — no drift to report.
+            continue
+        fp_was = _stored_fingerprint(row)
+        fp_now = embedder_fingerprint(cfg)
+        if fp_was.full == fp_now.full:
+            continue
+        # Count chunks needing rerun: existing embeddings table + missing chunks.
+        embedder_id = row["id"]
+        existing = 0
+        try:
+            existing = backend.count_existing_embeddings(embedder_id)
+        except AttributeError:
+            # Fallback: query via embeddings table name directly.
+            existing = 0
+        try:
+            missing = backend.count_chunks_missing_embedding(embedder_id)
+        except (AttributeError, TypeError):
+            missing = 0
+        chunks_to_rerun = int(existing) + int(missing)
+        est_seconds = chunks_to_rerun * _seconds_per_chunk()
+        drifts.append(EmbedderDrift(
+            name=cfg.name,
+            was_model_id=row["model_id"],
+            was_dimension=int(row["dimension"]),
+            now_model_id=cfg.model_id,
+            now_dimension=int(cfg.dimension),
+            chunks_to_rerun=chunks_to_rerun,
+            est_seconds=est_seconds,
+            fingerprint_was=fp_was.short,
+            fingerprint_now=fp_now.short,
+        ))
+    return drifts
+
+
+def save_active_fingerprint(config: Config, backend) -> None:
+    """After a successful re-embed, persist the new fingerprint."""
+    import json as _json
+    for cfg in config.embedders:
+        if not getattr(cfg, "active", True):
+            continue
+        row = backend.find_embedder_row_by_name(cfg.name)
+        if row is None:
+            continue
+        fp = embedder_fingerprint(cfg)
+        new_config_blob = {
+            "provider": cfg.provider,
+            "model_id": cfg.model_id,
+            "dimension": int(cfg.dimension),
+            "normalize": bool(cfg.normalize),
+            "distance": cfg.distance,
+            "fingerprint": fp.full,
+        }
+        # Both backends accept the raw dict via _execute parameter binding
+        # (postgres adapts via psycopg.types.json.Json; sqlite needs a
+        # JSON string).
+        backend.update_embedder_config_blob(row["id"], new_config_blob)
+
+
+__all__ = [
+    "EmbedderDrift",
+    "Fingerprint",
+    "compare_active",
+    "embedder_fingerprint",
+    "save_active_fingerprint",
+]
 ```
-
-Mirror for `corpus_forge/backends/sqlite.py` (no `corpus.` schema prefix,
-`?` placeholders).
-
-**CLI changes (`corpus_forge/cli.py` `estimate` command body):**
-
-After the existing `estimate_sync` call:
-1. Compute `scan_stats = estimate_result.scan_stats` (new attribute, see
-   below — or call `walk_with_stats` separately to avoid breaking the
-   `SyncEstimate` ABI).
-   
-   **DECISION:** keep `SyncEstimate` ABI clean. Run the walk twice? No —
-   call `walk_with_stats` ONCE before `estimate_sync` and pass the
-   pre-walked buckets into `estimate_sync` via a new kwarg `_prewalked:
-   tuple | None = None` (private/escape-hatch). Or simpler: change
-   `estimate_sync` to internally use the new walk and stash `ScanStats`
-   on a NEW non-frozen sibling result the CLI assembles. Implementor's
-   choice — pick the path with smallest diff and document.
-2. Build a `rich.table.Table` for "Scan stats":
-   ```
-   Scan stats
-   ──────────────────────────
-   Elapsed       3.2s
-   Rate          385 files/s
-   Files seen    1,234
-   Dirs visited  87
-   ```
-   Use `rich.box.SIMPLE` for clean look; render via `ui_console.print(table)`.
-3. Open the backend ONLY if `--json` is False AND the user did not
-   pass a flag like `--no-pending` (no need to add a flag; just degrade
-   gracefully if the backend doesn't open — wrap in try/except OSError,
-   ConnectionError, RuntimeError, ImportError; on failure skip the
-   "Pending files" section silently). Pseudocode:
-   ```python
-   backend = None
-   try:
-       backend = _get_backend(config)  # existing helper
-   except Exception as exc:
-       logger.debug("estimate: backend unreachable for pending counts (%s)", exc)
-   ```
-4. If `backend is not None`, compute:
-   - `pending_doc_count, pending_doc_samples = backend.pending_documents(limit=5)`
-   - For the first active embedder (or None if none configured), call
-     `embedder_id = backend.find_embedder_id_by_name(<first active.name>)`
-     (if that helper doesn't exist, fall back to skipping). Then
-     `pending_chunk_count = backend.count_chunks_missing_embedding(embedder_id)`.
-     Catch and log-debug on any exception.
-5. Render "Pending files" table:
-   ```
-   Pending files
-   ──────────────────────────────
-   Documents not chunked   12
-   Chunks missing embedding 481
-   
-   Sample paths (top 5):
-     - /path/to/foo.md
-     - ...
-   ```
-   Skip the entire section if BOTH counters are zero.
-6. `--json` mode: the existing `print(_json.dumps(asdict(estimate_result), ensure_ascii=False))`
-   stays UNCHANGED. The new `scan` key is added as a sibling — wrap the
-   final json object in `{"sync_estimate": asdict(...), "scan": asdict(scan_stats), "pending": {"documents": N, "chunks_missing_embedding": N, "sample_paths": [...]}}`.
-
-   **Wire compat:** this IS a JSON schema bump. The MCP `estimate_sync_size`
-   tool consumes `asdict(SyncEstimate)` directly (per the J1 brief +
-   `tests/unit/test_mcp_estimate.py`). DO NOT change that tool's shape.
-   The CLI `--json` mode gets the wrapped shape (sibling keys). Add a
-   `--legacy-json` flag for the old shape if needed, OR put the new
-   data UNDER a top-level `scan` + `pending` while keeping the existing
-   keys at the top level (additive — safer). **Pick the additive shape:**
-   `{...existing SyncEstimate fields..., "scan": {...}, "pending": {...}}`.
-   Add the new keys via `{**asdict(estimate_result), "scan": ..., "pending": ...}`.
-
-**Tests:**
-
-`tests/test_estimate.py` extend (or add new file `tests/estimate/test_scan_stats.py`):
-1. `test_walk_with_stats_returns_scanstats` — synthetic tmp_path with
-   3 files; assert `stats.file_count == 3`, `stats.elapsed_s > 0`,
-   `stats.scan_rate > 0`.
-2. `test_scan_logger_emits_bookends` — use `caplog` at INFO level on
-   `corpus_forge.estimate.scan`; assert "Scanning started" + "Scanning
-   complete" in the captured records after one walk.
-
-`tests/cli/test_estimate_progress.py` new:
-1. `test_estimate_renders_scan_stats_table` — `runner.invoke(app, ["estimate", str(tmp_path)])`;
-   assert "Scan stats" header appears in stdout AND a regex matching
-   `\d+\.\d+s` (elapsed) appears.
-2. `test_estimate_renders_pending_files_when_backend_available` —
-   patch `_get_backend` to return a `MagicMock` with
-   `pending_documents.return_value = (3, ["/a.md", "/b.md"])` and
-   `count_chunks_missing_embedding.return_value = 17`; assert
-   "Pending files" + "3" + "17" in stdout.
-3. `test_estimate_skips_pending_section_when_backend_unreachable` —
-   patch `_get_backend` to raise; assert "Pending files" NOT in stdout.
-4. `test_estimate_json_includes_scan_and_pending` — `runner.invoke(app,
-   ["estimate", str(tmp_path), "--json"])`; parse stdout as JSON;
-   assert `"scan"` key present with `"elapsed_s"`, `"scan_rate"`,
-   `"file_count"`, `"dir_count"`; assert top-level SyncEstimate fields
-   like `"schema_version"`, `"file_count"`, `"total_raw_bytes"` are STILL
-   present (additive shape).
-
-### W4-02 — Embed progress + count helper + loader INFO
 
 **Backend additions (BOTH `corpus_forge/backends/postgres.py` and
 `corpus_forge/backends/sqlite.py`):**
 
 ```python
-def count_chunks_missing_embedding(self, embedder_id: int) -> int:
-    """Return the total number of chunks missing an embedding for ``embedder_id``.
-
-    Companion to ``chunks_missing_embedding``; no limit, no row payload.
-    """
-    embedder_info = self._execute(
-        "SELECT name FROM corpus.embedders WHERE id = %s", (embedder_id,)
-    )
-    if not embedder_info:
-        return 0
-    name = embedder_info[0]["name"]
-    table_name = f"embeddings_{name.replace('-', '_')}"
+def find_embedder_row_by_name(self, name: str) -> dict | None:
+    """Return the embedders row for ``name`` (None if not registered)."""
     rows = self._execute(
-        f"SELECT COUNT(*) AS n FROM corpus.chunks c "
-        f"LEFT JOIN corpus.{table_name} e ON e.chunk_id = c.id "
-        f"WHERE e.chunk_id IS NULL"
+        "SELECT id, name, provider, model_id, dimension, normalized,"
+        " distance, table_name, config FROM corpus.embedders WHERE name = %s",
+        (name,),
     )
+    return dict(rows[0]) if rows else None
+
+def count_existing_embeddings(self, embedder_id: int) -> int:
+    """Return total rows in the per-embedder embeddings table."""
+    info = self._execute(
+        "SELECT table_name FROM corpus.embedders WHERE id = %s", (embedder_id,)
+    )
+    if not info:
+        return 0
+    table_name = info[0]["table_name"]
+    rows = self._execute(f"SELECT COUNT(*) AS n FROM corpus.{table_name}")
     return int(rows[0]["n"]) if rows else 0
+
+def update_embedder_config_blob(self, embedder_id: int, blob: dict) -> None:
+    """Replace the config JSONB for ``embedder_id``."""
+    self._execute(
+        "UPDATE corpus.embedders SET config = %s WHERE id = %s",
+        (psycopg.types.json.Json(blob), embedder_id),
+    )
 ```
 
-Mirror in sqlite (no `corpus.` prefix, `?` placeholder for embedder_id
-lookup; the embedder name lookup also reads `embedders.table_name`
-column directly in sqlite per the existing `chunks_missing_embedding`
-implementation — match that pattern). For unknown embedder_id, return 0.
+SQLite mirror: drop `corpus.` prefix, use `?` placeholders, store
+`json.dumps(blob)` instead of `Json(blob)`. Be careful with table_name
+column existence — sqlite mirror schema also carries it (see existing
+`register_embedder` which writes to `table_name` per chunks_missing_embedding
+implementation).
 
-**`corpus_forge/embed.py` changes:**
+**Tests** (`tests/embedders/test_fingerprint.py` + `test_drift_detect.py`):
 
-1. Add `from corpus_forge.ui.progress import make_progress` at module top.
-2. Inside `backfill_embedder` (line 73), after `embedder_id = backend.register_embedder(embedder)`:
+1. `test_fingerprint_identical_configs` — two identical `EmbedderConfig`s →
+   same `.full` and same `.short`.
+2. `test_fingerprint_changes_with_dimension` — flip `dimension=1024` →
+   `dimension=768`, fingerprint differs.
+3. `test_fingerprint_changes_with_model_id` — flip `model_id` value,
+   fingerprint differs.
+4. `test_fingerprint_whitespace_stable` — leading/trailing whitespace
+   on `model_id` does NOT change the fingerprint (we strip).
+5. `test_fingerprint_short_is_prefix_of_full` — `.short == .full[:16]`.
+6. `test_compare_active_no_stored_row_returns_empty` — backend returns
+   None for the lookup → no drift.
+7. `test_compare_active_matching_fingerprint_returns_empty` — stored row
+   matches → empty list.
+8. `test_compare_active_diverging_fingerprint_returns_drift` — stored
+   row differs → one `EmbedderDrift` with correct was/now ids + sum of
+   existing + missing chunks.
+9. `test_compare_active_handles_multiple_actives` — two active embedders
+   with mixed drift state → only the diverging ones returned.
+10. `test_compare_active_inactive_skipped` — `active=False` → skipped.
+11. `test_save_active_fingerprint_writes_config_blob` — after call,
+    backend.update_embedder_config_blob was invoked with the new
+    fingerprint embedded.
+
+Use `MagicMock` for the backend; no real Postgres / SQLite needed for
+the W5-01 unit suite. (The integration QA pass can re-verify on a
+real sqlite backend if desired.)
+
+### W5-02 — Marker file + drift prompt helper
+
+**`corpus_forge/embedders/_marker.py` (new):**
+
+```python
+"""Pending / skipped re-embed marker (~/.cache/corpus-forge/state/pending_rerun.json).
+
+Atomic-write via tempfile + rename. JSON shape:
+
+    {
+      "<embedder_name>": {
+        "state": "pending|skipped",
+        "fp_was": "...", "fp_now": "...",
+        "detected_at": "iso",
+        "suppressed_until": "iso?"
+      }
+    }
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Literal
+
+import platformdirs
+
+_SUPPRESSION_DAYS = 7
+
+
+def _state_dir() -> Path:
+    base = Path(platformdirs.user_cache_dir("corpus-forge")) / "state"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _marker_path() -> Path:
+    return _state_dir() / "pending_rerun.json"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _read() -> dict:
+    p = _marker_path()
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _atomic_write(payload: dict) -> None:
+    p = _marker_path()
+    fd, tmp = tempfile.mkstemp(prefix=".pending_rerun.", dir=str(p.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+        os.replace(tmp, p)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def mark_pending(name: str, *, fp_was: str, fp_now: str) -> None:
+    payload = _read()
+    payload[name] = {
+        "state": "pending",
+        "fp_was": fp_was,
+        "fp_now": fp_now,
+        "detected_at": _now_iso(),
+    }
+    _atomic_write(payload)
+
+
+def mark_skipped(name: str, *, fp_was: str, fp_now: str) -> None:
+    payload = _read()
+    suppress_until = (datetime.now(timezone.utc) + timedelta(days=_SUPPRESSION_DAYS))
+    payload[name] = {
+        "state": "skipped",
+        "fp_was": fp_was,
+        "fp_now": fp_now,
+        "detected_at": _now_iso(),
+        "suppressed_until": suppress_until.replace(microsecond=0).isoformat(),
+    }
+    _atomic_write(payload)
+
+
+def check_pending_or_skipped(
+    name: str, fp_now: str
+) -> Literal["pending", "skipped", "none"]:
+    payload = _read()
+    entry = payload.get(name)
+    if entry is None:
+        return "none"
+    # If the user re-changed fingerprints, the marker is stale.
+    if entry.get("fp_now") and entry["fp_now"] != fp_now:
+        return "none"
+    state = entry.get("state")
+    if state == "skipped":
+        suppressed = entry.get("suppressed_until")
+        if not suppressed:
+            return "none"
+        try:
+            until = datetime.fromisoformat(suppressed)
+        except ValueError:
+            return "none"
+        if datetime.now(timezone.utc) >= until:
+            return "none"
+        return "skipped"
+    if state == "pending":
+        return "pending"
+    return "none"
+
+
+def clear_marker(name: str) -> None:
+    payload = _read()
+    if name in payload:
+        del payload[name]
+        _atomic_write(payload)
+
+
+__all__ = [
+    "check_pending_or_skipped",
+    "clear_marker",
+    "mark_pending",
+    "mark_skipped",
+]
+```
+
+**`corpus_forge/embedders/drift_prompt.py` (new):**
+
+```python
+"""Render the embedder-drift panel and prompt the user for action."""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from rich.panel import Panel
+
+from corpus_forge.embedders.fingerprint import EmbedderDrift
+from corpus_forge.ui.console import console as _console
+from corpus_forge.ui.prompts import Prompt
+
+
+def _format_drift_line(d: EmbedderDrift) -> str:
+    minutes = max(1, int(d.est_seconds // 60))
+    return (
+        f"Was:  {d.name} ({d.was_dimension}-dim, model={d.was_model_id})  fp={d.fingerprint_was}…\n"
+        f"Now:  {d.name} ({d.now_dimension}-dim, model={d.now_model_id})  fp={d.fingerprint_now}…\n"
+        f"{d.chunks_to_rerun:,} chunks need re-embedding (~{minutes} min)"
+    )
+
+
+def prompt_for_drift(
+    drifts: list[EmbedderDrift],
+    *,
+    background: bool,
+    non_interactive: bool,
+    console=None,
+) -> Literal["now", "later", "skip"]:
+    """Render the drift panel and prompt the user (or auto-resolve)."""
+    if not drifts:
+        return "skip"
+    if non_interactive and background:
+        return "now"
+    if non_interactive and not background:
+        return "later"
+    body = "\n\n".join(_format_drift_line(d) for d in drifts)
+    target = console if console is not None else _console
+    panel = Panel(body, title="Embedder changed", border_style="brand.forge")
+    target.print(panel)
+    answer = Prompt.ask(
+        "Rerun now, later, or skip?",
+        choices=["now", "later", "skip"],
+        default="now",
+        console=target,
+    )
+    return answer  # type: ignore[return-value]
+
+
+__all__ = ["prompt_for_drift"]
+```
+
+**Tests** (`tests/embedders/test_marker.py` + `test_drift_prompt.py`):
+
+1. `test_mark_pending_writes_json` — `mark_pending("e1", fp_was="a",
+   fp_now="b")`; `check_pending_or_skipped("e1", "b") == "pending"`.
+2. `test_mark_skipped_with_ttl` — `mark_skipped("e1", fp_was="a",
+   fp_now="b")` → returns "skipped" now; monkeypatch the clock to
+   8 days ahead → returns "none".
+3. `test_check_returns_none_on_unknown` — fresh state dir; check returns
+   "none".
+4. `test_marker_re-change_fingerprint_invalidates_skip` — mark_skipped
+   for fp_now=b, then check with fp_now=c → "none" (user changed
+   fingerprints again; the suppression no longer applies).
+5. `test_clear_marker_removes_entry` — mark + clear; check returns "none".
+6. `test_atomic_write_doesnt_race` — open the file in read mode in
+   parallel via `Path.read_text()` while `mark_pending` is in flight;
+   no exception, no torn write. (Simulate with two threads + 100
+   iterations.)
+7. `test_prompt_for_drift_non_interactive_background_returns_now` —
+   `prompt_for_drift([drift], background=True, non_interactive=True)`
+   → "now"; no panel rendered.
+8. `test_prompt_for_drift_non_interactive_foreground_returns_later` —
+   `prompt_for_drift([drift], background=False, non_interactive=True)`
+   → "later".
+9. `test_prompt_for_drift_interactive_renders_panel_and_returns_choice`
+   — monkeypatch `Prompt.ask` to return "skip"; check that the
+   render captured the drift body AND the return is "skip".
+10. `test_prompt_for_drift_empty_drifts_returns_skip` — drift list
+    empty → "skip" (no prompt).
+
+Use `tmp_path` + monkeypatching of `platformdirs.user_cache_dir` to
+isolate the marker file under the test temp dir (`CF_LOG_DIR` style
+override doesn't exist for state — patch the function instead).
+
+### W5-03 — CLI / setup / daemon hook points
+
+**Action dispatcher.** Create a small private helper in
+`corpus_forge/cli.py` (NOT a new module — keep the CLI's wiring local
+to the CLI surface):
+
+```python
+def _handle_drift(
+    config,
+    backend,
+    *,
+    background: bool,
+    non_interactive: bool,
+) -> None:
+    """End-to-end drift detection + prompt + action dispatch."""
+    from corpus_forge.embedders.fingerprint import (
+        compare_active, save_active_fingerprint,
+    )
+    from corpus_forge.embedders.drift_prompt import prompt_for_drift
+    from corpus_forge.embedders._marker import (
+        check_pending_or_skipped, mark_pending, mark_skipped, clear_marker,
+    )
+    drifts = compare_active(config, backend)
+    if not drifts:
+        return
+    # Filter out suppressed entries.
+    actionable: list = []
+    for d in drifts:
+        state = check_pending_or_skipped(d.name, d.fingerprint_now)
+        if state == "skipped":
+            continue
+        actionable.append(d)
+    if not actionable:
+        return
+    decision = prompt_for_drift(
+        actionable, background=background, non_interactive=non_interactive,
+    )
+    if decision == "now":
+        if background:
+            _spawn_background_embed(actionable)
+        else:
+            _run_foreground_embed(config, backend, actionable)
+            save_active_fingerprint(config, backend)
+            for d in actionable:
+                clear_marker(d.name)
+    elif decision == "later":
+        for d in actionable:
+            mark_pending(d.name, fp_was=d.fingerprint_was, fp_now=d.fingerprint_now)
+    elif decision == "skip":
+        for d in actionable:
+            mark_skipped(d.name, fp_was=d.fingerprint_was, fp_now=d.fingerprint_now)
+
+
+def _spawn_background_embed(drifts):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    import platformdirs
+
+    state_dir = Path(platformdirs.user_cache_dir("corpus-forge")) / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    pid_file = state_dir / "embed-worker.pid"
+    # Spawn one worker per drifting embedder (sequential within the worker
+    # is acceptable — the user only cares that the foreground returns
+    # immediately).
+    for d in drifts:
+        proc = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-m", "corpus_forge", "embed", "-e", d.name],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        pid_file.write_text(str(proc.pid), encoding="utf-8")
+    ui_info(
+        "Running in background — watch with: "
+        "corpus-forge logs tail --component embed-worker --follow"
+    )
+
+
+def _run_foreground_embed(config, backend, drifts):
+    from corpus_forge.embed import backfill_embedder
+    for d in drifts:
+        backfill_embedder(d.name)
+```
+
+**Hook points:**
+
+1. **`corpus_forge/cli.py` `ingest` command body (cli.py:182)** — before
+   the `main(once=once)` call:
    ```python
-   total = backend.count_chunks_missing_embedding(embedder_id)
-   logger.info(f"Backfilling {embedder_name}: {total} chunks pending")
+   from corpus_forge.config import Config
+   from contextlib import suppress
+   try:
+       config = Config.load()
+   except FileNotFoundError:
+       config = None
+   if config is not None:
+       with suppress(Exception):
+           backend = _get_backend(config) if config.backend.kind == "postgres" else _get_sqlite_backend(config)
+           ctx = typer.Context  # — we'll need actual ctx access
+           _handle_drift(config, backend, background=False, non_interactive=False)
    ```
-3. Wrap the `while True:` loop (line 140) in:
-   ```python
-   with make_progress(
-       f"Embedding chunks ({embedder_name})",
-       total=total,
-       logger=logger,
-   ) as progress:
-       task = progress.add_task("Embedding chunks", total=total)
-       while True:
-           ...
-           processed += len(pairs)
-           progress.update(task, completed=processed)
-           if limit is not None and processed >= limit:
-               break
-   ```
-4. Demote per-batch `logger.info(f"Generating embeddings for ...")` (line
-   175) and `logger.info(f"Processed {processed} embeddings so far")`
-   (line 183) to `logger.debug`. The progress factory's bookends +
-   milestone INFO lines replace them in the default INFO stream.
-5. Mirror in `backfill_image_embedder` (line 192). For the image path,
-   `total` falls back to `None` (unbounded) since
-   `image_chunks_missing_embedding` doesn't have a count helper today —
-   document the gap in a code comment; Wave 5 can backfill the helper.
+   Implementor: thread the typer context's `ctx.obj.background` into the
+   call. Use `ctx: typer.Context` param if not already present.
 
-**`corpus_forge/embedders/sentence_transformers.py` changes:**
+2. **`corpus_forge/cli.py` `embed` command body (cli.py:200)** — same
+   pattern as ingest.
 
-1. Add module-level `loader_logger = logging.getLogger("corpus_forge.embedders.loader")`
-   (NOT `logger = ...` to avoid clashing with the `import logging`
-   namespace).
-2. In `_load_model()` (line 60):
+3. **Setup wizard end-hook (`cli.py:setup` after `run_wizard` /
+   `run_quick` / `run_non_interactive`):** load the just-written
+   config and run `_handle_drift`. Skip if non_interactive AND not
+   CF_BACKGROUND.
+
+4. **Daemon (`corpus_forge/daemon.py`):** in `main()` (line 61), after
+   `setup_signal_handlers()`, add:
    ```python
-   def _load_model(self):
-       if self._model is None and SENTENCE_TRANSFORMERS_AVAILABLE:
-           from corpus_forge._ml_device import resolve_device
-           import time
-           started = time.perf_counter()
-           loader_logger.info(
-               "Loading embedder %s (sentence-transformers, %d-dim, device=%s)",
-               self.name, self.dimension, self.device,
+   from contextlib import suppress
+   from corpus_forge.config import Config
+   from corpus_forge.embedders.fingerprint import compare_active
+   drift_logger = logging.getLogger("corpus_forge.embedders.fingerprint")
+   with suppress(Exception):
+       config = Config.load()
+       # Daemon may not have a foreground backend; reuse the helper:
+       from corpus_forge.cli import _get_backend  # imported lazy to avoid cycles
+       backend = _get_backend(config)
+       drifts = compare_active(config, backend)
+       for d in drifts:
+           drift_logger.warning(
+               "Embedder drift detected: %s -> %s (%d chunks affected)",
+               d.was_model_id, d.now_model_id, d.chunks_to_rerun,
            )
-           self._model = SentenceTransformer(self.model_id, device=resolve_device(self.device))
-           loader_logger.info(
-               "Embedder %s ready in %.1fs", self.name, time.perf_counter() - started,
-           )
    ```
+   No prompt. WARNING level.
 
-**Tests:**
-
-`tests/cli/test_embed_progress.py` new:
-1. `test_backfill_embedder_emits_bookends` — stub `Config.load`, stub
-   the backend (`MagicMock`) with:
-   - `register_embedder.return_value = 1`
-   - `chunks_missing_embedding.side_effect = [
-       [(1, "text-a"), (2, "text-b")],
-       [],  # exit loop
-     ]`
-   - `count_chunks_missing_embedding.return_value = 2`
-   Stub the embedder registry to return a `MagicMock` embedder whose
-   `encode` returns a 2x4 numpy array. Call `backfill_embedder("e1")`.
-   Use `caplog` at INFO; assert "Embedding chunks" appears in at least
-   one bookend record (the progress factory's auto-emitted "started"
-   + "complete" lines).
-2. `test_count_chunks_missing_embedding_postgres` — *NEW BACKEND TEST*
-   skip if no Docker / Postgres unavailable (use existing pg_backend
-   fixture pattern); insert known docs+chunks (no embeddings); assert
-   count matches.
-3. `test_count_chunks_missing_embedding_sqlite` — same against
-   sqlite_backend.
-4. `test_loader_logs_on_model_load` — instantiate
-   `SentenceTransformersEmbedder` and call `_load_model()` with the
-   sentence-transformers package patched to a stub. `caplog` on
-   `corpus_forge.embedders.loader` shows "Loading embedder" + "ready in".
-
-### W4-03 — Ingest --once progress + logger taxonomy
-
-**`corpus_forge/ingest.py` changes:**
-
-1. Add new module-level loggers (in addition to the existing
-   `logger = logging.getLogger(__name__)`):
+5. **`sync status` command body (`cli.py:534`)** — at the end of the
+   per-dataset loop, append one line:
    ```python
-   scan_logger = logging.getLogger("corpus_forge.ingest.scan")
-   extract_logger = logging.getLogger("corpus_forge.ingest.extract")
-   chunk_logger = logging.getLogger("corpus_forge.ingest.chunk")
-   ```
-2. Inside `ingest_once()` (line 422), after `source = _instantiate_source(...)`:
-   ```python
-   scan_logger.info("Scanning %s (%s source)…", source_config.plugin, source.name)
-   ```
-3. Wrap the `for raw in raw_items:` loop in `make_progress("Ingest",
-   total=None, logger=scan_logger)`:
-   ```python
-   from corpus_forge.ui.progress import make_progress
-   raw_items = source.scan()
-   with make_progress(
-       f"Ingest ({source.name})",
-       total=None,
-       logger=scan_logger,
-   ) as progress:
-       task = progress.add_task("Ingest", total=None)
-       docs_chunked = 0
-       for raw in raw_items:
-           try:
-               ingest_one(backend, raw, chunker, embedders, dataset_id)
-               docs_chunked += 1
-               if docs_chunked % 100 == 0:
-                   chunk_logger.info("Chunked %d documents so far", docs_chunked)
-           except Exception as e:
-               extract_logger.info(
-                   "Extractor failed on %s: %s",
-                   getattr(raw, "source_uri", "unknown"),
-                   e,
-               )
-               continue
-           progress.update(task, advance=1)
-       scan_logger.info("Scan complete: %d documents", docs_chunked)
-   ```
-   Note: the existing `logger.error(...)` at line 481 stays as a fallback
-   but the user-facing log line moves to `extract_logger` (downgrade
-   level from ERROR to INFO since the extractor failure is recoverable
-   per-file).
-4. **Daemon mode gating:** `main()` at line 613 already branches on
-   `once`. The progress wrapping lives inside `ingest_once`, which is
-   only called when `once=True`. The daemon-mode branch (line 629) is
-   stub today — no progress changes needed.
-
-**Tests:**
-
-`tests/cli/test_ingest_progress.py` new:
-1. `test_ingest_once_emits_bookend_logs` — stub `Config.load` returning
-   a minimal config with one filesystem source pointed at `tmp_path`
-   containing 2 markdown files. Stub the backend (`MagicMock` covering
-   `migrate`, `get_or_create_dataset`, `register_source`, `upsert_document`,
-   `register_embedder`, etc.). Call `corpus_forge.ingest.main(once=True)`.
-   `caplog` at INFO on `corpus_forge.ingest.scan` and on the root
-   `corpus_forge.ui.progress`-bookend records — assert "Ingest started"
-   AND "Ingest complete" appear AND "Scan complete:" appears.
-2. `test_extract_failure_logs_at_info` — same stub but `ingest_one`
-   patched to raise on one of the two files; `caplog` on
-   `corpus_forge.ingest.extract` shows "Extractor failed".
-3. `test_chunk_milestone_emitted_every_100_docs` — patch source to
-   yield 250 raw items; assert at least 2 `chunk_logger` INFO records
-   ("Chunked 100 …", "Chunked 200 …"). Patch `ingest_one` to a no-op
-   so the loop is fast.
-
-### W4-04 — Sync pull/push progress + logger bookends
-
-**`corpus_forge/sync/pull.py` changes:**
-
-1. Inside `PullPipeline.tick()` (line 81), wrap the `for rev in pending`
-   loop in progress (after computing `pending` so `len(pending)` is known):
-   ```python
-   from corpus_forge.ui.progress import make_progress
-   pending_list = list(pending)
-   if not pending_list:
-       return 0
-   with make_progress(
-       "Pulling revisions",
-       total=len(pending_list),
-       logger=logger,
-   ) as progress:
-       task = progress.add_task("Pulling revisions", total=len(pending_list))
-       count = 0
-       for rev in pending_list:
-           ...  # existing loop body
-           progress.update(task, advance=1)
-   return count
-   ```
-   Note: `pending` from `pending_remote_revisions` is already a list in
-   the existing tests — confirm via spot-read; the conversion is a
-   defensive no-op for iterators.
-
-**`corpus_forge/sync/push.py` changes:**
-
-1. Add module-level `logger = logging.getLogger(__name__)` at top.
-2. In `PushPipeline.start()` (line 142): add INFO bookend BEFORE
-   `self._observer.start()`:
-   ```python
-   logger.info(
-       "Push start: dataset_id=%d root=%s debounce=%.1fs",
-       self._dataset_id, source_root, debounce_seconds,
-   )
-   ```
-3. In `PushPipeline.stop()`: add INFO bookend after the observer joins:
-   ```python
-   logger.info("Push stop: dataset_id=%d", self._dataset_id)
+   import os
+   import platformdirs
+   from pathlib import Path
+   pid_path = Path(platformdirs.user_cache_dir("corpus-forge")) / "state" / "embed-worker.pid"
+   worker = "none"
+   log_path = ""
+   if pid_path.exists():
+       try:
+           pid = int(pid_path.read_text(encoding="utf-8").strip())
+           os.kill(pid, 0)
+           log_path = str(Path(platformdirs.user_cache_dir("corpus-forge")) / "logs" / "embed-worker.log")
+           worker = f"pid={pid}, log={log_path}"
+       except (ProcessLookupError, ValueError, PermissionError):
+           worker = "none"
+   print(f"Background embed-worker: {worker}")
    ```
 
-**CLI changes (`corpus_forge/cli.py`):**
+**Tests** (`tests/cli/test_drift_flow.py`):
 
-1. `sync pull --once` body (`cli.py:401`-ish): after the `count = pl.tick()`
-   line, the existing `ui_ok(f"Pulled {count} revision(s)")` stays.
-   Progress bar lives inside `tick()` — CLI is unchanged.
-2. `sync push` body (`cli.py:446`-ish): no change. Bookends are inside
-   `PushPipeline.start`/`stop`.
+1. `test_ingest_drift_prompts_now_runs_in_foreground` — invoke `ingest
+   --once` against a stubbed `compare_active` returning one drift +
+   `Prompt.ask` patched to return `"now"`; assert `backfill_embedder`
+   was called AND `save_active_fingerprint` was called.
+2. `test_ingest_drift_later_writes_marker` — `Prompt.ask` returns
+   `"later"`; assert the marker file under
+   `~/.cache/corpus-forge/state/pending_rerun.json` (redirected via
+   patched `platformdirs.user_cache_dir`) contains `state=pending`.
+3. `test_ingest_drift_skip_writes_suppression` — `Prompt.ask` returns
+   `"skip"`; assert marker has `state=skipped` + `suppressed_until` ≥
+   today + 7d.
+4. `test_ingest_background_flag_spawns_subprocess` — with global
+   `--background` flag set, drift handler runs `decision=="now"` AND
+   `subprocess.Popen` is called (mocked) AND the worker pid file is
+   written.
+5. `test_setup_quick_non_interactive_with_background_env_runs_now` —
+   `setup --quick --non-interactive` + `CF_BACKGROUND=1` env: drift
+   handler returns `"now"` background, `subprocess.Popen` invoked.
+6. `test_daemon_emits_warning_log_on_drift` — call `daemon.main()`
+   (patched to no-op the ingest loop) with a `compare_active` returning
+   one drift; assert a WARNING record on
+   `corpus_forge.embedders.fingerprint` containing
+   "Embedder drift detected".
+7. `test_daemon_does_not_prompt` — monkeypatch `Prompt.ask` to fail
+   loudly; daemon path must NOT invoke it.
+8. `test_sync_status_reports_running_worker_when_pid_alive` — write a
+   pid file with `str(os.getpid())` (definitely alive); invoke
+   `corpus-forge sync status`; stdout contains "pid=" + the current
+   pid.
+9. `test_sync_status_reports_none_when_pid_dead` — write a pid file
+   with `99999999` (unlikely to exist); stdout contains
+   "Background embed-worker: none".
+10. `test_no_drift_no_panel` — `compare_active` returns empty list;
+    drift panel is NOT rendered.
 
-**Tests:**
-
-`tests/cli/test_sync_progress.py` new:
-1. `test_pull_tick_emits_bookend_when_pending` — instantiate
-   `PullPipeline` with a `MagicMock` backend whose
-   `pending_remote_revisions.return_value = [<3 fake revs>]`. Call
-   `pipeline.tick()`. `caplog` on `corpus_forge.sync.pull` shows
-   "Pulling revisions started: 3 items" + "complete: 3 items".
-2. `test_pull_tick_no_pending_skips_bookend` — same with empty pending;
-   no bookend records emitted (early-return guards the wrap).
-3. `test_push_start_logs_bookend` — instantiate `PushPipeline` with a
-   mock backend + a real `EchoSuppressor`; call `start(tmp_path)`;
-   `caplog` on `corpus_forge.sync.push` shows "Push start:".
-4. `test_push_stop_logs_bookend` — same, call `stop()` after `start()`;
-   assert "Push stop:" recorded.
+Use `CliRunner(mix_stderr=False)` so we can check stdout vs stderr
+separately. Patch `corpus_forge.embedders.fingerprint.compare_active`
+to control the drift state. Patch `platformdirs.user_cache_dir` to
+point at `tmp_path`.
 
 ## DAG
 
-- **Wave A** (5 parallel): testers W4-01, W4-02, W4-03, W4-04; coder W4-02; coder W4-03; coder W4-04.
-- **Wave B** (1 sequential): coder W4-01 (after W4-02 lands `count_chunks_missing_embedding`).
-- **Wave C** (4 parallel): QA W4-01, W4-02, W4-03, W4-04.
-
-## Summary
-
-**Files changed (production):**
-- `corpus_forge/estimate.py` — new `ScanStats` dataclass; new
-  `walk_with_stats` + `get_last_scan_stats` public helpers; `_walk` now
-  returns a 5-tuple with `ScanStats`, wrapped in `make_progress`
-  (unbounded) under the `corpus_forge.estimate.scan` logger.
-- `corpus_forge/cli.py` — `estimate` command grows "Scan stats" +
-  "Pending files" tables; `--json` mode adds additive `"scan"` +
-  `"pending"` sibling keys (SyncEstimate shape unchanged). New
-  helpers `_estimate_pending_files`, `_render_scan_stats_table`,
-  `_render_pending_files_table`.
-- `corpus_forge/embed.py` — `backfill_embedder` + `backfill_image_embedder`
-  loops wrapped in `make_progress`; per-batch INFO chatter demoted
-  to DEBUG; backend coercion guards against MagicMock surfaces in
-  tests.
-- `corpus_forge/embedders/sentence_transformers.py` — new module-level
-  `corpus_forge.embedders.loader` logger; `_load_model` logs
-  "Loading embedder …" + "Embedder … ready in Xs".
-- `corpus_forge/ingest.py` — new taxonomy loggers
-  (`corpus_forge.ingest.{scan,extract,chunk}`); per-source loop
-  wrapped in `make_progress`; extract failures land on extract logger;
-  chunk milestones every 100 docs.
-- `corpus_forge/backends/postgres.py` — new
-  `count_chunks_missing_embedding` + `pending_documents` methods.
-- `corpus_forge/backends/sqlite.py` — mirrors the same two methods.
-- `corpus_forge/sync/pull.py` — `PullPipeline.tick()` wraps the apply
-  loop in `make_progress(total=len(pending))`; empty-pending early-exit
-  keeps idle ticks quiet.
-- `corpus_forge/sync/push.py` — adds module-level
-  `corpus_forge.sync.push` logger; `start()` + `stop()` emit
-  INFO bookends.
-
-**Files added (tests):**
-- `tests/cli/test_estimate_progress.py` (6 tests)
-- `tests/cli/test_embed_progress.py` (5 tests)
-- `tests/cli/test_ingest_progress.py` (3 tests)
-- `tests/cli/test_sync_progress.py` (4 tests)
-
-**Files updated (tests):**
-- `tests/unit/test_cli_estimate.py` — 9 sites flipped from
-  `result.output` to `result.stdout` (Click 8.2+ merges stdout+stderr
-  into `output`; the new progress INFO bookends on stderr broke the
-  pre-existing JSON-parse assertions). No new tests added.
-
-**Gates:**
-- New tests: 18/18 green (`test_estimate_progress.py` 6 +
-  `test_embed_progress.py` 5 + `test_ingest_progress.py` 3 +
-  `test_sync_progress.py` 4).
-- Existing `tests/unit/test_estimate.py`: 55/55 green (no API breakage).
-- Existing `tests/unit/test_cli_estimate.py`: 18/18 green (after
-  `result.output` → `result.stdout` flip).
-- Existing `tests/unit/test_embed_sqlite_wiring.py`: 15/15 green.
-- `tests/cli/test_no_typer_echo.py`: green (no new Typer echo sites).
-- Full unit+cli regression: **164 failed / 3376 passed** —
-  baseline pre-Wave-4 was **181 failed**, so **17 fewer failures**
-  with **zero new failures or errors** introduced.
-- `uv run ruff check` clean on all 14 touched files.
-- `uv run ruff format --check` clean on all 14 touched files.
-
-**Live smokes:**
-- `python -m corpus_forge estimate /tmp/cf-smoke` renders the new
-  "Scan stats" block (Elapsed / Rate / Files seen / Dirs visited)
-  and shows "Pending files" with documents-not-chunked + sample paths
-  when the sqlite backend has pending docs.
-- `python -m corpus_forge estimate /tmp/cf-smoke --json` emits a JSON
-  document with additive `"scan"` + `"pending"` sibling keys while
-  preserving the existing SyncEstimate top-level fields
-  (`schema_version`, `file_count`, `total_raw_bytes`, ...).
-
-## Notes for Wave 5+
-
-- The CLI `--json` payload now wraps the bare `asdict(SyncEstimate)` in
-  an additive shape. The MCP `estimate_sync_size` tool still consumes
-  `asdict(SyncEstimate)` directly via `corpus_forge.estimate` — that
-  call path is untouched. Any future agent-mode JSON contract (Wave 9)
-  should align with the CLI's wrapped shape, not the bare dataclass.
-- `get_last_scan_stats` is a module-level cache populated by `_walk`.
-  Multi-threaded callers should NOT rely on it; CLI is single-threaded.
-- `_estimate_pending_files` uses `backend._execute` directly to look up
-  the embedder id by name because `find_embedder_id_by_name` doesn't
-  exist on either backend yet. Wave 5+ can promote the lookup to a
-  proper protocol method if it sees broader use.
-- `backfill_image_embedder` runs progress unbounded because
-  `count_image_chunks_missing_embedding` doesn't exist on the backends.
-  Wave 5+ can backfill that companion.
-
-## QA verdict — Wave 4
-
-| task-id | verdict | notes |
-|---------|---------|-------|
-| W4-01..W4-04 | approved | 18/18 new tests green. 91/91 across touched test files. Regression delta: -17 failures (181 → 164), 0 new errors, 0 new failures. Ruff check + format clean on all 14 touched files. `tests/cli/test_no_typer_echo.py` static regression green. Live smokes confirmed: `corpus-forge estimate /tmp/cf-smoke` renders Scan stats + Pending files tables; `--json` mode emits additive `"scan"` + `"pending"` sibling keys. SyncEstimate wire shape unchanged (MCP `estimate_sync_size` consumer path untouched). |
+- Wave A (3 parallel testers): W5-01, W5-02, W5-03 testers RED in
+  parallel — all three test surfaces are disjoint.
+- Wave B (2 parallel coders): W5-01 + W5-02 coders GREEN in parallel
+  (independent module surface).
+- Wave C (1 sequential coder): W5-03 coder GREEN (consumes W5-01 +
+  W5-02 APIs).
+- Wave D (3 parallel QAs).
