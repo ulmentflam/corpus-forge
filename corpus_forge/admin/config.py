@@ -205,7 +205,12 @@ def _config_defaults() -> dict:
                 out[name] = info.default
             elif info.default_factory is not None:
                 try:
-                    out[name] = info.default_factory()
+                    # Pydantic v2 default_factory takes either zero args or one
+                    # (FieldInfo's "validated data" arg). We don't have the
+                    # validated-data context here so the no-arg call covers the
+                    # common case; on failure we fall back to None.
+                    factory = info.default_factory
+                    out[name] = factory()  # type: ignore[call-arg]
                 except Exception:
                     out[name] = None
         return out

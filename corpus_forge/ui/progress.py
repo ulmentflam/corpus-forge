@@ -12,7 +12,7 @@ import logging
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from rich.console import Console
 from rich.progress import (
@@ -106,7 +106,7 @@ def make_progress(
     total: int | None,
     console: Console | None = None,
     logger: logging.Logger | None = None,
-) -> Iterator[Progress]:
+) -> Iterator[Progress]:  # _ProgressEmitter is duck-compatible — see agent-mode branch below.
     """Return a configured ``Progress`` context manager.
 
     Parameters
@@ -140,7 +140,10 @@ def make_progress(
             logger.info(f"{description} started: {items} items")
         try:
             with emitter:
-                yield emitter
+                # _ProgressEmitter implements the same add_task/advance/update
+                # public surface as rich.progress.Progress (duck-typed); cast
+                # so callers' type-checks pass without per-call-site cast.
+                yield cast("Progress", emitter)
         finally:
             elapsed = time.perf_counter() - started
             if logger is not None:

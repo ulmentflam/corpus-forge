@@ -137,7 +137,8 @@ def _collect_deps() -> str:
         items = sorted(
             (dist.metadata["Name"], dist.version)
             for dist in importlib.metadata.distributions()
-            if dist.metadata and dist.metadata.get("Name")
+            # PackageMetadata uses __getitem__ (not .get); guard via `in`.
+            if dist.metadata and "Name" in dist.metadata
         )
         return "\n".join(f"{name}=={ver}" for name, ver in items) + "\n"
     except Exception as exc:  # pragma: no cover — defensive

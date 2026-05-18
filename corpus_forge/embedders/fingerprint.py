@@ -123,7 +123,9 @@ def _stored_fingerprint(row: dict) -> Fingerprint:
 
     provider = cfg_blob.get("provider") or row["provider"]
     model_id = cfg_blob.get("model_id") or row["model_id"]
-    dimension = cfg_blob.get("dimension", row["dimension"])
+    dimension = cfg_blob.get("dimension") or row["dimension"]
+    if dimension is None:
+        dimension = 0
     # SQLite stores ``normalized`` as INTEGER 0/1; coerce.
     normalize = cfg_blob.get("normalize")
     if normalize is None:

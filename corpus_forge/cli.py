@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import typer
 
@@ -63,8 +63,10 @@ def _version_callback(value: bool) -> None:
     except ImportError:
         raise typer.Exit() from None
     result = check_for_update()
-    if result and result.notice():
-        ui_info(result.notice())
+    if result:
+        notice = result.notice()
+        if notice:
+            ui_info(notice)
     raise typer.Exit()
 
 
@@ -2424,9 +2426,9 @@ def _render_scan_stats_table(scan_stats) -> None:
 
 def _render_pending_files_table(payload: dict[str, object]) -> None:
     """Render the "Pending files" table; skip if both counters are zero."""
-    docs = int(payload.get("documents_not_chunked", 0) or 0)
-    chunks = int(payload.get("chunks_missing_embedding", 0) or 0)
-    samples = payload.get("sample_paths") or []
+    docs = int(cast(int, payload.get("documents_not_chunked", 0) or 0))
+    chunks = int(cast(int, payload.get("chunks_missing_embedding", 0) or 0))
+    samples = cast(list, payload.get("sample_paths") or [])
     embedder = payload.get("embedder")
 
     if docs == 0 and chunks == 0:
