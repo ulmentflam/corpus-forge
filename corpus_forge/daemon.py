@@ -63,6 +63,12 @@ def main() -> NoReturn:
     setup_signal_handlers()
     logging.info("Starting corpus-forge daemon...")
 
+    # Phase L Wave 5 — fire a WARNING for any embedder drift the daemon
+    # detects on startup.  Daemons run unattended and don't prompt;
+    # surfacing the drift in the rotating log gives operators a
+    # greppable signal.
+    _log_embedder_drift_warning()
+
     # In daemon mode, we run continuous ingestion
     # For now, we'll just run one-shot and exit
     # In a real implementation, we'd set up watchdog observers and run indefinitely
@@ -71,6 +77,38 @@ def main() -> NoReturn:
     # This point should never be reached in a real daemon
     logging.info("Daemon stopped")
     sys.exit(0)
+
+
+def _log_embedder_drift_warning() -> None:
+    """Best-effort WARNING log on embedder fingerprint drift (Wave 5).
+
+    Lazy imports avoid a startup-time circular import with ``cli.py``
+    (which already imports ``daemon`` via the Typer registration path).
+    """
+
+    from contextlib import suppress  # noqa: PLC0415
+
+    drift_logger = logging.getLogger("corpus_forge.embedders.fingerprint")
+    try:
+        from corpus_forge.cli import _get_any_backend  # noqa: PLC0415
+        from corpus_forge.config import Config  # noqa: PLC0415
+        from corpus_forge.embedders.fingerprint import compare_active  # noqa: PLC0415
+    except ImportError:
+        return
+
+    with suppress(Exception):
+        config = Config.load()
+        backend = _get_any_backend(config)
+        if backend is None:
+            return
+        drifts = compare_active(config, backend)
+        for d in drifts:
+            drift_logger.warning(
+                "Embedder drift detected: %s -> %s (%d chunks affected)",
+                d.was_model_id,
+                d.now_model_id,
+                d.chunks_to_rerun,
+            )
 
 
 if __name__ == "__main__":

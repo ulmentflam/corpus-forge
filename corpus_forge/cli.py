@@ -179,7 +179,10 @@ def migrate_history() -> None:
 
 
 @app.command()
-def ingest(once: bool = typer.Option(False, "--once", help="Run one-shot ingestion pass")):
+def ingest(
+    ctx: typer.Context,
+    once: bool = typer.Option(False, "--once", help="Run one-shot ingestion pass"),
+):
     """Discover, extract, chunk, and persist every document the configured sources expose.
 
     Walks every ``[[datasets.sources]]`` entry, dispatches each file through
@@ -194,11 +197,13 @@ def ingest(once: bool = typer.Option(False, "--once", help="Run one-shot ingesti
     """
     from .ingest import main
 
+    _maybe_handle_drift(ctx)
     main(once=once)
 
 
 @app.command()
 def embed(
+    ctx: typer.Context,
     embedder: str = typer.Option(..., "-e", help="Embedder name"),
     dataset: str | None = typer.Option(None, "-d", help="Dataset name"),
     limit: int | None = typer.Option(None, "-l", help="Max chunks to process"),
@@ -216,6 +221,7 @@ def embed(
     """
     from .embed import main
 
+    _maybe_handle_drift(ctx)
     main(embedder=embedder, dataset=dataset, limit=limit, image=image)
 
 
@@ -324,6 +330,51 @@ def setup(
         ui_info(
             "No source root configured — add one later by editing "
             f"{config_path} (set datasets[0].sources)."
+        )
+
+    # Phase L Wave 5 — post-wizard drift check.  Best-effort; failure
+    # silently no-ops so a fresh setup never blocks on telemetry.
+    _maybe_handle_post_setup_drift(
+        config_path=config_path,
+        non_interactive=non_interactive,
+    )
+
+
+def _maybe_handle_post_setup_drift(
+    *,
+    config_path: Path,
+    non_interactive: bool,
+) -> None:
+    """Run :func:`_handle_drift` against the freshly-written config.
+
+    Under ``--non-interactive`` we only proceed if ``CF_BACKGROUND=1``
+    is set (the documented "rerun in the background" knob for CI / quick
+    setups). Otherwise the check would block waiting for input.
+    """
+
+    import os
+    from contextlib import suppress
+
+    from corpus_forge.config import Config
+
+    background = os.environ.get("CF_BACKGROUND") in ("1", "true", "True")
+    if non_interactive and not background:
+        return
+    try:
+        config = Config.load(config_path=config_path)
+    except (FileNotFoundError, ValueError):
+        return
+    backend = None
+    with suppress(Exception):
+        backend = _get_any_backend(config)
+    if backend is None:
+        return
+    with suppress(Exception):
+        _handle_drift(
+            config,
+            backend,
+            background=background,
+            non_interactive=non_interactive,
         )
 
 
@@ -525,9 +576,177 @@ def _get_backend(config):
     return PostgresBackend(dsn=config.backend.dsn, schema=config.backend.schema)
 
 
+def _get_any_backend(config):
+    """Return a backend instance for either backend kind.
+
+    Phase L Wave 5 — the drift-detection hook needs to consult the
+    backend regardless of ``backend.kind``.  Postgres uses
+    :func:`_get_backend`; SQLite hits :class:`SQLiteBackend` directly.
+    """
+
+    if getattr(config, "backend", None) is None:
+        return None
+    kind = getattr(config.backend, "kind", "postgres")
+    if kind == "sqlite":
+        from corpus_forge.backends.sqlite import SQLiteBackend
+
+        return SQLiteBackend(path=config.backend.dsn, schema=config.backend.schema)
+    return _get_backend(config)
+
+
 def _get_dataset_id(backend, name):
     rows = backend._execute("SELECT id FROM corpus.datasets WHERE name = %s", (name,))
     return rows[0]["id"] if rows else None
+
+
+# ── Embedder-fingerprint drift dispatcher (Phase L Wave 5) ──────────────
+
+
+def _is_non_interactive_runtime() -> bool:
+    """Return True under CI / non-TTY where prompting would block forever."""
+
+    import os
+    import sys
+
+    if os.environ.get("CF_NON_INTERACTIVE") in ("1", "true", "True"):
+        return True
+    return not sys.stdin.isatty()
+
+
+def _state_dir_path():
+    """Return ``<platformdirs cache>/corpus-forge/state`` (Wave 5)."""
+
+    from pathlib import Path
+
+    import platformdirs
+
+    p = Path(platformdirs.user_cache_dir("corpus-forge")) / "state"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _spawn_background_embed(drifts) -> None:
+    """Detach a re-embed worker per drifting embedder."""
+
+    import subprocess
+    import sys
+
+    state_dir = _state_dir_path()
+    pid_file = state_dir / "embed-worker.pid"
+    last_pid: int | None = None
+    for d in drifts:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "corpus_forge", "embed", "-e", d.name],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        last_pid = proc.pid
+    if last_pid is not None:
+        pid_file.write_text(str(last_pid), encoding="utf-8")
+    ui_info(
+        "Running in background — watch with: "
+        "corpus-forge logs tail --component embed-worker --follow"
+    )
+
+
+def _run_foreground_embed(drifts) -> None:
+    """Run the re-embed loop in-process for each drifting embedder."""
+
+    from corpus_forge.embed import backfill_embedder
+
+    for d in drifts:
+        backfill_embedder(d.name)
+
+
+def _handle_drift(config, backend, *, background: bool, non_interactive: bool) -> None:
+    """End-to-end drift detection + prompt + action dispatch."""
+
+    from corpus_forge.embedders._marker import (
+        check_pending_or_skipped,
+        clear_marker,
+        mark_pending,
+        mark_skipped,
+    )
+    from corpus_forge.embedders.drift_prompt import prompt_for_drift
+    from corpus_forge.embedders.fingerprint import (
+        compare_active,
+        save_active_fingerprint,
+    )
+
+    drifts = compare_active(config, backend)
+    if not drifts:
+        return
+
+    actionable = []
+    for d in drifts:
+        state = check_pending_or_skipped(d.name, d.fingerprint_now)
+        if state == "skipped":
+            continue
+        actionable.append(d)
+    if not actionable:
+        return
+
+    decision = prompt_for_drift(
+        actionable,
+        background=background,
+        non_interactive=non_interactive,
+    )
+
+    if decision == "now":
+        if background:
+            _spawn_background_embed(actionable)
+        else:
+            _run_foreground_embed(actionable)
+            try:
+                save_active_fingerprint(config, backend)
+            except Exception as exc:
+                import logging as _logging
+
+                _logging.getLogger("corpus_forge.embedders.fingerprint").debug(
+                    "save_active_fingerprint failed: %s", exc
+                )
+            for d in actionable:
+                clear_marker(d.name)
+    elif decision == "later":
+        for d in actionable:
+            mark_pending(d.name, fp_was=d.fingerprint_was, fp_now=d.fingerprint_now)
+    elif decision == "skip":
+        for d in actionable:
+            mark_skipped(d.name, fp_was=d.fingerprint_was, fp_now=d.fingerprint_now)
+
+
+def _maybe_handle_drift(ctx: typer.Context) -> None:
+    """Best-effort drift detection at the start of foreground commands.
+
+    Loads the config + opens the backend; on any failure (config not
+    written yet, backend unreachable, etc.) silently returns so we
+    never block a working command on this telemetry layer.
+    """
+
+    from contextlib import suppress
+
+    from corpus_forge.config import Config
+
+    state = ctx.obj if isinstance(getattr(ctx, "obj", None), GlobalState) else GlobalState()
+    try:
+        config = Config.load()
+    except FileNotFoundError:
+        return
+
+    backend = None
+    with suppress(Exception):
+        backend = _get_any_backend(config)
+    if backend is None:
+        return
+    with suppress(Exception):
+        _handle_drift(
+            config,
+            backend,
+            background=bool(state.background),
+            non_interactive=_is_non_interactive_runtime(),
+        )
 
 
 @sync_app.command()
@@ -535,6 +754,8 @@ def status(
     dataset: str = typer.Option(None, "-d", "--dataset", help="Dataset name"),
 ):
     """Show sync status per dataset."""
+    from contextlib import suppress
+
     from corpus_forge.config import Config
 
     try:
@@ -542,24 +763,60 @@ def status(
     except FileNotFoundError:
         ui_warn("No configuration found; run 'corpus-forge migrate' to initialise.")
         raise typer.Exit() from None
-    try:
+    backend = None
+    with suppress(Exception):
         backend = _get_backend(config)
-        for ds in config.datasets:
-            if dataset and ds.name != dataset:
-                continue
-            ds_id = _get_dataset_id(backend, ds.name)
-            if not ds_id:
-                ui_warn(f"Dataset {ds.name}: not found")
-                continue
-            pending = backend.pending_remote_revisions(ds_id, None, config.host_id(), limit=1)
-            # Per-dataset sync status — data line on stdout so callers can pipe.
-            print(
-                f"Dataset {ds.name}: sync={'enabled' if ds.sync_enabled else 'disabled'},"
-                f" pending={len(pending)}"
-            )
-    except Exception as exc:
-        ui_error(f"{exc}")
-        raise typer.Exit() from None
+    if backend is not None:
+        try:
+            for ds in config.datasets:
+                if dataset and ds.name != dataset:
+                    continue
+                ds_id = _get_dataset_id(backend, ds.name)
+                if not ds_id:
+                    ui_warn(f"Dataset {ds.name}: not found")
+                    continue
+                pending = backend.pending_remote_revisions(ds_id, None, config.host_id(), limit=1)
+                # Per-dataset sync status — data line on stdout so callers can pipe.
+                print(
+                    f"Dataset {ds.name}: sync={'enabled' if ds.sync_enabled else 'disabled'},"
+                    f" pending={len(pending)}"
+                )
+        except Exception as exc:
+            ui_error(f"{exc}")
+
+    # Phase L Wave 5 — background embed-worker pid row.
+    print(f"Background embed-worker: {_describe_embed_worker()}")
+
+
+def _describe_embed_worker() -> str:
+    """Return a one-line human description of the background embed worker."""
+
+    import os
+    from pathlib import Path
+
+    import platformdirs
+
+    base = Path(platformdirs.user_cache_dir("corpus-forge"))
+    pid_path = base / "state" / "embed-worker.pid"
+    log_path = base / "logs" / "embed-worker.log"
+
+    if not pid_path.exists():
+        return "none"
+    try:
+        pid_text = pid_path.read_text(encoding="utf-8").strip()
+        pid = int(pid_text)
+    except (OSError, ValueError):
+        return "none"
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, ValueError):
+        return "none"
+    except PermissionError:
+        # Process exists but we can't signal — still alive.
+        pass
+    except OSError:
+        return "none"
+    return f"pid={pid}, log={log_path}"
 
 
 @sync_app.command()
