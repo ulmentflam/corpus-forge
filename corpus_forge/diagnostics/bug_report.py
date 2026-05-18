@@ -207,6 +207,37 @@ def _safe_count(backend, sql: str) -> int:  # pragma: no cover — exercised via
         return 0
 
 
+def _collect_service_status() -> str:
+    """Render ``service status`` to a string for the bug-report bundle.
+
+    Routes the standard status renderer at a captured Rich :class:`Console`
+    so the output matches what a user would see locally.  Failures are
+    swallowed — bug-report should never fail because the daemon log is
+    missing.
+    """
+
+    try:
+        import io  # noqa: PLC0415
+
+        from rich.console import Console  # noqa: PLC0415
+
+        from corpus_forge.admin.service import render_status  # noqa: PLC0415
+        from corpus_forge.ui.theme import build_theme  # noqa: PLC0415
+
+        buffer = io.StringIO()
+        console = Console(
+            file=buffer,
+            width=100,
+            force_terminal=False,
+            color_system=None,
+            theme=build_theme(),
+        )
+        render_status(console=console)
+        return buffer.getvalue() or "(no service status output)\n"
+    except Exception as exc:  # pragma: no cover — best-effort.
+        return f"(unable to render service status: {exc})\n"
+
+
 def _collect_recent_events() -> str:
     """Flush the in-memory ring buffer into a text dump."""
 
@@ -351,6 +382,16 @@ def collect(
                 redaction_log.append(f"logs/recent_events.txt:{n}")
             (logs_dir / "recent_events.txt").write_text(events_text, encoding="utf-8")
 
+        # 4a. service_status.txt — Wave-8 cross-cut.  Rendered through
+        #     the same code path as the live ``service status`` so
+        #     triage sees what the user sees.
+        service_status_text = _collect_service_status()
+        service_status_text, n = redact_string(service_status_text)
+        total_redactions += n
+        if n:
+            redaction_log.append(f"service_status.txt:{n}")
+        (staging_dir / "service_status.txt").write_text(service_status_text, encoding="utf-8")
+
         # 4. env.txt + deps.txt
         env_text = _collect_env()
         env_text, n = redact_string(env_text)
@@ -408,8 +449,9 @@ def collect(
             "  3. logs/recent_events.txt — the last 200 INFO+ events.\n"
             "  4. logs/<component>.log.txt — full tail per component.\n"
             "  5. config.redacted.toml — user config with secrets stripped.\n"
-            "  6. db_summary.json — counts only (no row content).\n"
-            "  7. env.txt / deps.txt — runtime + package versions.\n\n"
+            "  6. service_status.txt — what `corpus-forge service status` would print.\n"
+            "  7. db_summary.json — counts only (no row content).\n"
+            "  8. env.txt / deps.txt — runtime + package versions.\n\n"
             "All secret-shaped strings (DSN passwords, API keys, bearer\n"
             "tokens) have been replaced with the marker `«redacted»`\n"
             "so a single grep over the bundle locates every site.\n"

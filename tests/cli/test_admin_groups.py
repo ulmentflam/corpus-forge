@@ -26,6 +26,8 @@ _GROUPS_AND_VERBS = [
     ("ollama", ["list", "get", "pull", "set-url", "test"]),
     ("dataset", ["list", "get", "add", "remove"]),
     ("source", ["list", "add", "remove"]),
+    # Phase L Wave 8 — service lifecycle group.
+    ("service", ["status", "start", "stop", "restart", "logs", "install", "uninstall"]),
 ]
 
 

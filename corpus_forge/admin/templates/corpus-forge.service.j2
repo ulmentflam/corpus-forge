@@ -1,0 +1,12 @@
+[Unit]
+Description=corpus-forge daemon
+After=network-online.target
+
+[Service]
+ExecStart={exec_path} service start
+Restart=on-failure
+RestartSec=5
+Environment=CF_CONFIG={config_path}
+
+[Install]
+WantedBy=default.target

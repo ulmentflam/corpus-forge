@@ -207,6 +207,9 @@ packages = ["corpus_forge"]
 "corpus_forge/eval/datasets/forge_self.jsonl"     = "corpus_forge/eval/datasets/forge_self.jsonl"
 "corpus_forge/eval/datasets/forge_self.corpus.md" = "corpus_forge/eval/datasets/forge_self.corpus.md"
 "corpus_forge/setup/questions.toml"               = "corpus_forge/setup/questions.toml"
+# Phase L Wave 8 — service-unit templates rendered by `corpus-forge service install`.
+"corpus_forge/admin/templates/corpus-forge.service.j2" = "corpus_forge/admin/templates/corpus-forge.service.j2"
+"corpus_forge/admin/templates/com.corpus-forge.plist.j2" = "corpus_forge/admin/templates/com.corpus-forge.plist.j2"
 
 [tool.hatch.build.targets.sdist]
 include = [

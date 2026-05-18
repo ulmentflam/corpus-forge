@@ -83,6 +83,8 @@ class TestCollect:
             assert "env.txt" in names
             assert "deps.txt" in names
             assert "logs/recent_events.txt" in names
+            # Phase L Wave 8 — service status snapshot is part of the bundle.
+            assert "service_status.txt" in names
             # cli.log was synthesized so its sweep should be present.
             assert "logs/cli.log.txt" in names
 

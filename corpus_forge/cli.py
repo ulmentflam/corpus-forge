@@ -227,17 +227,20 @@ def embed(
 
 @app.command()
 def daemon():
-    """Run the corpus-forge ingestion daemon in the foreground.
+    """[DEPRECATED] Use ``corpus-forge service start`` instead.
 
-    Watches every configured source for filesystem changes, debounces them,
-    and re-ingests touched documents through the extractor/chunker/embedder
-    pipeline. Intended for development; production deployments wrap this
-    command via the systemd user unit (Linux) or launchd agent (macOS)
-    rendered by ``scripts/{linux,macos}/install.sh``.
+    Kept for one release as an alias for ``service start`` so existing
+    CI and ops scripts don't break.  Internally forwards to
+    :func:`corpus_forge.admin.service.start_daemon_foreground`, which
+    runs the daemon main loop in-process with the same pid-file +
+    SIGINT semantics as ``service start``.
     """
-    from .daemon import main
+    from .admin.service import start_daemon_foreground
 
-    main()
+    ui_warn("`corpus-forge daemon` is deprecated; use `corpus-forge service start`.")
+    rc = start_daemon_foreground()
+    if rc != 0:
+        raise typer.Exit(code=rc)
 
 
 @app.command()
@@ -548,6 +551,7 @@ from corpus_forge.admin.config import config_app as _config_app  # noqa: E402
 from corpus_forge.admin.dataset import dataset_app as _dataset_app  # noqa: E402
 from corpus_forge.admin.embedder import embedder_app as _embedder_app  # noqa: E402
 from corpus_forge.admin.ollama import ollama_app as _ollama_app  # noqa: E402
+from corpus_forge.admin.service import service_app as _service_app  # noqa: E402
 from corpus_forge.admin.source import source_app as _source_app  # noqa: E402
 
 app.add_typer(_config_app, name="config")
@@ -555,6 +559,8 @@ app.add_typer(_embedder_app, name="embedder")
 app.add_typer(_ollama_app, name="ollama")
 app.add_typer(_dataset_app, name="dataset")
 app.add_typer(_source_app, name="source")
+# Phase L Wave 8 — daemon lifecycle group.
+app.add_typer(_service_app, name="service")
 
 
 # ── export subcommand group ──────────────────────────────────────────────
