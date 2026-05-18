@@ -89,17 +89,76 @@ make typecheck   # pyrefly strict on corpus_forge/
 
 ## Releasing
 
-Maintainers only. Release tags are annotated + GPG-signed:
+Maintainers only. Release tags are annotated + signed (SSH or GPG):
 
 ```bash
-git tag -as v0.1.0b1 -m "corpus-forge 0.1.0b1 — first beta"
-git push origin v0.1.0b1
+git tag -s v0.1.0b2 -m "corpus-forge v0.1.0b2 — Living Corpus beta"
+git push origin v0.1.0b2
 ```
 
-Pushing the tag fires `.github/workflows/release.yml`: it re-runs CI,
-builds the wheel + sdist with `uv build`, attaches SHA-256 checksums,
-and creates a GitHub release. Beta / RC tags are marked as
-`prerelease` automatically.
+Pushing the tag fires `.github/workflows/release.yml`, which runs four
+jobs in sequence:
+
+1. **gate** — re-runs the full CI matrix against the exact tag SHA.
+2. **build** — `uv build` produces the wheel + sdist; `sha256sum` writes
+   `dist/SHA256SUMS`; the `dist/` directory is uploaded as an artifact.
+3. **pypi-publish** — downloads the artifact, strips `SHA256SUMS`, and
+   publishes to PyPI via [Trusted Publishing][tp] (OIDC; no token in CI).
+   Gated by the `pypi` GitHub environment for an audit trail.
+4. **publish** — creates the GitHub release, attaches `dist/*`, and
+   marks beta/RC tags as `prerelease` automatically.
+
+[tp]: https://docs.pypi.org/trusted-publishers/
+
+### One-time setup for PyPI Trusted Publishing
+
+Before the **first** release fires, the publisher must be pre-registered:
+
+1. Visit <https://pypi.org/manage/account/publishing/> logged in as the
+   maintainer.
+2. **"Add a new pending publisher"** with:
+   - PyPI Project Name: `corpus-forge`
+   - Owner: `ulmentflam`
+   - Repository name: `corpus-forge`
+   - Workflow filename: `release.yml`
+   - Environment name: `pypi`
+3. Create the GitHub environment (one-liner from a checkout):
+   ```bash
+   gh api -X PUT \
+     "/repos/ulmentflam/corpus-forge/environments/pypi" \
+     -f wait_timer=0 \
+     -F reviewers='[]'
+   ```
+   (Optional: add a required reviewer if you want PyPI uploads to be
+   manual-approve.)
+
+After the first successful upload, PyPI promotes the publisher from
+"pending" to "active" automatically — no further account-side action is
+needed on subsequent releases.
+
+### Homebrew tap sync
+
+The `packaging/distribution/corpus-forge.rb` formula in this repo is a
+**scaffold**. On each release, the maintainer copies it (with the
+release-specific `url` and `sha256`) into
+[`ulmentflam/homebrew-tap`][tap]'s `Formula/corpus-forge.rb`.
+
+[tap]: https://github.com/ulmentflam/homebrew-tap
+
+```bash
+# Compute the sha256 of the source tarball for the tag:
+curl -sSL https://github.com/ulmentflam/corpus-forge/archive/refs/tags/v0.1.0b2.tar.gz \
+  | shasum -a 256 | awk '{ print $1 }'
+
+# Bump the scaffold's url + sha256, then sync to the tap repo:
+git -C ../homebrew-tap pull
+cp packaging/distribution/corpus-forge.rb ../homebrew-tap/Formula/corpus-forge.rb
+git -C ../homebrew-tap commit -am "corpus-forge v0.1.0b2"
+git -C ../homebrew-tap push
+```
+
+Future automation: a `brew bump-formula-pr` step inside `release.yml`
+would close this loop; tracked as a follow-up.
 
 ## Reporting vulnerabilities
 

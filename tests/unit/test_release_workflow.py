@@ -1,16 +1,20 @@
 """Phase BR-04 release.yml workflow pins.
 
 Validates ``.github/workflows/release.yml`` — the tag-triggered release
-pipeline. Three jobs are expected:
+pipeline. Four jobs are expected:
 
 1. ``gate`` — reuses ``ci.yml`` via ``workflow_call``.
 2. ``build`` — needs gate; runs ``uv build``, computes
    ``sha256sum dist/* > dist/SHA256SUMS``, uploads ``dist/`` as an
    artifact.
-3. ``publish`` — needs build; uses ``softprops/action-gh-release@v3``,
-   passes ``files: dist/*``, derives ``prerelease`` from the tag (any
-   tag containing ``b`` or ``rc`` is a prerelease), and
-   ``generate_release_notes: true``.
+3. ``pypi-publish`` — needs build; uses
+   ``pypa/gh-action-pypi-publish`` via OIDC Trusted Publishing.
+   Declares ``environment.name: pypi`` and
+   ``permissions.id-token: write``.
+4. ``publish`` — needs both ``build`` and ``pypi-publish``; uses
+   ``softprops/action-gh-release@v3``, passes ``files: dist/*``,
+   derives ``prerelease`` from the tag (any tag containing ``b`` or
+   ``rc`` is a prerelease), and ``generate_release_notes: true``.
 
 Trigger: ``on.push.tags: ['v*']``.
 
@@ -156,6 +160,84 @@ def test_publish_job_exists_and_needs_build(jobs: dict) -> None:
     needs = pub.get("needs")
     assert needs == "build" or (isinstance(needs, list) and "build" in needs), (
         f"publish job must `needs: build`; got needs={needs!r}"
+    )
+
+
+# ── pypi-publish job — Trusted Publishing via OIDC ───────────────────────
+
+
+def test_pypi_publish_job_exists_and_needs_build(jobs: dict) -> None:
+    assert "pypi-publish" in jobs, "release.yml must define a `pypi-publish` job"
+    pp = jobs["pypi-publish"]
+    needs = pp.get("needs")
+    assert needs == "build" or (isinstance(needs, list) and "build" in needs), (
+        f"pypi-publish job must `needs: build`; got needs={needs!r}"
+    )
+
+
+def test_pypi_publish_declares_pypi_environment(jobs: dict) -> None:
+    """Environment gate makes the job auditable and review-able from GitHub UI."""
+    pp = jobs["pypi-publish"]
+    env = pp.get("environment")
+    assert env is not None, "pypi-publish must declare `environment:` (audit trail)"
+    if isinstance(env, str):
+        assert env == "pypi", f"environment name must be 'pypi'; got {env!r}"
+    else:
+        assert isinstance(env, dict) and env.get("name") == "pypi", (
+            f"environment.name must be 'pypi'; got {env!r}"
+        )
+
+
+def test_pypi_publish_has_id_token_write_permission(jobs: dict) -> None:
+    """OIDC Trusted Publishing requires `id-token: write` on the job."""
+    pp = jobs["pypi-publish"]
+    perms = pp.get("permissions", {})
+    assert isinstance(perms, dict), (
+        f"pypi-publish must declare a `permissions:` block; got {perms!r}"
+    )
+    assert perms.get("id-token") == "write", (
+        f"pypi-publish must grant `id-token: write` for OIDC; got {perms!r}"
+    )
+    # Belt-and-suspenders: do NOT grant contents:write here. Only the
+    # publish job (which creates the GH release) needs it.
+    assert "contents" not in perms or perms.get("contents") != "write", (
+        "pypi-publish must NOT grant `contents: write` (least-privilege)"
+    )
+
+
+def test_pypi_publish_uses_pypa_action(jobs: dict) -> None:
+    pp = jobs["pypi-publish"]
+    steps = pp.get("steps", [])
+    publish_step = None
+    for s in steps:
+        if isinstance(s, dict) and "pypa/gh-action-pypi-publish" in str(s.get("uses", "")):
+            publish_step = s
+            break
+    assert publish_step is not None, (
+        "pypi-publish must use pypa/gh-action-pypi-publish for Trusted Publishing"
+    )
+
+
+def test_pypi_publish_downloads_artifact_and_drops_shasums(jobs: dict) -> None:
+    """SHA256SUMS must be stripped before twine check (rejects unknown files)."""
+    pp = jobs["pypi-publish"]
+    steps = pp.get("steps", [])
+    blob = " ".join(str(s) for s in steps)
+    assert "actions/download-artifact" in blob, (
+        "pypi-publish must download the dist/ artifact built upstream"
+    )
+    assert "SHA256SUMS" in blob, (
+        "pypi-publish must strip dist/SHA256SUMS before publish (twine check rejects it)"
+    )
+
+
+def test_publish_job_needs_pypi_publish(jobs: dict) -> None:
+    """GH release must come AFTER PyPI upload succeeds — no orphaned releases."""
+    pub = jobs["publish"]
+    needs = pub.get("needs")
+    assert isinstance(needs, list) and "pypi-publish" in needs, (
+        f"publish job must `needs:` include `pypi-publish` so the GH release "
+        f"doesn't fire on a PyPI upload failure; got needs={needs!r}"
     )
 
 

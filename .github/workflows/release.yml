@@ -54,8 +54,64 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  publish:
+  # PyPI Trusted Publishing via OIDC. No token in CI; PyPI verifies the
+  # GitHub-issued ID token against a pre-registered publisher on the
+  # project page (Account settings → Publishing → "Pending publishers"
+  # for the first ever upload, then the publisher carries over).
+  #
+  # One-time PyPI setup (does NOT block tagging; only blocks this job
+  # actually uploading):
+  #   1. Visit https://pypi.org/manage/account/publishing/ logged in as
+  #      the maintainer.
+  #   2. "Add a new pending publisher" with:
+  #        PyPI Project Name : corpus-forge
+  #        Owner             : ulmentflam
+  #        Repository name   : corpus-forge
+  #        Workflow filename : release.yml
+  #        Environment name  : pypi
+  #   3. After the first successful upload, PyPI promotes this from
+  #      "pending" to "active" and stops requiring it to be re-added.
+  #
+  # One-time GitHub setup:
+  #   gh api -X PUT \
+  #     "/repos/ulmentflam/corpus-forge/environments/pypi" \
+  #     -f wait_timer=0 \
+  #     -F reviewers='[]'
+  # (Optional: add a required-reviewer to make uploads manual-approve.)
+  pypi-publish:
+    name: Publish to PyPI (Trusted Publishing)
     needs: build
+    runs-on: ubuntu-22.04
+    environment:
+      name: pypi
+      url: https://pypi.org/project/corpus-forge/
+    permissions:
+      id-token: write  # for OIDC; do NOT add contents:write here.
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ github.ref_name }}
+          path: dist/
+
+      - name: Drop non-distribution files
+        # The build job's SHA256SUMS lives next to dist/*.whl|*.tar.gz;
+        # pypa/gh-action-pypi-publish runs `twine check` and would reject
+        # SHA256SUMS as an unknown distribution. Strip before upload.
+        run: rm -f dist/SHA256SUMS
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # `skip-existing: false` (default) — if you accidentally re-fire
+          # the workflow against the same tag, PyPI will reject the
+          # duplicate upload and the job fails loudly. That's the right
+          # default; flip to true only if you're deliberately repacking.
+          print-hash: true
+          verbose: true
+
+  publish:
+    needs: [build, pypi-publish]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
