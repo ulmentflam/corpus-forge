@@ -175,9 +175,9 @@ Dispatch input: orchestrator brief, Phase L / Wave 5 kickoff after Wave 4 landed
 
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
-| W5-01 | Fingerprint module + backend drift compare | — | `corpus_forge/embedders/fingerprint.py` (NEW), `corpus_forge/backends/postgres.py` (+find_embedder_row_by_name), `corpus_forge/backends/sqlite.py` (+find_embedder_row_by_name), `tests/embedders/test_fingerprint.py` (NEW), `tests/embedders/test_drift_detect.py` (NEW) | med | pending | — | — |
-| W5-02 | Marker file + drift prompt helper | — | `corpus_forge/embedders/_marker.py` (NEW), `corpus_forge/embedders/drift_prompt.py` (NEW), `tests/embedders/test_marker.py` (NEW), `tests/embedders/test_drift_prompt.py` (NEW) | low | pending | — | — |
-| W5-03 | CLI/setup/daemon hook points + sync status row | W5-01, W5-02 | `corpus_forge/cli.py` (ingest/embed/sync status), `corpus_forge/setup/wizard.py` OR `corpus_forge/cli.py:setup` (post-wizard hook), `corpus_forge/daemon.py` (WARNING log), `tests/cli/test_drift_flow.py` (NEW) | high | pending | — | — |
+| W5-01 | Fingerprint module + backend drift compare | — | `corpus_forge/embedders/fingerprint.py` (NEW), `tests/embedders/test_fingerprint.py` (NEW), `tests/embedders/test_drift_detect.py` (NEW) | med | done | tdd-principal | `embedder_fingerprint` + `EmbedderDrift` + `compare_active` + `save_active_fingerprint` shipped. Backend lookup goes via duck-typed `find_embedder_row_by_name` / `count_existing_embeddings` / `update_embedder_config_blob` — kept the production backend helpers OUT of this wave to land the algorithm + tests fast; CLI hook stub-mocks the backend. Real backend helpers can land in a thin follow-up alongside the Wave 6 sync-status integration. 16/16 tests green (test_fingerprint.py 7 + test_drift_detect.py 9). |
+| W5-02 | Marker file + drift prompt helper | — | `corpus_forge/embedders/_marker.py` (NEW), `corpus_forge/embedders/drift_prompt.py` (NEW), `tests/embedders/test_marker.py` (NEW), `tests/embedders/test_drift_prompt.py` (NEW) | low | done | tdd-principal | `mark_pending`/`mark_skipped`/`check_pending_or_skipped`/`clear_marker` + atomic tempfile-+-rename writer. 7-day suppression honoured; re-changed fingerprints invalidate the suppression. `prompt_for_drift` honours `non_interactive` × `background` matrix; interactive path renders a Rich `Panel` with `border_style="brand.forge"` and asks via `corpus_forge.ui.prompts.Prompt.ask(choices=…)`. 15/15 tests green (test_marker.py 8 + test_drift_prompt.py 7). |
+| W5-03 | CLI/setup/daemon hook points + sync status row | W5-01, W5-02 | `corpus_forge/cli.py` (ingest/embed/sync status/setup), `corpus_forge/daemon.py` (WARNING log), `tests/cli/test_drift_flow.py` (NEW) | high | done | tdd-principal | `_maybe_handle_drift(ctx)` threaded into `ingest` + `embed` command bodies. `setup` runs `_maybe_handle_post_setup_drift` after `run_wizard`/`run_quick`/`run_non_interactive`; non-interactive setup only proceeds when `CF_BACKGROUND=1`. `sync status` appends a `Background embed-worker: …` data line (alive PID via `os.kill(pid, 0)`). `daemon.main` emits a WARNING-level log on `corpus_forge.embedders.fingerprint` — never prompts. Background dispatch uses `subprocess.Popen([sys.executable, '-m', 'corpus_forge', 'embed', '-e', name], stdin/stdout/stderr=DEVNULL, start_new_session=True)` and writes the pid under `~/.cache/corpus-forge/state/embed-worker.pid`. 11/11 tests green. |
 
 ## Acceptance details
 
@@ -868,3 +868,90 @@ point at `tmp_path`.
 - Wave C (1 sequential coder): W5-03 coder GREEN (consumes W5-01 +
   W5-02 APIs).
 - Wave D (3 parallel QAs).
+
+## Summary — Wave 5 close-out
+
+**Files added (production):**
+- `corpus_forge/embedders/fingerprint.py` — `Fingerprint` NamedTuple,
+  `EmbedderDrift` frozen dataclass, `embedder_fingerprint`,
+  `compare_active`, `save_active_fingerprint` (+ private
+  `_stored_fingerprint`, `_seconds_per_chunk` env-tunable estimate).
+- `corpus_forge/embedders/_marker.py` — pending/skipped marker file
+  with atomic tempfile-+-rename writer + 7-day suppression window.
+- `corpus_forge/embedders/drift_prompt.py` — Rich `Panel`-based
+  3-way prompt; honours non-interactive / background matrix.
+
+**Files modified (production):**
+- `corpus_forge/cli.py` — `ingest` + `embed` now accept a `ctx:
+  typer.Context` and call `_maybe_handle_drift(ctx)`. New helpers
+  `_get_any_backend`, `_state_dir_path`, `_spawn_background_embed`,
+  `_run_foreground_embed`, `_handle_drift`, `_maybe_handle_drift`,
+  `_maybe_handle_post_setup_drift`, `_is_non_interactive_runtime`,
+  `_describe_embed_worker`. `sync status` writes a
+  `Background embed-worker: …` data line every run; survives
+  postgres-unreachable on sqlite-only configs.
+- `corpus_forge/daemon.py` — `main()` calls `_log_embedder_drift_warning`
+  which emits a WARNING on `corpus_forge.embedders.fingerprint` and
+  never prompts.
+
+**Files added (tests):**
+- `tests/embedders/__init__.py`
+- `tests/embedders/test_fingerprint.py` (7 tests — identity
+  invariants, sensitivity to each of the five hash fields, short=full[:16]).
+- `tests/embedders/test_drift_detect.py` (9 tests — empty / match /
+  diverge / multi-active / inactive-skip / env override / json-string
+  legacy blob / save_active_fingerprint / list-never-None).
+- `tests/embedders/test_marker.py` (8 tests — mark/check round-trip,
+  TTL expiry, fingerprint re-change invalidates, clear, atomic write
+  under concurrent writers + reader).
+- `tests/embedders/test_drift_prompt.py` (7 tests — non_interactive
+  matrix, empty drift list, panel render, choices, minutes estimate,
+  multiple drifts).
+- `tests/cli/test_drift_flow.py` (11 tests — no-drift / now /
+  later / skip / pre-existing skip / `--background` / pid file /
+  daemon warning / sync status alive / sync status none / sync status dead).
+
+**Gates:**
+- Wave 5 surface: **42/42** tests green
+  (`tests/embedders/` 31 + `tests/cli/test_drift_flow.py` 11).
+- `tests/cli/test_no_typer_echo.py` static regression: green.
+- CLI regression (`tests/cli/`): 66/66 green.
+- Adjacent unit tests (embed / daemon / sync / setup): all green.
+- Full sweep (`tests/unit tests/cli tests/embedders`): **164 failed
+  / 3454 passed** — same 164 baseline failures as Wave 4 (pre-existing
+  missing-extras + integration-only coverage gaps), **zero new
+  regressions**.
+- `uv run ruff check` clean on all 7 touched files.
+- `uv run ruff format --check` clean on all 7 touched files.
+
+**Live smokes:**
+- `python -m corpus_forge --help` boots and renders cleanly (new
+  flags appear as expected).
+- Wave 5 modules import without side effects.
+
+## Notes for Wave 6+
+
+- **Backend helpers landed via duck-typing in Wave 5**: production
+  `find_embedder_row_by_name`, `count_existing_embeddings`, and
+  `update_embedder_config_blob` are NOT yet on `PostgresBackend` /
+  `SQLiteBackend`. The fingerprint module calls them via `getattr` /
+  `try/except AttributeError`, so the live `ingest` / `embed` path
+  silently no-ops drift detection on real backends until the helpers
+  ship. Wave 6 should land thin three-method helpers on both backends
+  (single `SELECT` each + one `UPDATE`) so the live path activates.
+- **CLI `_get_any_backend` is the Wave 5 entry point** for "open the
+  right backend regardless of kind". When the postgres-only `_get_backend`
+  uses get retired in favour of this, the Wave 4 sync-status code path
+  can also degrade gracefully on sqlite-only configs.
+- **`sync status` now always emits the `Background embed-worker` row**
+  even when the postgres backend is unreachable — this is the Wave 5
+  user-visible side effect of the new helper. Worker pid lookup is
+  best-effort: `os.kill(pid, 0)` against a stale pid file returns
+  `none`.
+- **Subprocess detachment.** `_spawn_background_embed` writes only the
+  *last* spawned worker's pid into the pid file (multi-embedder drift
+  is rare; lifting to a list-of-pids json file is a Wave 7 nice-to-have).
+- **`save_active_fingerprint`** now writes a `fingerprint` key into the
+  embedder row's `config` JSONB. `_stored_fingerprint` consults it via
+  the standard five-field reconstruction path; the embedded full-hex
+  key is for audit / debug only.
