@@ -207,6 +207,96 @@ def _check_uv() -> CheckResult:
         return CheckResult("uv", CheckStatus.WARN, f"{exc}")
 
 
+# ── Phase L Wave 6 — daemon activity ──────────────────────────────────
+
+
+import re as _re  # noqa: E402
+
+from corpus_forge.logging_config import get_log_dir  # noqa: E402
+
+# Matches the standard Wave-1 rotating-log line shape.
+_DAEMON_LINE_RE = _re.compile(
+    r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:\.\d+)?\s+"
+    r"\[(?P<level>[A-Z]+)\s*\]\s+\S+:\s+(?P<msg>.*)$"
+)
+
+# Human-time bucket thresholds (seconds).
+_SECS_PER_MIN: int = 60
+_SECS_PER_HOUR: int = 60 * 60
+_SECS_PER_DAY: int = 24 * 60 * 60
+
+
+def _check_daemon_activity() -> CheckResult:
+    """Surface the most recent INFO line from ``daemon.log``.
+
+    SKIP when the file doesn't exist (the daemon may simply not be
+    running yet, which is the common new-user case).  OK when the
+    most-recent INFO line is parseable; WARN when the file exists but
+    no INFO line could be parsed (corrupt? truncated?).
+    """
+
+    try:
+        log_path = get_log_dir() / "daemon.log"
+    except Exception as exc:  # pragma: no cover — defensive
+        return CheckResult(
+            "daemon_activity",
+            CheckStatus.SKIP,
+            f"no daemon log (unable to resolve log dir: {exc})",
+        )
+
+    if not log_path.exists():
+        return CheckResult(
+            "daemon_activity",
+            CheckStatus.SKIP,
+            "no daemon log (daemon never started or log rotated away)",
+        )
+
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return CheckResult(
+            "daemon_activity",
+            CheckStatus.WARN,
+            f"unable to read {log_path}: {exc}",
+        )
+
+    last_info: tuple[str, str] | None = None  # (ts, msg)
+    for line in reversed(text.splitlines()):
+        m = _DAEMON_LINE_RE.match(line)
+        if not m or m.group("level") != "INFO":
+            continue
+        last_info = (m.group("ts"), m.group("msg"))
+        break
+
+    if last_info is None:
+        return CheckResult(
+            "daemon_activity",
+            CheckStatus.SKIP,
+            "daemon log present but no INFO lines parsed",
+        )
+
+    ts_str, msg = last_info
+    try:
+        ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+        delta = datetime.now() - ts
+        secs = int(delta.total_seconds())
+        if secs < 0:
+            human = ts_str
+        elif secs < _SECS_PER_MIN:
+            human = f"{secs}s ago"
+        elif secs < _SECS_PER_HOUR:
+            human = f"{secs // _SECS_PER_MIN}m ago"
+        elif secs < _SECS_PER_DAY:
+            human = f"{secs // _SECS_PER_HOUR}h ago"
+        else:
+            human = f"{secs // _SECS_PER_DAY}d ago"
+        detail = f"Last activity: {human} — {msg}"
+    except (ValueError, OSError):
+        detail = f"Last activity: {ts_str} — {msg}"
+
+    return CheckResult("daemon_activity", CheckStatus.OK, detail)
+
+
 # ── orchestrator ──────────────────────────────────────────────────────
 
 
@@ -215,6 +305,7 @@ _CHECKS: tuple[Callable[[], CheckResult], ...] = (
     _check_uv,
     _check_poppler,
     _check_ffmpeg,
+    _check_daemon_activity,
 )
 
 

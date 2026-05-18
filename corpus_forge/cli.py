@@ -485,6 +485,60 @@ def doctor(
         raise typer.Exit(code=1)
 
 
+# ── Phase L Wave 6 — bug-report + logs subcommands ───────────────────────
+
+
+@app.command("bug-report")
+def bug_report_cmd(
+    out: Path = typer.Option(
+        None,
+        "--out",
+        help=(
+            "Destination path for the bug-report bundle. Defaults to "
+            "./corpus-forge-bugreport-<date>-<short-hash>.zip in the CWD."
+        ),
+    ),
+    no_logs: bool = typer.Option(
+        False,
+        "--no-logs",
+        help="Skip the logs/ section in the bundle.",
+    ),
+    no_db: bool = typer.Option(
+        False,
+        "--no-db",
+        help="Skip the db_summary.json (no DB introspection).",
+    ),
+    no_zip: bool = typer.Option(
+        False,
+        "--no-zip",
+        help="Write the staging directory uncompressed instead of a zip.",
+    ),
+) -> None:
+    """Bundle a redacted diagnostic zip for an issue report.
+
+    Produces a self-contained snapshot of corpus-forge's runtime state
+    (doctor output, logs, config, DB counts, env) with secrets stripped.
+    Default destination is ``./corpus-forge-bugreport-<date>-<hash>.zip``
+    in the current directory; the prefilled GitHub issue URL is printed
+    after the file is written.
+    """
+
+    from corpus_forge.diagnostics.bug_report import collect
+
+    collect(
+        out=out,
+        include_logs=not no_logs,
+        include_db=not no_db,
+        zip_bundle=not no_zip,
+    )
+
+
+# Mount the ``logs`` sub-app (path / tail / clear).
+from corpus_forge.diagnostics.logs import logs_app as _logs_app  # noqa: E402
+
+app.add_typer(_logs_app, name="logs")
+
+
 # ── export subcommand group ──────────────────────────────────────────────
 
 export_app = typer.Typer(
