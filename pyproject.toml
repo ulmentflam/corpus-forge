@@ -254,6 +254,10 @@ ignore = ["PLR0911", "PLR0912", "PLR0913", "PLR0915"]
 # backend construction inside functions so the module is importable without
 # those extras installed.
 "corpus_forge/export.py" = ["PLC0415"]
+# Phase L Wave 7: admin/ modules defer `Config.load` + backend imports inside
+# verb functions so the package is importable without the user's config file
+# present (the verbs handle missing config individually).
+"corpus_forge/admin/*.py" = ["PLC0415"]
 # Tests use magic values, lambda args, broad raises, composite assertions freely
 "tests/**/*.py" = [
     "PLR2004",  # magic-value-comparison

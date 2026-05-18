@@ -539,6 +539,24 @@ from corpus_forge.diagnostics.logs import logs_app as _logs_app  # noqa: E402
 app.add_typer(_logs_app, name="logs")
 
 
+# ── Phase L Wave 7 — admin CRUD groups ───────────────────────────────────
+#
+# Five sub-apps for inspecting and editing the deployment without
+# hand-editing ``config.toml``.  Each module owns its verb wiring;
+# we just register the Typer apps onto the root.
+from corpus_forge.admin.config import config_app as _config_app  # noqa: E402
+from corpus_forge.admin.dataset import dataset_app as _dataset_app  # noqa: E402
+from corpus_forge.admin.embedder import embedder_app as _embedder_app  # noqa: E402
+from corpus_forge.admin.ollama import ollama_app as _ollama_app  # noqa: E402
+from corpus_forge.admin.source import source_app as _source_app  # noqa: E402
+
+app.add_typer(_config_app, name="config")
+app.add_typer(_embedder_app, name="embedder")
+app.add_typer(_ollama_app, name="ollama")
+app.add_typer(_dataset_app, name="dataset")
+app.add_typer(_source_app, name="source")
+
+
 # ── export subcommand group ──────────────────────────────────────────────
 
 export_app = typer.Typer(

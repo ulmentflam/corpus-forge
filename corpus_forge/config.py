@@ -448,6 +448,27 @@ class EnricherConfig(BaseModel):
         return self
 
 
+class OllamaConfig(BaseModel):
+    """Phase L Wave 7 — Ollama daemon endpoint.
+
+    Used by the ``corpus-forge ollama ...`` admin verbs (list / get /
+    pull / set-url / test).  Other model integrations (VLM, classifier,
+    code-enricher) keep their own ``*_url`` fields so the existing
+    local-or-remote URL pattern works per-integration; this top-level
+    block is just the canonical "where does ``corpus-forge ollama
+    pull``  go" pointer.
+
+    Migration: existing configs have no ``[ollama]`` section.  The
+    default field below means they continue to validate as-is —
+    ``Config(**old_toml)`` simply gets the default-constructed
+    ``OllamaConfig`` instance.
+    """
+
+    base_url: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class EstimateConfig(BaseModel):
     """Phase J / J1 — sync storage estimator knobs.
 
@@ -501,6 +522,9 @@ class Config(BaseModel):
     # no-compression baseline so existing configs see no behaviour
     # change.
     estimate: EstimateConfig = Field(default_factory=EstimateConfig)
+    # Phase L Wave 7 — Ollama daemon endpoint used by the admin verbs.
+    # Defaulted so existing configs (which omit the block) keep validating.
+    ollama: OllamaConfig = Field(default_factory=OllamaConfig)
 
     model_config = ConfigDict(
         str_strip_whitespace=True,
