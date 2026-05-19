@@ -177,9 +177,20 @@ def _ci_no_docker() -> bool:
     return raw.lower() in {"1", "true", "yes"}
 
 
-# Lazy import — only when Docker is available
+# Lazy import — only when Docker is available.
+#
+# Keep a module-level handle (``_PostgresContainer``) that's either the
+# real class or ``None``. The ``postgres_container`` fixture later checks
+# the handle and ``pytest.skip``s when it's ``None`` — that's safer than
+# referencing the symbol unconditionally and getting ``NameError`` if
+# the import-time check ever returned False (which happens on a
+# transient ``docker info`` hiccup on shared CI runners).
+_PostgresContainer = None
 if _docker_available() and _testcontainers_available():
-    from testcontainers.postgres import PostgresContainer
+    try:
+        from testcontainers.postgres import PostgresContainer as _PostgresContainer
+    except ImportError:  # pragma: no cover — defensive
+        _PostgresContainer = None
 
 
 @pytest.fixture(autouse=True)
@@ -335,8 +346,17 @@ def sample_opencode_dir(temp_dir: Path) -> Path:
 
 @pytest.fixture(scope="session")
 def postgres_container():  # type: ignore[return]
-    """Session-scoped PostgreSQL+pgvector container shared across all integration tests."""
-    with PostgresContainer("pgvector/pgvector:pg17", port=5432) as container:
+    """Session-scoped PostgreSQL+pgvector container shared across all integration tests.
+
+    Skips cleanly when ``_PostgresContainer`` is ``None`` (Docker or
+    ``testcontainers`` was unavailable at conftest import time). The
+    previous unconditional reference raised ``NameError`` instead of
+    skipping, which surfaced as a confusing test failure on runners
+    where ``docker info`` was briefly unresponsive during startup.
+    """
+    if _PostgresContainer is None:
+        pytest.skip("Docker / testcontainers not available at conftest import — skipping")
+    with _PostgresContainer("pgvector/pgvector:pg17", port=5432) as container:
         yield container
 
 
