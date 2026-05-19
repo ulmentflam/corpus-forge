@@ -306,7 +306,7 @@ class TestCheckCorpusignore:
             'name = "default"\n'
             'kind = "text"\n'
             'sources = [{plugin = "filesystem", root = "'
-            + str(scan_root)
+            + scan_root.as_posix()
             + '", chunker = "markdown"}]\n\n'
             "[[embedders]]\n"
             'name = "x"\nprovider = "sentence_transformers"\nmodel_id = "x"\ndimension = 8\n\n'
