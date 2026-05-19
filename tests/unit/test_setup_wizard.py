@@ -448,3 +448,127 @@ class TestCollectAnswers:
         # code_ingest skipped → answers["code_enricher"] absent.
         assert answers["code_ingest"] == "no"
         assert "code_enricher" not in answers
+
+
+# ── Phase M Wave 1 — create_corpusignore wiring ─────────────────────
+
+
+class TestCreateCorpusignoreQuestion:
+    """The wizard exposes a ``create_corpusignore`` yes/no question
+    (env var ``CF_CREATE_CORPUSIGNORE``, default ``yes``).
+    """
+
+    def test_question_present(self) -> None:
+        questions = load_questions()
+        ids = {q.id for q in questions}
+        assert "create_corpusignore" in ids
+        q = next(q for q in questions if q.id == "create_corpusignore")
+        assert q.type == "yes_no"
+        assert q.default == "yes"
+        assert q.env == "CF_CREATE_CORPUSIGNORE"
+
+
+class TestApplyCorpusignoreNonInteractive:
+    """End-to-end: ``run_non_interactive`` writes the managed block."""
+
+    def _base_env(self, *, scan_root: str, whisper: str = "no") -> dict[str, str]:
+        return {
+            "CF_BACKEND": "sqlite",
+            "CF_MULTI_FORMAT": "no",
+            "CF_CODE": "no",
+            "CF_OCR": "no",
+            "CF_WHISPER": whisper,
+            "CF_TOKENS": "no",
+            "CF_RETRIEVAL": "no",
+            "CF_RERANKER": "no",
+            "CF_EMBEDDER": "st",
+            "CF_CLASSIFIER": "rule",
+            "CF_MCP": "no",
+            "CF_HF": "no",
+            "CF_SUPERVISOR": "no",
+            "CF_CREATE_CORPUSIGNORE": "yes",
+            "CF_SCAN_ROOT": scan_root,
+        }
+
+    def test_writes_corpusignore_at_scan_root(self, tmp_path: Path) -> None:
+        scan_root = tmp_path / "vault"
+        scan_root.mkdir()
+        config_dir = tmp_path / "cf"
+        env = self._base_env(scan_root=str(scan_root))
+        run_non_interactive(config_dir=config_dir, env=env)
+        ignore_path = scan_root / ".corpusignore"
+        assert ignore_path.exists()
+        text = ignore_path.read_text(encoding="utf-8")
+        # Sentinels present.
+        from corpus_forge.ignore_defaults import MANAGED_END, MANAGED_START
+
+        assert MANAGED_START in text
+        assert MANAGED_END in text
+
+    def test_whisper_off_adds_audio_patterns(self, tmp_path: Path) -> None:
+        scan_root = tmp_path / "vault"
+        scan_root.mkdir()
+        config_dir = tmp_path / "cf"
+        env = self._base_env(scan_root=str(scan_root), whisper="no")
+        run_non_interactive(config_dir=config_dir, env=env)
+        text = (scan_root / ".corpusignore").read_text(encoding="utf-8")
+        assert "*.mp4" in text
+        assert "*.mp3" in text
+
+    def test_whisper_on_drops_audio_patterns(self, tmp_path: Path) -> None:
+        scan_root = tmp_path / "vault"
+        scan_root.mkdir()
+        config_dir = tmp_path / "cf"
+        env = self._base_env(scan_root=str(scan_root), whisper="yes")
+        # Provide whisper backend dependency so the deps-on tree wires.
+        env["CF_WHISPER_BACKEND"] = "local"
+        env["CF_WHISPER_LOCAL_MODEL"] = "small"
+        run_non_interactive(config_dir=config_dir, env=env)
+        text = (scan_root / ".corpusignore").read_text(encoding="utf-8")
+        assert "*.mp4" not in text
+
+    def test_blank_scan_root_writes_only_global(self, tmp_path: Path, monkeypatch) -> None:
+        # No scan_root → no per-tree write, but the global at
+        # <config_dir>/ignore gets resynced regardless.
+        config_dir = tmp_path / "cf"
+        env = self._base_env(scan_root="")
+        # Pin global to inside the config dir for the duration of this
+        # test; the wizard writes the global at <config_dir>/ignore.
+        monkeypatch.setenv("CF_GLOBAL_IGNORE_FILE", str(config_dir / "ignore"))
+        run_non_interactive(config_dir=config_dir, env=env)
+        # No tree to put a .corpusignore under — verify by absence in tmp_path.
+        leftover = list(tmp_path.rglob(".corpusignore"))
+        assert leftover == []
+        # Global written.
+        assert (config_dir / "ignore").exists()
+
+    def test_create_corpusignore_no_skips_local_write(self, tmp_path: Path) -> None:
+        scan_root = tmp_path / "vault"
+        scan_root.mkdir()
+        config_dir = tmp_path / "cf"
+        env = self._base_env(scan_root=str(scan_root))
+        env["CF_CREATE_CORPUSIGNORE"] = "no"
+        run_non_interactive(config_dir=config_dir, env=env)
+        # User opted out — no per-tree .corpusignore.
+        assert not (scan_root / ".corpusignore").exists()
+
+
+class TestApplyCorpusignoreQuick:
+    """``run_quick`` also honors the env var."""
+
+    def test_quick_writes_corpusignore(self, tmp_path: Path) -> None:
+        from corpus_forge.setup import run_quick
+
+        scan_root = tmp_path / "tree"
+        scan_root.mkdir()
+        config_dir = tmp_path / "cf"
+        env = {
+            "CF_BACKEND": "sqlite",
+            "CF_OLLAMA_URL": "http://localhost:11434",
+            "CF_EMBEDDER_MODEL_ID": "qwen3:8b",
+            "CF_DATASET_NAME": "default",
+            "CF_SCAN_ROOT": str(scan_root),
+            "CF_CREATE_CORPUSIGNORE": "yes",
+        }
+        run_quick(config_dir=config_dir, env=env, interactive=False)
+        assert (scan_root / ".corpusignore").exists()

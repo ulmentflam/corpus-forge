@@ -8,6 +8,82 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+## [0.1.0b5] - 2026-05-19
+
+### Added
+
+#### Phase M — Corpusignore lifecycle, scan perf, Zotero, semble spike
+
+- **Managed `.corpusignore` lifecycle** — `corpus-forge setup` now
+  offers to create a feature-aware `.corpusignore` at each data root.
+  The file carries a sentinel-delimited managed block whose patterns
+  derive from active features: always-on lockfiles / build artifacts /
+  sourcemaps / Apple metadata / archives; audio + video patterns
+  added when `whisper.backend == "none"`; raw-image patterns added
+  when no image extractor is configured. Conservative — PDFs,
+  notebooks, and source code are never auto-ignored. User edits
+  outside the sentinels survive resync.
+  (`corpus_forge/ignore_defaults.py`, `corpus_forge/ignore_lifecycle.py`)
+- **`corpus-forge doctor`** — new `corpusignore` check validates
+  syntax, detects managed-block drift vs current features, warns on
+  missing files at configured FS roots.
+- **`corpus-forge ignore` subcommand** — list, add, remove, edit,
+  validate, sync, and init `.corpusignore` files at local or global
+  scope. Refuses to mutate the managed region (instructs the user to
+  flip the underlying feature). Atomic writes; backup-and-rollback
+  on `$EDITOR` syntax errors.
+  (`corpus_forge/admin/ignore.py`)
+- **Five new MCP tools** wrapping the same surface: `list_ignore`,
+  `validate_ignore` (always available, read-only); `add_ignore_pattern`,
+  `remove_ignore_pattern`, `sync_ignore` (`writes_enabled`-gated).
+- **Zotero library source plugin** — local `zotero.sqlite` (read-only
+  via `mode=ro&immutable=1`, safe with Zotero running), Zotero Web API
+  at `api.zotero.org`, or both with local-wins reconciliation. PDF
+  attachments flow through `PdfDigitalExtractor`; Zotero metadata
+  (authors, year, DOI, collection, tags, abstract) propagates into
+  chunk metadata. Doctor and MCP gain Zotero-aware tools.
+  (`corpus_forge/zotero/`, `corpus_forge/sources/zotero.py`,
+  `mcp__corpus-forge__zotero_sync`)
+- **`[scan]` config block** — `extra_skip_dirs`, `follow_symlinks`,
+  `workers` (concurrency reserved for a follow-up wave).
+
+### Changed
+
+- **Unified file walker** (`corpus_forge/scanner/walker.py`) replaces
+  the two divergent slow walkers (`estimate._walk` and
+  `FilesystemSource.discover`). `os.scandir`-based with descent-time
+  directory pruning and extension short-circuit *before* statting.
+  Synthetic-tree bench measured **3.29× speedup** with 99% of
+  baseline-skip subtrees never entered (144 of ~2,200 dirs scanned on
+  a 10k-file fixture).
+- `IgnoreStack` gains `directory_pruned(rel_path)` — conservative
+  algorithm: any negation anywhere in the stack disables directory
+  pruning, otherwise prune iff a non-negated pattern matches. Strict
+  gitignore parent-exclusion semantics preserved (a `!parent/child`
+  negation cannot re-include children when `parent/` is ignored).
+- `corpus-forge estimate` and ingest of the `filesystem` source plugin
+  both delegate to the new walker; size/count behavior is unchanged
+  (parity-tested across five fixture trees including negation-heavy
+  ignore stacks).
+
+### Research
+
+- **semble investigation spike** — time-boxed measurement of
+  MinishLab/semble against corpus-forge's `HybridRetriever` on this
+  repo with 25 hand-authored queries. semble crushes identifier
+  searches (MRR@10 0.85 vs 0.40) at ~880× lower p50 latency, but
+  loses on concept, error, and call-site queries. Decision:
+  **extract techniques** (adaptive lexical-weight bump on symbol
+  queries, definition boosts, optional model2vec static-embedding
+  fast tier) in a follow-up phase. semble is not added as a
+  dependency. (`.planning/tdd/phase_m_wave5_semble.md`,
+  `experiments/semble_adapter.py`)
+
+### Deps
+
+- `httpx>=0.27` (core, for Zotero Web API)
+- `respx>=0.21` (dev, for Zotero web-client tests)
+
 ## [0.1.0b4] - 2026-05-18
 
 (Reissue of `0.1.0b3` — that tag's release pipeline failed on a missed

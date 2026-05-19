@@ -20,7 +20,6 @@ WARNING log entry.
 
 from __future__ import annotations
 
-import fnmatch
 import logging
 from collections.abc import Iterator
 from pathlib import Path
@@ -28,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from corpus_forge.config import ExtractionConfig
 from corpus_forge.extractors.registry import ExtractorRegistry, register_default_extractors
+from corpus_forge.ignore import CorpusIgnore, IgnoreStack
 from corpus_forge.sources.base import RawDocument, WatchedSource
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
@@ -59,31 +59,59 @@ _FAMILY_FLAGS: dict[str, str] = {
 }
 
 
-def _is_excluded(path: Path, root: Path, exclude_globs: list[str]) -> bool:
-    """Return True if *path* matches any exclude glob.
+def _ignore_from_globs(globs: list[str], *, root: Path) -> IgnoreStack | None:
+    """Translate `exclude_globs` into a gitignore-style :class:`IgnoreStack`.
 
-    Mirrors ``MarkdownVaultSource._is_excluded`` semantics:
-    - Match the relative path string against each glob (handles
-      ``dir/**``-style patterns).
-    - Match each individual path component against each glob (handles
-      simple patterns like ``.*``).
+    Phase M Wave 2 — adapter so :class:`FilesystemSource` can drive the
+    unified `scanner.walker.walk` without dual maintenance of two
+    exclude-matching code paths.
 
-    Extracted into a module-level helper so other sources (or tests) can
-    reuse the same matching logic without subclassing.
+    Legacy semantics (the reference behaviour we must preserve):
+    :func:`fnmatch.fnmatch` is applied to BOTH the full relative path
+    AND each individual path component. ``fnmatch`` does NOT special-case
+    ``/`` — so a pattern like ``cache/`` matches NOTHING (no real path
+    has a trailing slash; no component equals ``cache/``).
+
+    Translation rules:
+
+    - ``pattern`` (no slash): pass through. gitignore's unanchored
+      semantics match at any depth — covers BOTH the rel-path full-match
+      and component-match cases legacy handled.
+    - ``dir/**``: translates to ``dir/``, a gitignore directory prune.
+    - ``dir/sub/file``: pass through. gitignore's path-with-slash rule
+      anchors at the gitignore root — same as `fnmatch` on the relative
+      path.
+    - ``foo/`` (trailing slash, no ``**``): legacy no-op (fnmatch never
+      matches), so we DROP it from the stack to preserve parity.
+    - Empty / whitespace lines: skipped.
+
+    Returns ``None`` when the resulting line list is empty so the
+    walker can short-circuit the ignore-stack consultation entirely.
     """
-    try:
-        rel = path.relative_to(root)
-    except ValueError:
-        rel = path
+    if not globs:
+        return None
 
-    rel_str = str(rel)
-    for pattern in exclude_globs:
-        if fnmatch.fnmatch(rel_str, pattern):
-            return True
-        for part in rel.parts:
-            if fnmatch.fnmatch(part, pattern):
-                return True
-    return False
+    lines: list[str] = []
+    for raw in globs:
+        if not raw or not raw.strip():
+            continue
+        pat = raw
+        # `dir/**` → directory prune.
+        if pat.endswith("/**"):
+            lines.append(pat[:-3] + "/")
+            continue
+        # `foo/` (trailing slash but NOT `/**`) — legacy fnmatch never
+        # matches this against any real path, so drop it. Without this,
+        # we'd over-prune `cache/` style patterns that legacy left alone.
+        if pat.endswith("/"):
+            continue
+        # Anything else — pass through.
+        lines.append(pat)
+
+    if not lines:
+        return None
+
+    return IgnoreStack(sets=(CorpusIgnore.from_lines(lines, root=root),))
 
 
 class FilesystemSource(WatchedSource):
@@ -123,18 +151,83 @@ class FilesystemSource(WatchedSource):
 
     # ── Discovery ──────────────────────────────────────────────────────
 
+    def _registry_extensions(self) -> frozenset[str]:
+        # Defensive: custom registries (tests use stubs) may not implement
+        # `.extensions()`. In that case we yield no pre-stat filter — the
+        # registry's per-file `get_for(path)` is the authoritative decision.
+        getter = getattr(self._registry, "extensions", None)
+        if getter is None:
+            return frozenset()
+        return frozenset(ext.lower() for ext in getter())
+
+    def _registry_filenames(self) -> frozenset[str]:
+        getter = getattr(self._registry, "filenames", None)
+        if getter is None:
+            return frozenset()
+        return frozenset(getter())
+
     def discover(self) -> Iterator[Path]:
         """Walk ``root`` recursively yielding every regular file.
 
-        Excluded paths (per ``exclude_globs``) and directories are
-        skipped — the iterator yields only files.
+        Phase M Wave 2 — backed by `scanner.walker.walk` so the
+        baseline-skip (`.git`, `node_modules`, ...) and ignore-driven
+        prunes happen DURING descent rather than after.
+
+        The ignore stack composes (in evaluation order):
+
+        1. Global ``~/.config/corpus-forge/ignore`` (or
+           ``CF_GLOBAL_IGNORE_FILE``) — user-machine defaults.
+        2. Local ``<root>/.corpusignore`` — per-tree rules, including
+           the Phase M Wave 1 managed block that setup writes.
+        3. ``exclude_globs`` translated via :func:`_ignore_from_globs`
+           — legacy per-source toml knob; later sets win on conflict.
+
+        This is also the set ``estimate_sync_size`` and the
+        ``corpus-forge ignore`` CLI/MCP surfaces operate on, so the
+        three views can't drift.
         """
-        for path in self.root.rglob("*"):
-            if not path.is_file():
-                continue
-            if _is_excluded(path, self.root, self.exclude_globs):
-                continue
-            yield path
+        from corpus_forge.ignore import (  # noqa: PLC0415
+            IgnoreStack,
+            load_global_ignore,
+            load_local_ignore,
+        )
+        from corpus_forge.scanner import walk  # noqa: PLC0415
+
+        # Global first, then local — gitignore semantics: later set wins.
+        sets = []
+        try:
+            global_set = load_global_ignore()
+            if global_set.patterns:
+                sets.append(global_set)
+        except (OSError, ValueError) as exc:  # pragma: no cover — defensive
+            logger.debug("FilesystemSource: global ignore failed (%s) — skipping", exc)
+        try:
+            local_set = load_local_ignore(self.root)
+            if local_set.patterns:
+                sets.append(local_set)
+        except (OSError, ValueError) as exc:  # pragma: no cover — defensive
+            logger.debug("FilesystemSource: local ignore failed (%s) — skipping", exc)
+
+        glob_stack = _ignore_from_globs(self.exclude_globs, root=self.root)
+        if glob_stack is not None:
+            sets.extend(glob_stack.sets)
+
+        ignore: IgnoreStack | None = IgnoreStack(sets=tuple(sets)) if sets else None
+        # Restrict to extensions the registry actually handles plus the
+        # extension-less filenames it supports (Makefile/Dockerfile/...).
+        # Pre-stat short-circuit cost dominates for big trees.
+        include_exts = self._registry_extensions() or None
+        include_filenames = self._registry_filenames() or None
+
+        for entry in walk(
+            self.root,
+            ignore=ignore,
+            include_exts=include_exts,
+            include_filenames=include_filenames,
+            follow_symlinks=False,
+            sort=True,
+        ):
+            yield entry.path
 
     # ── Parsing ────────────────────────────────────────────────────────
 

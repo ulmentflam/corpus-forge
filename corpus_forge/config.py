@@ -112,6 +112,55 @@ class ExtractionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ZoteroSourceConfig(BaseModel):
+    """Phase M Wave 4 — Zotero library connector source config.
+
+    Attached as a nested ``zotero`` field on :class:`DatasetSourceConfig`
+    when ``plugin == "zotero"``. Three modes:
+
+    - ``local`` (default) — read ``zotero.sqlite`` directly via
+      ``sqlite3.connect("file:...?mode=ro&immutable=1", uri=True)``.
+      Requires the user to have a local Zotero install. Picks up the
+      default library path automatically when ``library_path`` is unset
+      (resolved at source-construction time).
+    - ``web`` — talk to ``api.zotero.org``. Requires ``user_id`` and an
+      API key in the env var named by ``api_key_env``.
+    - ``both`` — read both; reconcile on ``zotero_item_key``. Local wins
+      unless the web's ``dateModified`` is strictly newer.
+
+    The API key is indirected through an env-var name (``api_key_env``)
+    rather than a literal token field so the same config can be
+    committed without leaking credentials. ``ZOTERO_API_KEY`` is the
+    canonical default; rename only if it collides with another tool.
+    """
+
+    mode: Literal["local", "web", "both"] = "local"
+    library_path: ExpandedPath | None = None
+    user_id: str | None = None
+    api_key_env: str = "ZOTERO_API_KEY"
+    library_type: Literal["user", "group"] = "user"
+    group_id: str | None = None
+    base_url: AnyHttpUrl = AnyHttpUrl("https://api.zotero.org")
+    include_attachments: list[str] = Field(default_factory=lambda: ["application/pdf"])
+    include_collections: list[str] = Field(default_factory=list)
+    exclude_collections: list[str] = Field(default_factory=list)
+    cache_dir: ExpandedPath | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_mode_credentials(self) -> "ZoteroSourceConfig":
+        if self.mode in ("web", "both") and not self.user_id:
+            raise ValueError(
+                f"ZoteroSourceConfig(mode={self.mode!r}) requires user_id "
+                "(numeric Zotero user/group id)."
+            )
+        if self.library_type == "group" and not self.group_id:
+            raise ValueError("ZoteroSourceConfig(library_type='group') requires group_id.")
+        _validate_env_var_name("api_key_env", self.api_key_env)
+        return self
+
+
 class DatasetSourceConfig(BaseModel):
     """Configuration for a dataset source."""
 
@@ -134,6 +183,10 @@ class DatasetSourceConfig(BaseModel):
     # Phase D — multi-format extractor feature flags. Optional; legacy
     # markdown_vault / chat sources leave this None.
     extraction: ExtractionConfig | None = None
+    # Phase M Wave 4 — Zotero library connector. Nested block so the
+    # large set of mode-conditional fields doesn't pollute the
+    # ``DatasetSourceConfig`` namespace.
+    zotero: ZoteroSourceConfig | None = None
 
 
 class DatasetConfig(BaseModel):
@@ -494,6 +547,31 @@ class EstimateConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ScanConfig(BaseModel):
+    """Phase M Wave 2 — filesystem-walker knobs.
+
+    Drives :func:`corpus_forge.scanner.walker.walk` (the unified walker
+    consumed by both the estimator and the `filesystem` source plugin).
+
+    Fields:
+
+    - ``extra_skip_dirs``: additional directory NAMES to prune wholesale,
+      stacked on top of the hard-coded baseline (`.git`, `node_modules`,
+      `__pycache__`, ...). Per-name match, not per-path.
+    - ``follow_symlinks``: when True, symlinked directories are descended
+      (default False — keeps the walker from chasing cycles and
+      double-counting).
+    - ``workers``: API-plumbed but not yet implemented. Must be ``>= 1``;
+      values ``> 1`` raise :class:`NotImplementedError` at walk-time.
+    """
+
+    extra_skip_dirs: list[str] = Field(default_factory=list)
+    follow_symlinks: bool = False
+    workers: int = Field(default=1, ge=1)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class Config(BaseModel):
     """Main configuration for corpus-forge."""
 
@@ -525,6 +603,10 @@ class Config(BaseModel):
     # Phase L Wave 7 — Ollama daemon endpoint used by the admin verbs.
     # Defaulted so existing configs (which omit the block) keep validating.
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
+    # Phase M Wave 2 — filesystem-walker knobs (extra_skip_dirs,
+    # follow_symlinks, workers). Defaulted so existing configs (which omit
+    # the block) keep validating.
+    scan: ScanConfig = Field(default_factory=ScanConfig)
 
     model_config = ConfigDict(
         str_strip_whitespace=True,

@@ -627,6 +627,7 @@ app.add_typer(_logs_app, name="logs")
 from corpus_forge.admin.config import config_app as _config_app  # noqa: E402
 from corpus_forge.admin.dataset import dataset_app as _dataset_app  # noqa: E402
 from corpus_forge.admin.embedder import embedder_app as _embedder_app  # noqa: E402
+from corpus_forge.admin.ignore import ignore_app as _ignore_app  # noqa: E402
 from corpus_forge.admin.ollama import ollama_app as _ollama_app  # noqa: E402
 from corpus_forge.admin.service import service_app as _service_app  # noqa: E402
 from corpus_forge.admin.source import source_app as _source_app  # noqa: E402
@@ -638,6 +639,8 @@ app.add_typer(_dataset_app, name="dataset")
 app.add_typer(_source_app, name="source")
 # Phase L Wave 8 — daemon lifecycle group.
 app.add_typer(_service_app, name="service")
+# Phase M Wave 3 — .corpusignore browse / edit verbs.
+app.add_typer(_ignore_app, name="ignore")
 
 
 # ── export subcommand group ──────────────────────────────────────────────

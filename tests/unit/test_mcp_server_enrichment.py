@@ -255,7 +255,10 @@ class TestWritesEnabledGate:
             "estimate_sync_size",
             "next_curation_target",
             "next_curation_batch",
-        }, f"Expected exactly 8 read tools; got: {sorted(tools)}"
+            # Phase M Wave 3 — .corpusignore read tools
+            "list_ignore",
+            "validate_ignore",
+        }, f"Expected exactly 10 read tools; got: {sorted(tools)}"
 
     def test_writes_enabled_exposes_all_11_tools(
         self, backend: SQLiteBackend, seeded: dict
@@ -283,6 +286,9 @@ class TestWritesEnabledGate:
             # J4 read tools
             "next_curation_target",
             "next_curation_batch",
+            # Phase M Wave 3 read tools
+            "list_ignore",
+            "validate_ignore",
             # F-03 write tools
             "add_label",
             "remove_label",
@@ -298,9 +304,15 @@ class TestWritesEnabledGate:
             "register_session",
             # J4 write tool
             "commit_curation",
+            # Phase M Wave 3 write tools
+            "add_ignore_pattern",
+            "remove_ignore_pattern",
+            "sync_ignore",
+            # Phase M Wave 4 write tool
+            "zotero_sync",
         }
         assert set(tools) == expected, (
-            f"Expected 19 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
+            f"Expected 25 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
         )
 
     def test_unknown_tool_returns_error_when_writes_disabled(

@@ -51,7 +51,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client  # noqa: E402
 
 pytestmark = pytest.mark.smoke
 
-# ── Expected write tool names (F-03 / F-05 / G-03 / H-02 / J4) ──────────────
+# ── Expected write tool names (F-03 / F-05 / G-03 / H-02 / J4 / Phase M Wave 3) ──
 _WRITE_TOOLS = {
     "add_label",
     "remove_label",
@@ -67,10 +67,17 @@ _WRITE_TOOLS = {
     "register_session",
     # J4 write tool
     "commit_curation",
+    # Phase M Wave 3 — .corpusignore write tools
+    "add_ignore_pattern",
+    "remove_ignore_pattern",
+    "sync_ignore",
+    # Phase M Wave 4 — Zotero ingest tool
+    "zotero_sync",
 }
 # G-03: render_conversation + list_chat_templates are always-available read tools.
 # J1:   estimate_sync_size is an always-available read tool (no backend writes).
 # J4:   next_curation_target / next_curation_batch are always-available read tools.
+# Phase M Wave 3: list_ignore + validate_ignore are always-available read tools.
 _READ_TOOLS = {
     "search",
     "get_chunk",
@@ -80,6 +87,8 @@ _READ_TOOLS = {
     "estimate_sync_size",
     "next_curation_target",
     "next_curation_batch",
+    "list_ignore",
+    "validate_ignore",
 }
 _ALL_TOOLS = _READ_TOOLS | _WRITE_TOOLS
 

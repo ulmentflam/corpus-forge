@@ -577,24 +577,10 @@ def test_discover_exclude_component_match(tmp_path: Path):
 # ── coverage backfill — error paths + edge cases ─────────────────────────
 
 
-class TestIsExcludedRelativeFallback:
-    """The ``ValueError`` branch in ``_is_excluded`` — path outside root."""
-
-    def test_path_outside_root_falls_back_to_full_path(self, tmp_path: Path):
-        """When ``path.relative_to(root)`` raises ValueError, the helper
-        matches against the absolute path string. This is a defensive
-        branch: in practice ``discover()`` only yields paths under root.
-        """
-        from corpus_forge.sources.filesystem import _is_excluded
-
-        root = tmp_path / "vault"
-        root.mkdir()
-        # An absolute path *not* under root.
-        outside = tmp_path / "elsewhere" / "secret.md"
-        # Glob matches anywhere → True.
-        assert _is_excluded(outside, root, ["*secret*"]) is True
-        # No match → False.
-        assert _is_excluded(outside, root, ["*.txt"]) is False
+# Phase M Wave 2 — `_is_excluded` was deleted in favour of
+# `_ignore_from_globs` driving the unified walker. The legacy
+# `TestIsExcludedRelativeFallback` class is removed with it; the new
+# adapter is covered by `tests/integration/test_filesystem_source_parity.py`.
 
 
 class TestParseStatFailures:

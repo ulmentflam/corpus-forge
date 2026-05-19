@@ -94,6 +94,48 @@ description = "Heterogeneous personal corpus (research papers, codebases, notebo
     max_bytes       = 50_000_000
     code_chunker_config = { max_chars = 1500, min_chars = 100, overlap = 100 }
 
+# ─────────────────────────────────────────────────────────────────────
+# Zotero library connector (Phase M Wave 4).
+# Three modes: "local" (default), "web", "both".
+# - "local" reads ~/Zotero/zotero.sqlite directly (read-only, immutable=1
+#           so it co-exists with a running Zotero instance).
+# - "web"   talks to https://api.zotero.org. Requires user_id + an API
+#           key in the env var named by `api_key_env` (default
+#           ZOTERO_API_KEY).
+# - "both"  reads both and reconciles on `zotero_item_key` — local wins
+#           unless the web's `dateModified` is strictly newer.
+#
+# PDF attachments flow through PdfDigitalExtractor; Zotero item metadata
+# (authors, year, DOI, collection, tags, abstract) is enriched onto each
+# RawDocument so it propagates to chunks via the existing pipeline.
+#
+# Uncomment when you have a Zotero library to ingest.
+#
+# [[datasets]]
+# name        = "zotero-library"
+# kind        = "text"
+# description = "PDFs + abstracts from a Zotero library."
+#
+#   [[datasets.sources]]
+#   plugin = "zotero"
+#   chunker = "markdown"
+#
+#     [datasets.sources.zotero]
+#     mode = "local"
+#     library_path = "~/Zotero/zotero.sqlite"
+#     include_attachments = ["application/pdf"]
+#     # Empty include = every collection; otherwise prefix match.
+#     # include_collections = ["Research/Quantum"]
+#     # exclude_collections = ["Archive"]
+#
+#     # Web mode (or `both`) needs these:
+#     # mode = "web"   # or "both"
+#     # user_id = "1234567"
+#     # api_key_env = "ZOTERO_API_KEY"
+#     # library_type = "user"  # or "group"; group_id required when "group"
+#     # base_url = "https://api.zotero.org"
+#     # cache_dir = "~/.cache/corpus-forge/zotero"
+
 [[embedders]]
 name      = "qwen3_8b"
 provider  = "sentence_transformers"
@@ -436,6 +478,33 @@ temperature        = 0.1
 # Embeddings, btree indexes, and row overhead are NOT compressed —
 # the ratio only touches the text columns.
 compression_ratio = 1.0
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase M Wave 2 — filesystem walker
+# ─────────────────────────────────────────────────────────────────────
+# Drives the unified `os.scandir`-based walker shared by the estimator
+# and the `filesystem` source plugin. The walker prunes baseline-skip
+# dirs (`.git`, `node_modules`, `__pycache__`, `dist`, `build`, ...)
+# AND any `.corpusignore` directory patterns DURING descent — it never
+# scandir's into a pruned subtree. File-extension short-circuit runs
+# BEFORE `stat()` so non-corpus blobs (`.iso`, `.dmg`) cost nothing.
+#
+# All fields are optional; omitting the block keeps default behaviour.
+[scan]
+# Additional directory NAMES (not paths) to prune wholesale, stacked
+# on top of the hard-coded baseline. Per-name match, not per-path.
+# Useful for site-local conventions ("build_legacy", "wasm-pack", ...).
+extra_skip_dirs = []
+
+# When `true`, symlinked directories are descended. Default `false`
+# keeps the walker from chasing cycles or double-counting via symlinks
+# (the behaviour both pre-Wave-2 walkers had).
+follow_symlinks = false
+
+# Concurrency knob — API-plumbed but not yet implemented. Leave at 1
+# until a future revision lands a thread pool to overlap stat calls.
+# Values > 1 raise `NotImplementedError` at walk-time.
+workers = 1
 
 # ─────────────────────────────────────────────────────────────────────
 # See `docs/architecture.md` for the full pipeline reference (every

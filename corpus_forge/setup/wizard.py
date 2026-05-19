@@ -359,6 +359,102 @@ def render_secrets_env(answers: dict[str, str]) -> str:
 # ───────────────────────────────────────────────────────────────────────────
 
 
+def _features_from_answers(answers: dict[str, str]) -> dict[str, bool]:
+    """Derive the four corpusignore feature flags from the wizard's answer map.
+
+    Mapping (matches the canonical
+    :func:`corpus_forge.ignore_defaults.feature_flags_from_config`):
+
+    - ``CF_WHISPER`` / ``whisper_transcription`` → ``whisper``.
+    - ``CF_OCR`` / ``ocr_escalation`` → ``vlm`` **and** ``image_extractor``
+      (the OCR pipeline implies image-aware extraction).
+    - ``CF_CODE_ENRICHER`` / ``code_enricher`` (non-"none") → ``code_enricher``.
+
+    Defaults: all flags False. The non-interactive path may omit a key
+    entirely (depends_on skips), so use ``answers.get(...) == "yes"``
+    semantics throughout.
+    """
+    whisper_on = answers.get("whisper_transcription") == "yes"
+    ocr_on = answers.get("ocr_escalation") == "yes"
+    enricher_val = answers.get("code_enricher", "none")
+    code_enricher_on = enricher_val in {"local", "remote"}
+    return {
+        "whisper": whisper_on,
+        "image_extractor": ocr_on,
+        "code_enricher": code_enricher_on,
+        "vlm": ocr_on,
+    }
+
+
+def _apply_corpusignore(answers: dict[str, str], config_dir: Path) -> None:
+    """Phase M Wave 1 — write `.corpusignore` (per-tree + global).
+
+    Per-tree write happens only when:
+
+    1. ``create_corpusignore`` answer is ``yes`` (default).
+    2. A non-empty ``scan_root`` was supplied (the full and quick wizards
+       use slightly different keys, but the quick wizard's
+       ``scan_root`` is the same answer name).
+
+    The global file at ``<config_dir>/ignore`` is **always** resynced so
+    feature drift is caught even when the user skipped the per-tree
+    prompt.
+
+    Failures are logged-but-non-fatal: we never break the setup
+    completion when an ignore write hiccups. The caller (CLI banner)
+    surfaces enough information for the user to retry via
+    ``corpus-forge ignore sync`` (Wave 3).
+    """
+    # Local import keeps the ignore_lifecycle import-time cost out of the
+    # wizard hot path (the wizard is loaded by every CLI invocation).
+    from corpus_forge.ignore_lifecycle import (  # noqa: PLC0415
+        ManagedBlockCorrupted,
+        _make_backup_path,
+        atomic_write_text,
+        render_managed_block,
+        splice_managed_block,
+        write_corpusignore,
+    )
+
+    features = _features_from_answers(answers)
+
+    # 1. Per-tree write.
+    scan_root_raw = (answers.get("scan_root") or "").strip()
+    if answers.get("create_corpusignore", "yes") == "yes" and scan_root_raw:
+        try:
+            scan_root = Path(scan_root_raw).expanduser()
+            if scan_root.exists() and scan_root.is_dir():
+                write_corpusignore(scan_root, features)
+        except (OSError, ManagedBlockCorrupted) as exc:  # pragma: no cover — defensive
+            # Best-effort; the wizard prints a hint via the caller.
+            sys.stderr.write(
+                f"[corpus-forge setup] could not write {scan_root_raw}/.corpusignore: {exc}\n"
+            )
+
+    # 2. Global resync — always, so the global file tracks the configured
+    #    features even when the user opts out of a per-tree file.
+    try:
+        # Honor an explicit CF_GLOBAL_IGNORE_FILE override; otherwise
+        # default to <config_dir>/ignore (the canonical global path that
+        # already mirrors git's convention).
+        env_val = os.environ.get("CF_GLOBAL_IGNORE_FILE")
+        global_path = Path(env_val).expanduser() if env_val else config_dir / "ignore"
+        global_path.parent.mkdir(parents=True, exist_ok=True)
+        existing = global_path.read_text(encoding="utf-8") if global_path.exists() else ""
+        try:
+            new_text = splice_managed_block(existing, render_managed_block(features))
+        except ManagedBlockCorrupted:
+            # Move the broken global aside and rewrite from scratch.
+            backup = _make_backup_path(global_path)
+            global_path.replace(backup)
+            new_text = render_managed_block(features)
+        atomic_write_text(global_path, new_text)
+    except OSError as exc:  # pragma: no cover — defensive
+        sys.stderr.write(
+            f"[corpus-forge setup] could not write global ignore at {config_dir}/ignore: {exc}\n"
+        )
+
+
 def _write_config(
     config_dir: Path,
     answers: dict[str, str],
@@ -420,7 +516,9 @@ def run_wizard(
         stream_in=stream_in,
         stream_out=stream_out,
     )
-    config_path, secrets_path = _write_config(config_dir or DEFAULT_CONFIG_DIR, answers)
+    resolved_dir = config_dir or DEFAULT_CONFIG_DIR
+    config_path, secrets_path = _write_config(resolved_dir, answers)
+    _apply_corpusignore(answers, resolved_dir)
     return config_path, secrets_path, answers
 
 
@@ -437,7 +535,9 @@ def run_non_interactive(
         interactive=False,
         env=env or dict(os.environ),
     )
-    config_path, secrets_path = _write_config(config_dir or DEFAULT_CONFIG_DIR, answers)
+    resolved_dir = config_dir or DEFAULT_CONFIG_DIR
+    config_path, secrets_path = _write_config(resolved_dir, answers)
+    _apply_corpusignore(answers, resolved_dir)
     return config_path, secrets_path, answers
 
 
@@ -763,5 +863,15 @@ def run_quick(
         stream_in=stream_in,
         stream_out=stream_out,
     )
-    config_path, secrets_path = _write_quick_config(config_dir or DEFAULT_CONFIG_DIR, answers)
+    resolved_dir = config_dir or DEFAULT_CONFIG_DIR
+    config_path, secrets_path = _write_quick_config(resolved_dir, answers)
+    # The quick wizard's answer map doesn't include
+    # ``whisper_transcription`` / ``ocr_escalation`` / ``code_enricher`` —
+    # default all features off so the conservative pattern set applies.
+    # ``create_corpusignore`` is read from CF_CREATE_CORPUSIGNORE; when
+    # the env var is missing, fall back to "yes" (the question-tree
+    # default).
+    quick_env = env if env is not None else dict(os.environ)
+    answers.setdefault("create_corpusignore", quick_env.get("CF_CREATE_CORPUSIGNORE", "yes"))
+    _apply_corpusignore(answers, resolved_dir)
     return config_path, secrets_path, answers

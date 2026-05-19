@@ -312,6 +312,21 @@ env = "CF_MCP_REGISTER"
 depends_on = "mcp_server=yes"
 
 [[question]]
+id = "create_corpusignore"
+prompt = "Write a managed `.corpusignore` at the scan root (feature-aware defaults)?"
+type = "yes_no"
+default = "yes"
+env = "CF_CREATE_CORPUSIGNORE"
+
+[[question]]
+id = "scan_root"
+prompt = "Scan root directory for the managed `.corpusignore` (leave blank to skip per-tree write)"
+type = "text"
+default = ""
+env = "CF_SCAN_ROOT"
+depends_on = "create_corpusignore=yes"
+
+[[question]]
 id = "hf_export"
 prompt = "HuggingFace dataset export view?"
 type = "yes_no"

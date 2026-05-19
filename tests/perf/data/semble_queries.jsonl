@@ -1,0 +1,25 @@
+{"query": "HybridRetriever.search", "ground_truth_chunks": [{"file": "corpus_forge/retrieval/retriever.py", "byte_start": 3232, "byte_end": 6703}], "category": "identifier"}
+{"query": "IgnoreStack.directory_pruned", "ground_truth_chunks": [{"file": "corpus_forge/ignore.py", "byte_start": 8731, "byte_end": 10394}], "category": "identifier"}
+{"query": "class ManagedBlockCorrupted", "ground_truth_chunks": [{"file": "corpus_forge/ignore_lifecycle.py", "byte_start": 1524, "byte_end": 2254}], "category": "identifier"}
+{"query": "scanner.walker.walk function", "ground_truth_chunks": [{"file": "corpus_forge/scanner/walker.py", "byte_start": 2606, "byte_end": 6164}], "category": "identifier"}
+{"query": "ScanConfig class definition", "ground_truth_chunks": [{"file": "corpus_forge/config.py", "byte_start": 23211, "byte_end": 24278}], "category": "identifier"}
+{"query": "where do we call pymupdf4llm to_markdown", "ground_truth_chunks": [{"file": "corpus_forge/extractors/pdf.py", "byte_start": 6120, "byte_end": 6430}], "category": "callsite"}
+{"query": "callers of mrr_at_k metric", "ground_truth_chunks": [{"file": "corpus_forge/eval/metrics.py", "byte_start": 4382, "byte_end": 4924}], "category": "callsite"}
+{"query": "where is reciprocal_rank_fusion invoked", "ground_truth_chunks": [{"file": "corpus_forge/retrieval/retriever.py", "byte_start": 7157, "byte_end": 7532}], "category": "callsite"}
+{"query": "corpus-forge ingest command entry point", "ground_truth_chunks": [{"file": "corpus_forge/cli.py", "byte_start": 6345, "byte_end": 7500}], "category": "callsite"}
+{"query": "zotero source plugin branch in ingest loop", "ground_truth_chunks": [{"file": "corpus_forge/ingest.py", "byte_start": 26385, "byte_end": 26683}], "category": "callsite"}
+{"query": "how does the watch debounce work", "ground_truth_chunks": [{"file": "corpus_forge/sources/base.py", "byte_start": 1750, "byte_end": 2669}], "category": "concept"}
+{"query": "step-by-step hybrid search dense plus lexical fusion", "ground_truth_chunks": [{"file": "corpus_forge/retrieval/retriever.py", "byte_start": 3155, "byte_end": 8054}], "category": "concept"}
+{"query": "PDF Tier 1 digital text-layer extractor strategy", "ground_truth_chunks": [{"file": "corpus_forge/extractors/pdf.py", "byte_start": 199, "byte_end": 771}], "category": "concept"}
+{"query": "splice managed block while preserving user lines", "ground_truth_chunks": [{"file": "corpus_forge/ignore_lifecycle.py", "byte_start": 2942, "byte_end": 4203}], "category": "concept"}
+{"query": "scanner walker descent-time pruning rationale", "ground_truth_chunks": [{"file": "corpus_forge/scanner/walker.py", "byte_start": 0, "byte_end": 1156}], "category": "concept"}
+{"query": "managed block sentinels not found exception", "ground_truth_chunks": [{"file": "corpus_forge/ignore_lifecycle.py", "byte_start": 1524, "byte_end": 1787}], "category": "error"}
+{"query": "k_values must be non-empty", "ground_truth_chunks": [{"file": "corpus_forge/eval/runner.py", "byte_start": 3484, "byte_end": 3595}], "category": "error"}
+{"query": "gold set is empty no queries", "ground_truth_chunks": [{"file": "corpus_forge/eval/runner.py", "byte_start": 3595, "byte_end": 3763}], "category": "error"}
+{"query": "sqlite-vec extension load error", "ground_truth_chunks": [{"file": "corpus_forge/backends/sqlite.py", "byte_start": 5869, "byte_end": 6101}], "category": "error"}
+{"query": "poppler pdf2image missing OCR fallback", "ground_truth_chunks": [{"file": "corpus_forge/extractors/pdf.py", "byte_start": 1147, "byte_end": 1503}], "category": "error"}
+{"query": "scan workers default", "ground_truth_chunks": [{"file": "corpus_forge/config.py", "byte_start": 23211, "byte_end": 24278}], "category": "config"}
+{"query": "config example scan block extra_skip_dirs", "ground_truth_chunks": [{"file": "config.example.toml", "byte_start": 22473, "byte_end": 22920}], "category": "config"}
+{"query": "zotero dataset source config example", "ground_truth_chunks": [{"file": "config.example.toml", "byte_start": 3663, "byte_end": 4314}], "category": "config"}
+{"query": "whisper transcription backend config", "ground_truth_chunks": [{"file": "config.example.toml", "byte_start": 13087, "byte_end": 13441}], "category": "config"}
+{"query": "estimate block toml configuration tunables", "ground_truth_chunks": [{"file": "config.example.toml", "byte_start": 21321, "byte_end": 21799}], "category": "config"}

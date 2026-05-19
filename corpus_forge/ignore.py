@@ -252,6 +252,41 @@ class IgnoreStack:
                     ignored = not p.negate
         return ignored
 
+    def directory_pruned(self, rel_path: str) -> bool:
+        """True iff descent into ``rel_path`` can be skipped wholesale.
+
+        Phase M Wave 2 — fast-path used by ``scanner.walker.walk`` to
+        prune a subtree BEFORE calling ``os.scandir`` on it.
+
+        The algorithm is intentionally CONSERVATIVE: if any pattern in
+        any set in the stack is a negation (``!foo``), this method
+        returns False — we cannot prove a negation pattern would not
+        re-include a descendant, so we descend and let the per-file
+        ``matches()`` path decide.
+
+        Otherwise, return True iff at least one (non-negated) pattern in
+        any set matches ``rel_path`` via ``regex.search``. ``dir_only``
+        patterns are honored — they count toward a directory-path match.
+
+        The hard-coded ``_SKIP_DIR_NAMES`` baseline in
+        :mod:`corpus_forge.estimate` is enforced by the walker
+        independently; this method is purely about the ignore stack.
+        """
+        if not self.sets:
+            return False
+        # Conservative-negation switch: any negation in the stack
+        # disables descent-time pruning.
+        for s in self.sets:
+            for p in s.patterns:
+                if p.negate:
+                    return False
+        # No negations anywhere → True iff some pattern matches.
+        for s in self.sets:
+            for p in s.patterns:
+                if p.regex.search(rel_path) is not None:
+                    return True
+        return False
+
 
 # ── lookup helpers ───────────────────────────────────────────────────────
 

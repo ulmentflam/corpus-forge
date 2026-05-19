@@ -29,3 +29,7 @@ build/
 
 # Tests aren't needed inside the image.
 tests/
+
+# Phase M Wave 5 — research-only spike code.  Never ships in the
+# Docker image.  See ``experiments/README.md`` for why.
+experiments/

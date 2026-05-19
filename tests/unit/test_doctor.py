@@ -194,3 +194,159 @@ class TestCheckUv:
             result = _check_uv()
         assert result.status == CheckStatus.WARN
         assert "uv" in result.detail.lower()
+
+
+# ── Phase M Wave 1 — corpusignore doctor check ────────────────────────
+
+
+class TestCheckCorpusignore:
+    """``_check_corpusignore(cfg)`` follows the standard CheckResult
+    pattern: SKIP when no FS-style data root, WARN when the file is
+    missing or drifted, FAIL when the file is present but unparseable,
+    OK when synced.
+    """
+
+    def _write_config(self, tmp_path: Path, scan_root: Path | None = None) -> Path:
+        """Render a minimal toml config that loads cleanly.
+
+        Paths are embedded in POSIX form (``as_posix()``) so the TOML
+        parser doesn't treat Windows backslashes as escape sequences
+        (``\\t``, ``\\U``, etc.). Pydantic's ``ExpandedPath`` accepts
+        forward-slash paths on every platform.
+        """
+        if scan_root is None:
+            datasets_block = (
+                "[[datasets]]\n"
+                'name = "default"\n'
+                'kind = "text"\n'
+                'sources = [{plugin = "claude_code", projects_root = "'
+                + (tmp_path / "claude").as_posix()
+                + '", chunker = "conversation"}]\n'
+            )
+        else:
+            datasets_block = (
+                "[[datasets]]\n"
+                'name = "default"\n'
+                'kind = "text"\n'
+                'sources = [{plugin = "filesystem", root = "'
+                + scan_root.as_posix()
+                + '", chunker = "markdown"}]\n'
+            )
+        cfg_text = (
+            '[backend]\nkind = "sqlite"\ndsn = ":memory:"\n\n'
+            "[daemon]\n\n"
+            + datasets_block
+            + '\n[[embedders]]\nname = "x"\nprovider = "sentence_transformers"\n'
+            'model_id = "x"\ndimension = 8\n'
+        )
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text(cfg_text, encoding="utf-8")
+        return cfg_path
+
+    def test_skip_when_no_fs_root(self, tmp_path: Path) -> None:
+        from corpus_forge.config import Config
+        from corpus_forge.doctor.checks import _check_corpusignore
+
+        cfg_path = self._write_config(tmp_path, scan_root=None)
+        cfg = Config.load(config_path=cfg_path, secrets_path=tmp_path / "secrets.env")
+        result = _check_corpusignore(cfg)
+        assert result.name == "corpusignore"
+        assert result.status == CheckStatus.SKIP
+
+    def test_warn_when_file_missing(self, tmp_path: Path) -> None:
+        from corpus_forge.config import Config
+        from corpus_forge.doctor.checks import _check_corpusignore
+
+        scan_root = tmp_path / "vault"
+        scan_root.mkdir()
+        cfg_path = self._write_config(tmp_path, scan_root=scan_root)
+        cfg = Config.load(config_path=cfg_path, secrets_path=tmp_path / "secrets.env")
+        result = _check_corpusignore(cfg)
+        assert result.status == CheckStatus.WARN
+        assert "ignore init" in result.detail.lower() or "ignore sync" in result.detail.lower()
+
+    def test_fail_on_unparseable_line(self, tmp_path: Path) -> None:
+        """Make ``CorpusIgnore.from_file`` raise OSError via an unreadable path."""
+        from unittest.mock import patch as _patch
+
+        from corpus_forge.config import Config
+        from corpus_forge.doctor.checks import _check_corpusignore
+
+        scan_root = tmp_path / "vault"
+        scan_root.mkdir()
+        # Plant a .corpusignore so it's "present" (not WARN-missing)
+        # but force the parse path to raise.
+        (scan_root / ".corpusignore").write_text("# valid\n*.txt\n", encoding="utf-8")
+        cfg_path = self._write_config(tmp_path, scan_root=scan_root)
+        cfg = Config.load(config_path=cfg_path, secrets_path=tmp_path / "secrets.env")
+        with _patch(
+            "corpus_forge.ignore.CorpusIgnore.from_file",
+            side_effect=OSError("parse failure at line 3"),
+        ):
+            result = _check_corpusignore(cfg)
+        assert result.status == CheckStatus.FAIL
+        assert "parse" in result.detail.lower() or "line" in result.detail.lower()
+
+    def test_warn_on_managed_block_drift(self, tmp_path: Path) -> None:
+        """Synced file under whisper=off, then config flipped to whisper=on
+        → managed block drift → WARN."""
+        from corpus_forge.config import Config
+        from corpus_forge.doctor.checks import _check_corpusignore
+        from corpus_forge.ignore_lifecycle import write_corpusignore
+
+        scan_root = tmp_path / "vault"
+        scan_root.mkdir()
+        # Sync against whisper=off.
+        write_corpusignore(scan_root, {"whisper": False})
+        # Now run doctor against a config with whisper=on — drift expected.
+        cfg_text = (
+            '[backend]\nkind = "sqlite"\ndsn = ":memory:"\n\n'
+            "[daemon]\n\n"
+            "[[datasets]]\n"
+            'name = "default"\n'
+            'kind = "text"\n'
+            'sources = [{plugin = "filesystem", root = "'
+            + scan_root.as_posix()
+            + '", chunker = "markdown"}]\n\n'
+            "[[embedders]]\n"
+            'name = "x"\nprovider = "sentence_transformers"\nmodel_id = "x"\ndimension = 8\n\n'
+            '[whisper]\nbackend = "local"\nmodel = "small"\n'
+        )
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text(cfg_text, encoding="utf-8")
+        cfg = Config.load(config_path=cfg_path, secrets_path=tmp_path / "secrets.env")
+        result = _check_corpusignore(cfg)
+        assert result.status == CheckStatus.WARN
+        assert "sync" in result.detail.lower() or "drift" in result.detail.lower()
+
+    def test_ok_when_synced(self, tmp_path: Path) -> None:
+        from corpus_forge.config import Config
+        from corpus_forge.doctor.checks import _check_corpusignore
+        from corpus_forge.ignore_lifecycle import write_corpusignore
+
+        scan_root = tmp_path / "vault"
+        scan_root.mkdir()
+        # Sync under whisper=off, then verify under same config.
+        write_corpusignore(scan_root, {"whisper": False})
+        cfg_path = self._write_config(tmp_path, scan_root=scan_root)
+        cfg = Config.load(config_path=cfg_path, secrets_path=tmp_path / "secrets.env")
+        result = _check_corpusignore(cfg)
+        assert result.status == CheckStatus.OK
+
+
+class TestDoctorJsonShapePreserved:
+    """Phase M Wave 1 — the new ``corpusignore`` check is additive only.
+    Existing JSON ``checks[]`` keys all still present + a new entry for
+    the corpusignore check.
+    """
+
+    def test_corpusignore_check_appears_in_report(self, tmp_path: Path) -> None:
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text('[backend]\nkind = "sqlite"\ndsn = ":memory:"\n', encoding="utf-8")
+        report = run_doctor(config_path=cfg_path)
+        names = {r.name for r in report.results}
+        # Pre-existing names still present.
+        assert "python" in names
+        assert "config" in names
+        # New name.
+        assert "corpusignore" in names

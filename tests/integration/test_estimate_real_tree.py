@@ -196,11 +196,13 @@ def test_estimate_honors_corpusignore_against_multi_format_fixture(tmp_path: Pat
     stack = IgnoreStack((CorpusIgnore.empty(tmp_path), local))
     filtered = estimate_sync(tmp_path, config, ignore=stack)
 
-    # file_count drops by at least 2 (`vacation.heic` + `Backups/big.bin`).
-    # `notes.md` is in neither set (the `!notes.md` negation is a no-op
-    # because nothing was ignoring it). `.git/` and `node_modules/` are
-    # baseline-skipped in BOTH runs, so they don't contribute to the diff.
-    assert filtered.file_count <= baseline.file_count - 2
+    # file_count drops by at least 1 (`vacation.heic`). Phase M Wave 2:
+    # `Backups/big.bin` has an unknown extension and is now short-circuited
+    # BEFORE stat — it is absent from BOTH baseline and filtered runs and
+    # does not contribute to the diff. `.git/` and `node_modules/` remain
+    # baseline-skipped in both. `notes.md` is in neither set (the
+    # `!notes.md` negation is a no-op because nothing was ignoring it).
+    assert filtered.file_count <= baseline.file_count - 1
     assert filtered.total_raw_bytes < baseline.total_raw_bytes
 
     # Predicted-extractor classes after filtering: `markdown` only (heic +
@@ -208,5 +210,3 @@ def test_estimate_honors_corpusignore_against_multi_format_fixture(tmp_path: Pat
     classes = {s.extractor_class for s in filtered.by_extractor if s.file_count > 0}
     assert "markdown" in classes
     assert "image" not in classes, "vacation.heic should have been pruned"
-    # The Backups/big.bin file is an unknown extractor; we just need its
-    # bytes excluded from total_raw_bytes (asserted above).

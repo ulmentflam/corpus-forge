@@ -1,0 +1,868 @@
+{
+  "schema_version": 1,
+  "phase": "M",
+  "wave": 5,
+  "kind": "semble_bench",
+  "generated_at": "2026-05-19T15:00:59.685301+00:00",
+  "repo_root": "corpus-forge",
+  "git_head": "5a8a26c979c4c705c569cd6477ea052c5b9fdf06",
+  "n_queries": 25,
+  "platform": {
+    "python": "3.13.3",
+    "system": "darwin"
+  },
+  "build": {
+    "semble_seconds": 0.977,
+    "hybrid_seconds": 10.624
+  },
+  "summary": {
+    "semble": {
+      "mrr_at_10": 0.374,
+      "recall_at_5": 0.48,
+      "p50_latency_ms": 1.1004590196534991,
+      "p95_latency_ms": 9.10691695753485,
+      "n_queries": 25
+    },
+    "hybrid": {
+      "mrr_at_10": 0.4154920634920635,
+      "recall_at_5": 0.56,
+      "p50_latency_ms": 4.430499975569546,
+      "p95_latency_ms": 5.385082971770316,
+      "n_queries": 25
+    }
+  },
+  "by_category": {
+    "identifier": {
+      "semble": {
+        "mrr_at_10": 0.85,
+        "recall_at_5": 1.0,
+        "p50_latency_ms": 6.57100003445521,
+        "p95_latency_ms": 10.880707995966077,
+        "n_queries": 5
+      },
+      "hybrid": {
+        "mrr_at_10": 0.3555555555555555,
+        "recall_at_5": 0.6,
+        "p50_latency_ms": 3.7436250131577253,
+        "p95_latency_ms": 4.593624966219068,
+        "n_queries": 5
+      }
+    },
+    "callsite": {
+      "semble": {
+        "mrr_at_10": 0.2,
+        "recall_at_5": 0.2,
+        "p50_latency_ms": 1.100375025998801,
+        "p95_latency_ms": 1.3553340104408562,
+        "n_queries": 5
+      },
+      "hybrid": {
+        "mrr_at_10": 0.42000000000000004,
+        "recall_at_5": 0.6,
+        "p50_latency_ms": 4.985000006854534,
+        "p95_latency_ms": 5.466375034302473,
+        "n_queries": 5
+      }
+    },
+    "concept": {
+      "semble": {
+        "mrr_at_10": 0.42000000000000004,
+        "recall_at_5": 0.6,
+        "p50_latency_ms": 1.1051250039599836,
+        "p95_latency_ms": 1.333917025476694,
+        "n_queries": 5
+      },
+      "hybrid": {
+        "mrr_at_10": 0.6,
+        "recall_at_5": 0.8,
+        "p50_latency_ms": 4.227874975185841,
+        "p95_latency_ms": 5.216042045503855,
+        "n_queries": 5
+      }
+    },
+    "error": {
+      "semble": {
+        "mrr_at_10": 0.3,
+        "recall_at_5": 0.4,
+        "p50_latency_ms": 1.0473749716766179,
+        "p95_latency_ms": 1.185457978863269,
+        "n_queries": 5
+      },
+      "hybrid": {
+        "mrr_at_10": 0.64,
+        "recall_at_5": 0.8,
+        "p50_latency_ms": 4.2045420268550515,
+        "p95_latency_ms": 5.385082971770316,
+        "n_queries": 5
+      }
+    },
+    "config": {
+      "semble": {
+        "mrr_at_10": 0.1,
+        "recall_at_5": 0.2,
+        "p50_latency_ms": 1.0031669517047703,
+        "p95_latency_ms": 1.098125008866191,
+        "n_queries": 5
+      },
+      "hybrid": {
+        "mrr_at_10": 0.06190476190476191,
+        "recall_at_5": 0.0,
+        "p50_latency_ms": 4.1335419518873096,
+        "p95_latency_ms": 4.952084040269256,
+        "n_queries": 5
+      }
+    }
+  },
+  "per_query": [
+    {
+      "query_id": "q01",
+      "query": "HybridRetriever.search",
+      "category": "identifier",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/retrieval/retriever.py",
+          "byte_start": 3232,
+          "byte_end": 6703
+        }
+      ],
+      "semble": {
+        "query_id": "q01",
+        "mrr_at_10": 1.0,
+        "recall_at_5": 1.0,
+        "latency_ms": 10.880707995966077,
+        "n_hits": 10,
+        "n_relevant_hits": 2,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q01",
+        "mrr_at_10": 0.3333333333333333,
+        "recall_at_5": 1.0,
+        "latency_ms": 4.348040965851396,
+        "n_hits": 10,
+        "n_relevant_hits": 2,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q02",
+      "query": "IgnoreStack.directory_pruned",
+      "category": "identifier",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/ignore.py",
+          "byte_start": 8731,
+          "byte_end": 10394
+        }
+      ],
+      "semble": {
+        "query_id": "q02",
+        "mrr_at_10": 1.0,
+        "recall_at_5": 1.0,
+        "latency_ms": 9.10691695753485,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q02",
+        "mrr_at_10": 0.1111111111111111,
+        "recall_at_5": 0.0,
+        "latency_ms": 3.7091670092195272,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q03",
+      "query": "class ManagedBlockCorrupted",
+      "category": "identifier",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/ignore_lifecycle.py",
+          "byte_start": 1524,
+          "byte_end": 2254
+        }
+      ],
+      "semble": {
+        "query_id": "q03",
+        "mrr_at_10": 1.0,
+        "recall_at_5": 1.0,
+        "latency_ms": 6.57100003445521,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q03",
+        "mrr_at_10": 1.0,
+        "recall_at_5": 1.0,
+        "latency_ms": 4.239166039042175,
+        "n_hits": 10,
+        "n_relevant_hits": 2,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q04",
+      "query": "scanner.walker.walk function",
+      "category": "identifier",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/scanner/walker.py",
+          "byte_start": 2606,
+          "byte_end": 6164
+        }
+      ],
+      "semble": {
+        "query_id": "q04",
+        "mrr_at_10": 0.25,
+        "recall_at_5": 1.0,
+        "latency_ms": 1.1697910376824439,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q04",
+        "mrr_at_10": 0.0,
+        "recall_at_5": 0.0,
+        "latency_ms": 3.7436250131577253,
+        "n_hits": 10,
+        "n_relevant_hits": 0,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q05",
+      "query": "ScanConfig class definition",
+      "category": "identifier",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/config.py",
+          "byte_start": 23211,
+          "byte_end": 24278
+        }
+      ],
+      "semble": {
+        "query_id": "q05",
+        "mrr_at_10": 1.0,
+        "recall_at_5": 1.0,
+        "latency_ms": 6.960958999115974,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q05",
+        "mrr_at_10": 0.3333333333333333,
+        "recall_at_5": 1.0,
+        "latency_ms": 4.593624966219068,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q06",
+      "query": "where do we call pymupdf4llm to_markdown",
+      "category": "callsite",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/extractors/pdf.py",
+          "byte_start": 6120,
+          "byte_end": 6430
+        }
+      ],
+      "semble": {
+        "query_id": "q06",
+        "mrr_at_10": 0.0,
+        "recall_at_5": 0.0,
+        "latency_ms": 1.3553340104408562,
+        "n_hits": 10,
+        "n_relevant_hits": 0,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q06",
+        "mrr_at_10": 0.5,
+        "recall_at_5": 1.0,
+        "latency_ms": 5.266375024802983,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q07",
+      "query": "callers of mrr_at_k metric",
+      "category": "callsite",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/eval/metrics.py",
+          "byte_start": 4382,
+          "byte_end": 4924
+        }
+      ],
+      "semble": {
+        "query_id": "q07",
+        "mrr_at_10": 0.0,
+        "recall_at_5": 0.0,
+        "latency_ms": 1.3007910456508398,
+        "n_hits": 10,
+        "n_relevant_hits": 0,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q07",
+        "mrr_at_10": 0.0,
+        "recall_at_5": 0.0,
+        "latency_ms": 4.747625032905489,
+        "n_hits": 10,
+        "n_relevant_hits": 0,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q08",
+      "query": "where is reciprocal_rank_fusion invoked",
+      "category": "callsite",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/retrieval/retriever.py",
+          "byte_start": 7157,
+          "byte_end": 7532
+        }
+      ],
+      "semble": {
+        "query_id": "q08",
+        "mrr_at_10": 0.0,
+        "recall_at_5": 0.0,
+        "latency_ms": 1.0093330056406558,
+        "n_hits": 10,
+        "n_relevant_hits": 0,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q08",
+        "mrr_at_10": 0.1,
+        "recall_at_5": 0.0,
+        "latency_ms": 5.198583006858826,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q09",
+      "query": "corpus-forge ingest command entry point",
+      "category": "callsite",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/cli.py",
+          "byte_start": 6345,
+          "byte_end": 7500
+        }
+      ],
+      "semble": {
+        "query_id": "q09",
+        "mrr_at_10": 1.0,
+        "recall_at_5": 1.0,
+        "latency_ms": 1.3079579803161323,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q09",
+        "mrr_at_10": 0.5,
+        "recall_at_5": 1.0,
+        "latency_ms": 4.985000006854534,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q10",
+      "query": "zotero source plugin branch in ingest loop",
+      "category": "callsite",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/ingest.py",
+          "byte_start": 26385,
+          "byte_end": 26683
+        }
+      ],
+      "semble": {
+        "query_id": "q10",
+        "mrr_at_10": 0.0,
+        "recall_at_5": 0.0,
+        "latency_ms": 1.100375025998801,
+        "n_hits": 10,
+        "n_relevant_hits": 0,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q10",
+        "mrr_at_10": 1.0,
+        "recall_at_5": 1.0,
+        "latency_ms": 5.466375034302473,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q11",
+      "query": "how does the watch debounce work",
+      "category": "concept",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/sources/base.py",
+          "byte_start": 1750,
+          "byte_end": 2669
+        }
+      ],
+      "semble": {
+        "query_id": "q11",
+        "mrr_at_10": 0.5,
+        "recall_at_5": 1.0,
+        "latency_ms": 1.333917025476694,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q11",
+        "mrr_at_10": 1.0,
+        "recall_at_5": 1.0,
+        "latency_ms": 5.216042045503855,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q12",
+      "query": "step-by-step hybrid search dense plus lexical fusion",
+      "category": "concept",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/retrieval/retriever.py",
+          "byte_start": 3155,
+          "byte_end": 8054
+        }
+      ],
+      "semble": {
+        "query_id": "q12",
+        "mrr_at_10": 0.1,
+        "recall_at_5": 0.0,
+        "latency_ms": 1.1151660000905395,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q12",
+        "mrr_at_10": 1.0,
+        "recall_at_5": 1.0,
+        "latency_ms": 4.7032919828779995,
+        "n_hits": 10,
+        "n_relevant_hits": 5,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q13",
+      "query": "PDF Tier 1 digital text-layer extractor strategy",
+      "category": "concept",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/extractors/pdf.py",
+          "byte_start": 199,
+          "byte_end": 771
+        }
+      ],
+      "semble": {
+        "query_id": "q13",
+        "mrr_at_10": 0.0,
+        "recall_at_5": 0.0,
+        "latency_ms": 1.1051250039599836,
+        "n_hits": 10,
+        "n_relevant_hits": 0,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q13",
+        "mrr_at_10": 0.5,
+        "recall_at_5": 1.0,
+        "latency_ms": 4.719791992101818,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q14",
+      "query": "splice managed block while preserving user lines",
+      "category": "concept",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/ignore_lifecycle.py",
+          "byte_start": 2942,
+          "byte_end": 4203
+        }
+      ],
+      "semble": {
+        "query_id": "q14",
+        "mrr_at_10": 0.5,
+        "recall_at_5": 1.0,
+        "latency_ms": 1.0802919859997928,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q14",
+        "mrr_at_10": 0.3333333333333333,
+        "recall_at_5": 1.0,
+        "latency_ms": 4.227874975185841,
+        "n_hits": 10,
+        "n_relevant_hits": 2,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q15",
+      "query": "scanner walker descent-time pruning rationale",
+      "category": "concept",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/scanner/walker.py",
+          "byte_start": 0,
+          "byte_end": 1156
+        }
+      ],
+      "semble": {
+        "query_id": "q15",
+        "mrr_at_10": 1.0,
+        "recall_at_5": 1.0,
+        "latency_ms": 1.2248329585418105,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q15",
+        "mrr_at_10": 0.16666666666666666,
+        "recall_at_5": 0.0,
+        "latency_ms": 3.8590000476688147,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q16",
+      "query": "managed block sentinels not found exception",
+      "category": "error",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/ignore_lifecycle.py",
+          "byte_start": 1524,
+          "byte_end": 1787
+        }
+      ],
+      "semble": {
+        "query_id": "q16",
+        "mrr_at_10": 0.0,
+        "recall_at_5": 0.0,
+        "latency_ms": 1.1004590196534991,
+        "n_hits": 10,
+        "n_relevant_hits": 0,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q16",
+        "mrr_at_10": 1.0,
+        "recall_at_5": 1.0,
+        "latency_ms": 5.136957974173129,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q17",
+      "query": "k_values must be non-empty",
+      "category": "error",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/eval/runner.py",
+          "byte_start": 3484,
+          "byte_end": 3595
+        }
+      ],
+      "semble": {
+        "query_id": "q17",
+        "mrr_at_10": 0.5,
+        "recall_at_5": 1.0,
+        "latency_ms": 1.0458329925313592,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q17",
+        "mrr_at_10": 1.0,
+        "recall_at_5": 1.0,
+        "latency_ms": 4.2045420268550515,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q18",
+      "query": "gold set is empty no queries",
+      "category": "error",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/eval/runner.py",
+          "byte_start": 3595,
+          "byte_end": 3763
+        }
+      ],
+      "semble": {
+        "query_id": "q18",
+        "mrr_at_10": 1.0,
+        "recall_at_5": 1.0,
+        "latency_ms": 1.0473749716766179,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q18",
+        "mrr_at_10": 1.0,
+        "recall_at_5": 1.0,
+        "latency_ms": 5.385082971770316,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q19",
+      "query": "sqlite-vec extension load error",
+      "category": "error",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/backends/sqlite.py",
+          "byte_start": 5869,
+          "byte_end": 6101
+        }
+      ],
+      "semble": {
+        "query_id": "q19",
+        "mrr_at_10": 0.0,
+        "recall_at_5": 0.0,
+        "latency_ms": 1.185457978863269,
+        "n_hits": 10,
+        "n_relevant_hits": 0,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q19",
+        "mrr_at_10": 0.0,
+        "recall_at_5": 0.0,
+        "latency_ms": 4.210125014651567,
+        "n_hits": 10,
+        "n_relevant_hits": 0,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q20",
+      "query": "poppler pdf2image missing OCR fallback",
+      "category": "error",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/extractors/pdf.py",
+          "byte_start": 1147,
+          "byte_end": 1503
+        }
+      ],
+      "semble": {
+        "query_id": "q20",
+        "mrr_at_10": 0.0,
+        "recall_at_5": 0.0,
+        "latency_ms": 1.0647919843904674,
+        "n_hits": 10,
+        "n_relevant_hits": 0,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q20",
+        "mrr_at_10": 0.2,
+        "recall_at_5": 1.0,
+        "latency_ms": 4.130457993596792,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q21",
+      "query": "scan workers default",
+      "category": "config",
+      "ground_truth_chunks": [
+        {
+          "file": "corpus_forge/config.py",
+          "byte_start": 23211,
+          "byte_end": 24278
+        }
+      ],
+      "semble": {
+        "query_id": "q21",
+        "mrr_at_10": 0.5,
+        "recall_at_5": 1.0,
+        "latency_ms": 1.094292034395039,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q21",
+        "mrr_at_10": 0.16666666666666666,
+        "recall_at_5": 0.0,
+        "latency_ms": 4.1335419518873096,
+        "n_hits": 10,
+        "n_relevant_hits": 2,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q22",
+      "query": "config example scan block extra_skip_dirs",
+      "category": "config",
+      "ground_truth_chunks": [
+        {
+          "file": "config.example.toml",
+          "byte_start": 22473,
+          "byte_end": 22920
+        }
+      ],
+      "semble": {
+        "query_id": "q22",
+        "mrr_at_10": 0.0,
+        "recall_at_5": 0.0,
+        "latency_ms": 1.0031669517047703,
+        "n_hits": 10,
+        "n_relevant_hits": 0,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q22",
+        "mrr_at_10": 0.0,
+        "recall_at_5": 0.0,
+        "latency_ms": 4.430499975569546,
+        "n_hits": 10,
+        "n_relevant_hits": 0,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q23",
+      "query": "zotero dataset source config example",
+      "category": "config",
+      "ground_truth_chunks": [
+        {
+          "file": "config.example.toml",
+          "byte_start": 3663,
+          "byte_end": 4314
+        }
+      ],
+      "semble": {
+        "query_id": "q23",
+        "mrr_at_10": 0.0,
+        "recall_at_5": 0.0,
+        "latency_ms": 0.8962079882621765,
+        "n_hits": 10,
+        "n_relevant_hits": 0,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q23",
+        "mrr_at_10": 0.14285714285714285,
+        "recall_at_5": 0.0,
+        "latency_ms": 4.952084040269256,
+        "n_hits": 10,
+        "n_relevant_hits": 1,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q24",
+      "query": "whisper transcription backend config",
+      "category": "config",
+      "ground_truth_chunks": [
+        {
+          "file": "config.example.toml",
+          "byte_start": 13087,
+          "byte_end": 13441
+        }
+      ],
+      "semble": {
+        "query_id": "q24",
+        "mrr_at_10": 0.0,
+        "recall_at_5": 0.0,
+        "latency_ms": 1.098125008866191,
+        "n_hits": 10,
+        "n_relevant_hits": 0,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q24",
+        "mrr_at_10": 0.0,
+        "recall_at_5": 0.0,
+        "latency_ms": 4.544332972727716,
+        "n_hits": 10,
+        "n_relevant_hits": 0,
+        "n_ground_truth": 1
+      }
+    },
+    {
+      "query_id": "q25",
+      "query": "estimate block toml configuration tunables",
+      "category": "config",
+      "ground_truth_chunks": [
+        {
+          "file": "config.example.toml",
+          "byte_start": 21321,
+          "byte_end": 21799
+        }
+      ],
+      "semble": {
+        "query_id": "q25",
+        "mrr_at_10": 0.0,
+        "recall_at_5": 0.0,
+        "latency_ms": 1.030790968798101,
+        "n_hits": 10,
+        "n_relevant_hits": 0,
+        "n_ground_truth": 1
+      },
+      "hybrid": {
+        "query_id": "q25",
+        "mrr_at_10": 0.0,
+        "recall_at_5": 0.0,
+        "latency_ms": 4.031499964185059,
+        "n_hits": 10,
+        "n_relevant_hits": 0,
+        "n_ground_truth": 1
+      }
+    }
+  ]
+}
