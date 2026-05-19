@@ -62,23 +62,37 @@ class TestSignatures:
     def test_search_dense_signature(self, proto):
         sig = inspect.signature(proto.search_dense)
         params = list(sig.parameters.values())
-        # self + embedder_id + query_vector + kw-only k + kw-only dataset_id=None
+        # Phase N Wave 3 added the kw-only ``chunk_ids`` filter for the
+        # fast-tier shortcut mode (default ``None`` preserves pre-Wave-3
+        # behaviour).
         names = [p.name for p in params]
-        assert names == ["self", "embedder_id", "query_vector", "k", "dataset_id"], (
-            f"search_dense params: {names}"
-        )
+        assert names == [
+            "self",
+            "embedder_id",
+            "query_vector",
+            "k",
+            "dataset_id",
+            "chunk_ids",
+        ], f"search_dense params: {names}"
         assert params[3].kind == inspect.Parameter.KEYWORD_ONLY
         assert params[4].kind == inspect.Parameter.KEYWORD_ONLY
         assert params[4].default is None
+        assert params[5].kind == inspect.Parameter.KEYWORD_ONLY
+        assert params[5].default is None
 
     def test_search_lexical_signature(self, proto):
         sig = inspect.signature(proto.search_lexical)
         params = list(sig.parameters.values())
         names = [p.name for p in params]
-        assert names == ["self", "query", "k", "dataset_id"], f"search_lexical params: {names}"
+        # Phase N Wave 3 added the kw-only ``chunk_ids`` filter (default None).
+        assert names == ["self", "query", "k", "dataset_id", "chunk_ids"], (
+            f"search_lexical params: {names}"
+        )
         assert params[2].kind == inspect.Parameter.KEYWORD_ONLY
         assert params[3].kind == inspect.Parameter.KEYWORD_ONLY
         assert params[3].default is None
+        assert params[4].kind == inspect.Parameter.KEYWORD_ONLY
+        assert params[4].default is None
 
     def test_get_chunk_signature(self, proto):
         sig = inspect.signature(proto.get_chunk)

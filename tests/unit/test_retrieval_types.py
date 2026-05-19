@@ -216,7 +216,18 @@ class TestSearchOptions:
     def test_search_options_field_set(self):
         SearchOptions = self._options_cls()
         names = {f.name for f in dataclasses.fields(SearchOptions)}
-        assert names == {"k", "dataset", "fusion", "alpha", "rerank", "rerank_top_n"}
+        # Phase N Wave 3 added ``fast_tier_mode`` + ``fast_tier_top_n``
+        # for the static-tier candidate generator.
+        assert names == {
+            "k",
+            "dataset",
+            "fusion",
+            "alpha",
+            "rerank",
+            "rerank_top_n",
+            "fast_tier_mode",
+            "fast_tier_top_n",
+        }
 
 
 # ── RetrievalMetrics ─────────────────────────────────────────────────────

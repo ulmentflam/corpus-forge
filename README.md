@@ -264,6 +264,7 @@ pip install 'corpus-forge[sqlite,openai,hf,tokens,retrieval,rerank,mcp,eval,code
 | `[multi-format]` | PDF / HTML / EPUB / Office / Notebook / CSV / FastCDC chunker — **includes AGPL-3.0 components**. See [Distribution / licensing](#distribution--licensing). |
 | `[ocr]` | VLM OCR HTTP clients (`requests`) + PDF rasterisation (`pdf2image`, `pillow`). Needs system `poppler-utils` (see "Distribution / licensing"). Permissive. |
 | `[whisper]` | Audio + video transcription via `faster-whisper` (local) or any OpenAI-compatible `/audio/transcriptions` endpoint (remote). Bundles `imageio-ffmpeg`. Permissive. |
+| `[fast-tier]` | Static-embedding fast tier (`model2vec` / `minishlab/potion-code-16M`) for the Phase N Wave 3 candidate-generator front-end of `HybridRetriever`. MIT. ~16 MB model weights downloaded on first use. Default search behaviour unchanged until the user opts in via `SearchOptions.fast_tier_mode`. |
 
 ## Distribution / licensing
 

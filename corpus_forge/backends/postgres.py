@@ -1416,6 +1416,7 @@ class PostgresBackend(StorageBackend):
         *,
         k: int,
         dataset_id: int | None = None,
+        chunk_ids: "frozenset[int] | None" = None,
     ) -> "list":
         """pgvector cosine search via ``<=>`` against the per-embedder table.
 
@@ -1423,8 +1424,20 @@ class PostgresBackend(StorageBackend):
         (``score = 1.0 - cosine_distance``).  ``LEFT JOIN`` documents +
         conversations so message-only chunks are still attributable to a
         dataset.
+
+        Phase N Wave 3 — ``chunk_ids`` filter:
+
+        - ``None`` (default): pre-Wave-3 behaviour preserved.
+        - empty ``frozenset()``: returns ``[]`` immediately ("filter to
+          nothing" — distinct from "no filter").
+        - non-empty: ``WHERE c.id = ANY(%s)`` restricts the search to
+          the candidate pool surfaced by the fast tier (shortcut mode).
         """
         from corpus_forge.retrieval.types import Hit  # noqa: PLC0415
+
+        # Phase N Wave 3 — empty filter short-circuits.
+        if chunk_ids is not None and not chunk_ids:
+            return []
 
         # Look up the per-embedder table (e.g. corpus.embeddings_qwen3_8b).
         rows = self._execute(
@@ -1443,6 +1456,10 @@ class PostgresBackend(StorageBackend):
         if dataset_id is not None:
             ds_filter = " AND COALESCE(d.dataset_id, cv.dataset_id) = %s"
             params.append(dataset_id)
+        chunk_filter = ""
+        if chunk_ids is not None:
+            chunk_filter = " AND c.id = ANY(%s)"
+            params.append(list(chunk_ids))
         params.append(k)
 
         # NB: f-string interpolation of table_name is safe — register_embedder
@@ -1457,7 +1474,7 @@ class PostgresBackend(StorageBackend):
             JOIN corpus.chunks c ON c.id = e.chunk_id
             LEFT JOIN corpus.documents d ON d.id = c.document_id
             LEFT JOIN corpus.conversations cv ON cv.id = c.conversation_id
-            WHERE TRUE{ds_filter}
+            WHERE TRUE{ds_filter}{chunk_filter}
             ORDER BY e.embedding <=> %s::vector
             LIMIT %s
             """,
@@ -1488,6 +1505,7 @@ class PostgresBackend(StorageBackend):
         *,
         k: int,
         dataset_id: int | None = None,
+        chunk_ids: "frozenset[int] | None" = None,
     ) -> "list":
         """``text_tsv @@ websearch_to_tsquery('english', %s)`` ranked by ts_rank_cd.
 
@@ -1495,14 +1513,26 @@ class PostgresBackend(StorageBackend):
         ``Hit.score`` (clipping into [0, 1] — typical ts_rank_cd values for
         short documents stay well inside that range but the contract says
         normalised scores so we cap).
+
+        Phase N Wave 3 — ``chunk_ids`` filter (same semantics as
+        :meth:`search_dense`): ``None`` = no filter, ``frozenset()`` =
+        empty result, non-empty = ``WHERE c.id = ANY(%s)``.
         """
         from corpus_forge.retrieval.types import Hit  # noqa: PLC0415
+
+        # Phase N Wave 3 — empty filter short-circuits.
+        if chunk_ids is not None and not chunk_ids:
+            return []
 
         params: list = [query, query]  # one for the rank, one for the WHERE
         ds_filter = ""
         if dataset_id is not None:
             ds_filter = " AND COALESCE(d.dataset_id, cv.dataset_id) = %s"
             params.append(dataset_id)
+        chunk_filter = ""
+        if chunk_ids is not None:
+            chunk_filter = " AND c.id = ANY(%s)"
+            params.append(list(chunk_ids))
         params.append(k)
 
         rows = self._execute(
@@ -1514,7 +1544,7 @@ class PostgresBackend(StorageBackend):
             FROM corpus.chunks c
             LEFT JOIN corpus.documents d ON d.id = c.document_id
             LEFT JOIN corpus.conversations cv ON cv.id = c.conversation_id
-            WHERE c.text_tsv @@ websearch_to_tsquery('english', %s){ds_filter}
+            WHERE c.text_tsv @@ websearch_to_tsquery('english', %s){ds_filter}{chunk_filter}
             ORDER BY rank DESC
             LIMIT %s
             """,

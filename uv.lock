@@ -472,6 +472,9 @@ code = [
 eval = [
     { name = "numpy" },
 ]
+fast-tier = [
+    { name = "model2vec" },
+]
 hf = [
     { name = "datasets" },
 ]
@@ -552,6 +555,7 @@ requires-dist = [
     { name = "jupytext", marker = "extra == 'multi-format'", specifier = ">=1.16" },
     { name = "markdownify", marker = "extra == 'multi-format'", specifier = ">=0.13" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0,<2.0" },
+    { name = "model2vec", marker = "extra == 'fast-tier'", specifier = ">=0.5" },
     { name = "numpy", marker = "extra == 'eval'", specifier = ">=1.26" },
     { name = "numpy", marker = "extra == 'retrieval'", specifier = ">=1.26" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=1.30" },
@@ -580,7 +584,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "watchdog", specifier = ">=4.0" },
 ]
-provides-extras = ["openai", "hf", "tokens", "sqlite", "retrieval", "eval", "rerank", "mcp", "code", "multi-format", "ocr", "whisper"]
+provides-extras = ["openai", "hf", "tokens", "sqlite", "retrieval", "eval", "rerank", "mcp", "code", "multi-format", "ocr", "whisper", "fast-tier"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1994,6 +1998,25 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/29/33/c225eaf898634bdda489a6766fc35d1683c640bffe0e0acd10646b13536d/mkdocstrings_python-2.0.3.tar.gz", hash = "sha256:c518632751cc869439b31c9d3177678ad2bfa5c21b79b863956ad68fc92c13b8", size = 199083, upload-time = "2026-02-20T10:38:36.368Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/32/28/79f0f8de97cce916d5ae88a7bee1ad724855e83e6019c0b4d5b3fabc80f3/mkdocstrings_python-2.0.3-py3-none-any.whl", hash = "sha256:0b83513478bdfd803ff05aa43e9b1fca9dd22bcd9471f09ca6257f009bc5ee12", size = 104779, upload-time = "2026-02-20T10:38:34.517Z" },
+]
+
+[[package]]
+name = "model2vec"
+version = "0.8.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jinja2" },
+    { name = "joblib" },
+    { name = "numpy" },
+    { name = "rich" },
+    { name = "safetensors" },
+    { name = "setuptools" },
+    { name = "tokenizers" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/26/d2/0da831d4f7930839340ec9cab3d9c82205cf65b96bdc29cab6796b795b68/model2vec-0.8.1.tar.gz", hash = "sha256:9a35d35f6a444e4cec19f2027ee106c54965cd26b7fd4a4f002b5f3e2b6777f4", size = 4535650, upload-time = "2026-03-27T13:38:41.481Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f8/5d/fa38e1f68d123726639377f0ba494b366905a2fa451d2c0f365cf0cc6ecb/model2vec-0.8.1-py3-none-any.whl", hash = "sha256:24eee3a5b060c705cceddc9091e0d23fa908fb967e48c0e68b7990211b10927d", size = 49938, upload-time = "2026-03-27T13:38:39.81Z" },
 ]
 
 [[package]]

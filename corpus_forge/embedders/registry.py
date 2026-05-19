@@ -1,6 +1,7 @@
 """Embedder registry for corpus-forge."""
 
 from .base import Embedder
+from .model2vec import Model2VecEmbedder
 from .openai import OpenAIEmbedder
 from .sentence_transformers import SentenceTransformersEmbedder
 
@@ -12,6 +13,11 @@ class EmbedderRegistry:
         self._embedder_classes = {
             "sentence_transformers": SentenceTransformersEmbedder,
             "openai": OpenAIEmbedder,
+            # Phase N Wave 3 — static-tier fast embedder (model2vec /
+            # potion-code-16M).  Optional ``[fast-tier]`` extra; the
+            # provider module is importable without the extra (encode
+            # raises ImportError lazily).
+            "model2vec": Model2VecEmbedder,
         }
         self._instances: dict[str, Embedder] = {}
 

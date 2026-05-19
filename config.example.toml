@@ -567,6 +567,57 @@ compression_ratio = 1.0
 # definition_boost_factor_post_rerank = 1.2
 
 # ─────────────────────────────────────────────────────────────────────
+# Phase N Wave 3 — static-embedding fast tier (model2vec)
+# ─────────────────────────────────────────────────────────────────────
+# Wires an OPTIONAL second embedder (default: `minishlab/potion-code-16M`,
+# 256-dim, MIT, ~16 MB, CPU-fast) in front of the main embedder +
+# cross-encoder reranker as a candidate generator.  Two activation
+# modes available at search time via `SearchOptions.fast_tier_mode`:
+#
+#   "shortcut" — fast embedder runs first; top-N candidates seed the
+#                main dense+lexical fan-out via the backend's
+#                `chunk_ids=` filter.  Reranker + Wave 2 boost still
+#                compose normally.  Best quality + dramatic p50 drop
+#                (the cross-encoder only sees the slice).
+#
+#   "only"     — fast embedder produces top-k directly.  No lexical,
+#                no rerank.  Sub-10ms p50 on identifier queries in
+#                bench.  Lower quality acceptable for latency-bound
+#                paths.
+#
+#   "skip"     — pre-Wave-3 behaviour (default).
+#
+# Install the extra:  pip install 'corpus-forge[fast-tier]'
+#
+# Step 1 — declare a SECOND embedder under `[[embedders]]`:
+#
+# [[embedders]]
+# name      = "potion-code-16M"
+# provider  = "model2vec"
+# model_id  = "minishlab/potion-code-16M"
+# dimension = 256
+# normalize = true
+# distance  = "cosine"
+# active    = true
+#
+# Step 2 — point `[retrieval].fast_tier_embedder_name` at that name.
+# The validator rejects a typo at config-load time so a misconfigured
+# deploy doesn't silently dispatch as if the fast tier weren't wired.
+#
+# [retrieval]
+# fast_tier_embedder_name = "potion-code-16M"
+#
+# Callers then opt in per search via SearchOptions:
+#
+#     opts = SearchOptions(
+#         k=10,
+#         fast_tier_mode="shortcut",   # or "only" / "skip" (default)
+#         fast_tier_top_n=200,         # candidate pool size for shortcut
+#     )
+#
+# Default settings preserve pre-Wave-3 behaviour exactly.
+
+# ─────────────────────────────────────────────────────────────────────
 # Phase M Wave 2 — filesystem walker
 # ─────────────────────────────────────────────────────────────────────
 # Drives the unified `os.scandir`-based walker shared by the estimator

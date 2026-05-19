@@ -67,7 +67,9 @@ class TestRetrievalConfigDefaults:
         fields = set(rc.model_fields.keys())
         # R4 adds `reranker` (RerankerConfig nested); Phase N Wave 1 adds
         # `adaptive_lexical_weight` + `symbol_query_alpha`; Phase N Wave 2
-        # adds the three definition-boost knobs.  The R2 fields stay.
+        # adds the three definition-boost knobs.  Phase N Wave 3 adds
+        # `fast_tier_embedder_name` for the static fast-tier candidate
+        # generator.  The R2 fields stay.
         assert fields == {
             "alpha",
             "fusion",
@@ -80,6 +82,7 @@ class TestRetrievalConfigDefaults:
             "definition_boost_enabled",
             "definition_boost_factor_pre_rerank",
             "definition_boost_factor_post_rerank",
+            "fast_tier_embedder_name",
         }
 
     def test_fusion_literal_values(self):

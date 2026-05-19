@@ -155,6 +155,21 @@ whisper = [
   "imageio-ffmpeg>=0.5",
   "requests>=2.32",
 ]
+# Phase N Wave 3: model2vec static-embedding fast tier.
+#
+# License posture: model2vec is MIT (permissive).  Adding [fast-tier]
+# does NOT widen the AGPL surface introduced by [multi-format] and does
+# not pull a Whisper / OCR-style heavy stack — the static-tier weights
+# are small (~16 MB for ``minishlab/potion-code-16M``).
+#
+# This is the candidate-generator front-end for ``HybridRetriever``'s
+# ``SearchOptions.fast_tier_mode`` ∈ {"shortcut", "only"}; default
+# "skip" leaves the embedder uninstantiated even on Wave 3 builds.
+# Bench numbers + per-mode latency table live in
+# ``tests/perf/out/phase_n_wave3_*.json``.
+fast-tier = [
+  "model2vec>=0.5",
+]
 
 [project.scripts]
 corpus-forge = "corpus_forge.cli:app"

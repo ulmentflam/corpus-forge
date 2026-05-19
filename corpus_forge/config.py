@@ -221,7 +221,10 @@ class EmbedderConfig(BaseModel):
     """
 
     name: str
-    provider: str = Field(pattern="^(sentence_transformers|openai)$")
+    # Phase N Wave 3 added ``"model2vec"`` for the static fast-tier
+    # provider (potion-code-16M).  Optional ``[fast-tier]`` extra at
+    # install time; the dispatch lives in ``embedders/registry.py``.
+    provider: str = Field(pattern="^(sentence_transformers|openai|model2vec)$")
     model_id: str
     dimension: int = Field(gt=0)
     normalize: bool = Field(default=True)
@@ -320,6 +323,12 @@ class RetrievalConfig(BaseModel):
     definition_boost_enabled: bool = False
     definition_boost_factor_pre_rerank: float = Field(default=1.5, ge=1.0, le=5.0)
     definition_boost_factor_post_rerank: float = Field(default=1.2, ge=1.0, le=5.0)
+    # Phase N Wave 3 — fast-tier embedder cross-reference.  Names an
+    # entry in ``Config.embedders`` that runs as a candidate generator
+    # when ``SearchOptions.fast_tier_mode != "skip"``.  Validated at
+    # ``Config`` load time (see ``Config._check_fast_tier_embedder``)
+    # so a typo surfaces before any search call.
+    fast_tier_embedder_name: str | None = None
 
 
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -674,6 +683,27 @@ class Config(BaseModel):
             raise ValueError(
                 "Cross-host sync requires the postgres backend; SQLite is single-host. "
                 "Set sync_enabled = false or switch backend.kind to 'postgres'."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_fast_tier_embedder(self) -> "Config":
+        """Phase N Wave 3 — cross-reference fast tier embedder name.
+
+        When ``retrieval.fast_tier_embedder_name`` is set, the name
+        MUST resolve to a declared ``[[embedders]]`` entry.  Catches
+        typos at config-load time rather than at search time (where
+        the registry lookup would silently return ``None`` and
+        ``HybridRetriever`` would raise from inside the search call).
+        """
+        name = self.retrieval.fast_tier_embedder_name
+        if name is None:
+            return self
+        embedder_names = {e.name for e in self.embedders}
+        if name not in embedder_names:
+            raise ValueError(
+                f"retrieval.fast_tier_embedder_name={name!r} does not match any "
+                f"[[embedders]] entry; declared embedders: {sorted(embedder_names)!r}"
             )
         return self
 

@@ -105,6 +105,9 @@ class HybridRetriever:
         embedder_id: int,
         reranker: Any | None = None,
         config: RetrievalConfig | None = None,
+        *,
+        fast_embedder: Embedder | None = None,
+        fast_embedder_id: int | None = None,
     ) -> None:
         # Lazy-import so the retriever module doesn't pull in the full
         # Config pydantic graph just to construct a retriever without an
@@ -119,6 +122,13 @@ class HybridRetriever:
         self.embedder_id = embedder_id
         self.reranker = reranker
         self.config = config
+        # Phase N Wave 3 — optional static-tier fast embedder.  Stored
+        # but never queried when ``SearchOptions.fast_tier_mode ==
+        # "skip"`` (the default), so wiring a fast embedder up front
+        # is a pure pre-flight cost — the search path stays identical
+        # to pre-Wave-3 behaviour until the caller flips the mode.
+        self.fast_embedder = fast_embedder
+        self.fast_embedder_id = fast_embedder_id
 
     # ── public API ───────────────────────────────────────────────────────
 
@@ -128,12 +138,17 @@ class HybridRetriever:
         Steps:
         1. Resolve the dataset name (if any) → dataset_id; bail out empty
            if the name is unknown so we never leak across datasets.
-        2. Encode the query via ``embedder.encode_query``.
-        3. Fan out ``backend.search_dense`` + ``backend.search_lexical``,
+        2. Phase N Wave 3 fast-tier dispatch (mode ∈ ``skip / shortcut / only``).
+           When ``"only"`` we short-circuit here and return; when
+           ``"shortcut"`` we compute the candidate-id pool that gates
+           steps 3+; when ``"skip"`` (default) we drop straight through.
+        3. Encode the query via ``embedder.encode_query``.
+        4. Fan out ``backend.search_dense`` + ``backend.search_lexical``,
            each over-fetching by ``_OVERFETCH_MULTIPLIER * k`` to give
-           fusion room.
-        4. Fuse: RRF or alpha-blend per ``options.fusion``.
-        5. Materialise into ``Hit`` objects with ``source="fused"`` and
+           fusion room.  In shortcut mode, both are pre-filtered to the
+           Wave 3 candidate pool.
+        5. Fuse: RRF or alpha-blend per ``options.fusion``.
+        6. Materialise into ``Hit`` objects with ``source="fused"`` and
            return the top-``k``.
         """
         # ── Step 1: dataset resolution ─────────────────────────────────
@@ -147,25 +162,64 @@ class HybridRetriever:
                 # caller is explicitly trying to prevent.
                 return []
 
-        # ── Step 2: encode the query ──────────────────────────────────
+        # ── Step 2: Phase N Wave 3 — fast-tier dispatch ────────────────
+        # ``"only"`` short-circuits here.  ``"shortcut"`` computes the
+        # candidate-id pool that gates the main fan-out.  ``"skip"``
+        # (default) leaves ``candidate_ids = None`` and drops through
+        # to the pre-Wave-3 code path.
+        candidate_ids: frozenset[int] | None = None
+        if options.fast_tier_mode != "skip":
+            if self.fast_embedder is None or self.fast_embedder_id is None:
+                raise ValueError(
+                    "SearchOptions.fast_tier_mode="
+                    f"{options.fast_tier_mode!r} requires a fast_embedder "
+                    "wired at HybridRetriever construction time.  Pass "
+                    "fast_embedder=... and fast_embedder_id=... to the "
+                    "HybridRetriever(...) call (see Phase N Wave 3 docs)."
+                )
+            # Both shortcut + only paths need to verify the backend
+            # supports the chunk_ids filter.  The only-mode path will
+            # also pass chunk_ids=None to the dense call, but having
+            # the kwarg signature consistent across backends is what
+            # we're enforcing.
+            self._require_chunk_ids_filter()
+            if options.fast_tier_mode == "only":
+                return self._search_fast_only(query, options, dataset_id=dataset_id)
+            # shortcut: build the candidate pool.
+            candidate_ids = self._fast_tier_candidate_ids(query, options, dataset_id=dataset_id)
+
+        # ── Step 3: encode the query ──────────────────────────────────
         # `encode_query` is the asymmetric-aware entry point.  For symmetric
         # models BaseEmbedder.encode_query just delegates to encode.
         query_vectors = self.embedder.encode_query([query])
         # Shape: (1, dim).  Reduce to a 1-D vector for the backend call.
         qvec = query_vectors[0]
 
-        # ── Step 3: fan out the two backend searches ──────────────────
+        # ── Step 4: fan out the two backend searches ──────────────────
         overfetch_k = max(options.k * _OVERFETCH_MULTIPLIER, options.k)
+        # In shortcut mode, ``chunk_ids`` restricts BOTH search calls to
+        # the fast-tier candidate pool — that's the load-bearing
+        # latency win (the cross-encoder downstream sees only the
+        # candidate slice).
+        dense_kwargs: dict[str, Any] = {
+            "k": overfetch_k,
+            "dataset_id": dataset_id,
+        }
+        lex_kwargs: dict[str, Any] = {
+            "k": overfetch_k,
+            "dataset_id": dataset_id,
+        }
+        if candidate_ids is not None:
+            dense_kwargs["chunk_ids"] = candidate_ids
+            lex_kwargs["chunk_ids"] = candidate_ids
         dense_hits = self.backend.search_dense(
             self.embedder_id,
             qvec,
-            k=overfetch_k,
-            dataset_id=dataset_id,
+            **dense_kwargs,
         )
         lexical_hits = self.backend.search_lexical(
             query,
-            k=overfetch_k,
-            dataset_id=dataset_id,
+            **lex_kwargs,
         )
 
         # Build chunk_id → Hit map for quick lookup post-fusion.  When the
@@ -336,6 +390,106 @@ class HybridRetriever:
                 continue
             if name.lower() in tokens:
                 scores[cid] = score * multiplier
+
+    # ── Phase N Wave 3 — fast-tier helpers ────────────────────────────
+
+    def _require_chunk_ids_filter(self) -> None:
+        """Verify the backend's ``search_dense`` accepts ``chunk_ids=``.
+
+        Wave 3's shortcut + only modes require the backend's dense
+        (and, for shortcut, lexical) search to accept the candidate
+        filter.  We inspect the signature ONCE per search-call so a
+        misconfigured backend surfaces a clear error rather than a
+        downstream ``TypeError`` from ``search_dense(chunk_ids=...)``.
+
+        Raises:
+            ValueError: when the backend's ``search_dense`` doesn't
+                accept ``chunk_ids`` — points at the Phase N Wave 3
+                backend filter as the missing piece.
+        """
+        import inspect  # noqa: PLC0415 — cold path
+
+        sig = inspect.signature(self.backend.search_dense)
+        if "chunk_ids" not in sig.parameters:
+            raise ValueError(
+                "Phase N Wave 3 fast-tier requires the backend's "
+                "search_dense() to accept chunk_ids=frozenset[int]; "
+                f"the configured backend ({type(self.backend).__name__}) "
+                "does not.  Upgrade the backend or set "
+                "SearchOptions.fast_tier_mode='skip'."
+            )
+
+    def _fast_tier_candidate_ids(
+        self,
+        query: str,
+        options: SearchOptions,
+        *,
+        dataset_id: int | None,
+    ) -> frozenset[int]:
+        """Run the fast embedder; return the top-``fast_tier_top_n`` chunk_ids.
+
+        Used by the ``"shortcut"`` mode to seed the candidate pool the
+        main dense + lexical fan-out then restricts to.  Called inside
+        ``search()`` with the fast embedder + id already confirmed
+        non-None by the caller.
+        """
+        assert self.fast_embedder is not None
+        assert self.fast_embedder_id is not None
+        fast_qvec = self.fast_embedder.encode_query([query])[0]
+        # Pull top-N from the fast tier's dense table.  We do NOT pass
+        # ``chunk_ids`` here — this IS the candidate-selection step.
+        fast_hits = self.backend.search_dense(
+            self.fast_embedder_id,
+            fast_qvec,
+            k=options.fast_tier_top_n,
+            dataset_id=dataset_id,
+        )
+        return frozenset(h.chunk_id for h in fast_hits)
+
+    def _search_fast_only(
+        self,
+        query: str,
+        options: SearchOptions,
+        *,
+        dataset_id: int | None,
+    ) -> list[Hit]:
+        """Implement the ``"only"`` mode — fast tier + nothing else.
+
+        No lexical fan-out, no reranker, no Wave 1 alpha bump, no
+        Wave 2 boost — the static tier serves the entire query path.
+        ``Hit.source`` is set to ``"fused"`` for downstream
+        normalisation parity even though no fusion happened (no
+        lexical list to fuse against).  The score stays as the dense
+        backend's ``1 - cosine_distance`` value.
+        """
+        assert self.fast_embedder is not None
+        assert self.fast_embedder_id is not None
+        fast_qvec = self.fast_embedder.encode_query([query])[0]
+        # Caller's ``k`` is the final result count; over-fetch isn't
+        # needed (no fusion stage to shrink the list).
+        hits = self.backend.search_dense(
+            self.fast_embedder_id,
+            fast_qvec,
+            k=options.k,
+            dataset_id=dataset_id,
+        )
+        # Rebuild with source="fused" for downstream parity.
+        out: list[Hit] = []
+        for h in hits:
+            out.append(
+                Hit(
+                    chunk_id=h.chunk_id,
+                    score=h.score,
+                    text=h.text,
+                    document_id=h.document_id,
+                    source_uri=h.source_uri,
+                    title=h.title,
+                    dataset_id=h.dataset_id,
+                    metadata=h.metadata,
+                    source="fused",
+                )
+            )
+        return out
 
     @staticmethod
     def _apply_post_rerank_boost(
