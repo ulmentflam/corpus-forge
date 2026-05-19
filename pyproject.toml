@@ -200,6 +200,14 @@ dev = [
 # ── hatchling build target (explicit so the editable install picks up the
 #    `corpus_forge` package even with our somewhat-noisy repo root) ──
 
+# Phase M Wave 5 (semble investigation spike): the top-level
+# ``experiments/`` directory is research-only and never ships in the
+# wheel or sdist.  Because both targets are explicit allow-lists
+# (``packages = ["corpus_forge"]`` below, ``include = [...]`` further
+# down), ``experiments/`` is excluded *by construction* — there is no
+# allow entry that would pull it in.  Mirroring the exclusion in
+# ``.dockerignore`` keeps the Docker image small as well.  See
+# ``experiments/README.md`` for the spike's scope rules.
 [tool.hatch.build.targets.wheel]
 packages = ["corpus_forge"]
 
@@ -242,6 +250,10 @@ target-version = "py311"
 # ruff focused on production code and tests.
 extend-exclude = [
   "tests/fixtures/multi_format_corpus",
+  # Phase M Wave 5 (semble investigation spike): research-only code,
+  # excluded from wheels + Docker + lint passes.  See
+  # ``experiments/README.md`` for the contract.
+  "experiments",
 ]
 
 [tool.ruff.lint]
