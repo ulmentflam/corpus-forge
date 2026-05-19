@@ -89,7 +89,7 @@ jobs:
       id-token: write  # for OIDC; do NOT add contents:write here.
     steps:
       - name: Download dist artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dist-${{ github.ref_name }}
           path: dist/
@@ -122,7 +122,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download dist artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dist-${{ github.ref_name }}
           path: dist/
