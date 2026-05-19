@@ -18,6 +18,8 @@ from corpus_forge import __version__
 if TYPE_CHECKING:
     from rich.console import Console
 
+    from corpus_forge.config import Config
+
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "corpus-forge" / "config.toml"
 
 
@@ -297,6 +299,92 @@ def _check_daemon_activity() -> CheckResult:
     return CheckResult("daemon_activity", CheckStatus.OK, detail)
 
 
+# ── Phase M Wave 1 — .corpusignore check ──────────────────────────────
+
+
+def _check_corpusignore(cfg: Config) -> CheckResult:
+    """Validate every FS-style data root's ``.corpusignore`` file.
+
+    Status logic:
+
+    - ``SKIP`` when no FS-style data root is configured (chat-only or
+      Zotero-only datasets).
+    - ``FAIL`` when any root's ``.corpusignore`` exists but cannot be
+      parsed (``OSError`` or unreadable line).
+    - ``WARN`` when any root's file is missing or the managed block has
+      drifted from the current feature flags.
+    - ``OK`` when every root has a parseable, sentinel-bearing file
+      whose managed block matches :func:`default_managed_lines`.
+    """
+    # Local imports keep doctor's import-time cost bounded and avoid
+    # circular imports with corpus_forge.config (which imports doctor
+    # in some legacy code paths).
+    from corpus_forge.ignore import CorpusIgnore  # noqa: PLC0415
+    from corpus_forge.ignore_defaults import (  # noqa: PLC0415
+        default_managed_lines,
+        feature_flags_from_config,
+        parse_managed_lines,
+    )
+    from corpus_forge.ignore_lifecycle import discover_data_roots  # noqa: PLC0415
+
+    roots = discover_data_roots(cfg)
+    if not roots:
+        return CheckResult(
+            "corpusignore",
+            CheckStatus.SKIP,
+            "no filesystem-style data root configured",
+        )
+
+    features = feature_flags_from_config(cfg)
+    expected_lines = set(default_managed_lines(features))
+
+    warnings: list[str] = []
+    failures: list[str] = []
+    ok_roots: list[Path] = []
+
+    for root in roots:
+        target = root / ".corpusignore"
+        if not target.exists():
+            warnings.append(f"{target} missing — run `corpus-forge ignore init`")
+            continue
+        try:
+            CorpusIgnore.from_file(target, root=root)
+        except (OSError, ValueError) as exc:
+            failures.append(f"{target}: parse failure on line near {exc}")
+            continue
+        text = target.read_text(encoding="utf-8", errors="replace")
+        body = parse_managed_lines(text)
+        if body is None:
+            warnings.append(
+                f"{target}: managed block sentinels not found — "
+                "run `corpus-forge ignore sync` to install"
+            )
+            continue
+        body_set = {line for line in body if not line.startswith("#")}
+        if not expected_lines.issubset(body_set):
+            warnings.append(f"{target}: managed block drifted — run `corpus-forge ignore sync`")
+            continue
+        # Also flag extras within the managed block as drift — the user
+        # may have hand-edited.
+        extras = body_set - expected_lines
+        # Allow only the timestamp comment + empty marker; non-empty
+        # non-comment lines are unexpected.
+        if extras:
+            warnings.append(f"{target}: managed block drifted — run `corpus-forge ignore sync`")
+            continue
+        ok_roots.append(root)
+
+    if failures:
+        return CheckResult("corpusignore", CheckStatus.FAIL, "; ".join(failures))
+    if warnings:
+        return CheckResult("corpusignore", CheckStatus.WARN, "; ".join(warnings))
+    return CheckResult(
+        "corpusignore",
+        CheckStatus.OK,
+        f"{len(ok_roots)} data root(s) synced",
+    )
+
+
 # ── orchestrator ──────────────────────────────────────────────────────
 
 
@@ -309,9 +397,40 @@ _CHECKS: tuple[Callable[[], CheckResult], ...] = (
 )
 
 
+def _try_load_config(config_path: Path) -> Config | None:
+    """Best-effort :class:`Config` load for doctor's per-config checks.
+
+    Returns None on any failure (missing file, validation error). The
+    individual checks that need a real Config skip themselves when the
+    load returns None.
+    """
+    if not config_path.exists():
+        return None
+    try:
+        from corpus_forge.config import Config  # noqa: PLC0415
+
+        return Config.load(config_path=config_path, secrets_path=config_path.parent / "secrets.env")
+    except Exception:  # pragma: no cover — broad-except by design
+        return None
+
+
 def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
     """Run every registered check and return the aggregated report."""
     cfg = config_path if config_path is not None else DEFAULT_CONFIG_PATH
     results = [_check_config_present(cfg)]
     results.extend(check() for check in _CHECKS)
+    # Phase M Wave 1: corpusignore check needs a parsed Config to
+    # discover FS roots and the active feature flags. Skip silently
+    # when the load fails (the config check above already reports it).
+    loaded_cfg = _try_load_config(cfg)
+    if loaded_cfg is None:
+        results.append(
+            CheckResult(
+                "corpusignore",
+                CheckStatus.SKIP,
+                "skipped (config not loaded)",
+            )
+        )
+    else:
+        results.append(_check_corpusignore(loaded_cfg))
     return DoctorReport(results=results)
