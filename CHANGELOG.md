@@ -8,6 +8,76 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+## [0.1.0b6] - 2026-05-19
+
+### Added
+
+#### Phase N — Retrieval Quality (semble technique extraction)
+
+Carries out Phase M Wave 5's recommendation to extract three
+techniques from MinishLab/semble rather than swap retrievers. All
+three features default OFF — deployments opt in explicitly via
+`RetrievalConfig` flags.
+
+- **Wave 0 — broadened bench.** Vendored a `pallets/flask` snapshot
+  (`tests/fixtures/external/flask-snapshot/`, BSD-3-Clause, pinned
+  to commit `954f5684`) as a second bench corpus alongside this repo.
+  Grew `tests/perf/data/semble_queries.jsonl` from 25 → 61 hand-
+  authored queries with byte-offset ground truth. Captured the
+  Phase N baseline at `tests/perf/out/phase_n_baseline.json`. New
+  gated bench at `tests/perf/test_phase_n_bench.py`
+  (`CF_PHASE_N_BENCH=1`).
+- **Wave 1 — adaptive lexical-weight bump on symbol queries.** New
+  `corpus_forge.retrieval.query_shape.is_symbol_shaped(query)`
+  heuristic (catches `Foo.bar`, `Foo::bar`, `_private`,
+  `setUp`, `MyClass`, `snake_case_name`; rejects natural language).
+  `HybridRetriever.search` lowers the effective alpha to
+  `RetrievalConfig.symbol_query_alpha` (default 0.3) when
+  `adaptive_lexical_weight=True` and the query is symbol-shaped on
+  alpha fusion. Reranker downstream washes out the fusion-stage
+  signal in practice — Wave 1 ships the lever, the lift materialises
+  via composition with Wave 2.
+- **Wave 2 — definition boosts on retrieval.** Code chunker now tags
+  every AST-walk chunk with `metadata.is_definition = True` and
+  `metadata.definition_kind` (`Function` / `Class` / `Method` /
+  `Block`). HybridRetriever applies a score multiplier to definition
+  chunks whose `metadata.name` matches a query token, BOTH
+  pre-rerank (`definition_boost_factor_pre_rerank`, default 1.5) AND
+  post-rerank (`definition_boost_factor_post_rerank`, default 1.2).
+  Boost is gated on `is_symbol_shaped(query)` to avoid collateral
+  damage on natural-language queries that happen to contain
+  identifier-like words. Composite result with Wave 1: **identifier
+  MRR@10 +0.1225** (0.466 → 0.588), zero per-category regression vs
+  control on the broadened bench.
+- **Wave 3 — static-tier fast path.** New `model2vec` embedder
+  provider (`corpus_forge/embedders/model2vec.py`) for
+  `minishlab/potion-code-16M` (256-dim, MIT, ~16 MB, CPU-fast). New
+  `SearchOptions.fast_tier_mode ∈ {skip, shortcut, only}`. Shortcut
+  mode uses the fast embedder as a candidate generator
+  (`fast_tier_top_n`, default 200) for the main embedder's dense +
+  lexical + rerank pipeline; only mode bypasses lexical + rerank
+  entirely for latency-sensitive paths. Backend `search_dense` and
+  `search_lexical` gained a `chunk_ids: frozenset[int] | None`
+  keyword arg to support the candidate-pool restriction (on both
+  Postgres and SQLite). Bench result: **shortcut +0.07 concept
+  MRR@10**, **only mode 24.6 ms p50** (50× drop from 1.2 s) with
+  quality within the looser Pareto floor. The cross-encoder reranker
+  dominates p50, so shortcut-mode's value is quality preservation
+  under candidate restriction, not latency — documented in the
+  retriever's docstring.
+
+### Changed
+
+- **Embedder fingerprint drift detection** unchanged in code but
+  re-verified during Wave 3 pre-flight: silently skips embedders the
+  backend has not yet seen, so adding the new `model2vec` provider
+  does NOT false-positive on a user's main embedder.
+
+### Deps
+
+- `model2vec>=0.5` under the NEW optional extra `[fast-tier]`. Core
+  install size unchanged.
+
 ## [0.1.0b5] - 2026-05-19
 
 ### Added
