@@ -304,8 +304,19 @@ def _full_ext_index() -> frozenset[str]:
     return _FULL_EXT_INDEX
 
 
-# Directory names skipped wholesale during the walk. Hidden-by-name and
-# build-output noise that shouldn't enter a sizing estimate.
+# Directory names skipped wholesale during the walk. Tool / cache / VCS
+# noise nobody ingests intentionally — kept tight on purpose.
+#
+# ``build`` and ``dist`` are intentionally NOT in this set: in many
+# ecosystems (CMake / Bazel / Make / Java projects) they hold
+# hand-authored source (Makefile, Dockerfile, BUILD.bazel,
+# .editorconfig) that users do want indexed. Compiled outputs that DO
+# live under those names (``*.o``, ``*.so``, ``*.dll``, ``*.class``,
+# ``*.exe``, ``*.jar``, …) get filtered automatically by the walker's
+# extension short-circuit because no extractor registers those
+# extensions. Users who want the entire ``build/`` / ``dist/`` tree
+# skipped get it from Phase M Wave 1's managed ``.corpusignore``
+# ``_ALWAYS_ON`` block (``build/``, ``dist/``, ``out/``, ``target/`` …).
 _SKIP_DIR_NAMES = frozenset(
     {
         ".git",
@@ -323,8 +334,6 @@ _SKIP_DIR_NAMES = frozenset(
         ".cache",
         ".idea",
         ".vscode",
-        "dist",
-        "build",
     }
 )
 

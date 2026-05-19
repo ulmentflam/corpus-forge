@@ -84,6 +84,49 @@ def test_baseline_skip_dirs_never_descended(
         assert "__pycache__" not in Path(visited).parts
 
 
+def test_build_and_dist_not_in_baseline_skip() -> None:
+    """`build/` and `dist/` are NOT baseline-skipped.
+
+    Phase M follow-up to the multi-format ingest integration regression:
+    these names are routinely used for hand-authored source in CMake /
+    Bazel / Make-config projects (Makefile, Dockerfile, BUILD.bazel,
+    .editorconfig). Compiled outputs that DO live there get filtered by
+    the walker's extension short-circuit (no extractor registers `.o`,
+    `.so`, `.class`, …). Setup-using callers get directory-level
+    protection from Phase M Wave 1's managed `.corpusignore` `_ALWAYS_ON`
+    block.
+    """
+    from corpus_forge.estimate import _SKIP_DIR_NAMES
+
+    assert "build" not in _SKIP_DIR_NAMES
+    assert "dist" not in _SKIP_DIR_NAMES
+
+
+def test_build_dir_walked_when_no_corpusignore(tmp_path: Path) -> None:
+    """Without an ignore stack, files under `build/` are walked + yielded.
+
+    Pins the integration-test contract: a fixture tree containing
+    `code/build/Makefile`, `code/build/Dockerfile`, etc. must surface
+    those files through `walk()`.
+    """
+    from corpus_forge.scanner import walk
+
+    _make_tree(
+        tmp_path,
+        {
+            "src/main.py": "x",
+            "build/Makefile": "all:\n\techo hi\n",
+            "build/Dockerfile": "FROM alpine\n",
+            "dist/notes.md": "# notes\n",
+        },
+    )
+
+    rels = sorted(str(Path(e.path).relative_to(tmp_path).as_posix()) for e in walk(tmp_path))
+    assert "build/Makefile" in rels
+    assert "build/Dockerfile" in rels
+    assert "dist/notes.md" in rels
+
+
 def test_ignorestack_dir_pattern_prunes_descent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
