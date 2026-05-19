@@ -207,14 +207,20 @@ class TestCheckCorpusignore:
     """
 
     def _write_config(self, tmp_path: Path, scan_root: Path | None = None) -> Path:
-        """Render a minimal toml config that loads cleanly."""
+        """Render a minimal toml config that loads cleanly.
+
+        Paths are embedded in POSIX form (``as_posix()``) so the TOML
+        parser doesn't treat Windows backslashes as escape sequences
+        (``\\t``, ``\\U``, etc.). Pydantic's ``ExpandedPath`` accepts
+        forward-slash paths on every platform.
+        """
         if scan_root is None:
             datasets_block = (
                 "[[datasets]]\n"
                 'name = "default"\n'
                 'kind = "text"\n'
                 'sources = [{plugin = "claude_code", projects_root = "'
-                + str(tmp_path / "claude")
+                + (tmp_path / "claude").as_posix()
                 + '", chunker = "conversation"}]\n'
             )
         else:
@@ -223,7 +229,7 @@ class TestCheckCorpusignore:
                 'name = "default"\n'
                 'kind = "text"\n'
                 'sources = [{plugin = "filesystem", root = "'
-                + str(scan_root)
+                + scan_root.as_posix()
                 + '", chunker = "markdown"}]\n'
             )
         cfg_text = (

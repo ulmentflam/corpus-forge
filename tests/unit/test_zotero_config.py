@@ -14,6 +14,8 @@ Mode-conditional rules:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -42,7 +44,9 @@ class TestModeValidators:
     def test_local_mode_allows_no_credentials(self) -> None:
         cfg = ZoteroSourceConfig(mode="local", library_path="/tmp/zotero")
         assert cfg.mode == "local"
-        assert cfg.library_path.endswith("/tmp/zotero") or cfg.library_path == "/tmp/zotero"
+        # ``ExpandedPath`` normalises to native form, so on Windows the
+        # stored value becomes ``\tmp\zotero``. Compare canonical POSIX.
+        assert Path(str(cfg.library_path)).as_posix().endswith("/tmp/zotero")
         assert cfg.user_id is None
 
     def test_web_mode_requires_user_id(self) -> None:
