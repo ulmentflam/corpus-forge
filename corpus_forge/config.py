@@ -256,7 +256,7 @@ class RerankerConfig(BaseModel):
 
 
 class RetrievalConfig(BaseModel):
-    """Phase R2 + R4 — hybrid retrieval knobs.
+    """Phase R2 + R4 + Phase N Wave 1 — hybrid retrieval knobs.
 
     Defaults match the master plan verbatim:
 
@@ -269,6 +269,20 @@ class RetrievalConfig(BaseModel):
       behaviour does not call the reranker even if it's configured).
     - ``reranker`` (R4): nested config of the cross-encoder / Ollama
       reranker, used only when rerank is enabled.
+
+    Phase N Wave 1 — adaptive lexical-weight bump (default OFF):
+
+    - ``adaptive_lexical_weight``: when True AND ``fusion=="alpha"``
+      AND the query is symbol-shaped (per
+      :func:`corpus_forge.retrieval.query_shape.is_symbol_shaped`),
+      the effective alpha passed to :func:`alpha_blend` drops to
+      ``symbol_query_alpha``.  This raises the BM25 contribution on
+      identifier / accessor queries where lexical match is the right
+      retrieval signal.
+    - ``symbol_query_alpha``: the alpha to swap in when the bump fires.
+      Validated to ``[0, 1]`` like the headline ``alpha``.  Default
+      ``0.3`` was Wave 1's starting guess; the wave-gate test is the
+      arbiter on whether to retune.
     """
 
     alpha: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -277,6 +291,8 @@ class RetrievalConfig(BaseModel):
     rerank_top_n: int = Field(default=50, gt=0)
     rerank_enabled: bool = False
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
+    adaptive_lexical_weight: bool = False
+    symbol_query_alpha: float = Field(default=0.3, ge=0.0, le=1.0)
 
 
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

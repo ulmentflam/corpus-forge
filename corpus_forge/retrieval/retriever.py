@@ -54,10 +54,12 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from corpus_forge.retrieval.fusion import alpha_blend, reciprocal_rank_fusion
 from corpus_forge.retrieval.normalize import min_max
+from corpus_forge.retrieval.query_shape import is_symbol_shaped
 from corpus_forge.retrieval.types import Hit, SearchOptions
 
 if TYPE_CHECKING:
     from corpus_forge.backends.base import StorageBackend
+    from corpus_forge.config import RetrievalConfig
     from corpus_forge.embedders.base import Embedder
 
 
@@ -100,11 +102,21 @@ class HybridRetriever:
         embedder: Embedder,
         embedder_id: int,
         reranker: Any | None = None,
+        config: RetrievalConfig | None = None,
     ) -> None:
+        # Lazy-import so the retriever module doesn't pull in the full
+        # Config pydantic graph just to construct a retriever without an
+        # explicit config (also avoids a potential circular import with
+        # any future cross-references in `corpus_forge.config`).
+        if config is None:
+            from corpus_forge.config import RetrievalConfig as _RC  # noqa: PLC0415
+
+            config = _RC()
         self.backend = backend
         self.embedder = embedder
         self.embedder_id = embedder_id
         self.reranker = reranker
+        self.config = config
 
     # ── public API ───────────────────────────────────────────────────────
 
@@ -166,6 +178,8 @@ class HybridRetriever:
         # ── Step 4: fuse ───────────────────────────────────────────────
         fused_scores: dict[int, float]
         if options.fusion == "rrf":
+            # RRF is rank-only — there's no alpha to bump on this path.
+            # The Wave 1 adaptive lexical-weight knob is a no-op here.
             dense_ranking = [h.chunk_id for h in dense_hits]
             lexical_ranking = [h.chunk_id for h in lexical_hits]
             fused_scores = reciprocal_rank_fusion([dense_ranking, lexical_ranking])
@@ -173,7 +187,16 @@ class HybridRetriever:
             # alpha path: per-list min-max normalise THEN blend.
             dense_norm = self._normalize_to_dict(dense_hits)
             lexical_norm = self._normalize_to_dict(lexical_hits)
-            fused_scores = alpha_blend(dense_norm, lexical_norm, alpha=options.alpha)
+            # Phase N Wave 1 — adaptive lexical-weight bump.  When the
+            # caller has opted in via config AND the query "looks like"
+            # a code symbol, lower the effective alpha so the lexical
+            # (BM25) signal contributes more to the blend.  Default
+            # config keeps the bump disabled, preserving pre-Wave-1
+            # behaviour exactly.
+            effective_alpha = options.alpha
+            if self.config.adaptive_lexical_weight and is_symbol_shaped(query):
+                effective_alpha = self.config.symbol_query_alpha
+            fused_scores = alpha_blend(dense_norm, lexical_norm, alpha=effective_alpha)
 
         # ── Step 5: materialise & truncate ────────────────────────────
         # Sort descending by fused score; ties broken by chunk_id (stable).

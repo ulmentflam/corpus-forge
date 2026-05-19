@@ -54,11 +54,15 @@ class TestRetrievalConfigDefaults:
         assert rc.default_k == 10
         assert rc.rerank_top_n == 50
         assert rc.rerank_enabled is False
+        # Phase N Wave 1 — adaptive lexical-weight knobs default OFF.
+        assert rc.adaptive_lexical_weight is False
+        assert rc.symbol_query_alpha == 0.3
 
     def test_field_set(self):
         rc = self._cls()
         fields = set(rc.model_fields.keys())
-        # R4 adds `reranker` (RerankerConfig nested) — the R2 fields stay.
+        # R4 adds `reranker` (RerankerConfig nested); Phase N Wave 1 adds
+        # `adaptive_lexical_weight` + `symbol_query_alpha`.  The R2 fields stay.
         assert fields == {
             "alpha",
             "fusion",
@@ -66,6 +70,8 @@ class TestRetrievalConfigDefaults:
             "rerank_top_n",
             "rerank_enabled",
             "reranker",
+            "adaptive_lexical_weight",
+            "symbol_query_alpha",
         }
 
     def test_fusion_literal_values(self):
@@ -112,6 +118,28 @@ class TestRetrievalConfigValidation:
     def test_rerank_top_n_positive(self):
         with pytest.raises(ValidationError):
             self._cls()(rerank_top_n=0)
+
+    # ── Phase N Wave 1 — adaptive lexical-weight bump ──────────────────────
+
+    def test_adaptive_lexical_weight_accepts_bool(self):
+        rc = self._cls()(adaptive_lexical_weight=True)
+        assert rc.adaptive_lexical_weight is True
+        rc = self._cls()(adaptive_lexical_weight=False)
+        assert rc.adaptive_lexical_weight is False
+
+    def test_symbol_query_alpha_in_range(self):
+        rc = self._cls()(symbol_query_alpha=0.0)
+        assert rc.symbol_query_alpha == 0.0
+        rc = self._cls()(symbol_query_alpha=1.0)
+        assert rc.symbol_query_alpha == 1.0
+
+    def test_symbol_query_alpha_negative_rejected(self):
+        with pytest.raises(ValidationError):
+            self._cls()(symbol_query_alpha=-0.1)
+
+    def test_symbol_query_alpha_too_high_rejected(self):
+        with pytest.raises(ValidationError):
+            self._cls()(symbol_query_alpha=1.5)
 
 
 # ── attaches to top-level Config ──────────────────────────────────────────
@@ -163,6 +191,21 @@ class TestConfigAttachment:
         assert cfg.retrieval.default_k == 10
         assert cfg.retrieval.rerank_top_n == 50
         assert cfg.retrieval.rerank_enabled is False
+        # Phase N Wave 1 defaults — bump OFF, default value parsed but unused.
+        assert cfg.retrieval.adaptive_lexical_weight is False
+        assert cfg.retrieval.symbol_query_alpha == 0.3
+
+    def test_config_retrieval_phase_n_overrides_via_toml(self):
+        from corpus_forge.config import Config
+
+        toml = dict(_MINIMAL_TOML)
+        toml["retrieval"] = {  # type: ignore[assignment]
+            "adaptive_lexical_weight": True,
+            "symbol_query_alpha": 0.25,
+        }
+        cfg = Config(**toml)
+        assert cfg.retrieval.adaptive_lexical_weight is True
+        assert cfg.retrieval.symbol_query_alpha == 0.25
 
     def test_config_retrieval_overridable_via_toml(self):
         from corpus_forge.config import Config
