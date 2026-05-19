@@ -55,6 +55,24 @@ class ZoteroWebClient:
         cache_dir: Path | str | None = None,
         timeout: float = 30.0,
     ) -> None:
+        # Fail fast on missing identifier — otherwise ``_items_url`` and
+        # ``_attachment_file_url`` would silently embed ``None`` into the
+        # Zotero API path (``/users/None/items``) and produce a 404 instead
+        # of a descriptive error. Pydantic's ``ZoteroSourceConfig`` already
+        # guards this for config-driven construction; this is
+        # defence-in-depth for direct callers (tests + future plugins).
+        if library_type == "group":
+            if not group_id:
+                raise ValueError(
+                    "ZoteroWebClient(library_type='group') requires a non-empty group_id"
+                )
+        elif library_type == "user":
+            if not user_id:
+                raise ValueError(
+                    "ZoteroWebClient(library_type='user') requires a non-empty user_id"
+                )
+        else:  # pragma: no cover — Literal narrows this away at type-check time
+            raise ValueError(f"unknown library_type {library_type!r}")
         self.user_id = user_id
         self.api_key = api_key
         self.library_type = library_type

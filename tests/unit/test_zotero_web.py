@@ -176,3 +176,40 @@ class TestRateLimitAndBackoff:
             list(client.iter_items())
         # Three tries total → two sleeps between them.
         assert err_route.call_count == 3
+
+
+class TestConstructorValidation:
+    """Fail-fast invariants on ``__init__``.
+
+    Without these, ``_items_url`` / ``_attachment_file_url`` would
+    silently embed ``None`` into the path and produce a 404 instead of a
+    descriptive error.
+    """
+
+    def test_user_mode_requires_user_id(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="user_id"):
+            ZoteroWebClient(user_id=None, api_key="fake", library_type="user", cache_dir=tmp_path)
+
+    def test_user_mode_rejects_empty_user_id(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="user_id"):
+            ZoteroWebClient(user_id="", api_key="fake", library_type="user", cache_dir=tmp_path)
+
+    def test_group_mode_requires_group_id(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="group_id"):
+            ZoteroWebClient(
+                user_id="1",
+                api_key="fake",
+                library_type="group",
+                group_id=None,
+                cache_dir=tmp_path,
+            )
+
+    def test_group_mode_rejects_empty_group_id(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="group_id"):
+            ZoteroWebClient(
+                user_id="1",
+                api_key="fake",
+                library_type="group",
+                group_id="",
+                cache_dir=tmp_path,
+            )
