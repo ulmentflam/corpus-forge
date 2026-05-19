@@ -305,9 +305,7 @@ def _build_hybrid_retriever() -> tuple[Any, dict[int, dict[str, Any]]]:
 # ── Hit normalisation ───────────────────────────────────────────────────
 
 
-def _normalise_hybrid_hits(
-    hits: list[Any], chunk_index: dict[int, dict[str, Any]]
-) -> list[Any]:
+def _normalise_hybrid_hits(hits: list[Any], chunk_index: dict[int, dict[str, Any]]) -> list[Any]:
     """Attach ``file_path``/``byte_start``/``byte_end`` metadata to a
     HybridRetriever's hits via the ``chunk_index`` join built at index time."""
     from types import SimpleNamespace

@@ -1858,7 +1858,7 @@ def build_server(
         new=…)`` substitution is picked up here even though this
         function was constructed inside the ``build_server`` closure.
         """
-        import sys as _sys  # noqa: PLC0415
+        import sys as _sys
 
         dataset = arguments.get("dataset")
         dry_run = bool(arguments.get("dry_run", False))

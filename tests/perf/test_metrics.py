@@ -149,9 +149,7 @@ class TestHitMatchesGroundTruth:
 
 def _mkhit(file: str, start: int, end: int) -> SimpleNamespace:
     """Helper: build a Hit-like SimpleNamespace with metadata dict."""
-    return SimpleNamespace(
-        metadata={"file_path": file, "byte_start": start, "byte_end": end}
-    )
+    return SimpleNamespace(metadata={"file_path": file, "byte_start": start, "byte_end": end})
 
 
 class TestComputeMetrics:
@@ -221,8 +219,9 @@ class TestComputeMetrics:
         assert m["recall_at_5"] == 1.0
 
     def test_keys_are_dynamic_per_k(self) -> None:
-        m = compute_metrics({}, {"q1": [{"file": "a", "byte_start": 0, "byte_end": 64}]},
-                            k_mrr=20, k_recall=10)
+        m = compute_metrics(
+            {}, {"q1": [{"file": "a", "byte_start": 0, "byte_end": 64}]}, k_mrr=20, k_recall=10
+        )
         assert "mrr_at_20" in m
         assert "recall_at_10" in m
 
@@ -240,8 +239,7 @@ class TestComputeMetrics:
         # If a query has empty ground truth, including it would unfairly
         # drag means to 0.  We exclude it from the means but keep it in
         # per_query for transparency.
-        ground_truth = {"q1": [{"file": "a.py", "byte_start": 0, "byte_end": 100}],
-                        "q2": []}
+        ground_truth = {"q1": [{"file": "a.py", "byte_start": 0, "byte_end": 100}], "q2": []}
         hits = {
             "q1": {"hits": [_mkhit("a.py", 0, 100)], "latency_ms": 1.0},
             "q2": {"hits": [_mkhit("z.py", 0, 100)], "latency_ms": 1.0},
@@ -255,7 +253,5 @@ class TestComputeMetrics:
         # A hit without metadata keys must not crash.
         bad_hit = SimpleNamespace(metadata={})
         ground_truth = {"q1": [{"file": "a.py", "byte_start": 0, "byte_end": 100}]}
-        m = compute_metrics(
-            {"q1": {"hits": [bad_hit], "latency_ms": 0.0}}, ground_truth
-        )
+        m = compute_metrics({"q1": {"hits": [bad_hit], "latency_ms": 0.0}}, ground_truth)
         assert m["mrr_at_10"] == 0.0

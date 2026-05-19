@@ -89,9 +89,7 @@ def mrr_at_k(relevant_flags: list[bool], k: int) -> float:
     return 0.0
 
 
-def recall_at_k(
-    relevant_flags: list[bool], total_relevant: int, k: int
-) -> float:
+def recall_at_k(relevant_flags: list[bool], total_relevant: int, k: int) -> float:
     """Fraction of relevant items recovered within the top-``k``.
 
     Args:
