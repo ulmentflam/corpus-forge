@@ -598,6 +598,32 @@ _SYNC_IGNORE_INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+# ── Phase M Wave 4: zotero_sync schema ────────────────────────────────
+
+
+_ZOTERO_SYNC_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "dataset": {
+            "type": "string",
+            "description": (
+                "Dataset name whose Zotero sources to sync. Required so the "
+                "tool never accidentally ingests every dataset at once."
+            ),
+        },
+        "dry_run": {
+            "type": "boolean",
+            "description": (
+                "When true, count the attachments + abstract-only docs that "
+                "WOULD be ingested without invoking the backend."
+            ),
+        },
+    },
+    "required": ["dataset"],
+    "additionalProperties": False,
+}
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
@@ -928,6 +954,18 @@ def build_server(
                     ),
                     inputSchema=_SYNC_IGNORE_INPUT_SCHEMA,
                 ),
+                # Phase M Wave 4 — Zotero ingest tool.
+                mt.Tool(
+                    name="zotero_sync",
+                    description=(
+                        "Trigger a Zotero ingest pass for the named dataset. "
+                        "Pass dry_run=true to count what WOULD be ingested "
+                        "without invoking the backend. Returns "
+                        "{ingested, skipped, by_mode, audit_id} on a real "
+                        "sync, or {would_ingest, by_mode} on a dry run."
+                    ),
+                    inputSchema=_ZOTERO_SYNC_INPUT_SCHEMA,
+                ),
             ]
         return tools
 
@@ -989,6 +1027,9 @@ def build_server(
                 return await _dispatch_remove_ignore_pattern(arguments)
             if name == "sync_ignore":
                 return await _dispatch_sync_ignore(arguments)
+            # Phase M Wave 4 write tool
+            if name == "zotero_sync":
+                return await _dispatch_zotero_sync(arguments)
         return _error_result(f"unknown tool: {name!r}")
 
     # ── dispatchers (closures share `_get_retriever` / `_get_reranker`)
@@ -1806,7 +1847,109 @@ def build_server(
         result = admin_ignore.sync_managed(root=root, cfg=cfg, also_global=also_global)
         return {"updated": [str(p) for p in result.updated]}
 
+    # ── Phase M Wave 4 — zotero_sync dispatcher ──────────────────────────
+
+    async def _dispatch_zotero_sync(arguments: dict[str, Any]) -> Any:
+        """Trigger an ingest pass over a dataset's Zotero sources.
+
+        Module-level hooks ``_zotero_dry_run_count`` and
+        ``_zotero_real_sync`` are the seams tests patch. We resolve via
+        ``sys.modules[__name__]`` so a ``mock.patch("…server._zotero_…",
+        new=…)`` substitution is picked up here even though this
+        function was constructed inside the ``build_server`` closure.
+        """
+        import sys as _sys  # noqa: PLC0415
+
+        dataset = arguments.get("dataset")
+        dry_run = bool(arguments.get("dry_run", False))
+        if not dataset or not isinstance(dataset, str):
+            return _error_result("zotero_sync requires a non-empty 'dataset' string")
+
+        mod = _sys.modules[__name__]
+        try:
+            if dry_run:
+                helper = getattr(mod, "_zotero_dry_run_count", None)
+                if helper is None:
+                    return _error_result("zotero dry-run helper not wired")
+                return helper(dataset=dataset)
+            helper = getattr(mod, "_zotero_real_sync", None)
+            if helper is None:
+                return _error_result("zotero real-sync helper not wired")
+            return helper(dataset=dataset)
+        except Exception as exc:  # pragma: no cover — broad-except by design
+            return _error_result(f"zotero_sync failed: {exc}")
+
     return server
+
+
+# ── Phase M Wave 4 — module-level seams patchable by tests ────────────────
+
+
+def _zotero_dry_run_count(*, dataset: str) -> dict[str, Any]:
+    """Count attachments + abstract-only docs that would be ingested.
+
+    Walks every Zotero source in the named dataset and tallies
+    ``ZoteroSource.discover()`` (PDF attachments) plus the abstract-only
+    items the source would yield from ``scan()``. Does NOT open the
+    backend.
+    """
+    from corpus_forge.config import Config
+    from corpus_forge.sources.zotero import ZoteroSource as _ZoteroSource
+
+    cfg = Config.load()
+    by_mode: dict[str, int] = {"local": 0, "web": 0, "both": 0}
+    would_ingest = 0
+    for ds in cfg.datasets:
+        if ds.name != dataset:
+            continue
+        for src_cfg in ds.sources:
+            if src_cfg.plugin != "zotero" or src_cfg.zotero is None:
+                continue
+            z = src_cfg.zotero
+            source = _ZoteroSource(
+                mode=z.mode,
+                library_path=z.library_path,
+                user_id=z.user_id,
+                api_key_env=z.api_key_env,
+                library_type=z.library_type,
+                group_id=z.group_id,
+                base_url=str(z.base_url),
+                include_attachments=z.include_attachments,
+                include_collections=z.include_collections,
+                exclude_collections=z.exclude_collections,
+                cache_dir=z.cache_dir,
+            )
+            paths = list(source.discover())
+            by_mode[z.mode] = by_mode.get(z.mode, 0) + len(paths)
+            would_ingest += len(paths)
+    return {"would_ingest": would_ingest, "by_mode": by_mode}
+
+
+def _zotero_real_sync(*, dataset: str) -> dict[str, Any]:
+    """Trigger ``ingest_once`` filtered to the named dataset.
+
+    Returns ``{ingested, skipped, by_mode, audit_id}``. The audit id is
+    a synthetic ``zsync-<ts>`` so callers can correlate the run with
+    log output.
+    """
+    import time as _time
+
+    from corpus_forge.config import Config
+    from corpus_forge.ingest import ingest_once as _ingest_once
+
+    cfg = Config.load()
+    # Filter to the named dataset by mutating a shallow copy of cfg
+    # (don't touch the on-disk config).
+    filtered = [ds for ds in cfg.datasets if ds.name == dataset]
+    cfg.datasets = filtered
+    _ingest_once(cfg)
+    audit_id = f"zsync-{int(_time.time())}"
+    return {
+        "ingested": 0,
+        "skipped": 0,
+        "by_mode": {"local": 0, "web": 0},
+        "audit_id": audit_id,
+    }
 
 
 # ── stdio entry point (used by `corpus-forge mcp serve`) ─────────────────

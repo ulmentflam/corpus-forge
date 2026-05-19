@@ -308,9 +308,11 @@ class TestWritesEnabledGate:
             "add_ignore_pattern",
             "remove_ignore_pattern",
             "sync_ignore",
+            # Phase M Wave 4 write tool
+            "zotero_sync",
         }
         assert set(tools) == expected, (
-            f"Expected 24 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
+            f"Expected 25 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
         )
 
     def test_unknown_tool_returns_error_when_writes_disabled(

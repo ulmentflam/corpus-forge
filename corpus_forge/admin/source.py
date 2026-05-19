@@ -58,6 +58,11 @@ def _source_root_field(source: dict) -> str:
         val = source.get(key)
         if val:
             return str(val)
+    # Phase M Wave 4: Zotero sources have a nested `zotero` table with
+    # either library_path (local/both) or user_id (web).
+    z = source.get("zotero") or {}
+    if isinstance(z, dict):
+        return str(z.get("library_path") or z.get("user_id") or "")
     return ""
 
 
@@ -130,7 +135,7 @@ def cmd_add(
 
     plugin = Prompt.ask(
         "Plugin",
-        choices=["filesystem", "markdown_vault", "claude_code", "opencode"],
+        choices=["filesystem", "markdown_vault", "claude_code", "opencode", "zotero"],
         default="filesystem",
     )
 
@@ -147,6 +152,25 @@ def cmd_add(
             "plugin": plugin,
             "projects_root": projects_root,
             "chunker": "conversation",
+        }
+    elif plugin == "zotero":
+        # Phase M Wave 4: mode-aware wizard. We collect only the bare
+        # minimum here — full knobs (collections, mime allowlist, cache
+        # dir) round-trip via `config edit`.
+        mode = Prompt.ask("Mode", choices=["local", "web", "both"], default="local")
+        zotero: dict[str, str | None] = {"mode": mode}
+        if mode in ("local", "both"):
+            zotero["library_path"] = Prompt.ask(
+                "Local zotero.sqlite path",
+                default="~/Zotero/zotero.sqlite",
+            )
+        if mode in ("web", "both"):
+            zotero["user_id"] = Prompt.ask("Zotero user_id (numeric)")
+            zotero["api_key_env"] = Prompt.ask("API key env var", default="ZOTERO_API_KEY")
+        source = {
+            "plugin": plugin,
+            "zotero": zotero,
+            "chunker": "markdown",
         }
     else:  # opencode
         storage_root = Prompt.ask("Storage root", default="~/.opencode")

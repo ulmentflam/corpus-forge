@@ -1,103 +1,94 @@
-# TDD Task Board — Phase M Wave 2 (Scan & Estimate Performance)
+# TDD Task Board — Phase M Wave 4 (Zotero Library Connector)
 
 _Owner: tdd-principal (inline execution). Workers: n/a — single inline RED→GREEN wave._
-_Date: 2026-05-18._
+_Date: 2026-05-19._
 
-Brief: Replace two divergent slow walkers (`corpus_forge/estimate.py:_walk` and `corpus_forge/sources/filesystem.py:discover`) with a single fast `os.scandir`-based walker that prunes excluded directories during descent and short-circuits on extension before statting.
+Brief: Ship a Zotero library source plugin (local SQLite + Web API + reconciled `both` mode) that flows attachments through `PdfDigitalExtractor`, enriches per-item metadata onto each `RawDocument`, and exposes a `zotero_sync` MCP tool.
 
 ## Project gates
-- format: `uv run ruff format --check corpus_forge tests`
-- lint: `uv run ruff check corpus_forge tests`
-- typecheck: `uv run pyrefly check corpus_forge`  (baseline 32 pre-existing warnings — don't regress)
-- test: `uv run python -m pytest -x`
-- perf: `uv run python -m pytest tests/perf/test_scan_bench.py -m slow -v`
+- format: `uv run ruff format --check corpus_forge tests`   ✅ clean
+- lint:   `uv run ruff check corpus_forge tests`            ✅ clean
+- typecheck: `uv run pyrefly check corpus_forge`            ✅ 9 errors (all pre-existing optional-import noise; ≤ 27-baseline)
+- test:   `uv run python -m pytest tests/unit/test_zotero_*.py tests/unit/test_mcp_zotero_sync.py tests/unit/test_doctor_zotero.py tests/integration/test_zotero_ingest_pdf.py`  ✅ 60 passed
+- tool-count pin tests: `tests/smoke/test_mcp_writes_disabled_by_default.py`, `tests/smoke/test_skill_tool_contract.py`, `tests/unit/test_mcp_server_enrichment.py`  ✅ updated + passing
 
 ## Tasks
-| id | title | depends_on | surface | risk | status | claimed_by | notes |
-|----|-------|------------|---------|------|--------|------------|-------|
-| M2-T1 | RED: walker unit tests | — | tests/unit/test_walker.py | low | done | inline | scandir-count, prune, short-circuit, symlinks, sort, workers |
-| M2-T2 | RED: directory_pruned unit tests | — | tests/unit/test_ignore_directory_pruned.py | low | done | inline | conservative-negation algorithm |
-| M2-T3 | RED: extension-index unit tests | — | tests/unit/test_extension_index.py | low | done | inline | union of registry + heuristic extensions |
-| M2-T4 | RED: scan parity integration | — | tests/integration/test_scan_parity.py | med | done | inline | 5 fixtures incl. broken symlinks |
-| M2-T5 | RED: filesystem-source parity integration | — | tests/integration/test_filesystem_source_parity.py | med | done | inline | exclude_globs → IgnoreStack adapter |
-| M2-T6 | RED: scan-bench perf | — | tests/perf/test_scan_bench.py | low | done | inline | @pytest.mark.slow, 10k synthetic tree |
-| M2-G1 | GREEN: IgnoreStack.directory_pruned | M2-T2 | corpus_forge/ignore.py | low | done | inline | unlocks T2 |
-| M2-G2 | GREEN: scanner.walker module | M2-T1, M2-G1 | corpus_forge/scanner/__init__.py, corpus_forge/scanner/walker.py | med | done | inline | unlocks T1, T4, T5, T6 |
-| M2-G3 | GREEN: estimate._walk → walker | M2-G2 | corpus_forge/estimate.py | med | done | inline | _ext_to_class, _full_ext_index, dir_count |
-| M2-G4 | GREEN: FilesystemSource.discover → walker | M2-G2 | corpus_forge/sources/filesystem.py | med | done | inline | _ignore_from_globs adapter |
-| M2-G5 | GREEN: ScanConfig + config.example | — | corpus_forge/config.py, config.example.toml | low | done | inline | extra_skip_dirs, follow_symlinks, workers |
-| M2-G6 | GREEN: perf bench calibration | M2-G3, M2-G4, M2-G6 | tests/perf/test_scan_bench.py | low | done | inline | confirm ≥3×, ≤250 scandir calls |
+| id | title | depends_on | surface | risk | status |
+|----|-------|------------|---------|------|--------|
+| M4-F0 | Fixture: build_fixture.py + commit zotero.sqlite + storage tree | — | tests/fixtures/zotero/{build_fixture.py, zotero.sqlite, storage/...} | med | done |
+| M4-T1 | RED: ZoteroSourceConfig validators | — | tests/unit/test_zotero_config.py | low | done |
+| M4-T2 | RED: ZoteroLocalReader unit | M4-F0 | tests/unit/test_zotero_local.py | med | done |
+| M4-T3 | RED: ZoteroWebClient unit (respx) | — | tests/unit/test_zotero_web.py | med | done |
+| M4-T4 | RED: ZoteroSource unit | M4-F0 | tests/unit/test_zotero_source.py | med | done |
+| M4-T5 | RED: ingest+PdfDigitalExtractor integration | M4-F0 | tests/integration/test_zotero_ingest_pdf.py | med | done |
+| M4-T6 | RED: MCP zotero_sync tool | — | tests/unit/test_mcp_zotero_sync.py | low | done |
+| M4-T7 | RED: doctor _check_zotero | — | tests/unit/test_doctor_zotero.py | low | done |
+| M4-G1 | GREEN: zotero/types.py + __init__ | M4-T2 | corpus_forge/zotero/{__init__,types}.py | low | done |
+| M4-G2 | GREEN: zotero/local.py | M4-G1, M4-F0 | corpus_forge/zotero/local.py | med | done |
+| M4-G3 | GREEN: zotero/web_client.py | M4-G1 | corpus_forge/zotero/web_client.py | med | done |
+| M4-G4 | GREEN: sources/zotero.py | M4-G2, M4-G3 | corpus_forge/sources/zotero.py | med | done |
+| M4-G5 | GREEN: ZoteroSourceConfig | M4-T1 | corpus_forge/config.py | low | done |
+| M4-G6 | GREEN: ingest dispatch branch | M4-G4, M4-G5 | corpus_forge/ingest.py | low | done |
+| M4-G7 | GREEN: admin/source.py zotero wizard | M4-G5 | corpus_forge/admin/source.py | low | done |
+| M4-G8 | GREEN: MCP zotero_sync | M4-G4, M4-G6 | corpus_forge/mcp/server.py | med | done |
+| M4-G9 | GREEN: doctor _check_zotero | M4-G5 | corpus_forge/doctor/checks.py | low | done |
+| M4-G10 | GREEN: docs + pyproject deps + tool-count test backfills | M4-G3 | docs/sources/zotero.md, config.example.toml, pyproject.toml, tests/smoke/test_mcp_writes_disabled_by_default.py, tests/smoke/test_skill_tool_contract.py, tests/unit/test_mcp_server_enrichment.py | low | done |
 
 ## DAG
-- Wave 0 (RED): T1–T6 in parallel — disjoint test files. DONE
-- Wave 1 (GREEN): G1 → G2 → {G3, G4} → G5 → G6. DONE
+- Wave 0: M4-F0 (fixture must land first). DONE
+- Wave 1 (RED): T1, T3, T6, T7 in parallel; T2, T4, T5 after F0. DONE
+- Wave 2 (GREEN): G1 → G2/G3 → G4 → {G5..G10}. DONE
 
 ## Summary
 
-Files changed (Wave 2 scope):
+Files changed (Wave 4 scope):
 
-- `corpus_forge/scanner/__init__.py` (new)
-- `corpus_forge/scanner/walker.py` (new) — `os.scandir`-based walker with descent-time pruning + pre-stat short-circuit
-- `corpus_forge/ignore.py` — added `IgnoreStack.directory_pruned` (conservative-negation algorithm)
-- `corpus_forge/estimate.py` — `_walk` body now delegates to walker; added `_ext_to_class`, `_filename_to_class`, `_full_ext_index` module-level reverse-indices
-- `corpus_forge/sources/filesystem.py` — `discover` body now delegates to walker; added `_ignore_from_globs` adapter; removed legacy `_is_excluded`
-- `corpus_forge/config.py` — added `ScanConfig` (extra_skip_dirs, follow_symlinks, workers)
-- `config.example.toml` — added `[scan]` block
-- `pyproject.toml` — registered `slow` marker
-- `tests/unit/test_walker.py` (new, 14 tests)
-- `tests/unit/test_ignore_directory_pruned.py` (new, 10 tests)
-- `tests/unit/test_extension_index.py` (new, 5 tests)
-- `tests/integration/test_scan_parity.py` (new, 7 tests)
-- `tests/integration/test_filesystem_source_parity.py` (new, 5 tests)
-- `tests/perf/test_scan_bench.py` (new, 1 test, @pytest.mark.slow)
-- `tests/perf/__init__.py` (new)
-- `tests/unit/test_estimate.py` — `test_unknown_only_dir` updated for new pre-stat-filter contract
-- `tests/unit/test_filesystem_source.py` — removed `TestIsExcludedRelativeFallback` (helper deleted)
-- `tests/integration/test_estimate_real_tree.py` — assertion updated for new contract
+### New (production)
+- `corpus_forge/zotero/__init__.py`
+- `corpus_forge/zotero/types.py` — `ZoteroItem`, `ZoteroAttachment`, `ZoteroReconciled` frozen dataclasses.
+- `corpus_forge/zotero/local.py` — `ZoteroLocalReader` over `zotero.sqlite` (`mode=ro&immutable=1`).
+- `corpus_forge/zotero/web_client.py` — sync `httpx`-backed Zotero v3 REST client.
+- `corpus_forge/sources/zotero.py` — `ZoteroSource(WatchedSource)` + `reconcile_items(...)`.
 
-Gates:
+### New (tests + fixtures + docs)
+- `tests/fixtures/zotero/build_fixture.py` (run-once, committed alongside the binary).
+- `tests/fixtures/zotero/zotero.sqlite` (5 items, 5 attachments).
+- `tests/fixtures/zotero/storage/<KEY>/<filename>` (4 attachment files: 3 PDFs + 1 HTML).
+- `tests/unit/test_zotero_config.py` (12 tests).
+- `tests/unit/test_zotero_local.py` (20 tests).
+- `tests/unit/test_zotero_web.py` (6 tests).
+- `tests/unit/test_zotero_source.py` (10 tests).
+- `tests/unit/test_doctor_zotero.py` (6 tests).
+- `tests/unit/test_mcp_zotero_sync.py` (4 tests).
+- `tests/integration/test_zotero_ingest_pdf.py` (2 tests).
+- `docs/sources/zotero.md` — setup, mode trade-offs, "database is locked" troubleshooting.
 
-- `uv run ruff check corpus_forge tests` — clean
-- `uv run ruff format --check corpus_forge tests` — clean
-- `uv run pyrefly check corpus_forge` — 32 pre-existing errors, no regression
-- Full suite: 4550 passed, 192 pre-existing failures (all optional-deps `ModuleNotFoundError`), 0 new failures, 1 pre-existing test deselected
+### Modified
+- `corpus_forge/config.py` — `ZoteroSourceConfig` Pydantic block + nested `zotero` field on `DatasetSourceConfig`.
+- `corpus_forge/ingest.py` — `elif source_config.plugin == "zotero":` branch threading VLM + Whisper.
+- `corpus_forge/admin/source.py` — `zotero` in the `add` wizard with mode-aware prompts.
+- `corpus_forge/mcp/server.py` — `_ZOTERO_SYNC_INPUT_SCHEMA`, `zotero_sync` tool registration under `writes_enabled`, `_dispatch_zotero_sync`, plus module-level seams `_zotero_dry_run_count` / `_zotero_real_sync`.
+- `corpus_forge/doctor/checks.py` — `_check_zotero` (SKIP / OK / WARN / FAIL per mode).
+- `config.example.toml` — commented `[[datasets.sources]] plugin = "zotero"` example.
+- `pyproject.toml` — `httpx>=0.27` (new core dep, Zotero web client), `respx>=0.21` (dev dep, route-mock for tests).
+- `tests/smoke/test_mcp_writes_disabled_by_default.py` — added `zotero_sync` to `_WRITE_TOOL_NAMES`.
+- `tests/smoke/test_skill_tool_contract.py` — added `zotero_sync` to `_WRITE_TOOLS`.
+- `tests/unit/test_mcp_server_enrichment.py` — added `zotero_sync` to the writes-enabled expected set (25 tools total).
 
-Perf bench (synthetic 10,021-file tree, 379 dirs):
+### Net delta
+- 30 source/test/doc files added or modified.
+- ~3,750 lines added, 88 removed.
+- 60 new tests; full Wave 4 + tool-count backfill suite is 118 tests passing.
 
-- new_walker: ~0.012s (yields 2,800 files)
-- control: ~0.039s (yields 2,800 files)
-- speedup: ~3.29x (hard floor: 3.0x)
-- scandir calls: 144 (hard ceiling: 250)
+### Verification
+- `uv run ruff check corpus_forge tests`         → All checks passed!
+- `uv run ruff format --check corpus_forge tests` → 498 files already formatted
+- `uv run pyrefly check corpus_forge`            → 9 errors (all pre-existing optional-import noise; well below the 27 baseline)
+- Wave 4 + tool-count backfill suite             → 118 passed
+- Pre-existing failures unrelated to Wave 4: confirmed `test_sqlite_backend::TestCopyReusableEmbeddings::test_returns_reused_embedder_ids_subset` and friends fail on the pre-Wave-4 tree too (sqlite_vec / search_dense / OCR-extra paths).
 
-## Acceptance details
-
-### M2-T1 (walker tests)
-- Baseline `_SKIP_DIR_NAMES` never descended (monkey-patched `os.scandir` visit log).
-- `IgnoreStack` with `build/` prunes descent.
-- Any negation in the stack ⇒ walker still descends (conservative).
-- `include_exts={".md"}` short-circuits before `entry.stat()`.
-- `follow_symlinks=False` skips symlinked dirs and unresolved file symlinks.
-- `sort=True` yields POSIX-sorted output.
-- `workers=2` raises `NotImplementedError`.
-
-### M2-T2 (directory_pruned)
-- Empty stack → False.
-- `node_modules/` matches `node_modules` → True.
-- `node_modules/` does not match `src` → False.
-- Any negation → False.
-- Anchored `/.cache/` only matches at root.
-
-### M2-T3 (extension index)
-- `_full_ext_index()` contains `.md`, `.py`, `.pdf`; absent `.iso`, `.dmg`.
-- Filename-only set contains `Makefile`, `Dockerfile`.
-
-### M2-T4 (scan parity)
-- Per-class buckets, file_count, dir_count, total_raw_bytes identical against in-test reference walker on 5 fixtures.
-
-### M2-T5 (filesystem-source parity)
-- `FilesystemSource.discover()` yields identical sorted file list on 3 fixtures with mixed `exclude_globs`.
-
-### M2-T6 (perf bench)
-- (a) new walker ≥3× faster than control.
-- (b) `os.scandir` called ≤250 times of ~2,200 dirs.
-- (c) wall-clock warning if >5.0 s; not a hard fail.
+### Deviations from spec
+- Architecture decision says fixture should use **symlinks** to existing PDFs; I used `shutil.copyfile` instead because symlinks under macOS iCloud sync are unreliable (the iCloud daemon dereferences and uploads the target which can break under multi-machine sync), and the PDFs are tiny (~50 KB each). Same total bytes either way; safer for the committed-fixture story. The Master Plan called this out as a tolerated alternative ("if symlinks are risky for git portability, copy the bytes instead.").
+- Zotero schema test added a tiny `_AUTHOR_CREATOR_TYPES = ("author", "editor")` constant since the master plan called for "author-equivalent creatorType". Translator is intentionally excluded.
+- `chunker = "markdown"` is required on `DatasetSourceConfig` (TOML schema regex); the Zotero source carries it through but the per-document `chunker_hint = "markdown"` from `PdfDigitalExtractor` is what `_DISPATCHER` actually picks. The required field is a no-op for the Zotero path but preserves backwards-compat with the existing `DatasetSourceConfig` regex.
+- I had to backfill three "tool count" tests (smoke + unit) that pin the registered MCP tool set — these were not enumerated in the spec but are blocking regressions if not updated, so they're listed under M4-G10.

@@ -50,6 +50,10 @@ dependencies = [
   "python-dotenv>=1.0",
   "tenacity>=8.2",
   "alembic>=1.13",
+  # Phase M Wave 4: ``httpx`` is the HTTP client for the Zotero Web API
+  # connector (``corpus_forge.zotero.web_client``). Synchronous client only;
+  # the ingest loop is single-threaded so we don't need anyio/asyncio.
+  "httpx>=0.27",
   # Phase L Wave 1: promote `rich` (transitive via Typer) + `platformdirs`
   # (transitive via Pydantic) to direct deps. `rich` drives the new
   # `corpus_forge/ui/` package (theme, console, banner, progress,
@@ -177,6 +181,7 @@ dev = [
   "pre-commit>=3.7",
   "mkdocs-material>=9.5",                    # docs site (built on demand)
   "mkdocstrings[python]>=0.25",              # API docs from docstrings
+  "respx>=0.21",                             # Phase M Wave 4: httpx route mock for Zotero web client tests
   "build>=1.2",                              # CI-1: sdist/wheel builder for release artifacts
   # Phase D / Wave 3 (D-17): fixture-corpus generation script
   # (`scripts/build_fixture_corpus.py`).  These deps are needed *only*

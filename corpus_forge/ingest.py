@@ -623,6 +623,58 @@ def _instantiate_source(source_config, *, config: Config | None = None):
             whisper=whisper,
             debounce=2.0,
         )
+    elif source_config.plugin == "zotero":
+        # Phase M Wave 4 — Zotero library connector. Threads VLM/Whisper
+        # exactly like the filesystem branch so the OCR Tier 2 escalation
+        # works for scanned Zotero PDFs.
+        from .sources.zotero import ZoteroSource  # noqa: PLC0415
+
+        zcfg = source_config.zotero
+        if zcfg is None:
+            raise ValueError(
+                "DatasetSourceConfig.plugin = 'zotero' requires a "
+                "[datasets.sources.zotero] config block."
+            )
+        vlm = None
+        whisper = None
+        if config is not None:
+            try:
+                from .vlm.registry import get_active_vlm  # noqa: PLC0415
+
+                vlm = get_active_vlm(config)
+            except Exception as exc:
+                logger.warning(
+                    "VLM resolution failed (%s) — Zotero PDFs will use the digital-only path.",
+                    exc,
+                )
+                vlm = None
+            try:
+                from .whisper.registry import get_active_whisper  # noqa: PLC0415
+
+                whisper = get_active_whisper(config)
+            except Exception as exc:
+                logger.warning(
+                    "Whisper resolution failed (%s) — audio attachments "
+                    "would be skipped (Zotero does not currently emit audio).",
+                    exc,
+                )
+                whisper = None
+        return ZoteroSource(
+            mode=zcfg.mode,
+            library_path=zcfg.library_path,
+            user_id=zcfg.user_id,
+            api_key_env=zcfg.api_key_env,
+            library_type=zcfg.library_type,
+            group_id=zcfg.group_id,
+            base_url=str(zcfg.base_url),
+            include_attachments=zcfg.include_attachments,
+            include_collections=zcfg.include_collections,
+            exclude_collections=zcfg.exclude_collections,
+            cache_dir=zcfg.cache_dir,
+            debounce=2.0,
+            vlm=vlm,
+            whisper=whisper,
+        )
     else:
         raise ValueError(f"Unknown source plugin: {source_config.plugin}")
 

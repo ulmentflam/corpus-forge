@@ -94,6 +94,48 @@ description = "Heterogeneous personal corpus (research papers, codebases, notebo
     max_bytes       = 50_000_000
     code_chunker_config = { max_chars = 1500, min_chars = 100, overlap = 100 }
 
+# ─────────────────────────────────────────────────────────────────────
+# Zotero library connector (Phase M Wave 4).
+# Three modes: "local" (default), "web", "both".
+# - "local" reads ~/Zotero/zotero.sqlite directly (read-only, immutable=1
+#           so it co-exists with a running Zotero instance).
+# - "web"   talks to https://api.zotero.org. Requires user_id + an API
+#           key in the env var named by `api_key_env` (default
+#           ZOTERO_API_KEY).
+# - "both"  reads both and reconciles on `zotero_item_key` — local wins
+#           unless the web's `dateModified` is strictly newer.
+#
+# PDF attachments flow through PdfDigitalExtractor; Zotero item metadata
+# (authors, year, DOI, collection, tags, abstract) is enriched onto each
+# RawDocument so it propagates to chunks via the existing pipeline.
+#
+# Uncomment when you have a Zotero library to ingest.
+#
+# [[datasets]]
+# name        = "zotero-library"
+# kind        = "text"
+# description = "PDFs + abstracts from a Zotero library."
+#
+#   [[datasets.sources]]
+#   plugin = "zotero"
+#   chunker = "markdown"
+#
+#     [datasets.sources.zotero]
+#     mode = "local"
+#     library_path = "~/Zotero/zotero.sqlite"
+#     include_attachments = ["application/pdf"]
+#     # Empty include = every collection; otherwise prefix match.
+#     # include_collections = ["Research/Quantum"]
+#     # exclude_collections = ["Archive"]
+#
+#     # Web mode (or `both`) needs these:
+#     # mode = "web"   # or "both"
+#     # user_id = "1234567"
+#     # api_key_env = "ZOTERO_API_KEY"
+#     # library_type = "user"  # or "group"; group_id required when "group"
+#     # base_url = "https://api.zotero.org"
+#     # cache_dir = "~/.cache/corpus-forge/zotero"
+
 [[embedders]]
 name      = "qwen3_8b"
 provider  = "sentence_transformers"

@@ -385,6 +385,104 @@ def _check_corpusignore(cfg: Config) -> CheckResult:
     )
 
 
+# ── Phase M Wave 4 — Zotero check ─────────────────────────────────────
+
+
+def _check_zotero(cfg: Config) -> CheckResult:
+    """Validate every Zotero source's reachability per its mode.
+
+    Status logic:
+
+    - ``SKIP`` when no source has ``plugin == "zotero"``.
+    - For each Zotero source:
+        - local mode  → ``OK`` when ``library_path`` opens read-only,
+          ``FAIL`` when missing.
+        - web mode    → ``OK`` when ``api_key_env`` is set, ``WARN`` when
+          unset.
+        - both mode   → degrades gracefully: ``WARN`` if local path
+          missing but web is configured; ``FAIL`` only when BOTH fail.
+    - Worst-status wins across multiple sources.
+    """
+    import os as _os  # noqa: PLC0415
+    import sqlite3 as _sqlite3  # noqa: PLC0415
+
+    zotero_sources = []
+    for ds in cfg.datasets:
+        for src in ds.sources:
+            if getattr(src, "plugin", None) == "zotero":
+                z = getattr(src, "zotero", None)
+                if z is not None:
+                    zotero_sources.append(z)
+
+    if not zotero_sources:
+        return CheckResult(
+            "zotero",
+            CheckStatus.SKIP,
+            "no Zotero source configured",
+        )
+
+    worst = CheckStatus.OK
+    details: list[str] = []
+    for z in zotero_sources:
+        mode = getattr(z, "mode", "local")
+        # local-side probe
+        local_ok = False
+        local_msg = ""
+        library_path = getattr(z, "library_path", None)
+        if mode in ("local", "both"):
+            if not library_path:
+                local_msg = f"mode={mode}: library_path not set"
+            elif not Path(library_path).exists():
+                local_msg = f"mode={mode}: library_path missing ({library_path})"
+            else:
+                try:
+                    conn = _sqlite3.connect(f"file:{library_path}?mode=ro&immutable=1", uri=True)
+                    conn.close()
+                    local_ok = True
+                except Exception as exc:
+                    local_msg = f"mode={mode}: open failed ({exc})"
+
+        # web-side probe (env var presence only — no live HTTP)
+        web_ok = False
+        web_msg = ""
+        if mode in ("web", "both"):
+            api_key_env = getattr(z, "api_key_env", "ZOTERO_API_KEY")
+            user_id = getattr(z, "user_id", None)
+            key = _os.environ.get(api_key_env)
+            if not key:
+                web_msg = f"mode={mode}: {api_key_env} env var unset"
+            elif not user_id:
+                web_msg = f"mode={mode}: user_id not set"
+            else:
+                web_ok = True
+
+        if mode == "local":
+            if local_ok:
+                details.append("local OK")
+            else:
+                details.append(local_msg or "local FAIL")
+                worst = CheckStatus.FAIL
+        elif mode == "web":
+            if web_ok:
+                details.append("web OK")
+            else:
+                details.append(web_msg or "web WARN")
+                if worst != CheckStatus.FAIL:
+                    worst = CheckStatus.WARN
+        elif mode == "both":
+            if local_ok and web_ok:
+                details.append("both OK")
+            elif not local_ok and not web_ok:
+                details.append(f"both FAIL ({local_msg}; {web_msg})")
+                worst = CheckStatus.FAIL
+            else:
+                details.append(f"both degraded ({local_msg or '-'}; {web_msg or '-'})")
+                if worst != CheckStatus.FAIL:
+                    worst = CheckStatus.WARN
+
+    return CheckResult("zotero", worst, "; ".join(details))
+
+
 # ── orchestrator ──────────────────────────────────────────────────────
 
 
@@ -433,4 +531,5 @@ def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
         )
     else:
         results.append(_check_corpusignore(loaded_cfg))
+        results.append(_check_zotero(loaded_cfg))
     return DoctorReport(results=results)

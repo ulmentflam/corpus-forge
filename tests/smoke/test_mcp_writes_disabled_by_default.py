@@ -72,6 +72,8 @@ _WRITE_TOOL_NAMES = {
     "add_ignore_pattern",
     "remove_ignore_pattern",
     "sync_ignore",
+    # Phase M Wave 4 — Zotero ingest tool
+    "zotero_sync",
 }
 
 _ALL_TOOL_NAMES = _READ_TOOL_NAMES | _WRITE_TOOL_NAMES

@@ -71,6 +71,8 @@ _WRITE_TOOLS = {
     "add_ignore_pattern",
     "remove_ignore_pattern",
     "sync_ignore",
+    # Phase M Wave 4 — Zotero ingest tool
+    "zotero_sync",
 }
 # G-03: render_conversation + list_chat_templates are always-available read tools.
 # J1:   estimate_sync_size is an always-available read tool (no backend writes).
