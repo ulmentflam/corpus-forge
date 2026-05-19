@@ -494,6 +494,31 @@ class EstimateConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ScanConfig(BaseModel):
+    """Phase M Wave 2 — filesystem-walker knobs.
+
+    Drives :func:`corpus_forge.scanner.walker.walk` (the unified walker
+    consumed by both the estimator and the `filesystem` source plugin).
+
+    Fields:
+
+    - ``extra_skip_dirs``: additional directory NAMES to prune wholesale,
+      stacked on top of the hard-coded baseline (`.git`, `node_modules`,
+      `__pycache__`, ...). Per-name match, not per-path.
+    - ``follow_symlinks``: when True, symlinked directories are descended
+      (default False — keeps the walker from chasing cycles and
+      double-counting).
+    - ``workers``: API-plumbed but not yet implemented. Must be ``>= 1``;
+      values ``> 1`` raise :class:`NotImplementedError` at walk-time.
+    """
+
+    extra_skip_dirs: list[str] = Field(default_factory=list)
+    follow_symlinks: bool = False
+    workers: int = Field(default=1, ge=1)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class Config(BaseModel):
     """Main configuration for corpus-forge."""
 
@@ -525,6 +550,10 @@ class Config(BaseModel):
     # Phase L Wave 7 — Ollama daemon endpoint used by the admin verbs.
     # Defaulted so existing configs (which omit the block) keep validating.
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
+    # Phase M Wave 2 — filesystem-walker knobs (extra_skip_dirs,
+    # follow_symlinks, workers). Defaulted so existing configs (which omit
+    # the block) keep validating.
+    scan: ScanConfig = Field(default_factory=ScanConfig)
 
     model_config = ConfigDict(
         str_strip_whitespace=True,

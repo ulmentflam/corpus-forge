@@ -299,6 +299,7 @@ markers = [
   "requires_whisper_local: requires faster-whisper installed AND a downloadable Whisper model on disk",
   "requires_clip_local: requires sentence-transformers + the CLIP ViT-B-32 weights pulled",
   "requires_qwen_coder: requires Ollama with a qwen-coder model pulled (qwen3.6:35b-a3b-instruct OR qwen2.5-coder:* OR qwen2.5:*-instruct)",
+  "slow: slow / synthetic-scale performance benchmarks (opt-in via -m slow)",
 ]
 
 [tool.coverage.run]

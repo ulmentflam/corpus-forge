@@ -111,17 +111,20 @@ def test_empty_dir_returns_zero_estimate(tmp_path: Path) -> None:
 
 
 def test_unknown_only_dir(tmp_path: Path) -> None:
+    """Phase M Wave 2 behaviour change: files whose extension is not
+    in the registry+heuristic union (`_full_ext_index()`) are now
+    short-circuited BEFORE `entry.stat()` and never reach the
+    bucket-accountant. The estimator returns an empty roll-up rather
+    than an `unknown` bucket. End-to-end ingest output is unchanged:
+    the registry would have rejected these files anyway.
+    """
     from corpus_forge.estimate import estimate_sync
 
     _write(tmp_path / "blob.xyz", 4096)
     _write(tmp_path / "more.abc", 8192)
     est = estimate_sync(tmp_path, _config())
-    assert est.file_count == 2
-    # Both bucketed unknown — no chunks, no embeddings.
-    unknown = [b for b in est.by_extractor if b.extractor_class == "unknown"]
-    assert len(unknown) == 1
-    assert unknown[0].file_count == 2
-    assert unknown[0].est_chunks == 0
+    assert est.file_count == 0
+    assert est.by_extractor == []
     for e in est.embeddings:
         assert e.n_chunks == 0
 

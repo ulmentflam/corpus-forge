@@ -438,6 +438,33 @@ temperature        = 0.1
 compression_ratio = 1.0
 
 # ─────────────────────────────────────────────────────────────────────
+# Phase M Wave 2 — filesystem walker
+# ─────────────────────────────────────────────────────────────────────
+# Drives the unified `os.scandir`-based walker shared by the estimator
+# and the `filesystem` source plugin. The walker prunes baseline-skip
+# dirs (`.git`, `node_modules`, `__pycache__`, `dist`, `build`, ...)
+# AND any `.corpusignore` directory patterns DURING descent — it never
+# scandir's into a pruned subtree. File-extension short-circuit runs
+# BEFORE `stat()` so non-corpus blobs (`.iso`, `.dmg`) cost nothing.
+#
+# All fields are optional; omitting the block keeps default behaviour.
+[scan]
+# Additional directory NAMES (not paths) to prune wholesale, stacked
+# on top of the hard-coded baseline. Per-name match, not per-path.
+# Useful for site-local conventions ("build_legacy", "wasm-pack", ...).
+extra_skip_dirs = []
+
+# When `true`, symlinked directories are descended. Default `false`
+# keeps the walker from chasing cycles or double-counting via symlinks
+# (the behaviour both pre-Wave-2 walkers had).
+follow_symlinks = false
+
+# Concurrency knob — API-plumbed but not yet implemented. Leave at 1
+# until a future revision lands a thread pool to overlap stat calls.
+# Values > 1 raise `NotImplementedError` at walk-time.
+workers = 1
+
+# ─────────────────────────────────────────────────────────────────────
 # See `docs/architecture.md` for the full pipeline reference (every
 # protocol, every backend matrix, the local-or-remote URL principle as
 # a cross-cutting concern) and `docs/schema.md` for the database

@@ -220,12 +220,44 @@ def _heuristics() -> tuple[ExtractorHeuristic, ...]:
     return _HEURISTICS
 
 
+# Module-level reverse-index caches. Built lazily on first use from
+# `_heuristics()`. Replaces the linear scan in the old `_classify_extension`
+# (Phase M Wave 2 — every file pays the lookup cost on the hot path).
+_EXT_TO_CLASS: dict[str, str] | None = None
+_FILENAME_TO_CLASS: dict[str, str] | None = None
+
+
+def _ext_to_class() -> dict[str, str]:
+    """Lazy reverse-index: lowercase extension → extractor class name."""
+    global _EXT_TO_CLASS  # noqa: PLW0603 — module-level cache
+    if _EXT_TO_CLASS is None:
+        idx: dict[str, str] = {}
+        for h in _heuristics():
+            for ext in h.extensions:
+                idx[ext] = h.extractor_class
+        _EXT_TO_CLASS = idx
+    return _EXT_TO_CLASS
+
+
+def _filename_to_class() -> dict[str, str]:
+    """Lazy reverse-index: extension-less filename → extractor class.
+
+    Currently only the `code` extractor declares filename support
+    (``Makefile`` / ``Dockerfile`` / ``.gitignore`` etc.). The map is
+    built once and reused.
+    """
+    global _FILENAME_TO_CLASS  # noqa: PLW0603 — module-level cache
+    if _FILENAME_TO_CLASS is None:
+        idx: dict[str, str] = {}
+        for name in _code_filenames():
+            idx[name] = "code"
+        _FILENAME_TO_CLASS = idx
+    return _FILENAME_TO_CLASS
+
+
 def _classify_extension(suffix_lower: str) -> str | None:
     """Return the extractor-class for ``suffix_lower`` or ``None``."""
-    for h in _heuristics():
-        if suffix_lower in h.extensions:
-            return h.extractor_class
-    return None
+    return _ext_to_class().get(suffix_lower)
 
 
 def _heuristic_for(extractor_class: str) -> ExtractorHeuristic | None:
@@ -233,6 +265,43 @@ def _heuristic_for(extractor_class: str) -> ExtractorHeuristic | None:
         if h.extractor_class == extractor_class:
             return h
     return None
+
+
+# Cached union of every extractor's `supported_extensions` plus every
+# heuristic-table extension. Used by the walker as `include_exts` to
+# short-circuit non-text files BEFORE `entry.stat()`.
+_FULL_EXT_INDEX: frozenset[str] | None = None
+
+
+def _full_ext_index() -> frozenset[str]:
+    """Lazy union of registry + heuristic-table extensions.
+
+    Phase M Wave 2 — seeds `scanner.walker.walk(include_exts=...)`. The
+    set is intentionally a SUPERSET of what `_ext_to_class` resolves to:
+    extractors that ship without a heuristic entry (e.g. some Wave-1
+    additions) still want their files counted toward `unknown` even
+    though they never reach the per-class accountant.
+    """
+    global _FULL_EXT_INDEX  # noqa: PLW0603 — module-level cache
+    if _FULL_EXT_INDEX is None:
+        merged: set[str] = set()
+        # Heuristic-table extensions.
+        for h in _heuristics():
+            for ext in h.extensions:
+                merged.add(ext)
+        # Registry extensions (caps any gap the heuristic table missed).
+        try:
+            from corpus_forge.extractors.registry import (  # noqa: PLC0415
+                register_default_extractors,
+            )
+
+            reg = register_default_extractors(None)
+            for ext in reg.extensions():
+                merged.add(ext.lower())
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug("estimate: registry extension scan failed: %s", exc)
+        _FULL_EXT_INDEX = frozenset(merged)
+    return _FULL_EXT_INDEX
 
 
 # Directory names skipped wholesale during the walk. Hidden-by-name and
@@ -407,10 +476,14 @@ def _walk(
 ) -> tuple[dict[str, _ClassBucket], int, int, int, ScanStats]:
     """Walk ``root`` and bucket every file into an extractor class.
 
-    The hard-coded ``_SKIP_DIR_NAMES`` / ``_SKIP_FILE_NAMES`` baseline
-    applies first; the optional ``ignore`` stack is consulted *after*
-    the baseline so a ``!`` negation in any ``.corpusignore`` cannot
-    un-skip a baseline entry.
+    Phase M Wave 2 — the body now delegates to
+    :func:`corpus_forge.scanner.walker.walk`, which prunes baseline +
+    ignore-driven subtrees DURING descent (no `is_dir`/`is_symlink` cost
+    on pruned subtrees) and short-circuits non-corpus extensions BEFORE
+    `entry.stat()`. The hard-coded ``_SKIP_DIR_NAMES`` /
+    ``_SKIP_FILE_NAMES`` baseline still applies; the ``IgnoreStack`` is
+    consulted *after* the baseline so a ``!`` negation in any
+    ``.corpusignore`` cannot un-skip a baseline entry.
 
     Returns ``(buckets_by_class, file_count, dir_count, total_raw_bytes, scan_stats)``.
 
@@ -420,79 +493,59 @@ def _walk(
     on a TTY and the rotating log captures the start/complete bookends
     even for long walks.
     """
+    from corpus_forge.scanner import WalkStats, walk  # noqa: PLC0415
     from corpus_forge.ui.progress import make_progress  # noqa: PLC0415
 
     buckets: dict[str, _ClassBucket] = {}
     file_count = 0
-    dir_count = 0
     total_raw_bytes = 0
 
+    walk_stats = WalkStats()
     started = time.perf_counter()
 
-    # Iterative walk so we can prune subtrees by directory name.
-    stack: list[Path] = [root]
+    include_exts = _full_ext_index()
+    include_filenames = frozenset(_filename_to_class().keys())
+    ext_index = _ext_to_class()
+    name_index = _filename_to_class()
+
     with make_progress("Scanning", total=None, logger=scan_logger) as progress:
         task = progress.add_task("Scanning", total=None)
-        while stack:
-            current = stack.pop()
-            try:
-                entries = list(current.iterdir())
-            except (PermissionError, OSError) as exc:
-                logger.debug("estimator: cannot iterate %s: %s", current, exc)
-                continue
-            for entry in entries:
-                name = entry.name
-                try:
-                    if entry.is_symlink():
-                        # Don't follow symlinks — keeps the estimator from
-                        # double-counting and from chasing cycles.
-                        continue
-                    if entry.is_dir():
-                        if _should_skip_dir(name):
-                            continue
-                        if ignore is not None and ignore.matches(
-                            entry, is_dir=True, scan_root=root
-                        ):
-                            continue
-                        dir_count += 1
-                        stack.append(entry)
-                        continue
-                    if not entry.is_file():
-                        continue
-                    if _should_skip_file(name):
-                        continue
-                    if ignore is not None and ignore.matches(entry, is_dir=False, scan_root=root):
-                        continue
-                except OSError as exc:
-                    logger.debug("estimator: stat failed on %s: %s", entry, exc)
-                    continue
+        for entry in walk(
+            root,
+            ignore=ignore,
+            include_exts=include_exts,
+            include_filenames=include_filenames,
+            follow_symlinks=False,
+            sort=True,
+            stats=walk_stats,
+        ):
+            name = entry.path.name
+            # Suffix the way `pathlib.Path.suffix` would. `entry.path`
+            # is a real `Path`, but we already paid for the name above
+            # so re-do the cheap rfind.
+            last_dot = name.rfind(".")
+            suffix = name[last_dot:].lower() if last_dot > 0 else ""
+            extractor_class = ext_index.get(suffix)
+            if extractor_class is None:
+                extractor_class = name_index.get(name, "unknown")
 
-                try:
-                    size = entry.stat().st_size
-                except OSError as exc:
-                    logger.debug("estimator: size lookup failed on %s: %s", entry, exc)
-                    continue
+            size = entry.stat.st_size
+            if size > 2 * 1024 * 1024 * 1024:  # >2 GiB
+                logger.debug(
+                    "estimator: large file %s (%d bytes) — still counted",
+                    entry.path,
+                    size,
+                )
 
-                extractor_class = _classify_extension(entry.suffix.lower())
-                if extractor_class is None:
-                    # Filename second-pass fallback for the code extractor.
-                    extractor_class = "code" if name in _code_filenames() else "unknown"
+            bucket = buckets.setdefault(extractor_class, _ClassBucket())
+            bucket.file_count += 1
+            bucket.raw_bytes += size
+            bucket.est_chunks += _est_chunks(extractor_class, size)
+            file_count += 1
+            total_raw_bytes += size
+            progress.update(task, advance=1)
 
-                if size > 2 * 1024 * 1024 * 1024:  # >2 GiB
-                    logger.debug(
-                        "estimator: large file %s (%d bytes) — still counted",
-                        entry,
-                        size,
-                    )
-
-                bucket = buckets.setdefault(extractor_class, _ClassBucket())
-                bucket.file_count += 1
-                bucket.raw_bytes += size
-                bucket.est_chunks += _est_chunks(extractor_class, size)
-                file_count += 1
-                total_raw_bytes += size
-                progress.update(task, advance=1)
-
+    dir_count = walk_stats.dirs_descended
     elapsed_s = max(time.perf_counter() - started, 0.0)
     scan_rate = (file_count / elapsed_s) if elapsed_s > 0 else 0.0
     stats = ScanStats(
