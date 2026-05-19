@@ -4,9 +4,12 @@ Mirrors the Wave-3 ignore-tool tests:
 
 - ``writes_enabled=False`` → tool absent from ``list_tools()``.
 - ``writes_enabled=True`` → tool present.
-- ``dry_run=true`` returns counts without invoking ``ingest_once``.
+- ``dry_run=true`` returns ``{would_ingest, by_mode}`` without invoking
+  ``ingest_once``.
 - ``dry_run=false`` reaches the ingest path and returns
-  ``{ingested, skipped, by_mode, audit_id}``.
+  ``{started, audit_id}`` — per-document counts are intentionally NOT
+  surfaced because ``ingest_once`` doesn't plumb them back; the audit
+  id is the correlation handle for log lookup.
 """
 
 from __future__ import annotations
