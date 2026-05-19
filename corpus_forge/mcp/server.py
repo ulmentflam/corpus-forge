@@ -34,6 +34,8 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from pathlib import Path
+
     from mcp.server import Server
 
 
@@ -504,6 +506,98 @@ _REGISTER_SESSION_INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+# ── Phase M Wave 3 — .corpusignore browse / edit schemas ─────────────────
+
+
+_LIST_IGNORE_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "scope": {
+            "type": "string",
+            "enum": ["local", "global", "all"],
+            "description": "Which ignore file(s) to enumerate.",
+        },
+        "path": {
+            "type": "string",
+            "description": (
+                "Project root containing .corpusignore (defaults to the "
+                "server's cwd). Ignored when scope='global'."
+            ),
+        },
+    },
+    "required": ["scope"],
+    "additionalProperties": False,
+}
+
+
+_VALIDATE_IGNORE_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "path": {
+            "type": "string",
+            "description": "Path to the ignore file to validate.",
+        },
+    },
+    "required": ["path"],
+    "additionalProperties": False,
+}
+
+
+_ADD_IGNORE_PATTERN_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "pattern": {"type": "string", "description": "Pattern to insert."},
+        "scope": {"type": "string", "enum": ["local", "global"]},
+        "path": {
+            "type": "string",
+            "description": (
+                "Project root containing .corpusignore (defaults to the "
+                "server's cwd). Ignored when scope='global'."
+            ),
+        },
+    },
+    "required": ["pattern", "scope"],
+    "additionalProperties": False,
+}
+
+
+_REMOVE_IGNORE_PATTERN_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "pattern": {"type": "string", "description": "Pattern to remove."},
+        "scope": {"type": "string", "enum": ["local", "global"]},
+        "path": {
+            "type": "string",
+            "description": (
+                "Project root containing .corpusignore (defaults to the "
+                "server's cwd). Ignored when scope='global'."
+            ),
+        },
+    },
+    "required": ["pattern", "scope"],
+    "additionalProperties": False,
+}
+
+
+_SYNC_IGNORE_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "root": {
+            "type": "string",
+            "description": (
+                "Tree whose .corpusignore to resync. When omitted, every "
+                "FS-style data root in the loaded config is synced."
+            ),
+        },
+        "also_global": {
+            "type": "boolean",
+            "description": "Also resync the global ignore file.",
+        },
+    },
+    "additionalProperties": False,
+}
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
@@ -708,6 +802,25 @@ def build_server(
                 ),
                 inputSchema=_LIST_CHAT_TEMPLATES_INPUT_SCHEMA,
             ),
+            # Phase M Wave 3 read tools — always available.
+            mt.Tool(
+                name="list_ignore",
+                description=(
+                    "Enumerate patterns in the local and/or global "
+                    ".corpusignore. Returns each pattern with provenance "
+                    "({source, pattern, managed, line}). Read-only."
+                ),
+                inputSchema=_LIST_IGNORE_INPUT_SCHEMA,
+            ),
+            mt.Tool(
+                name="validate_ignore",
+                description=(
+                    "Validate every pattern in the given ignore file. "
+                    "Returns {ok, line, pattern, reason}; the first failing "
+                    "line is reported. Read-only."
+                ),
+                inputSchema=_VALIDATE_IGNORE_INPUT_SCHEMA,
+            ),
         ]
         if writes_enabled:
             tools += [
@@ -786,6 +899,35 @@ def build_server(
                     ),
                     inputSchema=_REGISTER_SESSION_INPUT_SCHEMA,
                 ),
+                # Phase M Wave 3 write tools (gated by writes_enabled)
+                mt.Tool(
+                    name="add_ignore_pattern",
+                    description=(
+                        "Append a pattern to the local or global ignore file. "
+                        "Idempotent: a duplicate insertion returns "
+                        "{added: false}. Validates the pattern before write."
+                    ),
+                    inputSchema=_ADD_IGNORE_PATTERN_INPUT_SCHEMA,
+                ),
+                mt.Tool(
+                    name="remove_ignore_pattern",
+                    description=(
+                        "Remove a pattern from the user region of an ignore "
+                        "file. Refuses (isError, managed_block_protected) to "
+                        "touch the managed block — call sync_ignore instead."
+                    ),
+                    inputSchema=_REMOVE_IGNORE_PATTERN_INPUT_SCHEMA,
+                ),
+                mt.Tool(
+                    name="sync_ignore",
+                    description=(
+                        "Regenerate the managed block in one or all FS-style "
+                        "data roots' .corpusignore. User lines outside the "
+                        "sentinels are preserved. Optionally also resyncs "
+                        "the global ignore file."
+                    ),
+                    inputSchema=_SYNC_IGNORE_INPUT_SCHEMA,
+                ),
             ]
         return tools
 
@@ -809,6 +951,11 @@ def build_server(
             return await _dispatch_render_conversation(arguments)
         if name == "list_chat_templates":
             return await _dispatch_list_chat_templates(arguments)
+        # Phase M Wave 3 read tools — always available
+        if name == "list_ignore":
+            return await _dispatch_list_ignore(arguments)
+        if name == "validate_ignore":
+            return await _dispatch_validate_ignore(arguments)
         if writes_enabled:
             if name == "add_label":
                 return await _dispatch_add_label(arguments)
@@ -835,6 +982,13 @@ def build_server(
             # H-02 write tool
             if name == "register_session":
                 return await _dispatch_register_session(arguments)
+            # Phase M Wave 3 write tools
+            if name == "add_ignore_pattern":
+                return await _dispatch_add_ignore_pattern(arguments)
+            if name == "remove_ignore_pattern":
+                return await _dispatch_remove_ignore_pattern(arguments)
+            if name == "sync_ignore":
+                return await _dispatch_sync_ignore(arguments)
         return _error_result(f"unknown tool: {name!r}")
 
     # ── dispatchers (closures share `_get_retriever` / `_get_reranker`)
@@ -1548,6 +1702,109 @@ def build_server(
             host=arguments.get("host"),
         )
         return result
+
+    # ── Phase M Wave 3 — ignore_* dispatchers ────────────────────────────
+
+    def _resolve_path_arg(arg: Any) -> Path | None:
+        """Coerce a wire-side path string into an absolute :class:`Path`."""
+
+        if arg in (None, ""):
+            return None
+        from pathlib import Path as _Path  # local import — avoid top-level
+
+        path = _Path(str(arg)).expanduser()
+        if not path.is_absolute():
+            path = _Path.cwd() / path
+        return path
+
+    async def _dispatch_list_ignore(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.admin import ignore as admin_ignore
+
+        scope = arguments.get("scope", "local")
+        if scope not in ("local", "global", "all"):
+            return _error_result(f"unknown scope: {scope!r}")
+        path = _resolve_path_arg(arguments.get("path"))
+        try:
+            entries = admin_ignore.list_patterns(scope, path=path)
+        except (OSError, ValueError) as exc:
+            return _error_result(f"list_ignore failed: {exc}")
+        return {
+            "patterns": [
+                {
+                    "pattern": e.pattern,
+                    "source": e.source,
+                    "managed": e.managed,
+                    "line": e.line,
+                }
+                for e in entries
+            ],
+            "count": len(entries),
+        }
+
+    async def _dispatch_validate_ignore(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.admin import ignore as admin_ignore
+
+        path = _resolve_path_arg(arguments.get("path"))
+        if path is None:
+            return _error_result("validate_ignore requires `path`")
+        result = admin_ignore.validate_file(path)
+        return {
+            "ok": result.ok,
+            "line": result.line,
+            "pattern": result.pattern,
+            "reason": result.reason,
+        }
+
+    async def _dispatch_add_ignore_pattern(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.admin import ignore as admin_ignore
+
+        scope = arguments.get("scope")
+        if scope not in ("local", "global"):
+            return _error_result(
+                f"add_ignore_pattern requires scope in [local, global]; got {scope!r}"
+            )
+        path = _resolve_path_arg(arguments.get("path"))
+        pattern = arguments.get("pattern", "")
+        try:
+            result = admin_ignore.add_pattern(pattern, scope=scope, path=path)
+        except admin_ignore.InvalidPattern as exc:
+            return _error_result(f"invalid_pattern: {exc}")
+        return {"path": str(result.path), "pattern": result.pattern, "added": result.added}
+
+    async def _dispatch_remove_ignore_pattern(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.admin import ignore as admin_ignore
+
+        scope = arguments.get("scope")
+        if scope not in ("local", "global"):
+            return _error_result(
+                f"remove_ignore_pattern requires scope in [local, global]; got {scope!r}"
+            )
+        path = _resolve_path_arg(arguments.get("path"))
+        pattern = arguments.get("pattern", "")
+        try:
+            result = admin_ignore.remove_pattern(pattern, scope=scope, path=path)
+        except admin_ignore.ManagedRegionProtected as exc:
+            return _error_result(
+                f"managed_block_protected: pattern={exc.pattern!r} path={exc.path}"
+            )
+        return {"path": str(result.path), "pattern": result.pattern, "removed": result.removed}
+
+    async def _dispatch_sync_ignore(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.admin import ignore as admin_ignore
+
+        root = _resolve_path_arg(arguments.get("root"))
+        also_global = bool(arguments.get("also_global", False))
+        # Best-effort config load — sync works without a config when a
+        # specific root is supplied.
+        cfg = None
+        try:
+            from corpus_forge.config import Config as _Config
+
+            cfg = _Config.load()
+        except Exception:
+            cfg = None
+        result = admin_ignore.sync_managed(root=root, cfg=cfg, also_global=also_global)
+        return {"updated": [str(p) for p in result.updated]}
 
     return server
 

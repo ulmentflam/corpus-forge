@@ -48,6 +48,9 @@ _READ_TOOL_NAMES = {
     "estimate_sync_size",
     "next_curation_target",
     "next_curation_batch",
+    # Phase M Wave 3 — .corpusignore read tools
+    "list_ignore",
+    "validate_ignore",
 }
 
 _WRITE_TOOL_NAMES = {
@@ -65,6 +68,10 @@ _WRITE_TOOL_NAMES = {
     "register_session",
     # J4 write tool
     "commit_curation",
+    # Phase M Wave 3 — .corpusignore write tools
+    "add_ignore_pattern",
+    "remove_ignore_pattern",
+    "sync_ignore",
 }
 
 _ALL_TOOL_NAMES = _READ_TOOL_NAMES | _WRITE_TOOL_NAMES
