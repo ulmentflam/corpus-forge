@@ -171,13 +171,48 @@ class FilesystemSource(WatchedSource):
 
         Phase M Wave 2 — backed by `scanner.walker.walk` so the
         baseline-skip (`.git`, `node_modules`, ...) and ignore-driven
-        prunes happen DURING descent rather than after. Excluded paths
-        (per ``exclude_globs``) are translated into a gitignore-style
-        :class:`IgnoreStack` via :func:`_ignore_from_globs`.
+        prunes happen DURING descent rather than after.
+
+        The ignore stack composes (in evaluation order):
+
+        1. Global ``~/.config/corpus-forge/ignore`` (or
+           ``CF_GLOBAL_IGNORE_FILE``) — user-machine defaults.
+        2. Local ``<root>/.corpusignore`` — per-tree rules, including
+           the Phase M Wave 1 managed block that setup writes.
+        3. ``exclude_globs`` translated via :func:`_ignore_from_globs`
+           — legacy per-source toml knob; later sets win on conflict.
+
+        This is also the set ``estimate_sync_size`` and the
+        ``corpus-forge ignore`` CLI/MCP surfaces operate on, so the
+        three views can't drift.
         """
+        from corpus_forge.ignore import (  # noqa: PLC0415
+            IgnoreStack,
+            load_global_ignore,
+            load_local_ignore,
+        )
         from corpus_forge.scanner import walk  # noqa: PLC0415
 
-        ignore = _ignore_from_globs(self.exclude_globs, root=self.root)
+        # Global first, then local — gitignore semantics: later set wins.
+        sets = []
+        try:
+            global_set = load_global_ignore()
+            if global_set.patterns:
+                sets.append(global_set)
+        except (OSError, ValueError) as exc:  # pragma: no cover — defensive
+            logger.debug("FilesystemSource: global ignore failed (%s) — skipping", exc)
+        try:
+            local_set = load_local_ignore(self.root)
+            if local_set.patterns:
+                sets.append(local_set)
+        except (OSError, ValueError) as exc:  # pragma: no cover — defensive
+            logger.debug("FilesystemSource: local ignore failed (%s) — skipping", exc)
+
+        glob_stack = _ignore_from_globs(self.exclude_globs, root=self.root)
+        if glob_stack is not None:
+            sets.extend(glob_stack.sets)
+
+        ignore: IgnoreStack | None = IgnoreStack(sets=tuple(sets)) if sets else None
         # Restrict to extensions the registry actually handles plus the
         # extension-less filenames it supports (Makefile/Dockerfile/...).
         # Pre-stat short-circuit cost dominates for big trees.

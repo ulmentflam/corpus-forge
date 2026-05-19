@@ -15,6 +15,18 @@ from __future__ import annotations
 import fnmatch
 from pathlib import Path
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_global_ignore(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neutralise the user's `~/.config/corpus-forge/ignore` for the
+    parity tests. `FilesystemSource.discover()` now reads it (so the CLI
+    / MCP / estimate views share one source of truth), but the legacy
+    reference walker doesn't, and developer-machine config would make
+    parity flaky."""
+    monkeypatch.setenv("CF_GLOBAL_IGNORE_FILE", "")
+
 
 def _legacy_is_excluded(path: Path, root: Path, exclude_globs: list[str]) -> bool:
     """Verbatim copy of pre-Wave-2 `_is_excluded`."""

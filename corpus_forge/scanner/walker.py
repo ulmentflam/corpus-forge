@@ -126,8 +126,13 @@ def walk(
     if workers > 1:
         raise NotImplementedError("walker concurrency is a follow-up — pass workers=1")
 
-    root_path = Path(root)
-    scan_root_path = scan_root if scan_root is not None else root_path
+    # Resolve to absolute up-front so:
+    # - WalkEntry.path is absolute (documented invariant);
+    # - ignore.matches' ``relative_to(scan_root)`` never falls into the
+    #   ValueError fallback because the candidate path was abs-vs-rel
+    #   mismatched.
+    root_path = Path(root).expanduser().resolve()
+    scan_root_path = Path(scan_root).expanduser().resolve() if scan_root is not None else root_path
 
     # Iterative DFS stack: (absolute_path, posix-relative_string_to_scan_root)
     # We carry the rel-string so we can call ``ignore.directory_pruned``

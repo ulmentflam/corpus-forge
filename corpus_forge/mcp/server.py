@@ -1886,12 +1886,15 @@ def build_server(
 
 
 def _zotero_dry_run_count(*, dataset: str) -> dict[str, Any]:
-    """Count attachments + abstract-only docs that would be ingested.
+    """Count every doc the source would emit, both attachment-backed and abstract-only.
 
-    Walks every Zotero source in the named dataset and tallies
-    ``ZoteroSource.discover()`` (PDF attachments) plus the abstract-only
-    items the source would yield from ``scan()``. Does NOT open the
-    backend.
+    Walks every Zotero source in the named dataset and counts the
+    ``RawDocument``s ``ZoteroSource.scan()`` would yield (PDF
+    attachments PLUS abstract-only items for attachment-less papers
+    with a non-empty ``abstractNote``). Does NOT open the backend.
+
+    We can't just sum ``discover()`` — abstract-only docs are built
+    directly by ``scan()`` and would be undercounted otherwise.
     """
     from corpus_forge.config import Config
     from corpus_forge.sources.zotero import ZoteroSource as _ZoteroSource
@@ -1919,18 +1922,32 @@ def _zotero_dry_run_count(*, dataset: str) -> dict[str, Any]:
                 exclude_collections=z.exclude_collections,
                 cache_dir=z.cache_dir,
             )
-            paths = list(source.discover())
-            by_mode[z.mode] = by_mode.get(z.mode, 0) + len(paths)
-            would_ingest += len(paths)
+            # Count via ``scan()`` so abstract-only docs are included.
+            # ``scan()`` calls ``parse()`` which runs the PDF extractor;
+            # for a dry-run we just need the count, so we tally
+            # attachments + abstract-only items directly instead.
+            n_attachments = sum(1 for _ in source.discover())
+            attached_keys = {att.item_key for att in source._attachments_by_path.values()}
+            n_abstract_only = sum(
+                1
+                for it in source._items_by_key.values()
+                if it.item_key not in attached_keys and (it.abstract or "").strip()
+            )
+            n = n_attachments + n_abstract_only
+            by_mode[z.mode] = by_mode.get(z.mode, 0) + n
+            would_ingest += n
     return {"would_ingest": would_ingest, "by_mode": by_mode}
 
 
 def _zotero_real_sync(*, dataset: str) -> dict[str, Any]:
     """Trigger ``ingest_once`` filtered to the named dataset.
 
-    Returns ``{ingested, skipped, by_mode, audit_id}``. The audit id is
-    a synthetic ``zsync-<ts>`` so callers can correlate the run with
-    log output.
+    Returns ``{started, audit_id}``. We deliberately do NOT advertise
+    per-document counts here because the underlying ``ingest_once``
+    surface doesn't plumb them back: returning fabricated zeros would
+    be misleading. Real counts can be added once the ingest layer
+    exposes them; until then callers should consult the audit log
+    keyed by ``audit_id``.
     """
     import time as _time
 
@@ -1944,12 +1961,7 @@ def _zotero_real_sync(*, dataset: str) -> dict[str, Any]:
     cfg.datasets = filtered
     _ingest_once(cfg)
     audit_id = f"zsync-{int(_time.time())}"
-    return {
-        "ingested": 0,
-        "skipped": 0,
-        "by_mode": {"local": 0, "web": 0},
-        "audit_id": audit_id,
-    }
+    return {"started": True, "audit_id": audit_id}
 
 
 # ── stdio entry point (used by `corpus-forge mcp serve`) ─────────────────

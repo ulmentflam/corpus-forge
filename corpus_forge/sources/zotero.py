@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Iterator
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -34,6 +35,75 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
 logger = logging.getLogger(__name__)
 
 
+def _passes_collection_filters(
+    collection_path: str,
+    *,
+    include: list[str],
+    exclude: list[str],
+) -> bool:
+    """Mirror :class:`ZoteroLocalReader`'s collection filtering semantics.
+
+    - ``include`` empty → all collections accepted (subject to ``exclude``).
+    - ``include`` non-empty → at least one prefix in ``include`` must
+      match ``collection_path`` (root-anchored prefix match).
+    - ``exclude`` always applied last; any prefix match excludes the item.
+    - Web items often carry an empty ``collection_path`` (the Zotero web
+      API doesn't expose collection paths on item entries — see
+      :func:`corpus_forge.zotero.web_client._parse_item`). Empty path
+      passes ``include`` only when ``include`` is empty.
+    """
+    if include and (
+        not collection_path
+        or not any(collection_path == p or collection_path.startswith(p + "/") for p in include)
+    ):
+        return False
+    return not (
+        exclude
+        and collection_path
+        and any(collection_path == p or collection_path.startswith(p + "/") for p in exclude)
+    )
+
+
+def _parse_zotero_dt(s: str) -> datetime | None:
+    """Best-effort parse of a Zotero ``dateModified`` string to a UTC
+    ``datetime``.
+
+    Zotero emits two shapes in practice: ``YYYY-MM-DDTHH:MM:SSZ`` (Web
+    API, ISO-8601) and ``YYYY-MM-DD HH:MM:SS`` (local SQLite). Both are
+    naturally accepted by ``datetime.fromisoformat`` on Python 3.11+
+    after normalising the trailing ``Z`` and the space-vs-T separator.
+    Returns ``None`` on parse failure so callers can fall back to a
+    deterministic tie-breaker.
+    """
+    import datetime as _dt  # noqa: PLC0415
+
+    if not s:
+        return None
+    raw = s.replace(" ", "T").rstrip("Z")
+    try:
+        d = _dt.datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=_dt.UTC)
+    return d
+
+
+def _is_newer(web_dt: str, local_dt: str) -> bool:
+    """True iff parsed ``web_dt`` is strictly after parsed ``local_dt``.
+
+    Both parse failures, or web unparseable → False (local wins).
+    Only local unparseable → True (assume web is canonical).
+    """
+    w = _parse_zotero_dt(web_dt)
+    if w is None:
+        return False
+    loc = _parse_zotero_dt(local_dt)
+    if loc is None:
+        return True
+    return w > loc
+
+
 # ── reconciliation ────────────────────────────────────────────────────
 
 
@@ -46,9 +116,12 @@ def reconcile_items(
     Rules:
 
     - Item present in both: local wins UNLESS ``web.date_modified``
-      sorts strictly after ``local.date_modified``. Lex sort is
-      sufficient — Zotero emits ``YYYY-MM-DDTHH:MM:SSZ`` or
-      ``YYYY-MM-DD HH:MM:SS`` and both formats sort correctly.
+      parses to a strictly later instant than ``local.date_modified``.
+      Zotero emits both ``YYYY-MM-DDTHH:MM:SSZ`` and ``YYYY-MM-DD
+      HH:MM:SS``; lexical compare is unsafe across the two because the
+      ``T``/space difference is at position 10, before the time fields.
+      We parse to ``datetime`` and compare; on parse failure local wins
+      (deterministic tie-breaker).
     - Item present in only one source: passes through.
     - Conflicts (both sides present) are recorded in
       :attr:`ZoteroReconciled.conflicts` for auditing.
@@ -66,7 +139,7 @@ def reconcile_items(
         web = by_key_web.get(key)
         if local is not None and web is not None:
             conflicts.append(key)
-            merged[key] = web if web.date_modified > local.date_modified else local
+            merged[key] = web if _is_newer(web.date_modified, local.date_modified) else local
         elif local is not None:
             merged[key] = local
         else:
@@ -173,10 +246,23 @@ class ZoteroSource(WatchedSource):
                 cache_dir=self.cache_dir,
             )
             try:
-                web_items = list(self._web.iter_items())
+                web_items = [
+                    it
+                    for it in self._web.iter_items()
+                    if _passes_collection_filters(
+                        it.collection_path,
+                        include=self.include_collections,
+                        exclude=self.exclude_collections,
+                    )
+                ]
             except Exception as exc:
-                # Web-side failures degrade gracefully — local data still
-                # gets ingested. Log at WARNING so the user sees it.
+                if self.mode == "web":
+                    # Web-only source — failure must surface so the user
+                    # doesn't see "0 documents" mean "everything is fine".
+                    logger.error("Zotero web client failed in mode='web': %s", exc)
+                    raise
+                # In mode='both' a transient web failure is recoverable —
+                # local data still gets ingested. Log at WARNING.
                 logger.warning(
                     "Zotero web client failed during prime: %s — degrading to local-only",
                     exc,
@@ -213,7 +299,15 @@ class ZoteroSource(WatchedSource):
                 library_id=att.library_id,
             )
 
-        self._library_id = "local" if self.mode == "local" else (self.user_id or "local")
+        if self.mode == "local":
+            self._library_id = "local"
+        elif self.library_type == "group":
+            # Different groups must not alias each other — using user_id
+            # here would collapse every group-backed source under the
+            # same source.identity() and zotero://<library_id>/ prefix.
+            self._library_id = self.group_id or "unknown-group"
+        else:
+            self._library_id = self.user_id or "unknown-user"
 
     def _get_extractor(self):
         """Lazy-build the PDF digital extractor.

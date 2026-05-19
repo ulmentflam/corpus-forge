@@ -4,7 +4,7 @@
   "wave": 5,
   "kind": "semble_bench",
   "generated_at": "2026-05-19T15:17:03.979386+00:00",
-  "repo_root": "/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Workspace/playground/corpus-forge",
+  "repo_root": "corpus-forge",
   "git_head": "5a8a26c979c4c705c569cd6477ea052c5b9fdf06",
   "n_queries": 25,
   "platform": {

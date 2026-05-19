@@ -493,7 +493,9 @@ def test_semble_bench(tmp_path: Path) -> None:
         "wave": 5,
         "kind": "semble_bench",
         "generated_at": _dt.datetime.now(_dt.UTC).isoformat(),
-        "repo_root": str(_REPO_ROOT),
+        # Use the repo's basename so bench artifacts are portable across
+        # machines and don't leak local paths / usernames.
+        "repo_root": _REPO_ROOT.name,
         "git_head": _git_head(),
         "n_queries": len(queries),
         "platform": {

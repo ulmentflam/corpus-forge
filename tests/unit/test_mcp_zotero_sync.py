@@ -107,14 +107,16 @@ class TestDryRun:
 
 
 class TestRealSync:
-    def test_real_sync_returns_ingest_counts(self) -> None:
+    def test_real_sync_returns_started_plus_audit_id(self) -> None:
+        """`zotero_sync` (dry_run=False) returns ``{started, audit_id}``.
+
+        Per-document ingest counts are intentionally NOT surfaced: the
+        underlying `ingest_once` doesn't plumb them back, and returning
+        fabricated zeros for `ingested`/`skipped`/`by_mode` would mislead
+        callers. The audit id is the correlation handle into the log.
+        """
         server = build_server(retriever_builder=_stub_retriever, writes_enabled=True)
-        fake = {
-            "ingested": 7,
-            "skipped": 1,
-            "by_mode": {"local": 7, "web": 0},
-            "audit_id": "zsync-1",
-        }
+        fake = {"started": True, "audit_id": "zsync-1"}
         with patch(
             "corpus_forge.mcp.server._zotero_real_sync",
             return_value=fake,
@@ -126,5 +128,5 @@ class TestRealSync:
                 {"dataset": "anything", "dry_run": False},
             )
         body = _structured_or_text(result)
-        assert body.get("ingested") == 7
+        assert body.get("started") is True
         assert body.get("audit_id") == "zsync-1"

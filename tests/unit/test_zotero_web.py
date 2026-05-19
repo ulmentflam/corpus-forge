@@ -107,18 +107,22 @@ class TestAttachmentCaching:
         # Attachment binary download endpoint.
         file_url = "https://api.zotero.org/users/1/items/ATT001/file"
 
-        respx.get(file_url).mock(return_value=httpx.Response(200, content=b"%PDF-1.4\nFAKE\n"))
+        # Store the Route object once; each ``respx.get(url)`` call
+        # registers a NEW Route, so checking ``.call_count`` on a fresh
+        # invocation always returns zero. Re-use the captured route.
+        file_route = respx.get(file_url)
+        file_route.mock(return_value=httpx.Response(200, content=b"%PDF-1.4\nFAKE\n"))
 
         client = ZoteroWebClient(user_id="1", api_key="fake", cache_dir=tmp_path)
         # First fetch — network call.
         path1 = client.fetch_attachment("ATT001")
         assert path1.exists()
-        # Second fetch — should NOT hit the network. We assert by tracking
-        # how many times respx matched the route.
-        n_calls_after_first = respx.get(file_url).call_count
+        # Second fetch — should NOT hit the network. We assert by
+        # comparing the cached call count to the count after.
+        n_calls_after_first = file_route.call_count
         path2 = client.fetch_attachment("ATT001")
         assert path2 == path1
-        assert respx.get(file_url).call_count == n_calls_after_first
+        assert file_route.call_count == n_calls_after_first
 
 
 class TestLibraryShape:
@@ -148,17 +152,19 @@ class TestRateLimitAndBackoff:
             httpx.Response(429, headers={"Retry-After": "0"}),
             httpx.Response(200, json=[], headers={"Total-Results": "0"}),
         ]
-        respx.get(url).mock(side_effect=responses)
+        retry_route = respx.get(url)
+        retry_route.mock(side_effect=responses)
 
         client = ZoteroWebClient(user_id="1", api_key="fake", cache_dir=tmp_path)
         # Should return without raising — the second response is empty.
         list(client.iter_items())
-        assert respx.get(url).call_count == 2
+        assert retry_route.call_count == 2
 
     @respx.mock
     def test_5xx_exponential_backoff_then_raise(self, tmp_path: Path, monkeypatch) -> None:
         url = "https://api.zotero.org/users/1/items"
-        respx.get(url).mock(return_value=httpx.Response(503))
+        err_route = respx.get(url)
+        err_route.mock(return_value=httpx.Response(503))
         # Patch sleep so the test doesn't actually wait.
         import time
 
@@ -169,4 +175,4 @@ class TestRateLimitAndBackoff:
         with pytest.raises(httpx.HTTPStatusError):
             list(client.iter_items())
         # Three tries total → two sleeps between them.
-        assert respx.get(url).call_count == 3
+        assert err_route.call_count == 3

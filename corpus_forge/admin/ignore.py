@@ -497,6 +497,18 @@ def sync_managed(
         try:
             new_text = splice_managed_block(existing, render_managed_block(features))
         except ManagedBlockCorrupted:
+            # Preserve the corrupt contents (which may include
+            # hand-edited user lines) before we rewrite. Mirrors the
+            # per-root behaviour of `write_corpusignore`.
+            import time as _time
+
+            backup = gp.with_name(f"{gp.name}.bak.{int(_time.time())}")
+            atomic_write_text(backup, existing)
+            logger.warning(
+                "global .corpusignore had corrupted managed-block sentinels — "
+                "backed up to %s before rewrite",
+                backup,
+            )
             new_text = render_managed_block(features)
         atomic_write_text(gp, new_text)
         written.append(gp)

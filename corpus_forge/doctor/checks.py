@@ -425,15 +425,26 @@ def _check_zotero(cfg: Config) -> CheckResult:
     details: list[str] = []
     for z in zotero_sources:
         mode = getattr(z, "mode", "local")
-        # local-side probe
+        # local-side probe.
+        #
+        # ``library_path`` is OPTIONAL for local mode — when unset, the
+        # connector resolves a platform default via
+        # ``ZoteroLocalReader.default_library_path()``. Treat the unset
+        # case as a non-fatal informational note (caller may have
+        # configured a non-standard install but not all errors propagate
+        # back here). Only flag FAIL when the user explicitly named a
+        # path that doesn't exist or doesn't open.
         local_ok = False
+        local_explicit_fail = False
         local_msg = ""
         library_path = getattr(z, "library_path", None)
         if mode in ("local", "both"):
             if not library_path:
-                local_msg = f"mode={mode}: library_path not set"
+                local_msg = f"mode={mode}: library_path not set (will resolve a platform default)"
+                local_ok = True
             elif not Path(library_path).exists():
                 local_msg = f"mode={mode}: library_path missing ({library_path})"
+                local_explicit_fail = True
             else:
                 try:
                     conn = _sqlite3.connect(f"file:{library_path}?mode=ro&immutable=1", uri=True)
@@ -441,6 +452,7 @@ def _check_zotero(cfg: Config) -> CheckResult:
                     local_ok = True
                 except Exception as exc:
                     local_msg = f"mode={mode}: open failed ({exc})"
+                    local_explicit_fail = True
 
         # web-side probe (env var presence only — no live HTTP)
         web_ok = False
@@ -457,11 +469,18 @@ def _check_zotero(cfg: Config) -> CheckResult:
                 web_ok = True
 
         if mode == "local":
-            if local_ok:
+            if local_ok and not local_msg:
                 details.append("local OK")
+            elif local_ok:
+                # Path-unset informational note: OK status, informative
+                # detail string. No status downgrade.
+                details.append(local_msg)
             else:
                 details.append(local_msg or "local FAIL")
-                worst = CheckStatus.FAIL
+                if local_explicit_fail:
+                    worst = CheckStatus.FAIL
+                elif worst != CheckStatus.FAIL:
+                    worst = CheckStatus.WARN
         elif mode == "web":
             if web_ok:
                 details.append("web OK")

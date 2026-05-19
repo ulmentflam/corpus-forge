@@ -173,18 +173,30 @@ class ZoteroWebClient:
                 return
 
     def fetch_attachment(self, attachment_key: str) -> Path:
-        """Download and cache an attachment's binary; return the on-disk path."""
+        """Download and cache an attachment's binary; return the on-disk path.
+
+        Path-handling invariants:
+
+        - The cached filename is the *basename* of whatever
+          ``Content-Disposition`` advertises, with ``..``/empty/``.``
+          rejected. Prevents traversal writes outside the cache
+          directory.
+        - On a cache hit with a single file present, return it. If the
+          directory has multiple files (e.g. server changed filename
+          between fetches), pick the most-recently-modified — never an
+          arbitrary one — so cached reads are deterministic.
+        """
         cache_path = self.cache_dir / self.library_id / attachment_key
-        # Cache hit — short-circuit, no network call. Pick the first file
-        # in the directory; we don't know the filename without metadata.
-        if cache_path.exists() and any(cache_path.iterdir()):
-            return next(cache_path.iterdir())
+        if cache_path.exists():
+            files = [p for p in cache_path.iterdir() if p.is_file()]
+            if files:
+                files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                return files[0]
         cache_path.mkdir(parents=True, exist_ok=True)
         url = self._attachment_file_url(attachment_key)
         resp = self._get_with_retries(url, params=None, headers=self._auth_headers())
         resp.raise_for_status()
-        # Filename: prefer Content-Disposition, else the attachment_key.pdf.
-        filename = _filename_from_response(resp) or f"{attachment_key}.bin"
+        filename = _safe_filename(_filename_from_response(resp), default=f"{attachment_key}.bin")
         path = cache_path / filename
         path.write_bytes(resp.content)
         return path
@@ -327,6 +339,24 @@ def _filename_from_response(resp: httpx.Response) -> str | None:
         if p.lower().startswith("filename="):
             return p.split("=", 1)[1].strip().strip('"')
     return None
+
+
+def _safe_filename(name: str | None, *, default: str) -> str:
+    """Strip path separators / traversal markers from a server-supplied filename.
+
+    Servers can hand us anything under ``Content-Disposition``; trusting
+    it verbatim opens path-traversal writes under the cache directory.
+    Use the basename, fall back to ``default`` on empty / dot / dotdot.
+    """
+    if not name:
+        return default
+    raw = name.strip().strip('"')
+    # Normalise both kinds of separator before taking the basename.
+    raw = raw.replace("\\", "/").rstrip("/")
+    base = Path(raw).name
+    if base in {"", ".", ".."}:
+        return default
+    return base
 
 
 __all__ = ["ZoteroWebClient"]

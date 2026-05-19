@@ -62,6 +62,7 @@ minimal venv.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 _MIN_OVERLAP_BYTES = 32
@@ -129,8 +130,9 @@ def percentile(samples: list[float], pct: float) -> float:
     if pct < 0.0 or pct > 100.0:
         raise ValueError(f"pct must be in [0, 100], got {pct!r}")
     s = sorted(samples)
-    # Rank is 1-based; clamp into [1, len(s)].
-    rank = max(1, round((pct / 100.0) * len(s)))
+    # Nearest-rank percentile: rank = ceil(pct/100 * n), 1-based, clamped
+    # into [1, n]. `round()` half-to-even is wrong here for some (pct, n).
+    rank = max(1, math.ceil((pct / 100.0) * len(s)))
     rank = min(rank, len(s))
     return float(s[rank - 1])
 
