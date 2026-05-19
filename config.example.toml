@@ -525,6 +525,48 @@ compression_ratio = 1.0
 # symbol_query_alpha  = 0.3
 
 # ─────────────────────────────────────────────────────────────────────
+# Phase N Wave 2 — definition boost on retrieval
+# ─────────────────────────────────────────────────────────────────────
+# When enabled, retrieved hits whose metadata says they ARE a definition
+# (every chunk emitted by the AST-walk code chunker carries
+# `is_definition=True` + `definition_kind`) AND whose `metadata.name`
+# matches a token in the query get a score multiplier in two places:
+#
+#   1. Pre-rerank: on the fused score dict BEFORE the rerank-slice
+#      truncation, with multiplier `definition_boost_factor_pre_rerank`.
+#   2. Post-rerank: on the reranker's output, with multiplier
+#      `definition_boost_factor_post_rerank`.
+#
+# Wave 1's bench investigation found that the cross-encoder reranker
+# emits its own scores and discards upstream fused scores — so the
+# pre-rerank boost alone produces no observable headline lift when
+# rerank is on.  The post-rerank application is the load-bearing one;
+# both fire on the same flag but the multipliers are independent so a
+# follow-up A/B can measure each separately.
+#
+# Tokenisation is whole-word: the query is lowercased and split on
+# non-identifier chars (`[^A-Za-z0-9_]+`), then each token is compared
+# for equality with the chunk's lowercased `metadata.name`.  Substring
+# matches do NOT boost — `"directory"` does not lift a definition
+# named `"directory_pruned"`.
+#
+# The boost only fires on chunks freshly chunked under Wave 2 — older
+# corpora need a re-ingest to pick up the `is_definition` flag.
+# [retrieval]
+# # Phase N Wave 2: opt-in flag for the definition boost.
+# definition_boost_enabled = true
+#
+# # Pre-rerank multiplier (applied on the fused score dict).  Validated
+# # to `[1.0, 5.0]`; default 1.5.
+# definition_boost_factor_pre_rerank  = 1.5
+#
+# # Post-rerank multiplier (applied on the reranker's output).
+# # Validated to `[1.0, 5.0]`; default 1.2.  Kept smaller than the
+# # pre-rerank factor because the cross-encoder's score scale is tight
+# # — a heavy multiplier swamps it.
+# definition_boost_factor_post_rerank = 1.2
+
+# ─────────────────────────────────────────────────────────────────────
 # Phase M Wave 2 — filesystem walker
 # ─────────────────────────────────────────────────────────────────────
 # Drives the unified `os.scandir`-based walker shared by the estimator

@@ -240,3 +240,117 @@ def test_chunk_textchunk_text_field_set():
     for ch in chunks:
         assert isinstance(ch.text, str)
         assert ch.text.strip()
+
+
+# ── Phase N Wave 2 — `is_definition` / `definition_kind` tagging ─────────
+#
+# Every chunk produced by the AST walk IS a definition by construction
+# (the walker captures only structural items — Function / Class / Method /
+# Block).  The Wave 2 retrieval boost reads `metadata["is_definition"]`
+# and `metadata["name"]`, so the chunker must tag every AST-walk chunk
+# regardless of whether it lands on the single-item or coalesced emit
+# path.  Byte-line fallback chunks deliberately DON'T get the tag —
+# they're emitted when grammar is unavailable and we genuinely don't
+# know whether the text is a definition or a reference.
+
+
+_ALLOWED_DEFINITION_KINDS = {"Function", "Class", "Method", "Block"}
+
+
+def test_ast_chunk_metadata_has_is_definition_flag():
+    """Every chunk emitted by the AST walk has ``is_definition=True``."""
+    chunks = CodeChunker(max_chars=2000).chunk(SIMPLE_PY, language="python")
+    assert chunks  # AST walk yielded something
+    for ch in chunks:
+        md = ch.metadata or {}
+        # Only chunks that have a `kind` came from the AST walk; the
+        # byte-line fallback never sets `kind`.  In SIMPLE_PY every chunk
+        # is AST-derived, so every chunk should be flagged.
+        assert md.get("is_definition") is True, (
+            f"AST-walk chunk missing is_definition flag; metadata={md!r}"
+        )
+
+
+def test_ast_chunk_metadata_definition_kind_in_allowed_set():
+    """``definition_kind`` is one of {Function, Class, Method, Block}."""
+    chunks = CodeChunker(max_chars=2000).chunk(SIMPLE_PY, language="python")
+    for ch in chunks:
+        md = ch.metadata or {}
+        if md.get("is_definition"):
+            assert md.get("definition_kind") in _ALLOWED_DEFINITION_KINDS, (
+                f"definition_kind {md.get('definition_kind')!r} not in "
+                f"{_ALLOWED_DEFINITION_KINDS!r}"
+            )
+
+
+def test_ast_chunk_definition_kind_matches_kind():
+    """``definition_kind`` mirrors the existing ``kind`` metadata field."""
+    chunks = CodeChunker(max_chars=2000).chunk(SIMPLE_PY, language="python")
+    for ch in chunks:
+        md = ch.metadata or {}
+        if md.get("is_definition"):
+            assert md.get("definition_kind") == md.get("kind"), (
+                f"definition_kind/kind mismatch in metadata={md!r}"
+            )
+
+
+def test_oversize_subsplit_chunks_carry_definition_tag():
+    """Sub-split chunks from oversize constructs also carry the tag."""
+    c = CodeChunker(max_chars=300, overlap=50, min_chars=50)
+    chunks = c.chunk(_LARGE_FN, language="python")
+    assert len(chunks) > 1  # sub-split actually fired
+    for ch in chunks:
+        md = ch.metadata or {}
+        assert md.get("is_definition") is True
+        assert md.get("definition_kind") in _ALLOWED_DEFINITION_KINDS
+
+
+def test_coalesced_chunks_carry_definition_tag_as_block():
+    """Undersize coalesce emits a single chunk; it must still be tagged."""
+    c = CodeChunker(max_chars=2000, min_chars=200, overlap=0)
+    chunks = c.chunk(_MANY_TINY, language="python")
+    assert chunks  # at least one emitted
+    saw_block = False
+    for ch in chunks:
+        md = ch.metadata or {}
+        assert md.get("is_definition") is True, (
+            f"coalesced chunk missing is_definition; metadata={md!r}"
+        )
+        assert md.get("definition_kind") in _ALLOWED_DEFINITION_KINDS
+        if md.get("kind") == "Block":
+            saw_block = True
+    # _MANY_TINY is 8 tiny functions; at min_chars=200 the coalesce path
+    # must fire at least once and emit a Block-kind chunk.
+    assert saw_block, "expected at least one coalesced Block chunk"
+
+
+def test_byte_line_fallback_chunks_have_no_definition_tag():
+    """Byte-line fallback chunks deliberately omit the tag.
+
+    The fallback runs when no grammar is available — we don't know
+    whether the text is a definition or a reference, so we don't lie.
+    """
+    source = "first line\nsecond line\nthird line\n" * 20
+    c = CodeChunker(max_chars=200, overlap=20)
+    chunks = c.chunk(source, language="totally-not-a-real-language")
+    assert chunks  # fallback emitted something
+    for ch in chunks:
+        md = ch.metadata or {}
+        assert "is_definition" not in md, (
+            f"byte-line fallback chunk should not be tagged; metadata={md!r}"
+        )
+        assert "definition_kind" not in md, (
+            f"byte-line fallback chunk should not be tagged; metadata={md!r}"
+        )
+
+
+def test_byte_line_fallback_no_language_has_no_definition_tag():
+    """Same for the `language=None` fallback path."""
+    source = "alpha\nbeta\ngamma\ndelta\nepsilon\n" * 10
+    c = CodeChunker(max_chars=100, overlap=10)
+    chunks = c.chunk(source, language=None)
+    assert chunks
+    for ch in chunks:
+        md = ch.metadata or {}
+        assert "is_definition" not in md
+        assert "definition_kind" not in md

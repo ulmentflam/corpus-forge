@@ -283,6 +283,30 @@ class RetrievalConfig(BaseModel):
       Validated to ``[0, 1]`` like the headline ``alpha``.  Default
       ``0.3`` was Wave 1's starting guess; the wave-gate test is the
       arbiter on whether to retune.
+
+    Phase N Wave 2 — definition boost on retrieval (default OFF):
+
+    - ``definition_boost_enabled``: when True, any retrieved hit whose
+      metadata carries ``is_definition=True`` AND whose ``name`` matches
+      a token in the query gets its score multiplied by the boost
+      factors below.  The boost fires in TWO places:
+        - Pre-rerank, on the fused score dict before the rerank-slice
+          truncation (multiplier ``definition_boost_factor_pre_rerank``);
+        - Post-rerank, on the reranker's output (multiplier
+          ``definition_boost_factor_post_rerank``).
+      Wave 1's bench investigation found that the cross-encoder
+      reranker emits its own scores and discards upstream fused scores,
+      so the post-rerank application is the load-bearing one.  Both are
+      enabled by the same flag and tuned independently.
+    - ``definition_boost_factor_pre_rerank``: multiplier applied to a
+      matching definition's fused score before the rerank slice.
+      Validated to ``[1.0, 5.0]`` — below 1.0 would be a penalty, not
+      a boost; above 5.0 would dominate fusion math.  Default ``1.5``.
+    - ``definition_boost_factor_post_rerank``: multiplier applied to a
+      matching definition's reranked score after the reranker returns.
+      Same validation window.  Default ``1.2`` (smaller than the
+      pre-rerank factor because the reranker's score scale is already
+      tight and a heavy multiplier swamps it).
     """
 
     alpha: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -293,6 +317,9 @@ class RetrievalConfig(BaseModel):
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
     adaptive_lexical_weight: bool = False
     symbol_query_alpha: float = Field(default=0.3, ge=0.0, le=1.0)
+    definition_boost_enabled: bool = False
+    definition_boost_factor_pre_rerank: float = Field(default=1.5, ge=1.0, le=5.0)
+    definition_boost_factor_post_rerank: float = Field(default=1.2, ge=1.0, le=5.0)
 
 
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

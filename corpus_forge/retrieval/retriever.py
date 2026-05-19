@@ -49,7 +49,9 @@ that prevents accidental 600 MB model downloads.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
+from dataclasses import replace as _dc_replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from corpus_forge.retrieval.fusion import alpha_blend, reciprocal_rank_fusion
@@ -198,6 +200,33 @@ class HybridRetriever:
                 effective_alpha = self.config.symbol_query_alpha
             fused_scores = alpha_blend(dense_norm, lexical_norm, alpha=effective_alpha)
 
+        # ── Step 4b: Phase N Wave 2 — pre-rerank definition boost ─────
+        # Applied AFTER fusion, BEFORE the rerank-slice truncation, so
+        # the boost can lift a definition into the slice the reranker
+        # later sees.  Wave 1's bench finding (cross-encoder washes out
+        # fusion-stage signal) means this alone isn't enough — the load-
+        # bearing application is the post-rerank pass below.  Both are
+        # gated by the same config flag but tuned with independent
+        # multipliers so a follow-up experiment can compare them.
+        #
+        # The boost ONLY fires on symbol-shaped queries (Wave 1's
+        # heuristic, applied to the whole query string).  Natural-
+        # language queries like "how does the watch debounce work"
+        # tokenise to common English words that frequently overlap
+        # with identifier names — applying the boost there produced
+        # collateral damage on concept-category MRR during the Wave 2
+        # gate's RED phase.  Gating on `is_symbol_shaped(query)` keeps
+        # the boost on the queries it was designed for (identifier /
+        # accessor lookups).
+        boost_fires = self.config.definition_boost_enabled and is_symbol_shaped(query)
+        if boost_fires:
+            self._apply_definition_boost(
+                query,
+                fused_scores,
+                hits_by_id,
+                multiplier=self.config.definition_boost_factor_pre_rerank,
+            )
+
         # ── Step 5: materialise & truncate ────────────────────────────
         # Sort descending by fused score; ties broken by chunk_id (stable).
         ordered = sorted(fused_scores.items(), key=lambda kv: (-kv[1], kv[0]))
@@ -230,13 +259,29 @@ class HybridRetriever:
         # Only when the caller explicitly asks AND a reranker is wired.
         # We pass `top_n=options.k` so the reranker returns the final
         # top-k.  HybridRetriever does NOT re-sort the reranker's output
-        # — the reranker is the authority on the final order.
+        # — the reranker is the authority on the final order *unless*
+        # the Phase N Wave 2 post-rerank boost is enabled, in which
+        # case the boost re-sorts after applying its multiplier (see
+        # Step 7 below).
         if rerank_active:
             # `self.reranker` is not None here (checked in `rerank_active`).
-            # pyrefly knows this via the assignment, but be explicit for
-            # readers.
             assert self.reranker is not None
-            return self.reranker.rerank(query, top, top_n=options.k)
+            reranked = self.reranker.rerank(query, top, top_n=options.k)
+
+            # ── Step 7: Phase N Wave 2 — post-rerank definition boost ─
+            # The cross-encoder reranker emits its own score scale and
+            # discards the upstream fused score.  Applying the boost
+            # here lets the definition flag survive the reranker's
+            # signal flattening — the load-bearing application per
+            # Wave 1's bench finding.  Same symbol-shape gate as the
+            # pre-rerank pass.
+            if boost_fires:
+                return self._apply_post_rerank_boost(
+                    query,
+                    reranked,
+                    multiplier=self.config.definition_boost_factor_post_rerank,
+                )
+            return reranked
 
         # No rerank → return the fused top-k.  `top` is already truncated
         # to `options.k` in the materialisation step above.
@@ -252,3 +297,94 @@ class HybridRetriever:
         scores = [h.score for h in hits]
         normalised = min_max(scores)
         return {h.chunk_id: s for h, s in zip(hits, normalised, strict=True)}
+
+    @staticmethod
+    def _apply_definition_boost(
+        query: str,
+        scores: dict[int, float],
+        hits_by_id: dict[int, Hit],
+        *,
+        multiplier: float,
+    ) -> None:
+        """Phase N Wave 2 — multiply fused scores for matching definitions.
+
+        Mutates ``scores`` in place.  For each chunk_id whose source hit
+        carries ``metadata.is_definition is True`` AND whose
+        ``metadata.name`` (case-folded) is one of the query's identifier
+        tokens, multiply the score by ``multiplier``.
+
+        Tokenisation is whole-word: a query token must EQUAL the name
+        after case-folding; substring matches do NOT trigger the boost.
+        That keeps ``"directory"`` from spuriously lifting
+        ``"directory_pruned"`` definitions when the user is asking
+        about something else.
+        """
+        if multiplier == 1.0:
+            return  # no-op fast path — useful for the A/B "one knob on" experiments
+        tokens = _tokenize_for_boost(query)
+        if not tokens:
+            return
+        for cid, score in list(scores.items()):
+            src = hits_by_id.get(cid)
+            if src is None:
+                continue
+            md = src.metadata or {}
+            if not md.get("is_definition"):
+                continue
+            name = md.get("name")
+            if not isinstance(name, str):
+                continue
+            if name.lower() in tokens:
+                scores[cid] = score * multiplier
+
+    @staticmethod
+    def _apply_post_rerank_boost(
+        query: str,
+        hits: list[Hit],
+        *,
+        multiplier: float,
+    ) -> list[Hit]:
+        """Phase N Wave 2 — boost reranked hits, then re-sort.
+
+        Rebuilds the ``Hit`` list with boosted scores (``Hit`` is frozen
+        so we can't mutate the input).  Resorts descending by score with
+        chunk_id as a stable tie-break.
+        """
+        if multiplier == 1.0:
+            return hits
+        tokens = _tokenize_for_boost(query)
+        if not tokens:
+            return hits
+        out: list[Hit] = []
+        for h in hits:
+            md = h.metadata or {}
+            name = md.get("name")
+            if md.get("is_definition") and isinstance(name, str) and name.lower() in tokens:
+                out.append(_dc_replace(h, score=h.score * multiplier))
+            else:
+                out.append(h)
+        out.sort(key=lambda h: (-h.score, h.chunk_id))
+        return out
+
+
+# ── Phase N Wave 2 — query tokenisation for the definition boost ──────────
+
+
+# Non-identifier characters: anything that isn't [A-Za-z0-9_].  Splits a
+# query like ``"Foo.bar"`` into {"foo", "bar"}.  Stays ASCII because the
+# definition names we boost against are Python / JS / Go / Rust identifiers
+# — Unicode identifier extras (CJK / accents) would never match a Python
+# function name.
+_TOKEN_SPLIT_RE = re.compile(r"[^A-Za-z0-9_]+")
+
+
+def _tokenize_for_boost(query: str) -> set[str]:
+    """Lowercase the query and split on non-identifier chars.
+
+    Private helper — not part of the public retrieval API.  Tests live
+    in :mod:`tests.unit.test_retrieval_definition_boost` (see the
+    "tokenisation contract" block).
+    """
+    if not query:
+        return set()
+    return {tok for tok in _TOKEN_SPLIT_RE.split(query.lower()) if tok}

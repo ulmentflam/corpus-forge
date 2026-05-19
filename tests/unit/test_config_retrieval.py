@@ -57,12 +57,17 @@ class TestRetrievalConfigDefaults:
         # Phase N Wave 1 — adaptive lexical-weight knobs default OFF.
         assert rc.adaptive_lexical_weight is False
         assert rc.symbol_query_alpha == 0.3
+        # Phase N Wave 2 — definition-boost knobs default OFF.
+        assert rc.definition_boost_enabled is False
+        assert rc.definition_boost_factor_pre_rerank == 1.5
+        assert rc.definition_boost_factor_post_rerank == 1.2
 
     def test_field_set(self):
         rc = self._cls()
         fields = set(rc.model_fields.keys())
         # R4 adds `reranker` (RerankerConfig nested); Phase N Wave 1 adds
-        # `adaptive_lexical_weight` + `symbol_query_alpha`.  The R2 fields stay.
+        # `adaptive_lexical_weight` + `symbol_query_alpha`; Phase N Wave 2
+        # adds the three definition-boost knobs.  The R2 fields stay.
         assert fields == {
             "alpha",
             "fusion",
@@ -72,6 +77,9 @@ class TestRetrievalConfigDefaults:
             "reranker",
             "adaptive_lexical_weight",
             "symbol_query_alpha",
+            "definition_boost_enabled",
+            "definition_boost_factor_pre_rerank",
+            "definition_boost_factor_post_rerank",
         }
 
     def test_fusion_literal_values(self):
@@ -141,6 +149,43 @@ class TestRetrievalConfigValidation:
         with pytest.raises(ValidationError):
             self._cls()(symbol_query_alpha=1.5)
 
+    # ── Phase N Wave 2 — definition-boost knobs ────────────────────────────
+
+    def test_definition_boost_enabled_accepts_bool(self):
+        rc = self._cls()(definition_boost_enabled=True)
+        assert rc.definition_boost_enabled is True
+        rc = self._cls()(definition_boost_enabled=False)
+        assert rc.definition_boost_enabled is False
+
+    def test_definition_boost_factor_pre_rerank_in_range(self):
+        rc = self._cls()(definition_boost_factor_pre_rerank=1.0)
+        assert rc.definition_boost_factor_pre_rerank == 1.0
+        rc = self._cls()(definition_boost_factor_pre_rerank=5.0)
+        assert rc.definition_boost_factor_pre_rerank == 5.0
+
+    def test_definition_boost_factor_pre_rerank_below_one_rejected(self):
+        # The boost is a multiplier — < 1.0 would be a penalty, not a boost.
+        with pytest.raises(ValidationError):
+            self._cls()(definition_boost_factor_pre_rerank=0.5)
+
+    def test_definition_boost_factor_pre_rerank_too_high_rejected(self):
+        with pytest.raises(ValidationError):
+            self._cls()(definition_boost_factor_pre_rerank=5.5)
+
+    def test_definition_boost_factor_post_rerank_in_range(self):
+        rc = self._cls()(definition_boost_factor_post_rerank=1.0)
+        assert rc.definition_boost_factor_post_rerank == 1.0
+        rc = self._cls()(definition_boost_factor_post_rerank=5.0)
+        assert rc.definition_boost_factor_post_rerank == 5.0
+
+    def test_definition_boost_factor_post_rerank_below_one_rejected(self):
+        with pytest.raises(ValidationError):
+            self._cls()(definition_boost_factor_post_rerank=0.99)
+
+    def test_definition_boost_factor_post_rerank_too_high_rejected(self):
+        with pytest.raises(ValidationError):
+            self._cls()(definition_boost_factor_post_rerank=5.1)
+
 
 # ── attaches to top-level Config ──────────────────────────────────────────
 
@@ -194,6 +239,24 @@ class TestConfigAttachment:
         # Phase N Wave 1 defaults — bump OFF, default value parsed but unused.
         assert cfg.retrieval.adaptive_lexical_weight is False
         assert cfg.retrieval.symbol_query_alpha == 0.3
+        # Phase N Wave 2 defaults — boost OFF, multipliers documented.
+        assert cfg.retrieval.definition_boost_enabled is False
+        assert cfg.retrieval.definition_boost_factor_pre_rerank == 1.5
+        assert cfg.retrieval.definition_boost_factor_post_rerank == 1.2
+
+    def test_config_retrieval_phase_n_wave2_overrides_via_toml(self):
+        from corpus_forge.config import Config
+
+        toml = dict(_MINIMAL_TOML)
+        toml["retrieval"] = {  # type: ignore[assignment]
+            "definition_boost_enabled": True,
+            "definition_boost_factor_pre_rerank": 1.8,
+            "definition_boost_factor_post_rerank": 1.3,
+        }
+        cfg = Config(**toml)
+        assert cfg.retrieval.definition_boost_enabled is True
+        assert cfg.retrieval.definition_boost_factor_pre_rerank == 1.8
+        assert cfg.retrieval.definition_boost_factor_post_rerank == 1.3
 
     def test_config_retrieval_phase_n_overrides_via_toml(self):
         from corpus_forge.config import Config
