@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name            = "corpus-forge"
-version         = "0.1.0b6"
+version         = "0.1.0b7"
 description     = "Chat with your data. Forge a living, trainable corpus from your notes, code, and chat history."
 requires-python = ">=3.11,<3.14"
 license         = "Apache-2.0"

@@ -261,6 +261,4 @@ def test_pgdg_pre_existing_repo_skip_logic_is_present() -> None:
     assert "/etc/apt/sources.list.d/" in script_text, (
         "Step 1 doesn't reference sources.list.d in its detection scan"
     )
-    assert "skipping apt-source write" in script_text, (
-        "Step 1 doesn't log the skip path"
-    )
+    assert "skipping apt-source write" in script_text, "Step 1 doesn't log the skip path"

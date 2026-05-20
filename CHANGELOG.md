@@ -8,6 +8,129 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+## [0.1.0b7] - 2026-05-20
+
+### Added
+
+#### Phase O — EDA + corpus cleaning (alembic `0012_analyze_signals`)
+
+- `[analyze]` optional extra: `scikit-learn`, `hdbscan`, `umap-learn`,
+  `bertopic`, `datasketch`, `fasttext-langdetect` (POSIX) +
+  `langdetect` (cross-platform fallback). All heavy modules are
+  lazy-imported inside function bodies — `corpus-forge --help` cold
+  start stays at ~34 ms.
+- `corpus_forge/analyze/` modules:
+  - `stats` — p50/p95/mean/min/max token counts, length histograms.
+  - `dedup` — exact (content-hash) + near-duplicate (MinHash LSH).
+  - `language` — ISO-code + confidence via fasttext/langdetect dispatch.
+  - `drift` — KS over token length, JS over embedding centroids.
+  - `topics` — BERTopic with raw-HDBSCAN fallback + c-TF-IDF top terms.
+  - `quality` — heuristic by default, joblib model when present at
+    `~/.cache/corpus-forge/models/quality.joblib`.
+- Curation selector extension: per-chunk dual-weight scheme. 5-weight
+  (`learned_quality` added) when `chunk_quality_signals` has a row;
+  4-weight (unchanged) otherwise. **The 47 pre-existing
+  `test_curation_selector` tests stay byte-identical**, so MCP callers
+  depending on `next_curation_target` ordering see no flip until
+  `analyze quality` has run.
+- New `corpus-forge analyze` CLI subgroup —
+  `stats|duplicates|topics|distribution|drift|quality`. Reports land
+  at `~/.cache/corpus-forge/reports/<ts>/` and respect
+  `CORPUS_FORGE_REPORT_DIR`.
+- Four new **read-only** MCP tools above the `writes_enabled` gate:
+  `analyze_corpus`, `find_duplicates`, `cluster_topics`,
+  `score_quality`.
+
+#### Phase P — RAG/CAG retrieval feedback (alembic `0013_search_sessions`)
+
+- New schema: `search_sessions(id, query, dataset_id, started_at)` and
+  `search_result_events(id, session_id FK, chunk_id, signal, value,
+  source, created_at)`.
+- `HybridRetriever.search()` returns a `SearchResponse` that
+  **subclasses `list`** — existing callers iterating/indexing the
+  return value still work; new callers can read `.query_id` and
+  `.results`. MCP `search` surfaces `query_id` in the response.
+- `rate_search_result` MCP write tool — auto-creates a session for
+  unknown `query_id`, persists `replacement_chunk_id` as a preference
+  signal for the learned reranker.
+- `LearnedReranker` — sklearn LogisticRegression trained on rated
+  events; conforms to the existing `Reranker` protocol. Train via
+  `corpus-forge analyze quality --train-reranker`.
+- `corpus_forge/cag/` — precomputed cache builder + hybrid CAG/RAG
+  selector. Cache key =
+  `sha256((dataset_id, sorted(content_hash_set), template_name))`,
+  so `commit_curation` triggers deterministic targeted invalidation
+  (best-effort; failure does not fail the commit). corpus-forge ships
+  CAG as a corpus-side cache builder, **not** an inference server.
+- `corpus-forge eval rag` + `eval cag` CLI subcommands with
+  configurable LLM-judge endpoint (local Ollama default; OpenAI-compat
+  remote supported). `corpus_forge/eval/judge_mock.py` ships a
+  SHA-256-keyed deterministic mock judge for CI byte-stability.
+
+#### Phase Q — Explicit feedback capture + SDFT-format preprocessing (alembic `0014_sdft_demonstrations`)
+
+Grounded in [Shenfeld et al., arXiv:2601.19897](https://arxiv.org/abs/2601.19897).
+**corpus-forge does NOT train, fine-tune, or sample models** — it
+captures feedback and emits training-ready data; downstream consumers
+train. A static-analysis test enforces the boundary
+(`tests/unit/test_sdft_no_inference.py`).
+
+- New schema: `sdft_demonstrations(id, dataset_id FK, query,
+  student_messages, teacher_messages, target, source, trace_id,
+  content_hash UNIQUE, created_at)` with indexes on
+  `(dataset_id, source)` and `(trace_id)`.
+- `record_demonstration` MCP write tool with content-hash dedup
+  (sha256 over a canonical-JSON payload). Idempotent — re-issued
+  identical writes return the existing id with `deduped=True`.
+- Capture hooks: `commit_curation` description corrections write a
+  demo with `source=curation_commit`; `rate_search_result` negative
+  signal + replacement_chunk_id writes with `source=rate_search_result`.
+  Pure metadata fixes do NOT fire the hook (low-signal filter).
+- Per-chat-client skill packs — all four reference the same MCP tool
+  set; `test_skill_pack_consistency.py` rot-detects drift:
+  - `.claude/skills/corpus-curate/SKILL.md` — extended
+  - `.gemini/extensions/corpus-curate.toml` + `PROMPT.md` (Gemini CLI)
+  - `opencode/commands/corpus-curate.md` (OpenCode)
+  - `codex/agents/corpus-curate.md` (Codex)
+- `corpus-forge feedback` CLI subgroup — `start|resume|list-sessions
+  |export-session`. `prompt_toolkit`-based TUI for offline curators
+  plus a scripted `--no-tui` mode for headless / CI usage. Session
+  state persists to `~/.cache/corpus-forge/feedback/session-<id>.json`
+  with idempotent resume.
+- `corpus-forge export sdft` — chat-templated JSONL/Parquet artifact
+  loadable via `datasets.load_dataset(...)`. Deterministic train /
+  held-out split via `sha256(content_hash) % 100` bucketing.
+  `--include-sources` filters by `SDFTSource` enum (covers
+  `curation_commit`, `rate_search_result`, `record_demonstration`,
+  `cli_feedback`, `claude_code`, `gemini`, `opencode`, `codex`).
+  Golden-file regression locks `export_chat` and
+  `export_feedback_pairs` schemas — no row-shape drift.
+- `corpus-forge eval distill` — preprocessing-health metrics only:
+  coverage, source mix histogram, template fidelity, p50/p95 token
+  stats. **Not** a training-quality metric (no judge calls, no model
+  sampling).
+
+### Fixed
+
+- `corpus_forge/sdft/capture.py` Postgres branch: the
+  `INSERT ... ON CONFLICT DO NOTHING RETURNING id` path never called
+  `conn.commit()`. The row was rolled back when
+  `backend._get_connection`'s context manager closed the connection,
+  so callers received a phantom `demonstration_id` that didn't exist
+  on disk. Added the commit; pinned with four regression tests at
+  `tests/integration/test_sdft_capture_pg_commit_regression.py`
+  (durability across connection close, dedup-branch round trip,
+  white-box commit-counter spy, full PostgresBackend round trip).
+- Bumped `astral-sh/setup-uv@v5 → v6` and `actions/cache@v4 → v5` in
+  `.github/actions/setup-uv/action.yml` to clear the Node.js 20
+  deprecation warning ahead of GitHub's 2026-09-16 forced removal.
+
+### Migration order
+
+`0012_analyze_signals` → `0013_search_sessions` →
+`0014_sdft_demonstrations`. Downgrade functions are `pass` (matches
+the project's forward-only convention from `0008` / `0010` / `0011`).
+
 ## [0.1.0b6] - 2026-05-19
 
 ### Added
