@@ -450,27 +450,38 @@ def test_dispatch_score_quality_dataset_lookup_failure_returns_error() -> None:
     assert _is_error_result(out)
 
 
-def test_dispatch_score_quality_persist_path_invokes_persist(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When persist=True + writes_enabled=True, _persist_quality_signals fires."""
-    chunks = [{"id": 1, "text": "alpha", "token_count": 8}]
-    backend = _FakeBackend(chunks_by_id={1: chunks[0]})
+class _PersistRecordingBackend(_FakeBackend):
+    """FakeBackend whose .conn attribute drives the real _persist_quality_signals.
 
-    captured: dict[str, Any] = {}
+    A `conn` attribute lets `_persist_quality_signals` find a connection;
+    we point it at an in-memory SQLite so persist actually writes rows.
+    """
 
-    def _stub_persist(b: Any, ids: list[int], scores: list[float]) -> int:
-        captured["chunk_ids"] = ids
-        captured["scores"] = scores
-        return len(ids)
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        import sqlite3 as _sqlite3
 
-    # Patch the module-level helper. Even if the dispatch resolves the
-    # reference through the module namespace, the runtime swap takes effect.
-    monkeypatch.setattr(
-        "corpus_forge.mcp._dispatch_analyze._persist_quality_signals",
-        _stub_persist,
+        self.conn = _sqlite3.connect(":memory:")
+        self.conn.execute(
+            """
+            CREATE TABLE chunk_quality_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chunk_id INTEGER NOT NULL,
+                signal_name TEXT NOT NULL,
+                signal_value REAL,
+                source TEXT NOT NULL,
+                computed_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        self.conn.commit()
+
+
+def test_dispatch_score_quality_persist_writes_real_rows() -> None:
+    """When persist=True + writes_enabled=True, rows land in chunk_quality_signals."""
+    backend = _PersistRecordingBackend(
+        chunks_by_id={1: {"id": 1, "text": "alpha", "token_count": 8}}
     )
-
     out = _run(
         _dispatch_score_quality(
             {"chunk_ids": [1], "persist": True},
@@ -479,32 +490,21 @@ def test_dispatch_score_quality_persist_path_invokes_persist(
         )
     )
     assert set(out["scores"].keys()) == {"1"}
-    assert captured["chunk_ids"] == [1]
-    assert len(captured["scores"]) == 1
+    # Real row written via persist_quality_signals.
+    count = backend.conn.execute("SELECT COUNT(*) FROM chunk_quality_signals").fetchone()[0]
+    assert count == 1
 
 
-def test_dispatch_score_quality_dataset_with_persist_aligns_resolved_ids(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When persisting by-dataset, scores+ids must align with the resolved chunks."""
-    chunks = [
-        {"id": 11, "text": "a", "token_count": 8},
-        {"id": 22, "text": "b", "token_count": 9},
-    ]
-    backend = _FakeBackend(chunks_by_dataset={"demo": chunks})
-
-    captured: dict[str, Any] = {}
-
-    def _stub_persist(b: Any, ids: list[int], scores: list[float]) -> int:
-        captured["chunk_ids"] = ids
-        captured["scores"] = scores
-        return len(ids)
-
-    monkeypatch.setattr(
-        "corpus_forge.mcp._dispatch_analyze._persist_quality_signals",
-        _stub_persist,
+def test_dispatch_score_quality_dataset_with_persist_aligns_resolved_ids() -> None:
+    """Persisting by-dataset writes one row per resolved chunk."""
+    backend = _PersistRecordingBackend(
+        chunks_by_dataset={
+            "demo": [
+                {"id": 11, "text": "a", "token_count": 8},
+                {"id": 22, "text": "b", "token_count": 9},
+            ]
+        }
     )
-
     out = _run(
         _dispatch_score_quality(
             {"dataset": "demo", "persist": True},
@@ -512,6 +512,8 @@ def test_dispatch_score_quality_dataset_with_persist_aligns_resolved_ids(
             writes_enabled=True,
         )
     )
-    # Resolved ids match the chunks returned by the dataset lookup.
-    assert captured["chunk_ids"] == [11, 22]
     assert set(out["scores"].keys()) == {"11", "22"}
+    chunk_ids = sorted(
+        r[0] for r in backend.conn.execute("SELECT chunk_id FROM chunk_quality_signals")
+    )
+    assert chunk_ids == [11, 22]
