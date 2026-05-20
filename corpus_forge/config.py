@@ -221,7 +221,10 @@ class EmbedderConfig(BaseModel):
     """
 
     name: str
-    provider: str = Field(pattern="^(sentence_transformers|openai)$")
+    # Phase N Wave 3 added ``"model2vec"`` for the static fast-tier
+    # provider (potion-code-16M).  Optional ``[fast-tier]`` extra at
+    # install time; the dispatch lives in ``embedders/registry.py``.
+    provider: str = Field(pattern="^(sentence_transformers|openai|model2vec)$")
     model_id: str
     dimension: int = Field(gt=0)
     normalize: bool = Field(default=True)
@@ -256,7 +259,7 @@ class RerankerConfig(BaseModel):
 
 
 class RetrievalConfig(BaseModel):
-    """Phase R2 + R4 — hybrid retrieval knobs.
+    """Phase R2 + R4 + Phase N Wave 1 — hybrid retrieval knobs.
 
     Defaults match the master plan verbatim:
 
@@ -269,6 +272,44 @@ class RetrievalConfig(BaseModel):
       behaviour does not call the reranker even if it's configured).
     - ``reranker`` (R4): nested config of the cross-encoder / Ollama
       reranker, used only when rerank is enabled.
+
+    Phase N Wave 1 — adaptive lexical-weight bump (default OFF):
+
+    - ``adaptive_lexical_weight``: when True AND ``fusion=="alpha"``
+      AND the query is symbol-shaped (per
+      :func:`corpus_forge.retrieval.query_shape.is_symbol_shaped`),
+      the effective alpha passed to :func:`alpha_blend` drops to
+      ``symbol_query_alpha``.  This raises the BM25 contribution on
+      identifier / accessor queries where lexical match is the right
+      retrieval signal.
+    - ``symbol_query_alpha``: the alpha to swap in when the bump fires.
+      Validated to ``[0, 1]`` like the headline ``alpha``.  Default
+      ``0.3`` was Wave 1's starting guess; the wave-gate test is the
+      arbiter on whether to retune.
+
+    Phase N Wave 2 — definition boost on retrieval (default OFF):
+
+    - ``definition_boost_enabled``: when True, any retrieved hit whose
+      metadata carries ``is_definition=True`` AND whose ``name`` matches
+      a token in the query gets its score multiplied by the boost
+      factors below.  The boost fires in TWO places:
+        - Pre-rerank, on the fused score dict before the rerank-slice
+          truncation (multiplier ``definition_boost_factor_pre_rerank``);
+        - Post-rerank, on the reranker's output (multiplier
+          ``definition_boost_factor_post_rerank``).
+      Wave 1's bench investigation found that the cross-encoder
+      reranker emits its own scores and discards upstream fused scores,
+      so the post-rerank application is the load-bearing one.  Both are
+      enabled by the same flag and tuned independently.
+    - ``definition_boost_factor_pre_rerank``: multiplier applied to a
+      matching definition's fused score before the rerank slice.
+      Validated to ``[1.0, 5.0]`` — below 1.0 would be a penalty, not
+      a boost; above 5.0 would dominate fusion math.  Default ``1.5``.
+    - ``definition_boost_factor_post_rerank``: multiplier applied to a
+      matching definition's reranked score after the reranker returns.
+      Same validation window.  Default ``1.2`` (smaller than the
+      pre-rerank factor because the reranker's score scale is already
+      tight and a heavy multiplier swamps it).
     """
 
     alpha: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -277,6 +318,17 @@ class RetrievalConfig(BaseModel):
     rerank_top_n: int = Field(default=50, gt=0)
     rerank_enabled: bool = False
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
+    adaptive_lexical_weight: bool = False
+    symbol_query_alpha: float = Field(default=0.3, ge=0.0, le=1.0)
+    definition_boost_enabled: bool = False
+    definition_boost_factor_pre_rerank: float = Field(default=1.5, ge=1.0, le=5.0)
+    definition_boost_factor_post_rerank: float = Field(default=1.2, ge=1.0, le=5.0)
+    # Phase N Wave 3 — fast-tier embedder cross-reference.  Names an
+    # entry in ``Config.embedders`` that runs as a candidate generator
+    # when ``SearchOptions.fast_tier_mode != "skip"``.  Validated at
+    # ``Config`` load time (see ``Config._check_fast_tier_embedder``)
+    # so a typo surfaces before any search call.
+    fast_tier_embedder_name: str | None = None
 
 
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -631,6 +683,27 @@ class Config(BaseModel):
             raise ValueError(
                 "Cross-host sync requires the postgres backend; SQLite is single-host. "
                 "Set sync_enabled = false or switch backend.kind to 'postgres'."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_fast_tier_embedder(self) -> "Config":
+        """Phase N Wave 3 — cross-reference fast tier embedder name.
+
+        When ``retrieval.fast_tier_embedder_name`` is set, the name
+        MUST resolve to a declared ``[[embedders]]`` entry.  Catches
+        typos at config-load time rather than at search time (where
+        the registry lookup would silently return ``None`` and
+        ``HybridRetriever`` would raise from inside the search call).
+        """
+        name = self.retrieval.fast_tier_embedder_name
+        if name is None:
+            return self
+        embedder_names = {e.name for e in self.embedders}
+        if name not in embedder_names:
+            raise ValueError(
+                f"retrieval.fast_tier_embedder_name={name!r} does not match any "
+                f"[[embedders]] entry; declared embedders: {sorted(embedder_names)!r}"
             )
         return self
 

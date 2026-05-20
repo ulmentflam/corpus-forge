@@ -1814,6 +1814,7 @@ class SQLiteBackend:
         *,
         k: int,
         dataset_id: int | None = None,
+        chunk_ids: "frozenset[int] | None" = None,
     ) -> "list":
         """Return the top-*k* nearest chunks for *query_vector* (cosine).
 
@@ -1830,10 +1831,23 @@ class SQLiteBackend:
           ``source_uri`` / ``title`` as ``None``.
         - Dataset filter is applied as a SARGable predicate after the vec0
           MATCH because the filter cannot be pushed inside the virtual table.
+
+        Phase N Wave 3 — ``chunk_ids`` filter:
+
+        - ``None`` (default): pre-Wave-3 behaviour.
+        - empty ``frozenset()``: returns ``[]`` immediately.
+        - non-empty: filtered in Python after the vec0 MATCH step (vec0
+          can't accept an IN-list predicate inside the MATCH clause).
+          We over-pull vec0's ``k`` argument so the filtered set still
+          fills the caller's ``k`` when possible.
         """
         # Local import — Hit lives in retrieval.types; pulled in lazily to keep
         # the backend module import-light.
         from corpus_forge.retrieval.types import Hit  # noqa: PLC0415
+
+        # Phase N Wave 3 — empty filter short-circuits.
+        if chunk_ids is not None and not chunk_ids:
+            return []
 
         embedder_rows = self._execute(
             "SELECT table_name FROM embedders WHERE id = ?",
@@ -1859,23 +1873,39 @@ class SQLiteBackend:
         # f-string interpolation of table_name is safe — the value is
         # synthesised in register_embedder() from a sanitised embedder name.
         # NB: vec0 requires the literal "k = ?" predicate in the WHERE clause.
+        #
+        # When a chunk_ids filter is in play, over-pull from vec0 so the
+        # post-filter slice can still fill ``k`` results.  Cap at 5x the
+        # caller's k for the over-pull (good enough for the Wave 3 fast
+        # tier's top-200 → main top-10 pipeline).
+        vec_k = k if chunk_ids is None else max(k, min(k * 5, len(chunk_ids) + k))
         match_rows = self._execute(
             f"SELECT chunk_id, distance FROM {table_name}"
             " WHERE embedding MATCH ? AND k = ? ORDER BY distance",
-            (blob, k),
+            (blob, vec_k),
         )
         if not match_rows:
             return []
 
-        chunk_ids = [int(r["chunk_id"]) for r in match_rows]
+        all_chunk_ids = [int(r["chunk_id"]) for r in match_rows]
+        # Apply the Wave 3 chunk_ids filter in Python (vec0 can't see
+        # arbitrary IN-lists inside the MATCH clause).
+        if chunk_ids is not None:
+            filtered_ids = [cid for cid in all_chunk_ids if cid in chunk_ids]
+            # Truncate to the caller's k AFTER the filter.
+            filtered_ids = filtered_ids[:k]
+        else:
+            filtered_ids = all_chunk_ids
+        if not filtered_ids:
+            return []
         distance_by_id = {int(r["chunk_id"]): float(r["distance"]) for r in match_rows}
 
         # Step 2: pull chunk + document metadata.  LEFT JOIN documents +
         # conversations so we can resolve the chunk's dataset_id even for
         # message chunks (where document_id IS NULL).  Filter by dataset_id
         # if the caller requested it.
-        placeholders = ",".join("?" * len(chunk_ids))
-        params: tuple = (*chunk_ids,)
+        placeholders = ",".join("?" * len(filtered_ids))
+        params: tuple = (*filtered_ids,)
         ds_filter = ""
         if dataset_id is not None:
             ds_filter = " AND COALESCE(d.dataset_id, cv.dataset_id) = ?"
@@ -1897,7 +1927,7 @@ class SQLiteBackend:
 
         # Preserve the vec0 ordering and zip in the joined metadata.
         hits: list = []
-        for cid in chunk_ids:
+        for cid in filtered_ids:
             r = by_id.get(cid)
             if r is None:
                 continue
@@ -1928,6 +1958,7 @@ class SQLiteBackend:
         *,
         k: int,
         dataset_id: int | None = None,
+        chunk_ids: "frozenset[int] | None" = None,
     ) -> "list":
         """BM25-ranked lexical search over the ``chunks_fts`` FTS5 virtual table.
 
@@ -1944,10 +1975,21 @@ class SQLiteBackend:
           regardless of casing or punctuation.  Discovered when the R3
           eval CLI ran the bundled ``forge_self`` gold set and crashed
           on the FIRST question with a trailing ``?``.
+
+        Phase N Wave 3 — ``chunk_ids`` filter:
+
+        - ``None`` (default): pre-Wave-3 behaviour.
+        - empty ``frozenset()``: returns ``[]`` immediately.
+        - non-empty: ``AND c.id IN (...)`` restricts the FTS join to the
+          candidate pool.
         """
         import re  # noqa: PLC0415 — local import keeps the cold-start lean
 
         from corpus_forge.retrieval.types import Hit  # noqa: PLC0415
+
+        # Phase N Wave 3 — empty filter short-circuits.
+        if chunk_ids is not None and not chunk_ids:
+            return []
 
         # Sanitise: alnum runs of >= min_token_chars chars, OR-joined.
         # Empty after tokenisation → no results (saves an FTS5 round-trip).
@@ -1962,6 +2004,11 @@ class SQLiteBackend:
         if dataset_id is not None:
             ds_filter = " AND COALESCE(d.dataset_id, cv.dataset_id) = ?"
             params = (*params, dataset_id)
+        chunk_filter = ""
+        if chunk_ids is not None:
+            placeholders = ",".join("?" * len(chunk_ids))
+            chunk_filter = f" AND c.id IN ({placeholders})"
+            params = (*params, *chunk_ids)
         params = (*params, k)
 
         rows = self._execute(
@@ -1974,7 +2021,7 @@ class SQLiteBackend:
             JOIN chunks c ON c.id = chunks_fts.rowid
             LEFT JOIN documents d ON d.id = c.document_id
             LEFT JOIN conversations cv ON cv.id = c.conversation_id
-            WHERE chunks_fts MATCH ?{ds_filter}
+            WHERE chunks_fts MATCH ?{ds_filter}{chunk_filter}
             ORDER BY bm25_score
             LIMIT ?
             """,

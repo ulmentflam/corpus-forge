@@ -480,6 +480,144 @@ temperature        = 0.1
 compression_ratio = 1.0
 
 # ─────────────────────────────────────────────────────────────────────
+# Phase N Wave 1 — adaptive lexical-weight bump
+# ─────────────────────────────────────────────────────────────────────
+# The `[retrieval]` block tunes the `HybridRetriever` end-to-end. The
+# Wave 1 release ships two new opt-in knobs that lower the fusion alpha
+# on symbol-shaped queries so the BM25 (lexical) signal contributes
+# more to the blend — semble's identifier-search advantage, ported as
+# a config-gated A/B without subclassing the retriever.
+#
+# Defaults are OFF on every knob — opt in here once you want to test.
+#
+# When does the bump fire?
+#   - `adaptive_lexical_weight = true` AND
+#   - `fusion = "alpha"` (the bump is a no-op on `"rrf"` — rank-only)
+#     AND
+#   - the query "looks like" a code symbol per
+#     `corpus_forge.retrieval.query_shape.is_symbol_shaped`. Rules of
+#     thumb: dotted accessors (`Foo.bar`), scope operators (`Foo::bar`,
+#     `foo->bar`), path-like (`foo/bar/baz`), CamelCase / snake_case
+#     identifiers, or leading-underscore privates (`_helper`).  Queries
+#     containing whitespace are treated as natural language even when
+#     they wrap a symbol — see the docstring for the full truth table.
+# [retrieval]
+# # Fusion strategy. `"rrf"` (default) is rank-only and ignores `alpha`;
+# # `"alpha"` linearly blends per-list min-max normalised scores. Only
+# # `"alpha"` exercises the Wave 1 bump.
+# fusion              = "alpha"
+#
+# # Blend weight on the dense list when `fusion = "alpha"`. Higher =
+# # more dense (semantic) weight; lower = more lexical (BM25). When the
+# # adaptive bump fires, this is the BASE alpha — the bump swaps in
+# # `symbol_query_alpha` for THAT query only.
+# alpha               = 0.7
+#
+# # Phase N Wave 1: opt-in flag for the adaptive lexical-weight bump.
+# # When `true`, identifier / accessor queries get a lower effective
+# # alpha (the `symbol_query_alpha` below) so BM25 dominates. Natural-
+# # language queries keep the base `alpha` above.
+# adaptive_lexical_weight = true
+#
+# # The effective alpha to swap in when the bump fires. 0.3 was the
+# # Wave 1 starting guess — lower numbers tip further toward lexical.
+# # Validated to `[0.0, 1.0]`.
+# symbol_query_alpha  = 0.3
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase N Wave 2 — definition boost on retrieval
+# ─────────────────────────────────────────────────────────────────────
+# When enabled, retrieved hits whose metadata says they ARE a definition
+# (every chunk emitted by the AST-walk code chunker carries
+# `is_definition=True` + `definition_kind`) AND whose `metadata.name`
+# matches a token in the query get a score multiplier in two places:
+#
+#   1. Pre-rerank: on the fused score dict BEFORE the rerank-slice
+#      truncation, with multiplier `definition_boost_factor_pre_rerank`.
+#   2. Post-rerank: on the reranker's output, with multiplier
+#      `definition_boost_factor_post_rerank`.
+#
+# Wave 1's bench investigation found that the cross-encoder reranker
+# emits its own scores and discards upstream fused scores — so the
+# pre-rerank boost alone produces no observable headline lift when
+# rerank is on.  The post-rerank application is the load-bearing one;
+# both fire on the same flag but the multipliers are independent so a
+# follow-up A/B can measure each separately.
+#
+# Tokenisation is whole-word: the query is lowercased and split on
+# non-identifier chars (`[^A-Za-z0-9_]+`), then each token is compared
+# for equality with the chunk's lowercased `metadata.name`.  Substring
+# matches do NOT boost — `"directory"` does not lift a definition
+# named `"directory_pruned"`.
+#
+# The boost only fires on chunks freshly chunked under Wave 2 — older
+# corpora need a re-ingest to pick up the `is_definition` flag.
+# [retrieval]
+# # Phase N Wave 2: opt-in flag for the definition boost.
+# definition_boost_enabled = true
+#
+# # Pre-rerank multiplier (applied on the fused score dict).  Validated
+# # to `[1.0, 5.0]`; default 1.5.
+# definition_boost_factor_pre_rerank  = 1.5
+#
+# # Post-rerank multiplier (applied on the reranker's output).
+# # Validated to `[1.0, 5.0]`; default 1.2.  Kept smaller than the
+# # pre-rerank factor because the cross-encoder's score scale is tight
+# # — a heavy multiplier swamps it.
+# definition_boost_factor_post_rerank = 1.2
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase N Wave 3 — static-embedding fast tier (model2vec)
+# ─────────────────────────────────────────────────────────────────────
+# Wires an OPTIONAL second embedder (default: `minishlab/potion-code-16M`,
+# 256-dim, MIT, ~16 MB, CPU-fast) in front of the main embedder +
+# cross-encoder reranker as a candidate generator.  Two activation
+# modes available at search time via `SearchOptions.fast_tier_mode`:
+#
+#   "shortcut" — fast embedder runs first; top-N candidates seed the
+#                main dense+lexical fan-out via the backend's
+#                `chunk_ids=` filter.  Reranker + Wave 2 boost still
+#                compose normally.  Best quality + dramatic p50 drop
+#                (the cross-encoder only sees the slice).
+#
+#   "only"     — fast embedder produces top-k directly.  No lexical,
+#                no rerank.  Sub-10ms p50 on identifier queries in
+#                bench.  Lower quality acceptable for latency-bound
+#                paths.
+#
+#   "skip"     — pre-Wave-3 behaviour (default).
+#
+# Install the extra:  pip install 'corpus-forge[fast-tier]'
+#
+# Step 1 — declare a SECOND embedder under `[[embedders]]`:
+#
+# [[embedders]]
+# name      = "potion-code-16M"
+# provider  = "model2vec"
+# model_id  = "minishlab/potion-code-16M"
+# dimension = 256
+# normalize = true
+# distance  = "cosine"
+# active    = true
+#
+# Step 2 — point `[retrieval].fast_tier_embedder_name` at that name.
+# The validator rejects a typo at config-load time so a misconfigured
+# deploy doesn't silently dispatch as if the fast tier weren't wired.
+#
+# [retrieval]
+# fast_tier_embedder_name = "potion-code-16M"
+#
+# Callers then opt in per search via SearchOptions:
+#
+#     opts = SearchOptions(
+#         k=10,
+#         fast_tier_mode="shortcut",   # or "only" / "skip" (default)
+#         fast_tier_top_n=200,         # candidate pool size for shortcut
+#     )
+#
+# Default settings preserve pre-Wave-3 behaviour exactly.
+
+# ─────────────────────────────────────────────────────────────────────
 # Phase M Wave 2 — filesystem walker
 # ─────────────────────────────────────────────────────────────────────
 # Drives the unified `os.scandir`-based walker shared by the estimator

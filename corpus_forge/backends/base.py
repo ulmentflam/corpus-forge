@@ -180,7 +180,17 @@ class StorageBackend(Protocol):
         *,
         k: int,
         dataset_id: int | None = None,
-    ) -> "list[Hit]": ...
+        chunk_ids: "frozenset[int] | None" = None,
+    ) -> "list[Hit]":
+        """Dense ANN search restricted to per-embedder + per-dataset.
+
+        Phase N Wave 3 added the ``chunk_ids`` keyword for the static
+        fast-tier shortcut mode — a non-None ``frozenset`` narrows the
+        result to the candidate pool surfaced by the fast tier; empty
+        means "filter to nothing"; ``None`` (default) preserves the
+        pre-Wave-3 unfiltered behaviour.
+        """
+        ...
 
     def search_lexical(
         self,
@@ -188,7 +198,11 @@ class StorageBackend(Protocol):
         *,
         k: int,
         dataset_id: int | None = None,
-    ) -> "list[Hit]": ...
+        chunk_ids: "frozenset[int] | None" = None,
+    ) -> "list[Hit]":
+        """Lexical (FTS) search.  Same ``chunk_ids`` semantics as
+        :meth:`search_dense` (Phase N Wave 3)."""
+        ...
 
     def get_chunk(self, chunk_id: int) -> "dict | None": ...
 

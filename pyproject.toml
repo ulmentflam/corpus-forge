@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name            = "corpus-forge"
-version         = "0.1.0b5"
+version         = "0.1.0b6"
 description     = "Chat with your data. Forge a living, trainable corpus from your notes, code, and chat history."
 requires-python = ">=3.11,<3.14"
 license         = "Apache-2.0"
@@ -154,6 +154,21 @@ whisper = [
   "faster-whisper>=1.0",
   "imageio-ffmpeg>=0.5",
   "requests>=2.32",
+]
+# Phase N Wave 3: model2vec static-embedding fast tier.
+#
+# License posture: model2vec is MIT (permissive).  Adding [fast-tier]
+# does NOT widen the AGPL surface introduced by [multi-format] and does
+# not pull a Whisper / OCR-style heavy stack — the static-tier weights
+# are small (~16 MB for ``minishlab/potion-code-16M``).
+#
+# This is the candidate-generator front-end for ``HybridRetriever``'s
+# ``SearchOptions.fast_tier_mode`` ∈ {"shortcut", "only"}; default
+# "skip" leaves the embedder uninstantiated even on Wave 3 builds.
+# Bench numbers + per-mode latency table live in
+# ``tests/perf/out/phase_n_wave3_*.json``.
+fast-tier = [
+  "model2vec>=0.5",
 ]
 
 [project.scripts]

@@ -61,6 +61,21 @@ class SearchOptions:
 
     Defaults match the Phase R1 plan verbatim — see the master plan for
     rationale on the fusion strategy and reranker toggle.
+
+    Phase N Wave 3 — static fast tier (default OFF):
+
+    - ``fast_tier_mode``:
+        - ``"skip"`` (default): pre-Wave-3 behaviour.  Fast embedder
+          never called even when wired.
+        - ``"shortcut"``: fast embedder runs first → top-N candidates
+          seed the main dense + lexical fan-out via the backend's
+          ``chunk_ids=`` filter.  Wave 2 boost + reranker still
+          compose normally.
+        - ``"only"``: fast embedder produces top-k directly.  No
+          lexical, no rerank.  Lowest latency, lower quality.
+    - ``fast_tier_top_n``: number of candidates the fast tier seeds in
+      ``shortcut`` mode.  Default 200; smaller numbers cut latency
+      further but risk recall loss.
     """
 
     k: int = 10
@@ -69,6 +84,8 @@ class SearchOptions:
     alpha: float = 0.5
     rerank: bool = False
     rerank_top_n: int = 50
+    fast_tier_mode: Literal["skip", "shortcut", "only"] = "skip"
+    fast_tier_top_n: int = 200
 
 
 @dataclass(frozen=True)

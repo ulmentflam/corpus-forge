@@ -218,6 +218,12 @@ class CodeChunker(Chunker):
                         "names": tuple(group_names),
                         "language": language,
                         "byte_range": (group_start_byte, group_end_byte),
+                        # Phase N Wave 2: every AST-walk chunk IS a
+                        # definition by construction.  The coalesce
+                        # path emits a synthetic Block, so
+                        # `definition_kind` is "Block" here.
+                        "is_definition": True,
+                        "definition_kind": "Block",
                     }
                     out.append(_make_textchunk(body, md, relative_path))
                     i = j
@@ -230,6 +236,12 @@ class CodeChunker(Chunker):
                 "name": item.name,
                 "language": language,
                 "byte_range": (item.start_byte, item.end_byte),
+                # Phase N Wave 2: tag the chunk as a definition.  The
+                # AST walker only captures structural items
+                # (Function / Class / Method / Block) so this is always
+                # safe to set here.
+                "is_definition": True,
+                "definition_kind": item.kind,
             }
             out.append(_make_textchunk(item_text, md, relative_path))
             i += 1
@@ -260,6 +272,12 @@ class CodeChunker(Chunker):
                 "name": name,
                 "language": language,
                 "byte_range": (base_offset + start, base_offset + end),
+                # Phase N Wave 2: every sub-split shares the parent
+                # construct's definition status.  ``kind`` here is the
+                # *parent's* kind (Function/Class/Method/Block), so it
+                # carries straight into ``definition_kind``.
+                "is_definition": True,
+                "definition_kind": kind,
             }
             chunks.append(_make_textchunk(payload, md, relative_path))
 

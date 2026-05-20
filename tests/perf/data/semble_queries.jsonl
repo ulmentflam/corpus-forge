@@ -1,25 +1,61 @@
-{"query": "HybridRetriever.search", "ground_truth_chunks": [{"file": "corpus_forge/retrieval/retriever.py", "byte_start": 3232, "byte_end": 6703}], "category": "identifier"}
-{"query": "IgnoreStack.directory_pruned", "ground_truth_chunks": [{"file": "corpus_forge/ignore.py", "byte_start": 8731, "byte_end": 10394}], "category": "identifier"}
-{"query": "class ManagedBlockCorrupted", "ground_truth_chunks": [{"file": "corpus_forge/ignore_lifecycle.py", "byte_start": 1524, "byte_end": 2254}], "category": "identifier"}
-{"query": "scanner.walker.walk function", "ground_truth_chunks": [{"file": "corpus_forge/scanner/walker.py", "byte_start": 2606, "byte_end": 6164}], "category": "identifier"}
-{"query": "ScanConfig class definition", "ground_truth_chunks": [{"file": "corpus_forge/config.py", "byte_start": 23211, "byte_end": 24278}], "category": "identifier"}
-{"query": "where do we call pymupdf4llm to_markdown", "ground_truth_chunks": [{"file": "corpus_forge/extractors/pdf.py", "byte_start": 6120, "byte_end": 6430}], "category": "callsite"}
-{"query": "callers of mrr_at_k metric", "ground_truth_chunks": [{"file": "corpus_forge/eval/metrics.py", "byte_start": 4382, "byte_end": 4924}], "category": "callsite"}
-{"query": "where is reciprocal_rank_fusion invoked", "ground_truth_chunks": [{"file": "corpus_forge/retrieval/retriever.py", "byte_start": 7157, "byte_end": 7532}], "category": "callsite"}
-{"query": "corpus-forge ingest command entry point", "ground_truth_chunks": [{"file": "corpus_forge/cli.py", "byte_start": 6345, "byte_end": 7500}], "category": "callsite"}
-{"query": "zotero source plugin branch in ingest loop", "ground_truth_chunks": [{"file": "corpus_forge/ingest.py", "byte_start": 26385, "byte_end": 26683}], "category": "callsite"}
-{"query": "how does the watch debounce work", "ground_truth_chunks": [{"file": "corpus_forge/sources/base.py", "byte_start": 1750, "byte_end": 2669}], "category": "concept"}
-{"query": "step-by-step hybrid search dense plus lexical fusion", "ground_truth_chunks": [{"file": "corpus_forge/retrieval/retriever.py", "byte_start": 3155, "byte_end": 8054}], "category": "concept"}
-{"query": "PDF Tier 1 digital text-layer extractor strategy", "ground_truth_chunks": [{"file": "corpus_forge/extractors/pdf.py", "byte_start": 199, "byte_end": 771}], "category": "concept"}
-{"query": "splice managed block while preserving user lines", "ground_truth_chunks": [{"file": "corpus_forge/ignore_lifecycle.py", "byte_start": 2942, "byte_end": 4203}], "category": "concept"}
-{"query": "scanner walker descent-time pruning rationale", "ground_truth_chunks": [{"file": "corpus_forge/scanner/walker.py", "byte_start": 0, "byte_end": 1156}], "category": "concept"}
-{"query": "managed block sentinels not found exception", "ground_truth_chunks": [{"file": "corpus_forge/ignore_lifecycle.py", "byte_start": 1524, "byte_end": 1787}], "category": "error"}
-{"query": "k_values must be non-empty", "ground_truth_chunks": [{"file": "corpus_forge/eval/runner.py", "byte_start": 3484, "byte_end": 3595}], "category": "error"}
-{"query": "gold set is empty no queries", "ground_truth_chunks": [{"file": "corpus_forge/eval/runner.py", "byte_start": 3595, "byte_end": 3763}], "category": "error"}
-{"query": "sqlite-vec extension load error", "ground_truth_chunks": [{"file": "corpus_forge/backends/sqlite.py", "byte_start": 5869, "byte_end": 6101}], "category": "error"}
-{"query": "poppler pdf2image missing OCR fallback", "ground_truth_chunks": [{"file": "corpus_forge/extractors/pdf.py", "byte_start": 1147, "byte_end": 1503}], "category": "error"}
-{"query": "scan workers default", "ground_truth_chunks": [{"file": "corpus_forge/config.py", "byte_start": 23211, "byte_end": 24278}], "category": "config"}
-{"query": "config example scan block extra_skip_dirs", "ground_truth_chunks": [{"file": "config.example.toml", "byte_start": 22473, "byte_end": 22920}], "category": "config"}
-{"query": "zotero dataset source config example", "ground_truth_chunks": [{"file": "config.example.toml", "byte_start": 3663, "byte_end": 4314}], "category": "config"}
-{"query": "whisper transcription backend config", "ground_truth_chunks": [{"file": "config.example.toml", "byte_start": 13087, "byte_end": 13441}], "category": "config"}
-{"query": "estimate block toml configuration tunables", "ground_truth_chunks": [{"file": "config.example.toml", "byte_start": 21321, "byte_end": 21799}], "category": "config"}
+{"query": "HybridRetriever.search", "ground_truth_chunks": [{"file": "corpus_forge/retrieval/retriever.py", "byte_start": 3232, "byte_end": 6703}], "category": "identifier", "corpus": "current"}
+{"query": "IgnoreStack.directory_pruned", "ground_truth_chunks": [{"file": "corpus_forge/ignore.py", "byte_start": 8731, "byte_end": 10394}], "category": "identifier", "corpus": "current"}
+{"query": "class ManagedBlockCorrupted", "ground_truth_chunks": [{"file": "corpus_forge/ignore_lifecycle.py", "byte_start": 1524, "byte_end": 2254}], "category": "identifier", "corpus": "current"}
+{"query": "scanner.walker.walk function", "ground_truth_chunks": [{"file": "corpus_forge/scanner/walker.py", "byte_start": 2606, "byte_end": 6164}], "category": "identifier", "corpus": "current"}
+{"query": "ScanConfig class definition", "ground_truth_chunks": [{"file": "corpus_forge/config.py", "byte_start": 23211, "byte_end": 24278}], "category": "identifier", "corpus": "current"}
+{"query": "SentenceTransformersEmbedder", "ground_truth_chunks": [{"file": "corpus_forge/embedders/sentence_transformers.py", "byte_start": 1349, "byte_end": 2583}], "category": "identifier", "corpus": "current"}
+{"query": "CodeChunker", "ground_truth_chunks": [{"file": "corpus_forge/chunkers/code.py", "byte_start": 1819, "byte_end": 14351}], "category": "identifier", "corpus": "current"}
+{"query": "EmbedderRegistry", "ground_truth_chunks": [{"file": "corpus_forge/embedders/registry.py", "byte_start": 171, "byte_end": 1393}], "category": "identifier", "corpus": "current"}
+{"query": "MarkdownVaultSource class", "ground_truth_chunks": [{"file": "corpus_forge/sources/markdown_vault.py", "byte_start": 162, "byte_end": 1387}], "category": "identifier", "corpus": "current"}
+{"query": "where do we call pymupdf4llm to_markdown", "ground_truth_chunks": [{"file": "corpus_forge/extractors/pdf.py", "byte_start": 6120, "byte_end": 6430}], "category": "callsite", "corpus": "current"}
+{"query": "callers of mrr_at_k metric", "ground_truth_chunks": [{"file": "corpus_forge/eval/metrics.py", "byte_start": 4382, "byte_end": 4924}], "category": "callsite", "corpus": "current"}
+{"query": "where is reciprocal_rank_fusion invoked", "ground_truth_chunks": [{"file": "corpus_forge/retrieval/retriever.py", "byte_start": 7157, "byte_end": 7532}], "category": "callsite", "corpus": "current"}
+{"query": "corpus-forge ingest command entry point", "ground_truth_chunks": [{"file": "corpus_forge/cli.py", "byte_start": 6345, "byte_end": 7500}], "category": "callsite", "corpus": "current"}
+{"query": "zotero source plugin branch in ingest loop", "ground_truth_chunks": [{"file": "corpus_forge/ingest.py", "byte_start": 26385, "byte_end": 26683}], "category": "callsite", "corpus": "current"}
+{"query": "embedder_fingerprint compare_active drift detection", "ground_truth_chunks": [{"file": "corpus_forge/embedders/fingerprint.py", "byte_start": 4732, "byte_end": 6255}], "category": "callsite", "corpus": "current"}
+{"query": "how does the watch debounce work", "ground_truth_chunks": [{"file": "corpus_forge/sources/base.py", "byte_start": 1750, "byte_end": 2669}], "category": "concept", "corpus": "current"}
+{"query": "step-by-step hybrid search dense plus lexical fusion", "ground_truth_chunks": [{"file": "corpus_forge/retrieval/retriever.py", "byte_start": 3155, "byte_end": 8054}], "category": "concept", "corpus": "current"}
+{"query": "PDF Tier 1 digital text-layer extractor strategy", "ground_truth_chunks": [{"file": "corpus_forge/extractors/pdf.py", "byte_start": 199, "byte_end": 771}], "category": "concept", "corpus": "current"}
+{"query": "splice managed block while preserving user lines", "ground_truth_chunks": [{"file": "corpus_forge/ignore_lifecycle.py", "byte_start": 2942, "byte_end": 4203}], "category": "concept", "corpus": "current"}
+{"query": "scanner walker descent-time pruning rationale", "ground_truth_chunks": [{"file": "corpus_forge/scanner/walker.py", "byte_start": 0, "byte_end": 1156}], "category": "concept", "corpus": "current"}
+{"query": "embedder fingerprint drift comparison flow", "ground_truth_chunks": [{"file": "corpus_forge/embedders/fingerprint.py", "byte_start": 4732, "byte_end": 6255}], "category": "concept", "corpus": "current"}
+{"query": "managed block sentinels not found exception", "ground_truth_chunks": [{"file": "corpus_forge/ignore_lifecycle.py", "byte_start": 1524, "byte_end": 1787}], "category": "error", "corpus": "current"}
+{"query": "k_values must be non-empty", "ground_truth_chunks": [{"file": "corpus_forge/eval/runner.py", "byte_start": 3484, "byte_end": 3595}], "category": "error", "corpus": "current"}
+{"query": "gold set is empty no queries", "ground_truth_chunks": [{"file": "corpus_forge/eval/runner.py", "byte_start": 3595, "byte_end": 3763}], "category": "error", "corpus": "current"}
+{"query": "sqlite-vec extension load error", "ground_truth_chunks": [{"file": "corpus_forge/backends/sqlite.py", "byte_start": 5869, "byte_end": 6101}], "category": "error", "corpus": "current"}
+{"query": "poppler pdf2image missing OCR fallback", "ground_truth_chunks": [{"file": "corpus_forge/extractors/pdf.py", "byte_start": 1147, "byte_end": 1503}], "category": "error", "corpus": "current"}
+{"query": "Malformed JSON from upstream HTTP client", "ground_truth_chunks": [{"file": "corpus_forge/_http.py", "byte_start": 7264, "byte_end": 7664}], "category": "error", "corpus": "current"}
+{"query": "empty segment in dotted key error", "ground_truth_chunks": [{"file": "corpus_forge/admin/_path.py", "byte_start": 2554, "byte_end": 2954}], "category": "error", "corpus": "current"}
+{"query": "Could not acquire lock for source", "ground_truth_chunks": [{"file": "corpus_forge/backends/postgres.py", "byte_start": 45834, "byte_end": 46234}], "category": "error", "corpus": "current"}
+{"query": "scan workers default", "ground_truth_chunks": [{"file": "corpus_forge/config.py", "byte_start": 23211, "byte_end": 24278}], "category": "config", "corpus": "current"}
+{"query": "config example scan block extra_skip_dirs", "ground_truth_chunks": [{"file": "config.example.toml", "byte_start": 22473, "byte_end": 22920}], "category": "config", "corpus": "current"}
+{"query": "zotero dataset source config example", "ground_truth_chunks": [{"file": "config.example.toml", "byte_start": 3663, "byte_end": 4314}], "category": "config", "corpus": "current"}
+{"query": "whisper transcription backend config", "ground_truth_chunks": [{"file": "config.example.toml", "byte_start": 13087, "byte_end": 13441}], "category": "config", "corpus": "current"}
+{"query": "estimate block toml configuration tunables", "ground_truth_chunks": [{"file": "config.example.toml", "byte_start": 21321, "byte_end": 21799}], "category": "config", "corpus": "current"}
+{"query": "class Flask WSGI application", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/src/flask/app.py", "byte_start": 3608, "byte_end": 5619}], "category": "identifier", "corpus": "vendored"}
+{"query": "Blueprint", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/src/flask/blueprints.py", "byte_start": 456, "byte_end": 2471}], "category": "identifier", "corpus": "vendored"}
+{"query": "FlaskClient testing", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/src/flask/testing.py", "byte_start": 3374, "byte_end": 8823}], "category": "identifier", "corpus": "vendored"}
+{"query": "class AppContext", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/src/flask/ctx.py", "byte_start": 7983, "byte_end": 17884}], "category": "identifier", "corpus": "vendored"}
+{"query": "class SessionInterface", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/src/flask/sessions.py", "byte_start": 3243, "byte_end": 10955}], "category": "identifier", "corpus": "vendored"}
+{"query": "JSONProvider", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/src/flask/json/provider.py", "byte_start": 318, "byte_end": 3535}], "category": "identifier", "corpus": "vendored"}
+{"query": "send_file helper", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/src/flask/helpers.py", "byte_start": 14586, "byte_end": 19869}], "category": "callsite", "corpus": "vendored"}
+{"query": "where is url_for defined", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/src/flask/helpers.py", "byte_start": 6632, "byte_end": 8460}], "category": "callsite", "corpus": "vendored"}
+{"query": "render_template entry point", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/src/flask/templating.py", "byte_start": 4529, "byte_end": 5087}], "category": "callsite", "corpus": "vendored"}
+{"query": "jsonify response builder", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/src/flask/json/__init__.py", "byte_start": 4209, "byte_end": 5583}], "category": "callsite", "corpus": "vendored"}
+{"query": "flash message function", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/src/flask/helpers.py", "byte_start": 11001, "byte_end": 12384}], "category": "callsite", "corpus": "vendored"}
+{"query": "how blueprints attach routes to an app", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/docs/blueprints.rst", "byte_start": 2149, "byte_end": 4928}], "category": "concept", "corpus": "vendored"}
+{"query": "how a request is handled in Flask", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/docs/lifecycle.rst", "byte_start": 5067, "byte_end": 6617}], "category": "concept", "corpus": "vendored"}
+{"query": "application discovery rules for the flask CLI", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/docs/cli.rst", "byte_start": 417, "byte_end": 2465}], "category": "concept", "corpus": "vendored"}
+{"query": "what does Flask error handler do when an exception is raised", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/docs/errorhandling.rst", "byte_start": 2804, "byte_end": 10116}], "category": "concept", "corpus": "vendored"}
+{"query": "Detected multiple Flask applications in module", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/src/flask/cli.py", "byte_start": 1525, "byte_end": 2125}], "category": "error", "corpus": "vendored"}
+{"query": "There is no request in this context", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/src/flask/ctx.py", "byte_start": 12543, "byte_end": 13143}], "category": "error", "corpus": "vendored"}
+{"query": "Unable to build URLs outside an active request", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/src/flask/app.py", "byte_start": 47737, "byte_end": 48337}], "category": "error", "corpus": "vendored"}
+{"query": "Could not locate a Flask application", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/src/flask/cli.py", "byte_start": 11209, "byte_end": 11809}], "category": "error", "corpus": "vendored"}
+{"query": "Object of type is not JSON serializable", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/src/flask/json/provider.py", "byte_start": 3885, "byte_end": 4485}], "category": "error", "corpus": "vendored"}
+{"query": "Flask pyproject project metadata block", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/pyproject.toml", "byte_start": 0, "byte_end": 970}], "category": "config", "corpus": "vendored"}
+{"query": "dependency-groups dev configuration", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/pyproject.toml", "byte_start": 1055, "byte_end": 1616}], "category": "config", "corpus": "vendored"}
+{"query": "ruff lint configuration", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/pyproject.toml", "byte_start": 3031, "byte_end": 3213}], "category": "config", "corpus": "vendored"}
+{"query": "flask tutorial pyproject project block", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/examples/tutorial/pyproject.toml", "byte_start": 0, "byte_end": 313}], "category": "config", "corpus": "vendored"}
+{"query": "Configuration Basics Flask docs", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/docs/config.rst", "byte_start": 932, "byte_end": 1523}], "category": "config", "corpus": "vendored"}
+{"query": "Scaffold class shared between Flask and Blueprint", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/src/flask/sansio/scaffold.py", "byte_start": 1650, "byte_end": 26812}], "category": "identifier", "corpus": "vendored"}
+{"query": "NoAppException Flask CLI", "ground_truth_chunks": [{"file": "tests/fixtures/external/flask-snapshot/src/flask/cli.py", "byte_start": 793, "byte_end": 897}], "category": "identifier", "corpus": "vendored"}
