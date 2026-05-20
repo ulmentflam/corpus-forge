@@ -228,3 +228,39 @@ def test_password_confirmation_helper_is_defined_and_wired() -> None:
     assert pw_call in script_text, (
         "PASSWORD resolution is not wired to prompt_password_with_confirm"
     )
+
+
+def test_pgdg_pre_existing_repo_skip_logic_is_present() -> None:
+    """Static check that Step 1 detects pre-existing PGDG sources.
+
+    Background: an LXC may already have apt.postgresql.org configured
+    via a different sources.list file with a different ``Signed-By``
+    keyring path (e.g. ``/etc/apt/keyrings/pgdg.gpg``, the modern Debian
+    convention). Writing OUR own pgdg.list on top triggers
+
+      E: Conflicting values set for option Signed-By regarding source
+         https://apt.postgresql.org/pub/repos/apt/ trixie-pgdg:
+         /usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg
+         != /etc/apt/keyrings/pgdg.gpg
+
+    and breaks apt update.
+
+    Fix: before writing our own sources line, grep anywhere under
+    /etc/apt/sources.list.d/ AND /etc/apt/sources.list for any
+    apt.postgresql.org reference. If found, skip Step 1's write
+    entirely — the host already knows how to fetch from PGDG.
+
+    Static check because exercising it end-to-end would require a
+    writable /etc/apt mounted into the test container.
+    """
+    script_text = SCRIPT.read_text(encoding="utf-8")
+    assert "PGDG_EXISTING=" in script_text, "Step 1 missing pre-existing PGDG detection"
+    assert "grep -rlI 'apt\\.postgresql\\.org'" in script_text, (
+        "Step 1 doesn't scan /etc/apt for existing PGDG entries"
+    )
+    assert "/etc/apt/sources.list.d/" in script_text, (
+        "Step 1 doesn't reference sources.list.d in its detection scan"
+    )
+    assert "skipping apt-source write" in script_text, (
+        "Step 1 doesn't log the skip path"
+    )
