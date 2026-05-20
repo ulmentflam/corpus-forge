@@ -3175,6 +3175,54 @@ class SQLiteBackend:
             (dataset_id,),
         )
 
+    def list_sdft_demonstrations(
+        self,
+        dataset_id: int,
+        include_sources: "list[str] | None" = None,
+    ) -> "list[dict]":
+        """Return sdft_demonstrations rows for *dataset_id*.
+
+        Each row's ``student_messages`` and ``teacher_messages`` columns are
+        deserialized from the stored JSON text to Python lists.
+
+        Args:
+            dataset_id:      Dataset to filter on.
+            include_sources: When non-None and non-empty, only rows whose
+                             ``source`` value is in this list are returned.
+                             ``None`` returns all rows.  An empty list
+                             returns no rows.
+        """
+        if include_sources is not None and len(include_sources) == 0:
+            return []
+
+        if include_sources is not None:
+            placeholders = ",".join("?" * len(include_sources))
+            rows = self._execute(
+                f"SELECT id, query, student_messages, teacher_messages, target, source,"
+                f" dataset_id, trace_id, content_hash"
+                f" FROM sdft_demonstrations"
+                f" WHERE dataset_id = ? AND source IN ({placeholders})"
+                f" ORDER BY id",
+                (dataset_id, *include_sources),
+            )
+        else:
+            rows = self._execute(
+                "SELECT id, query, student_messages, teacher_messages, target, source,"
+                " dataset_id, trace_id, content_hash"
+                " FROM sdft_demonstrations"
+                " WHERE dataset_id = ?"
+                " ORDER BY id",
+                (dataset_id,),
+            )
+
+        # Deserialize JSON text columns to Python lists.
+        for row in rows:
+            for col in ("student_messages", "teacher_messages"):
+                if isinstance(row.get(col), str):
+                    with contextlib.suppress(json.JSONDecodeError, TypeError):
+                        row[col] = json.loads(row[col])
+        return rows
+
     def get_audit_event(self, audit_id: int) -> "dict | None":
         """Return the mcp_audit row for *audit_id*, or None on miss."""
         rows = self._execute(

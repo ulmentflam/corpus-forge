@@ -2597,6 +2597,46 @@ class PostgresBackend(StorageBackend):
             (dataset_id,),
         )
 
+    def list_sdft_demonstrations(
+        self,
+        dataset_id: int,
+        include_sources: "list[str] | None" = None,
+    ) -> "list[dict]":
+        """Return sdft_demonstrations rows for *dataset_id*.
+
+        Postgres JSONB columns (student_messages, teacher_messages) are
+        returned as native Python objects by psycopg2, so no extra
+        deserialization is needed.
+
+        Args:
+            dataset_id:      Dataset to filter on.
+            include_sources: When non-None and non-empty, only rows whose
+                             ``source`` value is in this list are returned.
+                             ``None`` returns all rows.  An empty list
+                             returns no rows.
+        """
+        if include_sources is not None and len(include_sources) == 0:
+            return []
+
+        if include_sources is not None:
+            placeholders = ",".join(["%s"] * len(include_sources))
+            return self._execute(
+                f"SELECT id, query, student_messages, teacher_messages, target, source,"
+                f" dataset_id, trace_id, content_hash"
+                f" FROM corpus.sdft_demonstrations"
+                f" WHERE dataset_id = %s AND source IN ({placeholders})"
+                f" ORDER BY id",
+                (dataset_id, *include_sources),
+            )
+        return self._execute(
+            "SELECT id, query, student_messages, teacher_messages, target, source,"
+            " dataset_id, trace_id, content_hash"
+            " FROM corpus.sdft_demonstrations"
+            " WHERE dataset_id = %s"
+            " ORDER BY id",
+            (dataset_id,),
+        )
+
     def get_audit_event(self, audit_id: int) -> "dict | None":
         """Return the corpus.mcp_audit row for *audit_id*, or None on miss."""
         rows = self._execute(

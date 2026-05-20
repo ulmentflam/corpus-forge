@@ -688,6 +688,48 @@ def export_chat_cmd(
     ui_info(f"exported to {out}")
 
 
+@export_app.command("sdft")
+def export_sdft_cmd(
+    dataset: Annotated[str, typer.Option("--dataset", "-d", help="Dataset name to export.")],
+    out: Annotated[Path, typer.Option("--out", "-o", help="Output file path.")],
+    template: Annotated[
+        str, typer.Option("--template", "-t", help="Chat template name.")
+    ] = "chatml",
+    format: Annotated[
+        str, typer.Option("--format", "-f", help="Output format: jsonl or parquet.")
+    ] = "jsonl",
+    held_out_fraction: Annotated[
+        float,
+        typer.Option("--held-out-fraction", help="Fraction of rows to hold out (0.0 = no split)."),
+    ] = 0.0,
+    include_sources: Annotated[
+        str | None,
+        typer.Option("--include-sources", help="Comma-separated list of sources to include."),
+    ] = None,
+    custom_jinja: Annotated[
+        str | None, typer.Option("--custom-jinja", help="Inline Jinja override.")
+    ] = None,
+    push: Annotated[
+        str | None, typer.Option("--push", help="HF dataset repo to push to after writing.")
+    ] = None,
+) -> None:
+    """Export SDFT demonstrations as HF-format rows."""
+    from corpus_forge.export import export_sdft
+
+    sources = [s.strip() for s in include_sources.split(",")] if include_sources else None
+    result = export_sdft(
+        dataset=dataset,
+        template=template,
+        out_path=out,
+        format=format,
+        held_out_fraction=held_out_fraction,
+        include_sources=sources,
+        custom_jinja=custom_jinja,
+        push=push,
+    )
+    ui_info(f"exported {result['row_count']} rows to {result['out_paths']}")
+
+
 @export_app.command("feedback-pairs")
 def export_feedback_pairs_cmd(
     dataset: Annotated[str, typer.Option("--dataset", "-d", help="Dataset name to export.")],

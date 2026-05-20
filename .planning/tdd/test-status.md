@@ -3340,3 +3340,40 @@ Test patterns of note:
   - `export-session` reads from the session JSON's `pending_writes` list and emits JSONL (one JSON object per line).
   - Typer CliRunner in this project does NOT support `mix_stderr=False` (typer 0.21.2); use plain `CliRunner()`.
 - Status: red — handed off to tdd-coder
+
+## Q4-T1
+- Test files:
+  - `tests/unit/export/test_export_sdft.py` (36 tests — all RED via ImportError)
+  - `tests/unit/export/test_export_sdft_template_resolution.py` (8 tests — all RED via ImportError)
+  - `tests/unit/export/test_chat_export_unchanged.py` (8 tests — all GREEN as characterisation baseline)
+  - `tests/unit/export/test_sdft_no_inference.py` (10 tests — 9 GREEN safety net, 1 RED confirming export_sdft absent)
+  - `tests/fixtures/export/export_chat_baseline.jsonl` (generated baseline committed)
+  - `tests/fixtures/export/export_feedback_pairs_baseline.jsonl` (generated baseline committed)
+- Run command: `uv run pytest tests/unit/export/ --tb=short 2>&1 | tail -30`
+- Edge case checklist:
+  - [x] happy — basic JSONL export, basic parquet export, single/multi row
+  - [x] boundaries — empty dataset (zero rows), 20-row dataset for split tests, empty include_sources list
+  - [x] type / format — wrong dataset name raises ValueError/KeyError, custom Jinja string accepted, unknown template name raises
+  - [x] state — deterministic held_out split (same content_hash bucket every run), two consecutive runs produce identical splits, no split when held_out_fraction=0
+  - [ ] N/A — concurrency (single-writer JSONL/parquet, no concurrent write surface)
+  - [x] failure paths — unknown dataset raises, unknown template name raises KeyError/ValueError
+  - [ ] N/A — locale / time (no date arithmetic in export path; timestamp normalisation in golden tests covers SQLite vs ISO-8601 formats)
+  - [x] production-realistic data — fixture matches real sdft_demonstrations DDL; messages are dicts with role/content matching capture.py schema
+  - [x] regression hooks — golden-file tests pin export_chat and export_feedback_pairs schemas; test_export_sdft_not_yet_importable confirms RED state
+- Red output (tail):
+  ```
+  ERROR tests/unit/export/test_export_sdft.py
+  ERROR tests/unit/export/test_export_sdft_template_resolution.py
+  ImportError: cannot import name 'export_sdft' from 'corpus_forge.export'
+  FAILED tests/unit/export/test_sdft_no_inference.py::TestExportSdftImportFails::test_export_sdft_not_yet_importable
+  AssertionError: export_sdft is not yet defined in corpus_forge.export
+  2 errors during collection, 1 failed, 17 passed
+  ```
+- Notes:
+  - Coder must add export_sdft() to corpus_forge/export.py adjacent to export_feedback_pairs (line 104).
+  - Return dict: {"row_count": int, "train_count": int, "held_out_count": int, "out_paths": list[str]}.
+  - Split files: .train.jsonl / .held_out.jsonl (or .parquet equivalents); single file uses out_path unchanged.
+  - Deterministic split: derive bucket from row content_hash mod (no random seed).
+  - Template resolution: reuse corpus_forge.templates.resolve_template + render, exactly as export_chat lines 49-66.
+  - Do NOT modify export_chat or export_feedback_pairs schemas.
+- Status: red — handed off to tdd-coder

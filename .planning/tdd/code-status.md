@@ -2,6 +2,21 @@
 
 Record of implementations written by tdd-coder.
 
+## Q4-G1
+- Source files:
+  - `corpus_forge/export.py` (added `export_sdft` function + `import hashlib`)
+  - `corpus_forge/cli.py` (added `export_sdft_cmd` / `corpus-forge export sdft` subcommand)
+  - `corpus_forge/backends/sqlite.py` (added `list_sdft_demonstrations` method)
+  - `corpus_forge/backends/postgres.py` (added `list_sdft_demonstrations` method)
+- Gates:
+  - format: ✓ (`ruff format --check` — 665 files already formatted after auto-fix of export.py)
+  - lint: ✓ (`ruff check corpus_forge/export.py corpus_forge/cli.py corpus_forge/backends/` — all checks passed; 2 pre-existing errors in test_cag_hybrid_selector.py are out of scope)
+  - typecheck: skipped (no new type contracts beyond existing Any/dict patterns; pyrefly baseline unchanged)
+  - test: ✓ (`pytest tests/unit/export -q` — 50 passed, 0 failed; `pytest tests/unit tests/integration -m 'not requires_docker' -q` — 5091 passed, 26 skipped, 0 failed)
+- Test files modified: NONE (verified — `git diff --name-only` shows only the 4 source files above)
+- Diff scope: within surface — yes
+- Status: green — handed off to tdd-qa
+
 ## Q3-G1
 - Source files:
   - `corpus_forge/cli_feedback.py` (new)
