@@ -624,6 +624,59 @@ class ScanConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class AnalyzeConfig(BaseModel):
+    """Phase O Wave 1 — EDA + corpus-cleaning analysis config.
+
+    Controls the ``corpus_forge.analyze`` subsystem: dedup detection,
+    topic clustering, language identification, and an optional LLM-based
+    quality judge.
+
+    **Cross-cutting: local-or-remote URL.**  ``judge_endpoint`` is the base
+    URL of any Ollama-compatible endpoint.  Default
+    ``http://localhost:11434`` (local Ollama).  Swap to a remote URL (e.g.
+    ``https://api.openai.com/v1``) to point at a hosted endpoint without
+    changing code.  Same principle as :attr:`ClassifierConfig.llm_url`
+    (line 492).
+
+    Fields:
+
+    - ``enabled``: master on/off switch.  Default ``False`` so existing
+      configs without an ``[analyze]`` block opt in transparently.
+    - ``dedup_threshold``: cosine-similarity floor for near-duplicate
+      detection (``[0.0, 1.0]``).
+    - ``topic_min_cluster_size``: HDBSCAN minimum cluster size (``>= 2``).
+    - ``language_detector``: ``"langdetect"`` (pure-Python, default) or
+      ``"fasttext"`` (faster binary model).
+    - ``judge_endpoint``: base URL of the Ollama-compatible quality-judge
+      endpoint.  Local-or-remote.
+    - ``judge_model``: Ollama / OpenAI model tag for the quality judge.
+    - ``judge_api_key_env``: optional env-var name holding a bearer token.
+      Empty string (default) omits the ``Authorization`` header — preserves
+      the open-local-Ollama shape.
+    - ``judge_timeout_s``: per-request HTTP budget (``> 0``).
+    """
+
+    enabled: bool = False
+    dedup_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    topic_min_cluster_size: int = Field(default=10, ge=2)
+    language_detector: Literal["fasttext", "langdetect"] = "langdetect"
+    # ── Judge / LLM fields ────────────────────────────────────────────
+    # Pydantic v2 quirk: ``AnyHttpUrl`` defaults must be wrapped in the
+    # class (not bare strings). Mirrors the proven pattern from
+    # :attr:`ClassifierConfig.llm_url`.
+    judge_endpoint: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
+    judge_model: str = "qwen2.5:7b-instruct"
+    judge_api_key_env: str = ""
+    judge_timeout_s: float = Field(default=60.0, gt=0)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_judge_api_key_env_name(self) -> "AnalyzeConfig":
+        _validate_env_var_name("judge_api_key_env", self.judge_api_key_env, allow_empty=True)
+        return self
+
+
 class Config(BaseModel):
     """Main configuration for corpus-forge."""
 
@@ -659,6 +712,12 @@ class Config(BaseModel):
     # follow_symlinks, workers). Defaulted so existing configs (which omit
     # the block) keep validating.
     scan: ScanConfig = Field(default_factory=ScanConfig)
+    # Phase O Wave 1 — EDA + corpus-cleaning analysis config. Defaults to
+    # ``enabled=False`` so existing configs without an ``[analyze]`` block
+    # continue to validate. Heavy deps (sklearn, hdbscan, etc.) are lazy-
+    # imported inside ``corpus_forge.analyze`` function bodies and are
+    # never pulled in by config parsing alone.
+    analyze: AnalyzeConfig = Field(default_factory=AnalyzeConfig)
 
     model_config = ConfigDict(
         str_strip_whitespace=True,

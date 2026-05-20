@@ -170,6 +170,23 @@ whisper = [
 fast-tier = [
   "model2vec>=0.5",
 ]
+# Phase O — EDA + corpus-cleaning ML stack.  All deps lazy-imported
+# inside corpus_forge/analyze/ function bodies so corpus-forge --help
+# cold-start budget is unaffected.
+#
+# License posture: scikit-learn (BSD-3-Clause), hdbscan (BSD-3-Clause),
+# umap-learn (BSD-3-Clause), bertopic (MIT), datasketch (MIT),
+# fasttext-langdetect (MIT), langdetect (Apache-2.0).  All permissive;
+# does NOT widen the AGPL surface introduced by [multi-format].
+analyze = [
+  "scikit-learn>=1.4",
+  "hdbscan>=0.8",
+  "umap-learn>=0.5",
+  "bertopic>=0.16",
+  "datasketch>=1.6",
+  "fasttext-langdetect>=1.0",
+  "langdetect>=1.0",
+]
 
 [project.scripts]
 corpus-forge = "corpus_forge.cli:app"

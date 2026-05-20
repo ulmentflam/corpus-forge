@@ -114,8 +114,7 @@ def test_scikit_learn_in_analyze():
     extras = _get_extras(pp)
     deps = extras["analyze"]  # KeyError → acceptable RED
     assert any(_dep_contains_name(d, "scikit-learn") for d in deps), (
-        "scikit-learn not found in [analyze] extra. "
-        f"Current deps: {deps}"
+        f"scikit-learn not found in [analyze] extra. Current deps: {deps}"
     )
 
 
@@ -176,7 +175,10 @@ def test_langdetect_in_analyze():
     pp = _load_pyproject()
     extras = _get_extras(pp)
     deps = extras["analyze"]
-    assert any(_dep_contains_name(d, "langdetect") and not _dep_contains_name(d, "fasttext-langdetect") for d in deps), (
+    assert any(
+        _dep_contains_name(d, "langdetect") and not _dep_contains_name(d, "fasttext-langdetect")
+        for d in deps
+    ), (
         "langdetect (standalone fallback) not found in [analyze] extra. "
         "fasttext-langdetect alone is insufficient — the fallback package must also be present. "
         f"Current deps: {deps}"
@@ -208,13 +210,10 @@ def test_all_required_packages_present_in_analyze():
     extras = _get_extras(pp)
     deps = extras["analyze"]
     missing = [
-        pkg
-        for pkg in _REQUIRED_PACKAGES
-        if not any(_dep_contains_name(d, pkg) for d in deps)
+        pkg for pkg in _REQUIRED_PACKAGES if not any(_dep_contains_name(d, pkg) for d in deps)
     ]
     assert not missing, (
-        f"The following packages are missing from [analyze] extra: {missing}. "
-        f"Current deps: {deps}"
+        f"The following packages are missing from [analyze] extra: {missing}. Current deps: {deps}"
     )
 
 
@@ -227,9 +226,7 @@ def test_analyze_packages_not_in_core_dependencies():
     pp = _load_pyproject()
     core_deps = _get_core_deps(pp)
     in_core = [
-        pkg
-        for pkg in _MUST_NOT_BE_CORE
-        if any(_dep_contains_name(d, pkg) for d in core_deps)
+        pkg for pkg in _MUST_NOT_BE_CORE if any(_dep_contains_name(d, pkg) for d in core_deps)
     ]
     assert not in_core, (
         f"The following packages MUST NOT be in core [project.dependencies]: {in_core}. "

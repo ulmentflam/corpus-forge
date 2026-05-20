@@ -895,5 +895,81 @@ Implementation notes:
 
 ---
 
+## O1-G4
+- Source files:
+  - `corpus_forge/analyze/__init__.py`
+  - `corpus_forge/analyze/stats.py`
+- Gates:
+  - format: ✓ (`ruff format` — 2 files unchanged after auto-format)
+  - lint: ✓ (`ruff check corpus_forge/analyze/` — All checks passed)
+  - typecheck: ✓ (`pyrefly check corpus_forge/analyze/` — 0 errors, 1 warning not shown)
+  - test: ✓ (`pytest tests/unit/test_analyze_stats.py` — 27 passed, 0 failed)
+- numpy smoke: `python -c "import sys; import corpus_forge.analyze.stats; assert 'numpy' not in sys.modules"` exits 0
+- p95 algorithm: `statistics.quantiles(sorted_data, n=20, method="inclusive")[18]` for n>=2; identical value for n==1. This is linear interpolation at the 95th quantile boundary. For [10,20,30,40,50] it yields 48, satisfying the test's `40 <= p95 <= 50` constraint. A `max(p95, p50)` guard ensures the p50<=p95 invariant is never violated by rounding edge cases.
+- Test files modified: NONE (verified — no touch to `tests/unit/test_analyze_stats.py`)
+- Diff scope: within surface — yes (`corpus_forge/analyze/__init__.py` and `corpus_forge/analyze/stats.py` only)
+- Status: green — handed off to tdd-qa
+
+---
+
+## O1-G3
+- Source files:
+  - `corpus_forge/alembic/versions/0012_analyze_signals.py`
+- Gates:
+  - format: ✓ (`ruff format` clean — 1 file reformatted, then clean on recheck)
+  - lint: ✓ (`ruff check` — All checks passed)
+  - typecheck: n/a (migration file; no new type-annotated production code beyond existing pattern)
+  - test: PARTIAL — 22/24 SQLite+module tests pass; 2 FK cascade tests fail (see escalation below)
+- Postgres tests: skipped (Docker not available in this environment)
+- Regression: 129 migration tests passed, 0 regressions in existing migration suite
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (`corpus_forge/alembic/versions/0012_analyze_signals.py` only)
+- ESCALATION — tester bug in O1-T4:
+  - `test_chunk_quality_signals_fk_cascade_on_delete` (line 491) and
+    `test_near_duplicate_clusters_fk_cascade_on_delete` (line 684) both execute:
+    `INSERT INTO chunks (id, content, content_hash, token_count) VALUES (...)` but
+    `chunks.content` does not exist. The actual column is `chunks.text` per `0001_core.py`.
+  - The migration file itself is correct and complete. This is a test authoring error
+    where the tester used the wrong column name.
+  - Fix required: change `content` to `text` in both INSERT statements in the test file.
+    Route to O1-T4 tester to correct and re-ship the RED suite.
+- Status: escalated — awaiting O1-T4 tester fix before O1-G3 can be marked green
+
+---
+
 # Phase E P1 — Wave 3 dispatch
 
+
+---
+
+## O1-G2
+- Source files:
+  - `corpus_forge/config.py`
+  - `config.example.toml`
+- Gates:
+  - format: ✓ (`ruff format corpus_forge/config.py config.example.toml` — 1 file unchanged, TOML not checked by ruff)
+  - lint: ✓ (`ruff check corpus_forge/config.py` — All checks passed)
+  - typecheck: ✓ (`pyrefly check corpus_forge/config.py` — 0 errors, 2 suppressed via existing `# pyrefly: ignore` comments)
+  - test: ✓ (`pytest tests/unit/test_analyze_config.py` — 46 passed, 0 failed)
+- Full unit suite: 4013 passed, 4 failed (pre-existing: O1-G3 migration + O1-G1 pyproject extras, not introduced by this task)
+- Sanity: `python -c "from corpus_forge.config import Config, AnalyzeConfig; ..."` prints `AnalyzeConfig`
+- AnyHttpUrl pydantic-v2 note: defaults must be wrapped as `AnyHttpUrl("http://localhost:11434")` (not bare strings); same pattern as `ClassifierConfig.llm_url`. String inputs to the field (e.g. from TOML) are coerced correctly by pydantic.
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (`corpus_forge/config.py` and `config.example.toml` only)
+- Status: green — handed off to tdd-qa
+
+## O1-G1
+- Source files:
+  - `pyproject.toml`
+  - `README.md` (required by pre-existing `test_pyproject_extras_are_each_mentioned_in_readme` gate — adding an extra without a README row fails that test)
+- Gates:
+  - format: ✓ (pyproject.toml is TOML, not checked by ruff format; zero Python files touched)
+  - lint: ✓ (zero lint errors introduced; pre-existing 10 errors in Tester/parallel-task files unchanged)
+  - typecheck: n/a (no Python source changes)
+  - test: ✓ (`pytest tests/unit/test_pyproject_extras_analyze.py` — 12 passed, 0 failed)
+- Full unit suite: pre-existing 3 failures (O1-G3 migration file causes test_sqlite_backend + test_docs_consistency alembic failures — confirmed pre-existed before this change); zero new failures introduced
+- PyPI verification: `fasttext-langdetect` resolves at 1.0.5 (canonical name confirmed, no drift to `ft-langdetect`). `uv pip install --dry-run -e '.[analyze]'` resolved all 7 packages: bertopic==0.17.4, datasketch==1.10.0, fasttext-langdetect==1.0.5, hdbscan==0.8.43, langdetect==1.0.9, umap-learn==0.5.12, scikit-learn (already installed).
+- Test files modified: NONE (verified; `test_pyproject_extras_analyze.py` was not touched)
+- `_REQUIRED_PACKAGES` rename: not required — `fasttext-langdetect` is the canonical PyPI name (no drift)
+- Diff scope: `pyproject.toml` (primary surface) + `README.md` (forced by pre-existing docs gate)
+- Status: green — O1-G1: pyproject.toml — GREEN (12/12 passing)

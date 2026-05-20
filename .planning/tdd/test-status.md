@@ -2647,3 +2647,150 @@ Test patterns of note:
 
 # Phase E P1 — Wave 3 dispatch
 
+
+---
+
+## O1-T3
+- Test files: `tests/unit/test_pyproject_extras_analyze.py`
+- Run command: `uv run pytest tests/unit/test_pyproject_extras_analyze.py -x`
+- Edge case checklist:
+  - [x] happy path — `analyze` key exists and contains all seven packages
+  - [x] boundaries — exactly 7 entries (drift gate: no more, no less)
+  - [x] type/format — case-insensitive + hyphen/underscore normalisation in dep-name matching
+  - [x] state — negative invariant: none of the seven packages appear in core `[project.dependencies]`
+  - [ ] N/A — concurrency (pure TOML parse, no concurrency surface)
+  - [ ] N/A — failure paths (pyproject.toml is a static repo file; missing file would be a dev environment breakage, not a test dimension)
+  - [ ] N/A — locale/time (no date/locale surface)
+  - [x] production-realistic data — reads the actual repo-root `pyproject.toml`, same file CI uses
+  - [ ] N/A — regression hooks (no prior bug referenced; this is a new feature gate)
+  - [x] per-package tests — one dedicated test per required package for clear failure attribution
+  - [x] langdetect disambiguation — `test_langdetect_in_analyze` excludes `fasttext-langdetect` matches so the standalone `langdetect` fallback entry is proven independently
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_analyze_extra_is_a_list
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_scikit_learn_in_analyze
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_fasttext_langdetect_in_analyze
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_analyze_extra_exists
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_umap_learn_in_analyze
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_all_required_packages_present_in_analyze
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_datasketch_in_analyze
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_analyze_extra_has_exactly_seven_entries
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_bertopic_in_analyze
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_langdetect_in_analyze
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_hdbscan_in_analyze
+  ========================= 11 failed, 1 passed in 0.17s =========================
+  ```
+  Root failure: `KeyError: 'analyze'` — key absent from `[project.optional-dependencies]` until O1-G1 GREEN.
+  The 1 passing test (`test_analyze_packages_not_in_core_dependencies`) is a negative-invariant gate; it is
+  correct that it passes in RED state since none of the ML packages appear in core deps.
+- Notes: Package spec list settled as: `scikit-learn`, `hdbscan`, `umap-learn`, `bertopic`, `datasketch`,
+  `fasttext-langdetect`, `langdetect`. Phase doc uses `fasttext-langdetect` (not `ft-langdetect`); the test
+  matches that name. The coder (O1-G1) must verify the PyPI name via `pip index versions fasttext-langdetect`
+  during GREEN and update the test if the canonical name differs.
+- Status: red — handed off to tdd-coder (O1-G1)
+
+---
+
+## O1-T2
+- Test files: `tests/unit/test_analyze_stats.py`
+- Run command: `uv run pytest tests/unit/test_analyze_stats.py -x`
+- Edge case checklist:
+  - [x] happy — single chunk, 5-element fixture ([10,20,30,40,50]), basic multi-chunk invariants
+  - [x] boundaries — empty input (all-zero dict, no exception), single element (p50==p95==min==max), bins=1 through bins=50 via hypothesis
+  - [x] type / format — token_count=None fallback, missing token_count key entirely, empty text + None count (expect token_total==0)
+  - [x] state — determinism test (two calls with same input return identical dict, no PRNG)
+  - [ ] N/A — concurrency (pure function, no shared state)
+  - [ ] N/A — failure paths (pure computation, no I/O, no network)
+  - [ ] N/A — locale / time (integer arithmetic only)
+  - [x] production-realistic data — hypothesis generates up to 200 chunks with token_counts up to 1_000_000; bins varied 1-50
+  - [ ] N/A — regression hooks (no prior bug reference; this is a new module)
+  - [x] property-based (hypothesis): p50 <= p95 always; mean in [min, max] always; token_total == sum(token_counts) always; distribution counts sum to n always; len(edges)==bins+1 and len(counts)==bins always
+- Field-shape ambiguity notes:
+  - Phase doc § O1-T2 acceptance (line 59) uses key `"edges"` not `"bin_edges"`. Test asserts `"edges"` and `"counts"` as the canonical keys.
+  - p95 for [10,20,30,40,50] tested as range [40,50] inclusive to accommodate both linear-interpolation (=48) and nearest-rank (=50) pure-stdlib implementations. Phase doc says "linear interpolation per numpy convention" but stats.py is pure-stdlib so the coder chooses the approach; the test avoids over-specification.
+  - `bin_strategy="log10"` tested for structural invariants only (no specific edge values asserted), consistent with the phase doc mentioning the parameter without specifying exact bucket boundaries.
+  - Fallback for None/missing token_count: test verifies no exception and token_total > 0 for non-empty text; does not assert the specific chars-per-token constant. The coder is free to choose any positive divisor.
+- Red output (tail):
+  ```
+  tests/unit/test_analyze_stats.py F
+
+  =================================== FAILURES ===================================
+  _______ test_compute_length_distribution_edges_monotonically_increasing ________
+
+      def test_compute_length_distribution_edges_monotonically_increasing() -> None:
+          """Bin edges must be strictly increasing."""
+  >       from corpus_forge.analyze.stats import compute_length_distribution
+  E       ModuleNotFoundError: No module named 'corpus_forge.analyze'
+
+  tests/unit/test_analyze_stats.py:309: ModuleNotFoundError
+  =========================== short test summary info ===========================
+  FAILED tests/unit/test_analyze_stats.py::test_compute_length_distribution_edges_monotonically_increasing
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+  ============================== 1 failed in 0.19s ==============================
+  ```
+  (27 tests collected; pytest -x stops at the first; all would fail with the same ModuleNotFoundError)
+- Status: red — handed off to tdd-coder (O1-G4)
+
+## O1-T1
+- Test files: `tests/unit/test_analyze_config.py`
+- Run command: `uv run pytest tests/unit/test_analyze_config.py -x`
+- Edge case checklist:
+  - [x] happy path — defaults match spec; Config.analyze attribute exists; TOML round-trip with all fields
+  - [x] boundaries — dedup_threshold at 0.0 and 1.0 (ge/le); topic_min_cluster_size at 2 (ge=2); judge_timeout_s at boundary (gt=0 means 0.0 rejected)
+  - [x] type/format — language_detector Literal rejects "spacy", "", "nltk"; judge_endpoint rejects ftp:// and bare string; judge_api_key_env rejects spaces, hyphens, digit-prefix
+  - [x] state — omitting [analyze] block entirely yields default AnalyzeConfig (backwards-compat invariant); empty [analyze] block also yields defaults
+  - [ ] N/A — concurrency (pure pydantic model construction, no shared state)
+  - [ ] N/A — failure paths / network (config is a local pydantic model, no I/O in AnalyzeConfig itself)
+  - [ ] N/A — locale/time (no time-sensitive fields in AnalyzeConfig)
+  - [x] production-realistic data — TOML round-trip uses both local (localhost:11434) and remote (api.openai.com) judge_endpoint examples from config.example.toml template
+  - [ ] N/A — regression hooks (no prior bug referenced for this new model)
+- Red output (tail):
+  ```
+  E       ImportError: cannot import name 'AnalyzeConfig' from 'corpus_forge.config' (/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Workspace/playground/corpus-forge/corpus_forge/config.py)
+  
+  tests/unit/test_analyze_config.py:143: ImportError
+  =============================== warnings summary ===============================
+  tests/unit/test_analyze_config.py::TestAnalyzeConfigValidation::test_judge_api_key_env_spaces_rejected
+    corpus_forge/config.py:36: UserWarning: Field name "schema" in "BackendConfig" shadows an attribute in parent "BaseModel"
+      class BackendConfig(BaseModel):
+  
+  -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+  ========================= short test summary info ============================
+  FAILED tests/unit/test_analyze_config.py::TestAnalyzeConfigValidation::test_judge_api_key_env_spaces_rejected
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+  ========================= 1 failed, 1 warning in 0.19s =========================
+  ```
+  Full run: 46 failed, 0 passed. Every failure is `ImportError: cannot import name 'AnalyzeConfig' from 'corpus_forge.config'`.
+- Notes: Phase doc specifies `judge_endpoint: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")` (not `str | None = None` as the task description originally suggested). Phase doc wins. `judge_api_key_env` is `str = ""` with allow-empty POSIX validation (mirrors `ClassifierConfig.llm_api_key_env`). `judge_timeout_s` default is `60.0` (not `30.0`). `topic_min_cluster_size` default is `10` with `ge=2`.
+
+## O1-T4
+- Test files: `tests/integration/test_migrate_0012_analyze.py`
+- Run command: `uv run pytest tests/integration/test_migrate_0012_analyze.py -v`
+- Edge case checklist:
+  - [x] happy — upgrade produces both tables with correct column set, indexes, and FK wiring (SQLite + Postgres)
+  - [x] boundaries — per-column NOT NULL / nullable assertions; REAL vs bigint / INTEGER type assertions per dialect
+  - [x] type/format — Postgres: bigint / text / real / timestamp with time zone; SQLite: INTEGER / TEXT / REAL / datetime('now') convention
+  - [x] state — fresh DB per test via tmp_path (SQLite) and _reset_pg_schema (Postgres); cross-test isolation guaranteed
+  - [x] N/A — concurrency (pure DDL migration, sequential, no shared mutable state)
+  - [x] failure paths — all alembic-based tests fail with CommandError (revision not found); module-import tests fail with ModuleNotFoundError
+  - [x] N/A — locale/time (computed_at DEFAULT is database-side; no locale-sensitive assertions needed)
+  - [x] production-realistic — column shapes drawn from the O1 phase-doc DDL spec verbatim
+  - [x] regression hooks — down_revision assertion pins the chain to 0011_image_embeddings; forward-only assertion inspects AST to confirm downgrade() body is a single `pass`
+  - [x] FK/cascade — SQLite: PRAGMA foreign_keys=ON + insert chunk + delete chunk → cascade verified. Postgres: information_schema FK query asserts delete_rule=CASCADE for both tables.
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_migrate_0012_analyze.py::TestMigrationModuleAttributes::test_revision_value
+  FAILED tests/integration/test_migrate_0012_analyze.py::TestMigrationModuleAttributes::test_down_revision_value
+  FAILED tests/integration/test_migrate_0012_analyze.py::TestMigrationModuleAttributes::test_downgrade_is_forward_only_pass
+  FAILED tests/integration/test_migrate_0012_analyze.py::TestSQLiteAnalyzeSignals::test_chunk_quality_signals_table_exists
+  FAILED tests/integration/test_migrate_0012_analyze.py::TestSQLiteAnalyzeSignals::test_chunk_quality_signals_fk_cascade_on_delete
+  [... 40 more, all same CommandError or ModuleNotFoundError ...]
+
+  alembic.util.exc.CommandError: Can't locate revision identified by '0012_analyze_signals'
+  ModuleNotFoundError: No module named 'corpus_forge.alembic.versions.0012_analyze_signals'
+
+  45 failed, 40 warnings in 4.68s
+  ```
+- Notes: signal_value and similarity are REAL (nullable per phase-doc column list; the phase doc says "REAL" not "REAL NOT NULL" — assertion accepts nullable). Both FK tests exercise cascade behavior with PRAGMA foreign_keys=ON (SQLite). The chunks INSERT assumes columns (id, content, content_hash, token_count) — if the chunks schema differs, the FK cascade tests will surface that as a clear error for the Coder to fix.
+- Status: red — handed off to tdd-coder
+- Status: red — handed off to tdd-coder (O1-G2)

@@ -113,6 +113,20 @@ Revision `0004_sync` added the cross-host sync surface:
   per-embedder `image_embeddings_<name>` tables themselves are created at
   runtime (same pattern as the text `embeddings_<name>` family).
 
+## Phase O Wave 1 — EDA / quality signals (revision `0012`)
+
+- `0012_analyze_signals` adds two append-friendly tables that back the new
+  `corpus-forge analyze` surface:
+  - `chunk_quality_signals(chunk_id, signal_name, signal_value, source,
+    computed_at)` — per-chunk learned-quality readouts, joined by the curation
+    selector when the table is populated (otherwise the selector falls back to
+    its existing 4-weight scheme).
+  - `near_duplicate_clusters(cluster_id, chunk_id, similarity, method,
+    computed_at)` — MinHash LSH groupings produced by `corpus-forge analyze
+    duplicates`.
+- Both `chunk_id` FKs cascade on delete so removing a chunk reaps its analyze
+  rows automatically. Forward-only downgrade per project convention.
+
 ## Indexing strategy
 
 | Query path | Index |
@@ -175,6 +189,7 @@ Apply with `corpus-forge migrate` (idempotent). Each revision file lives at
 | `0009_feedback_host_default` | SQLite-only: rebuild `feedback` with `host TEXT NOT NULL DEFAULT 'localhost'` so bare inserts succeed. |
 | `0010_document_label_confidence` | Adds `document_labels.confidence REAL` (Phase E classifier output). |
 | `0011_image_embeddings` | Adds `embedders.image BOOLEAN` column + reserves the dynamic `image_embeddings_<name>` family namespace (Phase G P1). |
+| `0012_analyze_signals` | Adds `chunk_quality_signals` (per-chunk learned-quality readouts) + `near_duplicate_clusters` (MinHash LSH groupings) for Phase O EDA / cleaning. Both tables FK to `chunks(id)` with `ON DELETE CASCADE`. |
 
 ## Design rationale
 
