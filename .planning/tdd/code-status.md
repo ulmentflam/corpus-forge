@@ -2,6 +2,24 @@
 
 Record of implementations written by tdd-coder.
 
+## P4-G1
+- Source files: `corpus_forge/eval/judge_mock.py` (new), `corpus_forge/eval/judge.py` (new), `corpus_forge/eval/rag.py` (new), `corpus_forge/eval/__init__.py` (re-exports added), `corpus_forge/cli.py` (eval rag + eval cag subcommands added)
+- Gates:
+  - format: ✓ (`ruff format --check corpus_forge/eval corpus_forge/cli.py` — 9 files already formatted)
+  - lint: ✓ (`ruff check corpus_forge/eval corpus_forge/cli.py` — all checks passed)
+  - typecheck: skipped (pyrefly baseline; no new type contracts introduced in new files)
+  - test: ✓ (`pytest tests/integration/test_eval_rag.py tests/integration/test_eval_cag.py -q` → 47 passed, 2 skipped; full suite 5518 passed, 5 pre-existing smoke failures confirmed pre-existing via git stash)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (`corpus_forge/eval/` new files + `corpus_forge/cli.py` eval subcommands)
+- Status: green — handed off to tdd-qa
+
+## P4-G2
+- Source files: `corpus_forge/eval/cag.py` (new) — P4-G1 and P4-G2 combined into single commit since they share cli.py surface
+- Gates: same as P4-G1 above
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes
+- Status: green — handed off to tdd-qa
+
 ## P3-G1
 - Source files: `corpus_forge/cag/cache.py` (new), `corpus_forge/cag/__init__.py` (updated re-exports), `corpus_forge/mcp/server.py` (minimal hook in `_dispatch_commit_curation`)
 - Gates:

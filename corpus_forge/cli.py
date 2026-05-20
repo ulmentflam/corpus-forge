@@ -1444,6 +1444,165 @@ def eval_corpus_quality(
     _do_eval(dataset, k, metric, fusion, alpha, rerank, json_out)
 
 
+# ── eval rag subcommand (Phase P Wave 4) ─────────────────────────────────
+
+
+@eval_app.command("rag")
+def eval_rag(
+    queries: Path = typer.Option(
+        ...,
+        "--queries",
+        help="Path to a JSONL file with query/answer/contexts rows.",
+    ),
+    judge_endpoint: str = typer.Option(
+        None,
+        "--judge-endpoint",
+        help=(
+            "LLM judge endpoint URL, or 'mock' for deterministic offline scoring. "
+            "Defaults to CF_JUDGE_ENDPOINT env var, then 'mock'."
+        ),
+    ),
+    dataset: str = typer.Option(
+        "default",
+        "--dataset",
+        help="Dataset name (informational; included in the report).",
+    ),
+    k: int = typer.Option(5, "--k", help="Primary k cutoff for retrieval metrics."),
+    json_flag: bool = typer.Option(False, "--json", help="Print the result JSON to stdout."),
+    report_dir: Path = typer.Option(
+        None,
+        "--report-dir",
+        help="Directory for report output. Defaults to ~/.cache/corpus-forge/reports/<ts>/.",
+    ),
+) -> None:
+    """Evaluate RAG quality using an LLM judge.
+
+    Reads a JSONL queries fixture (query, answer, relevant_chunk_ids, contexts)
+    and scores each entry for nDCG@1/5/10, MRR, faithfulness, answer_relevance,
+    context_precision, and context_recall.  Writes Markdown + JSON reports and
+    persists raw judge prompts for auditability.
+    """
+    import os as _os
+
+    from corpus_forge.eval.judge import JudgeUnavailable
+    from corpus_forge.eval.rag import run_rag_eval
+
+    # Resolve judge endpoint: flag > env var > "mock".
+    if judge_endpoint is None:
+        judge_endpoint = _os.environ.get("CF_JUDGE_ENDPOINT", "mock")
+
+    # Validate queries file.
+    if not queries.exists():
+        ui_error(f"Queries file not found: {queries}")
+        raise typer.Exit(code=2)
+
+    # Load queries from JSONL.
+    import json as _json
+
+    rows = []
+    with queries.open(encoding="utf-8") as fh:
+        for _line in fh:
+            stripped = _line.strip()
+            if stripped:
+                rows.append(_json.loads(stripped))
+
+    try:
+        result = run_rag_eval(
+            dataset,
+            rows,
+            judge_endpoint=judge_endpoint,
+            k=k,
+            report_dir=report_dir,
+        )
+    except JudgeUnavailable as exc:
+        ui_error(f"Judge endpoint unavailable: {exc}")
+        raise typer.Exit(code=1) from None
+
+    if json_flag:
+        print(_json.dumps(result, indent=2, sort_keys=True))
+
+
+# ── eval cag subcommand (Phase P Wave 4) ─────────────────────────────────
+
+
+@eval_app.command("cag")
+def eval_cag(
+    queries: Path = typer.Option(
+        ...,
+        "--queries",
+        help="Path to a JSONL file with query/answer/contexts rows.",
+    ),
+    judge_endpoint: str = typer.Option(
+        None,
+        "--judge-endpoint",
+        help=(
+            "LLM judge endpoint URL, or 'mock' for deterministic offline scoring. "
+            "Defaults to CF_JUDGE_ENDPOINT env var, then 'mock'."
+        ),
+    ),
+    dataset: str = typer.Option(
+        "default",
+        "--dataset",
+        help="Dataset name; used as the cache subdirectory.",
+    ),
+    cache_root: Path = typer.Option(
+        None,
+        "--cache-root",
+        help="CAG cache root directory. Defaults to no-cache (all misses).",
+    ),
+    json_flag: bool = typer.Option(False, "--json", help="Print the result JSON to stdout."),
+    report_dir: Path = typer.Option(
+        None,
+        "--report-dir",
+        help="Directory for report output. Defaults to ~/.cache/corpus-forge/reports/<ts>/.",
+    ),
+) -> None:
+    """Evaluate CAG vs RAG quality using an LLM judge.
+
+    Routes each query through the CAG selector (cache hit vs RAG miss) and
+    scores each branch for quality.  Reports cache_hit_count, rag_count,
+    cache_quality_score, rag_quality_score, and cache_vs_rag_delta.
+    """
+    import os as _os
+
+    from corpus_forge.eval.cag import run_cag_eval
+    from corpus_forge.eval.judge import JudgeUnavailable
+
+    # Resolve judge endpoint: flag > env var > "mock".
+    if judge_endpoint is None:
+        judge_endpoint = _os.environ.get("CF_JUDGE_ENDPOINT", "mock")
+
+    # Validate queries file.
+    if not queries.exists():
+        ui_error(f"Queries file not found: {queries}")
+        raise typer.Exit(code=2)
+
+    # Load queries from JSONL.
+    import json as _json
+
+    rows = []
+    with queries.open(encoding="utf-8") as fh:
+        for _line in fh:
+            stripped = _line.strip()
+            if stripped:
+                rows.append(_json.loads(stripped))
+
+    try:
+        result = run_cag_eval(
+            dataset,
+            rows,
+            judge_endpoint=judge_endpoint,
+            root=cache_root,
+            report_dir=report_dir,
+        )
+    except JudgeUnavailable as exc:
+        ui_error(f"Judge endpoint unavailable: {exc}")
+        raise typer.Exit(code=1) from None
+
+    if json_flag:
+        print(_json.dumps(result, indent=2, sort_keys=True))
+
+
 # ── mcp subcommand group (Phase R5) ───────────────────────────────────────
 
 

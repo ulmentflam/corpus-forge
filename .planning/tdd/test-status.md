@@ -3166,3 +3166,29 @@ Test patterns of note:
   =============================== 1 error in 0.16s ===============================
   ```
 - Status: red — handed off to tdd-coder
+
+## P4-T1+T2 (combined: eval rag + eval cag)
+- Test files:
+  - `tests/integration/test_eval_rag.py` (30 tests — 29 RED, 4 pass correctly on boundary tests, 2 skip)
+  - `tests/integration/test_eval_cag.py` (19 tests — 14 RED, 4 pass correctly on boundary tests, 1 skip)
+- Run command: `uv run pytest tests/integration/test_eval_rag.py tests/integration/test_eval_cag.py -x`
+- Edge case checklist:
+  - [x] happy — mock judge exits 0, produces parseable JSON, all required keys present (both files)
+  - [x] boundaries — missing queries file exits nonzero and names the bad path; empty report dir created on first run
+  - [x] type/format — all judge scores asserted to be floats in [0.0, 1.0]; delta may be negative (float check, not bound check)
+  - [x] state — determinism: two consecutive mock runs produce byte-identical JSON (pins temperature=0 contract)
+  - [N/A] concurrency — CliRunner is sequential; CAG selector is pure-function, no shared mutable state
+  - [x] failure paths — missing --queries file exits non-zero; real Ollama endpoint unreachable → no unhandled traceback
+  - [N/A] locale/time — report timestamps are filesystem-derived; no locale assertions needed
+  - [x] production-realistic — fixture uses the real `corpus_forge.cag.selector._derive_key` SHA-256 formula to seed cache files; two JSONL queries cover both cache-hit and cache-miss branches
+  - [x] regression hooks — `test_eval_rag_mock_judge_deterministic` and `test_eval_cag_mock_judge_deterministic` pin the temperature=0 / hash-of-prompt semantic so score drift across CI runs is caught immediately; `test_judge_mock_score_returns_required_keys` pins the four required judge dimensions
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_eval_rag.py::test_eval_rag_raw_prompts_persisted
+  FAILED tests/integration/test_eval_cag.py::test_eval_cag_json_contains_cache_hit_count
+  FAILED tests/integration/test_eval_cag.py::test_eval_cag_mock_judge_produces_json
+  FAILED tests/integration/test_eval_rag.py::test_judge_mock_score_importable - ModuleNotFoundError: No module named 'corpus_forge.eval.judge_mock'
+  FAILED tests/integration/test_eval_cag.py::test_eval_cag_help_exits_zero - AssertionError: No such command 'cag'.
+  43 failed, 4 passed, 2 skipped in 0.87s
+  ```
+- Status: red — handed off to tdd-coder
