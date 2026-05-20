@@ -31,10 +31,17 @@ def debian_os_release(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Path to a Debian-style /etc/os-release fixture.
 
     macOS hosts have no /etc/os-release; the bootstrap script reads
-    ``CF_OS_RELEASE`` so tests can inject one.
+    ``CF_OS_RELEASE`` so tests can inject one. ``VERSION_CODENAME`` is
+    required — the PGDG sources line embeds the codename literally and
+    apt rejects it with 404 if the field is empty.
     """
     path = tmp_path_factory.mktemp("os-release") / "os-release"
-    path.write_text('ID="debian"\nVERSION_ID="12"\nPRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\n')
+    path.write_text(
+        'ID="debian"\n'
+        'VERSION_ID="12"\n'
+        'VERSION_CODENAME="bookworm"\n'
+        'PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\n'
+    )
     return path
 
 
@@ -172,3 +179,52 @@ def test_unsupported_distro_exits_3_and_points_at_docs(tmp_path: Path) -> None:
     )
     combined = (result.stderr + result.stdout).lower()
     assert "debian" in combined or "ubuntu" in combined or "docs/deployment/postgres.md" in combined
+
+
+def test_pgdg_sources_line_uses_resolved_codename(debian_os_release: Path) -> None:
+    """The PGDG sources line must embed the codename literally, not as
+    `$(lsb_release -cs)`.
+
+    Earlier revisions wrote the line in single quotes assuming apt would
+    shell-expand it later (it does not). The result was a
+    ``404 Not Found`` on every ``apt update``. This test pins the fix:
+    the dry-run output must contain ``bookworm-pgdg`` (our fixture's
+    VERSION_CODENAME) and must NOT contain the unexpanded form.
+    """
+    env = {**REQUIRED_ENV, "CF_OS_RELEASE": str(debian_os_release)}
+    result = _run(["--dry-run"], env=env)
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    out = result.stdout
+    assert "bookworm-pgdg" in out, f"PGDG line missing resolved codename 'bookworm-pgdg':\n{out}"
+    assert "$(lsb_release" not in out, (
+        "PGDG line still contains the unexpanded $(lsb_release -cs) literal; "
+        "the resolved codename must be embedded in the sources.list line:\n"
+        f"{out}"
+    )
+
+
+def test_password_confirmation_helper_is_defined_and_wired() -> None:
+    """Static check that the password-confirm helper exists and is
+    actually called for the PASSWORD resolution step.
+
+    A real-TTY interaction test would require ``pty`` plumbing; this
+    static check catches accidental regressions where someone reverts
+    the helper or rewires the call site back to ``prompt_if_tty`` (which
+    asks only once).
+    """
+    script_text = SCRIPT.read_text(encoding="utf-8")
+    assert "prompt_password_with_confirm()" in script_text, (
+        "password confirmation helper not defined"
+    )
+    assert "Confirm password:" in script_text, (
+        "password confirmation helper does not prompt for confirmation"
+    )
+    assert "Passwords don't match" in script_text, (
+        "password confirmation helper does not surface a mismatch message"
+    )
+    # The PASSWORD resolution line must use the confirm helper, not the
+    # one-shot prompt_if_tty.
+    pw_call = 'PASSWORD="$(prompt_password_with_confirm "${PASSWORD}"'
+    assert pw_call in script_text, (
+        "PASSWORD resolution is not wired to prompt_password_with_confirm"
+    )

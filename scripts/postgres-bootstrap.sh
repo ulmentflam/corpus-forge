@@ -174,6 +174,38 @@ prompt_if_tty() {
   return 1
 }
 
+prompt_password_with_confirm() {
+  # $1 = current value (env/flag). When provided, used verbatim — no
+  # confirmation step (caller is responsible for their own value).
+  # When stdin is a TTY and the value is empty, prompts twice and
+  # loops until both entries match.
+  local current="$1"
+  if [[ -n "${current}" ]]; then
+    echo "${current}"
+    return 0
+  fi
+  if [[ ! -t 0 ]]; then
+    echo ""
+    return 1
+  fi
+  local pw1 pw2
+  while :; do
+    read -r -s -p "Role password: " pw1
+    echo "" >&2
+    if [[ -z "${pw1}" ]]; then
+      echo "Empty password not allowed." >&2
+      continue
+    fi
+    read -r -s -p "Confirm password: " pw2
+    echo "" >&2
+    if [[ "${pw1}" == "${pw2}" ]]; then
+      echo "${pw1}"
+      return 0
+    fi
+    echo "Passwords don't match — try again." >&2
+  done
+}
+
 require_value() {
   # $1 = current, $2 = env var name, $3 = flag name
   if [[ -z "${1}" ]]; then
@@ -218,7 +250,7 @@ require_value "${DB}" CF_PG_DB --db
 USR="$(prompt_if_tty "${USR}" "Role / user name" || true)"
 require_value "${USR}" CF_PG_USER --user
 
-PASSWORD="$(prompt_if_tty "${PASSWORD}" "Role password" "secret" || true)"
+PASSWORD="$(prompt_password_with_confirm "${PASSWORD}" || true)"
 require_value "${PASSWORD}" CF_PG_PASSWORD --password
 
 CIDR="$(prompt_if_tty "${CIDR}" "pg_hba CIDR (e.g. 192.168.1.0/24)" || true)"
@@ -244,11 +276,30 @@ fi
 
 PGDG_KEYRING="/usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg"
 PGDG_LIST="/etc/apt/sources.list.d/pgdg.list"
-# The PGDG-published line uses `$(lsb_release -cs)` as a literal — the
-# *system* shell expands it when apt reads the file. Keeping the string
-# in single quotes here is deliberate; do not change to double-quotes.
-# shellcheck disable=SC2016
-PGDG_LINE='deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main'
+# Resolve the Debian/Ubuntu codename at SCRIPT-write time and embed it
+# in the sources.list line literally. APT does NOT shell-expand entries
+# in /etc/apt/sources.list.d/*.list — the `$(lsb_release -cs)` form
+# would end up as a literal string in the file and apt rejects it with
+# a 404 like:
+#   Err: https://apt.postgresql.org/pub/repos/apt $(lsb_release Release
+#        404  Not Found
+# Earlier revisions of this script were wrong about that.
+#
+# Source: parse /etc/os-release's VERSION_CODENAME — always present on
+# Debian 12+, Ubuntu 18.04+. Avoids depending on `lsb_release` which is
+# installed by Step 1 *below* this code (chicken-and-egg).
+PGDG_CODENAME="$(
+  grep -E '^VERSION_CODENAME=' "${CF_OS_RELEASE}" \
+    | head -1 \
+    | cut -d= -f2 \
+    | tr -d '"' \
+    || true
+)"
+if [[ -z "${PGDG_CODENAME}" ]]; then
+  echo "${PROG_NAME}: cannot read VERSION_CODENAME from ${CF_OS_RELEASE}" >&2
+  exit 4
+fi
+PGDG_LINE="deb [signed-by=${PGDG_KEYRING}] https://apt.postgresql.org/pub/repos/apt ${PGDG_CODENAME}-pgdg main"
 
 log "Step 1/7: Ensure PGDG apt repo is configured."
 emit apt-get install -y curl ca-certificates gnupg lsb-release
@@ -289,7 +340,7 @@ SQL
 )
 if (( DRY_RUN == 1 )); then
   echo "  sudo -u postgres psql -v ON_ERROR_STOP=1 -v username=\"${USR}\" -v password=\"***\" <<'SQL'"
-  echo "${ROLE_SQL}" | sed 's/^/  /'
+  printf '  %s\n' "${ROLE_SQL//$'\n'/$'\n'  }"
   echo "  SQL"
 else
   sudo -u postgres psql -v ON_ERROR_STOP=1 \
