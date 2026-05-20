@@ -381,7 +381,19 @@ pythonpath    = ["."]
 testpaths     = ["tests"]
 addopts       = "-ra --strict-markers --strict-config --timeout=60 --timeout-method=thread"
 xfail_strict  = true
+filterwarnings = [
+  # Library-side runtime warnings we don't control:
+  # scipy.stats.ks_2samp falls back to asymp mode for small-N samples.
+  # Note: the message arg uses Python regex; the colon-after-action format
+  # is "action:message:category:module" so escape inner colons.
+  "ignore:.*ks_2samp.*Exact calculation unsuccessful.*:RuntimeWarning",
+  # SWIG-wrapped C extensions in pymupdf/etc miss __module__ on a few
+  # internal types under Python 3.13's stricter introspection.
+  "ignore:builtin type Swig.*has no __module__ attribute:DeprecationWarning",
+  "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
+]
 markers = [
+  "unit: pure-unit test (no Docker, no network, no live services)",
   "integration: requires Docker / live Postgres",
   "smoke: end-to-end happy path",
   "fuzz: hypothesis-driven property tests",
