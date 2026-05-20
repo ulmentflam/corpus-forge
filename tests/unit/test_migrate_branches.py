@@ -23,6 +23,9 @@ class TestBuildAlembicConfigPostgresBranch:
 
         fake_backend = MagicMock()
         fake_backend.dsn = dsn
+        # Pin ``.schema`` so the recorded ``version_table_schema`` is a
+        # real string, not a child MagicMock attribute access.
+        fake_backend.schema = "corpus"
         return _build_alembic_config(backend=fake_backend, dialect="postgres")
 
     def test_postgres_dsn_plain_gets_psycopg_driver_injected(self) -> None:

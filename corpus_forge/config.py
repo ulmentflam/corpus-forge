@@ -3,6 +3,7 @@
 import os
 import re
 import socket
+import warnings
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -10,8 +11,24 @@ try:
     import tomllib  # Python 3.11+
 except ImportError:
     import tomli as tomllib  # type: ignore[import-not-found]
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
-from pydantic.functional_validators import AfterValidator
+
+# Pydantic v2 emits a UserWarning when a field name shadows an attribute
+# on a parent model — ``BackendConfig.schema`` (TOML key ``schema =
+# "corpus"``) shadows the deprecated ``BaseModel.schema()`` method. We
+# intentionally keep the field name because it's part of the public TOML
+# surface and is read at 15+ call sites as ``config.backend.schema``;
+# renaming would break every existing config in the wild. The warning
+# itself is informational, so suppress this exact message before the
+# class is defined.
+warnings.filterwarnings(
+    "ignore",
+    message=re.escape('Field name "schema" in "BackendConfig"')
+    + r'.*shadows an attribute in parent "BaseModel"',
+    category=UserWarning,
+)
+
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator  # noqa: E402
+from pydantic.functional_validators import AfterValidator  # noqa: E402
 
 
 def expand_user(path: str) -> str:
@@ -38,7 +55,11 @@ class BackendConfig(BaseModel):
 
     kind: str = Field(default="postgres", pattern="^(postgres|sqlite)$")
     dsn: EnvInterpolatedStr
-    schema: str = Field(default="corpus")  # pyrefly: ignore[bad-override-mutable-attribute]  # Pydantic v2's BaseModel.schema() is deprecated; field shadow is intentional
+    # pyrefly: ignore[bad-override-mutable-attribute]
+    # Pydantic v2's ``BaseModel.schema()`` is deprecated; shadowing it with
+    # this field is intentional and the resulting UserWarning is silenced
+    # at module load above. See the ``warnings.filterwarnings`` block.
+    schema: str = Field(default="corpus")
 
 
 class DaemonConfig(BaseModel):

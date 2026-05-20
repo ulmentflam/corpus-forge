@@ -100,6 +100,38 @@ class TestBackendConfig:
         finally:
             del os.environ["PG_HOST"]
 
+    def test_backend_config_schema_shadow_warning_is_suppressed(self):
+        """The ``schema`` field shadows ``BaseModel.schema()`` on purpose.
+
+        Pydantic emits a ``UserWarning`` when a model field name shadows
+        an attribute on the parent. ``BackendConfig.schema`` is read at
+        ~15 call sites and is part of the public TOML surface
+        (``[backend] schema = "corpus"``), so renaming is not an
+        option. ``corpus_forge.config`` filters the specific message at
+        module load — this regression guard asserts no such warning
+        leaks if someone re-imports the module fresh.
+        """
+        import importlib
+        import warnings
+
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always")
+            import corpus_forge.config as _cfg_mod
+
+            importlib.reload(_cfg_mod)
+
+        offenders = [
+            w
+            for w in captured
+            if issubclass(w.category, UserWarning)
+            and 'Field name "schema" in "BackendConfig"' in str(w.message)
+        ]
+        assert offenders == [], (
+            "BackendConfig.schema shadow UserWarning leaked out — the "
+            "filterwarnings() block in corpus_forge/config.py is no "
+            f"longer matching. Captured: {[str(w.message) for w in offenders]}"
+        )
+
 
 class TestDaemonConfig:
     def test_daemon_config_defaults(self):

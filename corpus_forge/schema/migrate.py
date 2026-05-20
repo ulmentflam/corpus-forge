@@ -60,8 +60,13 @@ def _build_alembic_config(
             dsn: str = backend.dsn  # type: ignore[union-attr]
             sa_url = re.sub(r"^postgresql(s?)://", r"postgresql+psycopg\1://", dsn)
             config.set_main_option("sqlalchemy.url", sa_url)
-            # Signal env.py to place alembic_version inside the corpus schema.
-            config.attributes["version_table_schema"] = "corpus"
+            # Signal env.py to place alembic_version in the SAME schema
+            # the user configured (default "corpus"). Reading from
+            # ``backend.schema`` keeps this in lockstep with the
+            # pre-create step in ``_apply_alembic`` — otherwise a
+            # non-default schema would silently land the version table
+            # elsewhere.
+            config.attributes["version_table_schema"] = backend.schema  # type: ignore[union-attr]
 
     return config
 
@@ -93,25 +98,34 @@ def _apply_alembic(
         # Pre-create the target schema BEFORE Alembic runs.
         #
         # ``_build_alembic_config`` tells the env to put ``alembic_version``
-        # in ``backend.schema`` (default ``"corpus"``). On first-run, Alembic
-        # creates that version table the moment it connects — BEFORE any
-        # migration script runs. Migration 0001 itself does
+        # in ``backend.schema`` (default ``"corpus"``). On first-run,
+        # Alembic creates that version table the moment it connects —
+        # BEFORE any migration script runs. Migration 0001 itself does
         # ``CREATE SCHEMA IF NOT EXISTS corpus``, but that's too late
         # (Alembic already errored out with
         # ``psycopg.errors.InvalidSchemaName: schema "corpus" does not
         # exist`` while creating its version table).
         #
-        # Idempotent: ``CREATE SCHEMA IF NOT EXISTS`` is a no-op when the
-        # schema already exists.
+        # Idempotent: ``CREATE SCHEMA IF NOT EXISTS`` is a no-op when
+        # the schema already exists.
+        #
+        # Identifier composition: use ``psycopg.sql.Identifier`` so a
+        # schema name with special characters (or hypothetical SQL
+        # injection from a malicious config) is properly quoted —
+        # never interpolate identifiers via f-string.
         import psycopg  # noqa: PLC0415 — avoid load-time cost when sqlite-only
+        from psycopg import sql as psycopg_sql  # noqa: PLC0415
 
         target_schema: str = backend.schema  # type: ignore[union-attr]
         dsn: str = backend.dsn  # type: ignore[union-attr]
         # Strip the SQLAlchemy driver prefix if present — psycopg.connect
         # takes a raw libpq DSN.
         libpq_dsn = re.sub(r"^postgresql\+psycopg(s?)://", r"postgresql\1://", dsn)
+        create_schema = psycopg_sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
+            psycopg_sql.Identifier(target_schema)
+        )
         with psycopg.connect(libpq_dsn, autocommit=True) as _conn:
-            _conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{target_schema}"')
+            _conn.execute(create_schema)
         logger.debug("pre-created Postgres schema %r before Alembic upgrade", target_schema)
 
     config = _build_alembic_config(backend, dialect)

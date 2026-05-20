@@ -217,27 +217,34 @@ def get_active_embedders(config: Config) -> list[Embedder]:
     for embedder_config in config.embedders:
         if not embedder_config.active:
             continue
-        kwargs: dict[str, object] = {
-            "name": embedder_config.name,
-            "provider": embedder_config.provider,
-            "model_id": embedder_config.model_id,
-            "dimension": embedder_config.dimension,
+        # ``extra_kwargs`` holds only the per-provider optional fields.
+        # The four required typed args (name/provider/model_id/dimension)
+        # are passed explicitly so pyrefly can narrow them — unpacking a
+        # ``dict[str, object]`` into typed parameters trips
+        # ``bad-argument-type``.
+        extra_kwargs: dict[str, object] = {
             "normalized": embedder_config.normalize,
             "distance": embedder_config.distance,
             "batch_size": getattr(embedder_config, "batch_size", 32),
         }
         if embedder_config.provider == "sentence_transformers":
-            kwargs["device"] = getattr(embedder_config, "device", "auto")
+            extra_kwargs["device"] = getattr(embedder_config, "device", "auto")
         elif embedder_config.provider == "openai":
-            kwargs["api_key_env"] = getattr(embedder_config, "api_key_env", "OPENAI_API_KEY")
+            extra_kwargs["api_key_env"] = getattr(embedder_config, "api_key_env", "OPENAI_API_KEY")
             base_url = getattr(embedder_config, "base_url", None)
             if base_url is not None:
                 # ``base_url`` may be an AnyHttpUrl from pydantic — cast
                 # to str so the OpenAI SDK accepts it unchanged.
-                kwargs["base_url"] = str(base_url).rstrip("/")
+                extra_kwargs["base_url"] = str(base_url).rstrip("/")
         # ``model2vec`` and any future CPU-only / static providers fall
         # through with just the common kwargs.
-        embedder = registry.register(**kwargs)
+        embedder = registry.register(
+            name=embedder_config.name,
+            provider=embedder_config.provider,
+            model_id=embedder_config.model_id,
+            dimension=embedder_config.dimension,
+            **extra_kwargs,
+        )
         embedders.append(embedder)
     return embedders
 

@@ -53,7 +53,14 @@ def run_migrations_offline() -> None:
         "version_table": "alembic_version",
     }
     if is_postgres:
-        configure_kwargs["version_table_schema"] = "corpus"
+        # Honor whatever schema migrate.py set in
+        # ``config.attributes["version_table_schema"]`` (which mirrors
+        # ``backend.schema``). Fall back to the canonical "corpus"
+        # default for direct ``alembic upgrade`` invocations that don't
+        # go through ``_build_alembic_config``.
+        configure_kwargs["version_table_schema"] = context.config.attributes.get(
+            "version_table_schema", "corpus"
+        )
 
     with context.begin_transaction():
         context.configure(**configure_kwargs)
@@ -93,11 +100,16 @@ def run_migrations_online() -> None:
                 target_metadata=None,
             )
         else:
-            # Postgres (and any other dialect) — use corpus schema for version table.
+            # Postgres (and any other dialect) — use the schema
+            # ``_build_alembic_config`` recorded (mirrors
+            # ``backend.schema``). Fall back to "corpus" for direct
+            # alembic invocations.
             context.configure(
                 connection=connection,
                 version_table="alembic_version",
-                version_table_schema="corpus",
+                version_table_schema=context.config.attributes.get(
+                    "version_table_schema", "corpus"
+                ),
                 target_metadata=None,
             )
 

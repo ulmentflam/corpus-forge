@@ -29,6 +29,10 @@ from corpus_forge.ingest import get_active_embedders
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Keys that ``get_active_embedders`` forwards to ``registry.register``
+# for EVERY provider. ``device`` is intentionally absent — it's only
+# forwarded for ``sentence_transformers`` (OpenAI / model2vec don't
+# accept it and were raising ``TypeError`` on first-run ingest).
 _EXPECTED_BASE_KEYS = {
     "name",
     "provider",
@@ -37,7 +41,6 @@ _EXPECTED_BASE_KEYS = {
     "normalized",
     "distance",
     "batch_size",
-    "device",
 }
 
 
@@ -142,7 +145,8 @@ class TestSentenceTransformersKwargs:
             get_active_embedders(_mock_config(cfg))
 
         _, kwargs = mock_register.call_args
-        assert set(kwargs.keys()) == _EXPECTED_BASE_KEYS
+        # sentence_transformers receives base keys + ``device``.
+        assert set(kwargs.keys()) == _EXPECTED_BASE_KEYS | {"device"}
 
     def test_does_not_raise_with_sentence_transformers_provider(self):
         """get_active_embedders does not raise TypeError for sentence_transformers."""
@@ -188,7 +192,14 @@ class TestOpenAIKwargs:
         assert kwargs["api_key_env"] == "MY_CUSTOM_KEY"
 
     def test_register_called_with_all_required_kwargs(self):
-        """registry.register receives all expected kwargs for openai."""
+        """registry.register receives all expected kwargs for openai.
+
+        OpenAI's underlying HTTP transport has no local-accelerator
+        concept, so ``device`` must NOT be forwarded — passing it
+        raised ``TypeError: OpenAIEmbedder.__init__() got an unexpected
+        keyword argument 'device'`` on every first-run ingest against
+        an Ollama-backed OpenAI-compatible endpoint.
+        """
         cfg = _make_openai_config()
 
         with patch("corpus_forge.ingest.registry.register") as mock_register:
@@ -203,7 +214,7 @@ class TestOpenAIKwargs:
         assert kwargs["normalized"] is True
         assert kwargs["distance"] == "cosine"
         assert kwargs["batch_size"] == 256
-        assert kwargs["device"] == "auto"
+        assert "device" not in kwargs
 
     def test_register_kwarg_keys_are_base_set_plus_api_key_env(self):
         """openai registers with exactly base keys + api_key_env."""
