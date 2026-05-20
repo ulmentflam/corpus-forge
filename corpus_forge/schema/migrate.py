@@ -1,7 +1,6 @@
 """Schema migration utility for corpus-forge."""
 
 import logging
-import os
 import re
 import sqlite3
 from pathlib import Path
@@ -90,6 +89,31 @@ def _apply_alembic(
         with backend._get_connection():  # type: ignore[union-attr]
             pass
 
+    if dialect == "postgres":
+        # Pre-create the target schema BEFORE Alembic runs.
+        #
+        # ``_build_alembic_config`` tells the env to put ``alembic_version``
+        # in ``backend.schema`` (default ``"corpus"``). On first-run, Alembic
+        # creates that version table the moment it connects — BEFORE any
+        # migration script runs. Migration 0001 itself does
+        # ``CREATE SCHEMA IF NOT EXISTS corpus``, but that's too late
+        # (Alembic already errored out with
+        # ``psycopg.errors.InvalidSchemaName: schema "corpus" does not
+        # exist`` while creating its version table).
+        #
+        # Idempotent: ``CREATE SCHEMA IF NOT EXISTS`` is a no-op when the
+        # schema already exists.
+        import psycopg  # noqa: PLC0415 — avoid load-time cost when sqlite-only
+
+        target_schema: str = backend.schema  # type: ignore[union-attr]
+        dsn: str = backend.dsn  # type: ignore[union-attr]
+        # Strip the SQLAlchemy driver prefix if present — psycopg.connect
+        # takes a raw libpq DSN.
+        libpq_dsn = re.sub(r"^postgresql\+psycopg(s?)://", r"postgresql\1://", dsn)
+        with psycopg.connect(libpq_dsn, autocommit=True) as _conn:
+            _conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{target_schema}"')
+        logger.debug("pre-created Postgres schema %r before Alembic upgrade", target_schema)
+
     config = _build_alembic_config(backend, dialect)
     alembic_command.upgrade(config, "head")
 
@@ -117,17 +141,43 @@ def apply_migrations(
 
 
 def main() -> None:
-    """Main entry point for migration command."""
-    # In a real implementation, we'd get these from config
-    # For now, we'll use defaults
-    dsn = os.getenv("DATABASE_URL", "postgresql://memory@localhost/memory")
-    schema = "corpus"
+    """Main entry point for ``corpus-forge migrate``.
 
-    backend = PostgresBackend(dsn=dsn, schema=schema)
+    Loads the user's ``Config`` and dispatches to the appropriate
+    backend (Postgres or SQLite) based on ``config.backend.kind``. The
+    Alembic env reads its DB URL out of the ``Config`` we hand it
+    through ``_build_alembic_config``; we do NOT consult
+    ``DATABASE_URL`` env var here (it's still honoured at the Alembic
+    layer in ``alembic/env.py:_get_url`` as a CI override).
+
+    Earlier revisions defaulted to ``postgresql://memory@localhost/memory``
+    when ``DATABASE_URL`` was unset — a dev-machine leftover that silently
+    redirected ``corpus-forge migrate`` away from the user's configured
+    backend. Fixed in PR "install + migrate first-run UX".
+    """
+    from corpus_forge.config import Config  # noqa: PLC0415 — avoid import cycle at module load
+
+    config = Config.load()
     schema_dir = Path(__file__).parent
 
-    apply_migrations(backend, schema_dir)
-    logger.info("Migrations applied successfully!")
+    # NB: ``backend`` is intentionally un-annotated below because
+    # ``SQLiteBackend`` is only imported in ``TYPE_CHECKING`` (lazy to
+    # avoid pulling sqlite-vec into the postgres-only fast path). A
+    # quoted annotation here would trip UP037; an unquoted one would
+    # NameError on the sqlite branch.
+    if config.backend.kind == "postgres":
+        backend = PostgresBackend(dsn=config.backend.dsn, schema=config.backend.schema)
+        dialect: Literal["postgres", "sqlite"] = "postgres"
+    elif config.backend.kind == "sqlite":
+        from ..backends.sqlite import SQLiteBackend as _SQLiteBackend  # noqa: PLC0415
+
+        backend = _SQLiteBackend(path=config.backend.dsn, schema=config.backend.schema)
+        dialect = "sqlite"
+    else:  # pragma: no cover — Pydantic Literal narrows this away
+        raise ValueError(f"unsupported backend kind: {config.backend.kind!r}")
+
+    apply_migrations(backend, schema_dir, dialect=dialect)
+    logger.info("Migrations applied successfully against backend.kind=%s", config.backend.kind)
 
 
 if __name__ == "__main__":

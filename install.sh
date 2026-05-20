@@ -372,11 +372,16 @@ esac
 
 info "Launching the post-install setup wizard"
 if command -v corpus-forge >/dev/null 2>&1; then
-    if [ "${CF_NON_INTERACTIVE:-0}" = "1" ]; then
-        corpus-forge setup --non-interactive
-    else
-        corpus-forge setup
-    fi
+    # ALWAYS pass --non-interactive. The CF_* env vars are already
+    # populated above (interactive prompts feed into them via
+    # ``set_answer``; non-interactive flow inherits them directly from
+    # the caller's environment). If we omit ``--non-interactive``, the
+    # wizard reprompts on the same stdin that this script has already
+    # consumed (or was never a TTY when piped via ``curl | sh``), so
+    # the prompts get empty replies and silently take defaults —
+    # discarding every answer the user just typed.  See PR fixing
+    # "install.sh post-install wizard ignores collected answers".
+    corpus-forge setup --non-interactive
 else
     warn "corpus-forge not on PATH yet. Open a new shell and run \`corpus-forge setup\`."
 fi

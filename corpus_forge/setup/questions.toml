@@ -256,7 +256,7 @@ choices = ["none", "local", "remote"]
 default = "none"
 env = "CF_CODE_ENRICHER"
 depends_on = "code_ingest=yes"
-warn = "Local ``qwen3.6:35b-a3b-instruct`` is ~22 GB on disk and needs ``ollama pull qwen3.6:35b-a3b-instruct``. Skip if disk-bound."
+warn = "A real Ollama model tag is required (e.g. ``qwen2.5:7b-instruct`` — ~5 GB — or ``gpt-oss:20b`` — ~13 GB). Run ``ollama pull <tag>`` before first use; corpus-forge fails fast with a clear error until the model is local."
 
 [[question]]
 id = "code_enricher_url"
