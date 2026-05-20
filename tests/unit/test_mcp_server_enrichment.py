@@ -279,6 +279,7 @@ class TestWritesEnabledGate:
         J4 adds next_curation_target + next_curation_batch (read) and
         commit_curation (write) = 19 total.
         Phase O Wave 4 adds 4 analyze read tools = 29 total.
+        Phase P Wave 2 adds rate_search_result (write) = 30 total.
         """
         server = _build_server(backend, writes_enabled=True)
         tools = _list_tools(server)
@@ -323,9 +324,11 @@ class TestWritesEnabledGate:
             "sync_ignore",
             # Phase M Wave 4 write tool
             "zotero_sync",
+            # Phase P Wave 2 write tool
+            "rate_search_result",
         }
         assert set(tools) == expected, (
-            f"Expected 29 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
+            f"Expected 30 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
         )
 
     def test_unknown_tool_returns_error_when_writes_disabled(

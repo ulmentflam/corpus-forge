@@ -692,6 +692,94 @@ def register_session(
     return {"feedback_session_id": feedback_session_id, "created": created}
 
 
+# ---------------------------------------------------------------------------
+# rate_search_result
+# ---------------------------------------------------------------------------
+
+
+def rate_search_result(
+    backend: Any,
+    ctx: Any,
+    query_id: str,
+    chunk_id: int,
+    signal: str,
+    value: float | None,
+    source: str,
+    *,
+    replacement_chunk_id: int | None = None,
+) -> dict:
+    """Record a signal (rating, click, thumbs, …) for a search result.
+
+    Looks up ``search_sessions`` by ``query`` = ``query_id``.  If no row
+    exists, auto-creates one with ``query="(retroactive)"`` and resolves
+    ``dataset_id`` from the chunk's parent document.  Inserts one row into
+    ``search_result_events`` and emits one ``mcp_audit`` row.
+
+    Returns ``{"event_id": int, "session_id": int}``.
+    """
+    # Verify chunk_id exists; propagate FK violation as a clean error.
+    chunk_rows = backend._execute(
+        "SELECT id FROM chunks WHERE id = ?",
+        (chunk_id,),
+    )
+    if not chunk_rows:
+        raise ValueError(f"chunk_id={chunk_id} does not exist in chunks table")
+
+    # Look up or auto-create the search session.
+    session_rows = backend._execute(
+        "SELECT id FROM search_sessions WHERE query = ? LIMIT 1",
+        (query_id,),
+    )
+    if session_rows:
+        session_id: int = int(session_rows[0]["id"])
+    else:
+        # Resolve dataset_id via chunk → document.
+        doc_rows = backend._execute(
+            "SELECT d.dataset_id FROM chunks c"
+            " JOIN documents d ON d.id = c.document_id"
+            " WHERE c.id = ? LIMIT 1",
+            (chunk_id,),
+        )
+        dataset_id: int | None = int(doc_rows[0]["dataset_id"]) if doc_rows else None
+        new_session_rows = backend._execute(
+            "INSERT INTO search_sessions (query, dataset_id) VALUES (?, ?) RETURNING id",
+            ("(retroactive)", dataset_id),
+        )
+        session_id = int(new_session_rows[0]["id"])
+
+    # Insert the event row.
+    event_rows = backend._execute(
+        "INSERT INTO search_result_events"
+        " (session_id, chunk_id, signal, value, source, replacement_chunk_id)"
+        " VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+        (session_id, chunk_id, signal, value, source, replacement_chunk_id),
+    )
+    event_id: int = int(event_rows[0]["id"])
+
+    # Emit audit row (mirrors add_feedback pattern).
+    after: dict = {
+        "query_id": query_id,
+        "chunk_id": chunk_id,
+        "signal": signal,
+        "value": value,
+        "source": source,
+        "replacement_chunk_id": replacement_chunk_id,
+    }
+    backend.audit_event(
+        ctx.host,
+        ctx.client,
+        ctx.session_id,
+        "rate_search_result",
+        "chunk",
+        chunk_id,
+        None,
+        after,
+        False,
+    )
+
+    return {"event_id": event_id, "session_id": session_id}
+
+
 __all__ = [
     "WriteContext",
     "add_feedback",
@@ -699,6 +787,7 @@ __all__ = [
     "append_conversation",
     "append_message",
     "list_labels",
+    "rate_search_result",
     "register_session",
     "remove_label",
     "set_description",

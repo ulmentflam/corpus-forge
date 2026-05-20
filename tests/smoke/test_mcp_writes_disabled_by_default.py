@@ -74,6 +74,8 @@ _WRITE_TOOL_NAMES = {
     "sync_ignore",
     # Phase M Wave 4 — Zotero ingest tool
     "zotero_sync",
+    # Phase P Wave 2 — search result rating tool
+    "rate_search_result",
 }
 
 _ALL_TOOL_NAMES = _READ_TOOL_NAMES | _WRITE_TOOL_NAMES

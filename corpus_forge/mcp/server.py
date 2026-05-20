@@ -411,6 +411,49 @@ _ADD_FEEDBACK_INPUT_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+# ── Phase P Wave 2 — rate_search_result ──────────────────────────────────
+
+_RATE_SEARCH_RESULT_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query_id": {
+            "type": "string",
+            "description": (
+                "Key into search_sessions.  If no matching row exists an "
+                "auto-created session with query='(retroactive)' is used."
+            ),
+        },
+        "chunk_id": {
+            "type": "integer",
+            "description": "Primary key of the result chunk being rated.",
+        },
+        "signal": {
+            "type": "string",
+            "description": (
+                "Signal type, e.g. 'relevance', 'click', 'thumbs_up', "
+                "'thumbs_down', 'curation_suggestion'."
+            ),
+        },
+        "value": {
+            "type": ["number", "null"],
+            "description": "Numeric magnitude (0-1) or null for boolean signals.",
+        },
+        "source": {
+            "type": "string",
+            "description": (
+                "Origin of the signal, e.g. 'human', 'ui', 'reranker', "
+                "'reranker-v2/bge-reranker-large'."
+            ),
+        },
+        "replacement_chunk_id": {
+            "type": ["integer", "null"],
+            "description": "Optional FK to chunks(id): preferred replacement chunk.",
+        },
+    },
+    "required": ["query_id", "chunk_id", "signal", "value", "source"],
+    "additionalProperties": False,
+}
+
 
 # ── JSON schemas for the three G-03 template tools ────────────────────────
 
@@ -1089,6 +1132,18 @@ def build_server(
                     ),
                     inputSchema=_ZOTERO_SYNC_INPUT_SCHEMA,
                 ),
+                # Phase P Wave 2 — search result rating tool.
+                mt.Tool(
+                    name="rate_search_result",
+                    description=(
+                        "Record a signal (relevance score, click, thumbs_up, "
+                        "thumbs_down, curation_suggestion, …) for a search "
+                        "result chunk.  Looks up or auto-creates a "
+                        "search_sessions row keyed on query_id. "
+                        "Returns {event_id, session_id}."
+                    ),
+                    inputSchema=_RATE_SEARCH_RESULT_INPUT_SCHEMA,
+                ),
             ]
         return tools
 
@@ -1162,6 +1217,9 @@ def build_server(
             # Phase M Wave 4 write tool
             if name == "zotero_sync":
                 return await _dispatch_zotero_sync(arguments)
+            # Phase P Wave 2 write tool
+            if name == "rate_search_result":
+                return await _dispatch_rate_search_result(arguments)
         return _error_result(f"unknown tool: {name!r}")
 
     # ── dispatchers (closures share `_get_retriever` / `_get_reranker`)
@@ -1706,6 +1764,33 @@ def build_server(
             metadata=arguments.get("metadata"),
             dry_run=bool(arguments.get("dry_run", False)),
         )
+        return result
+
+    async def _dispatch_rate_search_result(arguments: dict[str, Any]) -> Any:
+        """Phase P Wave 2 — record a signal for a search result chunk."""
+        from corpus_forge.mcp import writes
+
+        backend = _get_write_backend()
+        if backend is None:
+            return _error_result("retriever has no backend; cannot rate search result")
+        ctx = _make_write_ctx()
+        raw_value = arguments.get("value")
+        value: float | None = float(raw_value) if raw_value is not None else None
+        raw_repl = arguments.get("replacement_chunk_id")
+        replacement_chunk_id: int | None = int(raw_repl) if raw_repl is not None else None
+        try:
+            result = writes.rate_search_result(
+                backend,
+                ctx,
+                arguments["query_id"],
+                int(arguments["chunk_id"]),
+                arguments["signal"],
+                value,
+                arguments["source"],
+                replacement_chunk_id=replacement_chunk_id,
+            )
+        except Exception as exc:
+            return _error_result(str(exc))
         return result
 
     async def _dispatch_commit_curation(arguments: dict[str, Any]) -> Any:

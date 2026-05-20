@@ -3041,3 +3041,53 @@ Test patterns of note:
   ```
   Full run: 43 failed, 0 passed. Registration tests: AssertionError (tool name absent from list_tools() set). Dispatch/idempotency tests: ModuleNotFoundError: No module named 'corpus_forge.mcp._dispatch_analyze'.
 - Status: red — handed off to tdd-coder
+
+## P2-T1
+- Test files: `tests/integration/test_mcp_rate_search_result.py`
+- Run command: `uv run pytest tests/integration/test_mcp_rate_search_result.py -m 'not requires_docker' -x 2>&1 | tail -5`
+- Edge case checklist:
+  - [x] happy — existing session + valid chunk inserts event row + audit row; returns {event_id, session_id}
+  - [x] boundaries — value=None accepted (signal-only events); replacement_chunk_id omitted → NULL in DB; two consecutive identical-signal calls both recorded (event log, not state machine)
+  - [x] type/format — JSON-serialisable output asserted; source string preserved verbatim including slashes
+  - [x] state — auto-create session when query_id is new; retroactive query text; returned session_id matches DB row; idempotency N/A (event log explicitly allows duplicates)
+  - [ ] N/A — concurrency (MCP dispatch is sequential; no shared mutable state across tool calls)
+  - [x] failure paths — writes_enabled=False blocks tool registration + call (unknown tool error); invalid chunk_id returns isError=True
+  - [ ] N/A — locale/time (created_at is DB-managed DEFAULT; not pinned in tests)
+  - [x] production-realistic data — seeded SQLite DB with real dataset/document/chunk FK chain; source strings with slashes (reranker model paths); signal names matching the plan (relevance, click, thumbs_up, thumbs_down, curation_suggestion)
+  - [ ] N/A — regression hooks (no prior bug referenced; new tool with no production history yet)
+- Red output (tail):
+  ```
+  WARNING  mcp.server.lowlevel.server:server.py:488 Tool 'rate_search_result' not listed, no validation will be performed
+  =========================== short test summary info ============================
+  FAILED tests/integration/test_mcp_rate_search_result.py::TestAutoCreateSession::test_autocreated_session_query_text_is_retroactive
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+  ============================== 1 failed in 0.42s
+  ```
+  Full run: 15 failed, 4 passed. Key failures: AssertionError 'rate_search_result' not in list_tools(writes_enabled=True); all dispatch tests fail with isError=True "unknown tool: 'rate_search_result'". 4 passing tests cover already-working behavior: tool absent from writes_disabled list, write-gate error returned, invalid-chunk-id returns error (semantic correct, currently via "unknown tool" path).
+- Notes: The `test_unknown_chunk_id_returns_error` test currently passes because the tool isn't registered (any call → "unknown tool" → isError=True). Post-implementation it should still pass via the FK-violation path. The semantic assertion (`isError=True` for bad FK) is correct regardless; this is acceptable RED per project convention. The `_MCPContext` dataclass is imported but unused in this test file (write dispatchers in server.py create their own context from env vars). Removed the unused import in the final linted version.
+- Status: red — handed off to tdd-coder
+
+## P2-T2
+- Test files: `tests/unit/test_reranker_learned.py`
+- Run command: `uv run pytest tests/unit/test_reranker_learned.py -x`
+- Edge case checklist:
+  - [x] happy — `TestTrainRerankerWritesFile` (balanced 3-pos+3-neg events → joblib written, auc in [0,1], counts correct)
+  - [x] boundaries — empty events table → ValueError; single-class imbalanced data (5 pos / 0 neg + 5 neg / 0 pos) handled gracefully; top_n=None returns all; top_n clips to 2 of 5
+  - [x] type/format — return dict n_train/n_pos/n_neg are ints; auc is float; model_path is str; feature spec pins [chunk_score, lexical_score, query_len]
+  - [x] state — constructor does NOT load model; first rerank loads once and memoises; idempotent: same model + same input → same ordered output + same scores
+  - [ ] N/A — concurrency (pure function, no shared mutable state in trained model path)
+  - [x] failure paths — empty events table raises ValueError with descriptive message; no file written on error; empty hits returns [] without touching joblib
+  - [ ] N/A — locale/time (no locale-sensitive text handling; timestamps are DB-managed)
+  - [x] production-realistic data — _sqlite_conn_with_events uses in-memory DB matching the 0013_search_sessions schema exactly (search_sessions + search_result_events); _minimal_trained_model_path produces a real sklearn LogisticRegression artifact loaded by joblib
+  - [x] regression hooks — lazy-import guard (sklearn + joblib) encoded as TestLazyImportGuard; protocol conformance encoded as TestLearnedRerankerProtocol; neutral events skipped test pins the label-derivation contract; source_filter test pins filtering behavior
+- Hypothesis property: `test_property_predicted_score_in_zero_one` — for any (chunk_score ∈ [0,1], query_len ∈ [1,200], chunk_id ∈ [1,10000]) the predicted score is a finite float in [0.0, 1.0]. 50 examples, deadline=5000ms.
+- Red output (tail):
+  ```
+  tests/unit/test_reranker_learned.py:653: ModuleNotFoundError
+  =========================== short test summary info ============================
+  FAILED tests/unit/test_reranker_learned.py::TestLearnedRerankerProtocol::test_has_model_id_attribute
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+  1 failed in 0.18s
+  ```
+  Full run (no -x): 31 failed, 0 passed. All failures: ModuleNotFoundError: No module named 'corpus_forge.retrieval.rerank.learned'.
+- Status: red — handed off to tdd-coder
