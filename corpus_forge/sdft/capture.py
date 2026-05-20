@@ -81,6 +81,11 @@ def record_demonstration(
                 ),
             )
             row = cur.fetchone()
+        # Commit so the INSERT is durable AND visible to subsequent
+        # connections. Without this the row is rolled back when
+        # backend._get_connection's context manager closes the conn,
+        # so callers see a phantom demonstration_id that doesn't exist.
+        conn.commit()
         if row is not None:
             return {"demonstration_id": int(row[0]), "deduped": False}
         # Conflict — fetch the existing id.

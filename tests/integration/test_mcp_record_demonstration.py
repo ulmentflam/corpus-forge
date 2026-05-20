@@ -542,3 +542,132 @@ class TestFKViolation:
         assert "dataset" in text or "not found" in text or "unknown" in text, (
             f"Expected descriptive error for unknown dataset; got: {text!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Postgres parity — verifies the record_demonstration write tool works
+# end-to-end against a real psycopg connection. Pins:
+# - corpus_forge.sdft.capture.record_demonstration commits the Postgres
+#   transaction (regression: prior versions left the INSERT in an open
+#   transaction so the row was rolled back when _get_connection closed).
+# - INSERT ... ON CONFLICT DO NOTHING dedup path works on PG.
+# - dataset_id resolution via backend.find_dataset_id_by_name works on PG.
+# Requires Docker + testcontainers via the shared `pg_dsn` session fixture.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.requires_docker
+class TestRecordDemonstrationPostgres:
+    """Same dispatch contract, exercised against a Postgres backend."""
+
+    @staticmethod
+    def _reset_and_migrate(pg_dsn: str) -> None:
+        import re as _re
+        from pathlib import Path as _Path
+
+        import psycopg
+        from alembic import command
+        from alembic.config import Config as _AlembicConfig
+
+        with psycopg.connect(pg_dsn, autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute("DROP SCHEMA IF EXISTS corpus CASCADE")
+            cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            cur.execute("CREATE SCHEMA IF NOT EXISTS corpus")
+
+        repo_root = _Path(__file__).resolve().parents[2]
+        cfg = _AlembicConfig(str(repo_root / "alembic.ini"))
+        cfg.set_main_option("script_location", str(repo_root / "corpus_forge" / "alembic"))
+        cfg.set_main_option(
+            "sqlalchemy.url",
+            _re.sub(r"^postgresql(s?)://", r"postgresql+psycopg\1://", pg_dsn),
+        )
+        command.upgrade(cfg, "head")
+
+    @staticmethod
+    def _seed_dataset_pg(pg_dsn: str, name: str = "pg-sdft-ds") -> int:
+        import psycopg
+
+        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO corpus.datasets (name, kind, description) "
+                "VALUES (%s, %s, %s) RETURNING id",
+                (name, "text", "Postgres parity for record_demonstration"),
+            )
+            ds_id = cur.fetchone()[0]
+            conn.commit()
+        return int(ds_id)
+
+    @staticmethod
+    def _pg_backend(pg_dsn: str) -> Any:
+        from corpus_forge.backends.postgres import PostgresBackend
+
+        return PostgresBackend(dsn=pg_dsn, schema="corpus")
+
+    def test_pg_record_demonstration_writes_row(self, pg_dsn: str) -> None:
+        """Happy path on Postgres — INSERT is committed and durable."""
+        self._reset_and_migrate(pg_dsn)
+        ds_id = self._seed_dataset_pg(pg_dsn, name="pg-sdft-ds")
+        backend = self._pg_backend(pg_dsn)
+        server = build_server(
+            retriever_builder=lambda: _BackedRetriever(backend),  # type: ignore[arg-type]
+            writes_enabled=True,
+        )
+        root = _call_raw(server, _TOOL_NAME, _demo_args(dataset="pg-sdft-ds"))
+        assert not _is_error(root), _error_text(root)
+        result = _payload(root)
+        assert "demonstration_id" in result
+        assert result["deduped"] is False
+        rows = backend._execute(
+            "SELECT dataset_id, source FROM corpus.sdft_demonstrations WHERE id = %s",
+            (result["demonstration_id"],),
+        )
+        assert rows
+        assert int(rows[0]["dataset_id"]) == ds_id
+
+    def test_pg_record_demonstration_dedupes_on_repeat(self, pg_dsn: str) -> None:
+        """Identical payloads return the same id; only one row exists."""
+        self._reset_and_migrate(pg_dsn)
+        self._seed_dataset_pg(pg_dsn, name="pg-sdft-dedup")
+        backend = self._pg_backend(pg_dsn)
+        server = build_server(
+            retriever_builder=lambda: _BackedRetriever(backend),  # type: ignore[arg-type]
+            writes_enabled=True,
+        )
+        args = _demo_args(dataset="pg-sdft-dedup")
+        first = _payload(_call_raw(server, _TOOL_NAME, args))
+        second = _payload(_call_raw(server, _TOOL_NAME, args))
+        assert first["demonstration_id"] == second["demonstration_id"]
+        assert first["deduped"] is False
+        assert second["deduped"] is True
+        rows = backend._execute("SELECT COUNT(*) AS n FROM corpus.sdft_demonstrations")
+        assert int(rows[0]["n"]) == 1
+
+    def test_pg_record_demonstration_unknown_dataset_returns_error(self, pg_dsn: str) -> None:
+        """Unknown dataset name surfaces as a clean error payload."""
+        self._reset_and_migrate(pg_dsn)
+        backend = self._pg_backend(pg_dsn)
+        server = build_server(
+            retriever_builder=lambda: _BackedRetriever(backend),  # type: ignore[arg-type]
+            writes_enabled=True,
+        )
+        root = _call_raw(server, _TOOL_NAME, _demo_args(dataset="no-such-dataset-pg-xyz"))
+        assert _is_error(root)
+        text = _error_text(root).lower()
+        assert "dataset" in text or "not found" in text or "unknown" in text
+
+    def test_pg_record_demonstration_invalid_source_rejected(self, pg_dsn: str) -> None:
+        """Source not in SDFTSource is rejected before touching the DB."""
+        self._reset_and_migrate(pg_dsn)
+        self._seed_dataset_pg(pg_dsn, name="pg-sdft-invalid-src")
+        backend = self._pg_backend(pg_dsn)
+        server = build_server(
+            retriever_builder=lambda: _BackedRetriever(backend),  # type: ignore[arg-type]
+            writes_enabled=True,
+        )
+        args = _demo_args(
+            dataset="pg-sdft-invalid-src",
+            source="__not_a_real_source__",
+        )
+        root = _call_raw(server, _TOOL_NAME, args)
+        assert _is_error(root)
+        assert "SDFTSource" in _error_text(root)

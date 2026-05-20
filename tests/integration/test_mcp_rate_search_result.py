@@ -716,3 +716,198 @@ class TestSourcePreserved:
         assert rows[0]["source"] == source, (
             f"Expected source={source!r} in DB; got {rows[0]['source']!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Postgres parity — verifies the `?` → `%s` placeholder dispatch in
+# corpus_forge.mcp.writes._q() works against a real psycopg connection.
+# Requires Docker + testcontainers via the shared `pg_dsn` session fixture.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.requires_docker
+class TestRateSearchResultPostgres:
+    """Same dispatch contract, exercised against a Postgres backend.
+
+    Pinned regressions:
+    - rate_search_result must translate the SQLite-style ``?`` placeholders
+      in writes._q() to ``%s`` for psycopg. Any miss raises psycopg's
+      ``SyntaxError`` immediately on execute.
+    - Auto-created session uses the supplied query_id (not the legacy
+      ``"(retroactive)"`` literal) on Postgres too.
+    """
+
+    @staticmethod
+    def _reset_and_migrate(pg_dsn: str) -> None:
+        import re as _re
+        from pathlib import Path as _Path
+
+        import psycopg
+        from alembic import command
+        from alembic.config import Config as _AlembicConfig
+
+        with psycopg.connect(pg_dsn, autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute("DROP SCHEMA IF EXISTS corpus CASCADE")
+            cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            cur.execute("CREATE SCHEMA IF NOT EXISTS corpus")
+
+        repo_root = _Path(__file__).resolve().parents[2]
+        cfg = _AlembicConfig(str(repo_root / "alembic.ini"))
+        cfg.set_main_option("script_location", str(repo_root / "corpus_forge" / "alembic"))
+        cfg.set_main_option(
+            "sqlalchemy.url",
+            _re.sub(r"^postgresql(s?)://", r"postgresql+psycopg\1://", pg_dsn),
+        )
+        command.upgrade(cfg, "head")
+
+    @staticmethod
+    def _seed_pg(pg_dsn: str) -> dict[str, int]:
+        import psycopg
+
+        with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO corpus.datasets (name, kind, description) "
+                "VALUES (%s, %s, %s) RETURNING id",
+                ("pg-rate-ds", "text", "Postgres parity for rate_search_result"),
+            )
+            ds_id = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO corpus.documents "
+                "(dataset_id, source_uri, content_hash, title, text, metadata) "
+                "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                (ds_id, "test://pg/doc.md", "pg-doc-hash", "PG Doc", "body", "{}"),
+            )
+            doc_id = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO corpus.chunks "
+                "(document_id, chunk_index, text, metadata) "
+                "VALUES (%s, %s, %s, %s) RETURNING id",
+                (doc_id, 0, "rated chunk on postgres", "{}"),
+            )
+            chunk_id = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO corpus.chunks "
+                "(document_id, chunk_index, text, metadata) "
+                "VALUES (%s, %s, %s, %s) RETURNING id",
+                (doc_id, 1, "replacement chunk on postgres", "{}"),
+            )
+            repl_id = cur.fetchone()[0]
+            conn.commit()
+        return {
+            "dataset_id": ds_id,
+            "document_id": doc_id,
+            "chunk_id": chunk_id,
+            "replacement_chunk_id": repl_id,
+        }
+
+    def _pg_backend(self, pg_dsn: str) -> Any:
+        from corpus_forge.backends.postgres import PostgresBackend
+
+        return PostgresBackend(dsn=pg_dsn, schema="corpus")
+
+    def test_pg_rate_search_result_writes_event_row(self, pg_dsn: str) -> None:
+        """Happy path on Postgres — psycopg accepts the translated `%s` SQL."""
+        self._reset_and_migrate(pg_dsn)
+        seeded = self._seed_pg(pg_dsn)
+        backend = self._pg_backend(pg_dsn)
+        server = build_server(
+            retriever_builder=lambda: _BackedRetriever(backend),  # type: ignore[arg-type]
+            writes_enabled=True,
+        )
+        root = _call_raw(
+            server,
+            _TOOL_NAME,
+            {
+                "query_id": "pg-qid-001",
+                "chunk_id": seeded["chunk_id"],
+                "signal": "thumbs_up",
+                "value": 1.0,
+                "source": "human",
+            },
+        )
+        assert not _is_error(root), _error_text(root)
+        result = _payload(root)
+        assert "event_id" in result
+        assert "session_id" in result
+        rows = backend._execute(
+            "SELECT signal, value, source FROM corpus.search_result_events WHERE id = %s",
+            (result["event_id"],),
+        )
+        assert rows and rows[0]["signal"] == "thumbs_up"
+        assert rows[0]["value"] == 1.0
+
+    def test_pg_auto_creates_session_with_query_id(self, pg_dsn: str) -> None:
+        """Auto-created session stores query_id (not '(retroactive)')."""
+        self._reset_and_migrate(pg_dsn)
+        seeded = self._seed_pg(pg_dsn)
+        backend = self._pg_backend(pg_dsn)
+        server = build_server(
+            retriever_builder=lambda: _BackedRetriever(backend),  # type: ignore[arg-type]
+            writes_enabled=True,
+        )
+        _call_raw(
+            server,
+            _TOOL_NAME,
+            {
+                "query_id": "pg-new-qid",
+                "chunk_id": seeded["chunk_id"],
+                "signal": "click",
+                "value": 0.5,
+                "source": "claude_code",
+            },
+        )
+        rows = backend._execute("SELECT query FROM corpus.search_sessions ORDER BY id DESC LIMIT 1")
+        assert rows and rows[0]["query"] == "pg-new-qid"
+
+    def test_pg_existing_session_is_reused(self, pg_dsn: str) -> None:
+        """Two calls with the same query_id share one session row."""
+        self._reset_and_migrate(pg_dsn)
+        seeded = self._seed_pg(pg_dsn)
+        backend = self._pg_backend(pg_dsn)
+        server = build_server(
+            retriever_builder=lambda: _BackedRetriever(backend),  # type: ignore[arg-type]
+            writes_enabled=True,
+        )
+        args = {
+            "query_id": "pg-reused-qid",
+            "chunk_id": seeded["chunk_id"],
+            "signal": "thumbs_up",
+            "value": 0.9,
+            "source": "human",
+        }
+        first = _payload(_call_raw(server, _TOOL_NAME, args))
+        second = _payload(_call_raw(server, _TOOL_NAME, args))
+        assert first["session_id"] == second["session_id"]
+        sess_rows = backend._execute(
+            "SELECT COUNT(*) AS n FROM corpus.search_sessions WHERE query = %s",
+            ("pg-reused-qid",),
+        )
+        assert int(sess_rows[0]["n"]) == 1
+        evt_rows = backend._execute(
+            "SELECT COUNT(*) AS n FROM corpus.search_result_events WHERE session_id = %s",
+            (first["session_id"],),
+        )
+        assert int(evt_rows[0]["n"]) == 2
+
+    def test_pg_unknown_chunk_id_returns_error(self, pg_dsn: str) -> None:
+        """FK violation on Postgres surfaces as a clean error payload."""
+        self._reset_and_migrate(pg_dsn)
+        self._seed_pg(pg_dsn)
+        backend = self._pg_backend(pg_dsn)
+        server = build_server(
+            retriever_builder=lambda: _BackedRetriever(backend),  # type: ignore[arg-type]
+            writes_enabled=True,
+        )
+        root = _call_raw(
+            server,
+            _TOOL_NAME,
+            {
+                "query_id": "qid-fk",
+                "chunk_id": 9999999,
+                "signal": "relevance",
+                "value": 1.0,
+                "source": "human",
+            },
+        )
+        assert _is_error(root)
+        assert "does not exist" in _error_text(root)
