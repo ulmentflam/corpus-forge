@@ -2992,3 +2992,52 @@ Test patterns of note:
   Full run: 23 failed, 11 passed. All failures: AttributeError: 'ScoreBreakdown' object has no attribute 'learned_quality' or AssertionError: _SCORE_WEIGHTS_4/_SCORE_WEIGHTS_5 not found on selector module.
 - Notes: Baseline pickle generated from pre-O3 main (0.1.0b6) using `uv run python tests/fixtures/curation/regenerate_baseline.py`. Batch order pinned: [1, 3, 2, 4, 5]. Single target: chunk_id=1, score=0.569642. Cohesion: 0.997121.
 - Status: red — handed off to tdd-coder
+
+## O4-T1
+- Test files: `tests/cli/test_analyze_cli.py`
+- Run command: `uv run pytest tests/cli/test_analyze_cli.py -v`
+- Edge case checklist:
+  - [x] happy — each subcommand exits 0 on demo dataset (6 parametrized tests)
+  - [x] boundaries — empty/missing dataset exits nonzero + names dataset; --limit=3 accepted by all 6 subs
+  - [x] type/format — --json flag on stats emits parseable JSON dict, not markdown
+  - [x] state — report dir creation is idempotent (two back-to-back runs both succeed)
+  - [x] N/A — concurrency (CLI dispatch is sequential; no shared mutable state across invocations)
+  - [x] failure paths — missing dataset exits non-zero; dataset name echoed in output
+  - [x] N/A — locale/time (timestamp-based report dirs are implementation detail; not pinned)
+  - [x] production-realistic — seeded SQLite DB with 6 chunk rows including an exact duplicate pair
+  - [x] regression hooks — test_analyze_is_registered_as_app_subgroup pins the app.add_typer wiring in cli.py
+- Red output (tail):
+  ```
+  FAILED tests/cli/test_analyze_cli.py::test_analyze_help_lists_six_subcommands
+  FAILED tests/cli/test_analyze_cli.py::test_analyze_is_registered_as_app_subgroup
+  FAILED tests/cli/test_analyze_cli.py::test_stats_writes_markdown_report
+  FAILED tests/cli/test_analyze_cli.py::test_quality_persists_rows_to_chunk_quality_signals
+  ... (26 more)
+  Core failure: No such command 'analyze'. / AttributeError: module 'corpus_forge' has no attribute 'cli_analyze'
+  30 failed, 0 passed in 0.46s
+  ```
+- Status: red — handed off to tdd-coder
+
+## O4-T2
+- Test files: `tests/integration/test_mcp_analyze_tools.py` (43 tests)
+- Run command: `uv run pytest tests/integration/test_mcp_analyze_tools.py -x`
+- Edge case checklist:
+  - [x] happy — analyze_corpus returns n_chunks/token_stats/n_documents; find_duplicates returns exact+near keys; cluster_topics returns clusters with cluster_id/chunk_ids/top_terms; score_quality returns scores in [0,1]
+  - [x] boundaries — empty dataset returns n_chunks=0 (no exception); empty chunk_ids list returns empty scores map; single demo chunk exercised via DEMO_CHUNKS fixture
+  - [x] type/format — JSON-serializable output asserted on all four tools (json.dumps must not raise TypeError for numpy arrays or non-serializable objects)
+  - [x] state — idempotency: analyze_corpus + score_quality(persist=False) yield identical results on second call with same arguments
+  - [ ] N/A — concurrency (all four tools are pure read functions with no shared mutable state; MCP dispatch is sequential)
+  - [x] failure paths — missing dataset returns isError=True error payload (not a crash); persist=True without writes_enabled returns clear error; ModuleNotFoundError on _dispatch_analyze confirmed as the correct RED failure reason for dispatch tests
+  - [ ] N/A — locale/time (no timestamp or locale-sensitive paths in these tools; computed_at on persist rows is backend-managed)
+  - [x] production-realistic data — DEMO_CHUNKS fixture has 5 chunks with realistic token counts, content hashes (including an intentional exact-dup pair), classifier labels, and metadata; mirrors the shape corpus_forge.analyze functions actually consume
+  - [x] regression hooks — persist=True requires writes_enabled gate test; read-only contract (all 4 callable with writes_enabled=False) encoded as a dedicated TestReadOnlyContract class; tool names encoded as module-level constants to catch typo drift
+- Red output (tail):
+  ```
+  tests/integration/test_mcp_analyze_tools.py:816: ModuleNotFoundError
+  =========================== short test summary info ============================
+  FAILED tests/integration/test_mcp_analyze_tools.py::TestIdempotency::test_score_quality_idempotent_no_persist
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+  1 failed in 0.30s
+  ```
+  Full run: 43 failed, 0 passed. Registration tests: AssertionError (tool name absent from list_tools() set). Dispatch/idempotency tests: ModuleNotFoundError: No module named 'corpus_forge.mcp._dispatch_analyze'.
+- Status: red — handed off to tdd-coder

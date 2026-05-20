@@ -1163,6 +1163,10 @@ eval_app = typer.Typer(
 )
 app.add_typer(eval_app, name="eval")
 
+from corpus_forge.cli_analyze import analyze_app  # noqa: E402
+
+app.add_typer(analyze_app, name="analyze")
+
 
 _BUNDLED_DATASETS = {
     "forge_self": "corpus_forge/eval/datasets/forge_self.jsonl",

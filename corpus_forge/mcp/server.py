@@ -624,6 +624,89 @@ _ZOTERO_SYNC_INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+# ── Phase O Wave 4: analyze tool schemas ─────────────────────────────────
+
+
+_ANALYZE_CORPUS_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "dataset": {
+            "type": "string",
+            "description": "Dataset name to analyze.",
+        },
+    },
+    "required": ["dataset"],
+    "additionalProperties": False,
+}
+
+
+_FIND_DUPLICATES_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "dataset": {
+            "type": "string",
+            "description": "Dataset name to scan for duplicates.",
+        },
+        "threshold": {
+            "type": "number",
+            "description": (
+                "Jaccard similarity threshold for near-duplicate clustering "
+                "(default: 0.85).  Range [0.0, 1.0]."
+            ),
+        },
+    },
+    "required": ["dataset"],
+    "additionalProperties": False,
+}
+
+
+_CLUSTER_TOPICS_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "dataset": {
+            "type": "string",
+            "description": "Dataset name whose chunks to cluster.",
+        },
+        "min_cluster_size": {
+            "type": "integer",
+            "description": (
+                "Minimum number of chunks to form a cluster (default: 10; HDBSCAN constraint >= 2)."
+            ),
+            "minimum": 2,
+        },
+    },
+    "required": ["dataset"],
+    "additionalProperties": False,
+}
+
+
+_SCORE_QUALITY_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "chunk_ids": {
+            "type": "array",
+            "items": {"type": "integer"},
+            "description": "List of chunk primary-key IDs to score.",
+        },
+        "dataset": {
+            "type": "string",
+            "description": (
+                "Dataset name; all chunks in the dataset are scored.  "
+                "Provide either chunk_ids or dataset, not both."
+            ),
+        },
+        "persist": {
+            "type": "boolean",
+            "description": (
+                "When true, write scores to chunk_quality_signals.  "
+                "Requires writes_enabled=True on the server.  Default: false."
+            ),
+        },
+    },
+    "additionalProperties": False,
+}
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
@@ -847,6 +930,46 @@ def build_server(
                 ),
                 inputSchema=_VALIDATE_IGNORE_INPUT_SCHEMA,
             ),
+            # Phase O Wave 4 analyze tools — read-only, always available.
+            mt.Tool(
+                name="analyze_corpus",
+                description=(
+                    "Compute token and length statistics over all chunks in a "
+                    "dataset.  Returns n_chunks, token_stats (p50/p95/mean/min/"
+                    "max/token_total/n), and n_documents.  Read-only — no "
+                    "backend writes."
+                ),
+                inputSchema=_ANALYZE_CORPUS_INPUT_SCHEMA,
+            ),
+            mt.Tool(
+                name="find_duplicates",
+                description=(
+                    "Detect exact and near-duplicate chunks in a dataset.  "
+                    "Returns exact_duplicates (hash→[chunk_ids]) and "
+                    "near_duplicates (MinHash LSH clusters).  Read-only."
+                ),
+                inputSchema=_FIND_DUPLICATES_INPUT_SCHEMA,
+            ),
+            mt.Tool(
+                name="cluster_topics",
+                description=(
+                    "Cluster chunks by topic using HDBSCAN (or BERTopic).  "
+                    "Returns clusters, each with cluster_id, chunk_ids, and "
+                    "top_terms.  Read-only — no backend writes."
+                ),
+                inputSchema=_CLUSTER_TOPICS_INPUT_SCHEMA,
+            ),
+            mt.Tool(
+                name="score_quality",
+                description=(
+                    "Score chunk quality in [0, 1] using a fast heuristic.  "
+                    "Accepts chunk_ids (list) or dataset (all chunks).  "
+                    "persist=True writes scores to chunk_quality_signals — "
+                    "requires writes_enabled=True.  Default: persist=False "
+                    "(read-only)."
+                ),
+                inputSchema=_SCORE_QUALITY_INPUT_SCHEMA,
+            ),
         ]
         if writes_enabled:
             tools += [
@@ -994,6 +1117,15 @@ def build_server(
             return await _dispatch_list_ignore(arguments)
         if name == "validate_ignore":
             return await _dispatch_validate_ignore(arguments)
+        # Phase O Wave 4 analyze read tools — always available
+        if name == "analyze_corpus":
+            return await _dispatch_analyze_corpus(arguments)
+        if name == "find_duplicates":
+            return await _dispatch_find_duplicates(arguments)
+        if name == "cluster_topics":
+            return await _dispatch_cluster_topics(arguments)
+        if name == "score_quality":
+            return await _dispatch_score_quality(arguments)
         if writes_enabled:
             if name == "add_label":
                 return await _dispatch_add_label(arguments)
@@ -1368,6 +1500,40 @@ def build_server(
         if batch is None:
             return {"batch": None}
         return {"batch": asdict(batch)}
+
+    # ── Phase O Wave 4 analyze dispatchers ──────────────────────────────
+
+    async def _dispatch_analyze_corpus(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp._dispatch_analyze import (
+            _dispatch_analyze_corpus as _da_corpus,
+        )
+
+        backend = _get_write_backend()
+        return await _da_corpus(arguments, backend=backend, writes_enabled=writes_enabled)
+
+    async def _dispatch_find_duplicates(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp._dispatch_analyze import (
+            _dispatch_find_duplicates as _da_find_dups,
+        )
+
+        backend = _get_write_backend()
+        return await _da_find_dups(arguments, backend=backend, writes_enabled=writes_enabled)
+
+    async def _dispatch_cluster_topics(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp._dispatch_analyze import (
+            _dispatch_cluster_topics as _da_cluster,
+        )
+
+        backend = _get_write_backend()
+        return await _da_cluster(arguments, backend=backend, writes_enabled=writes_enabled)
+
+    async def _dispatch_score_quality(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp._dispatch_analyze import (
+            _dispatch_score_quality as _da_score,
+        )
+
+        backend = _get_write_backend()
+        return await _da_score(arguments, backend=backend, writes_enabled=writes_enabled)
 
     # ── write dispatchers (only reached when writes_enabled=True) ────────
 

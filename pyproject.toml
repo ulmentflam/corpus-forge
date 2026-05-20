@@ -326,6 +326,12 @@ ignore = ["PLR0911", "PLR0912", "PLR0913", "PLR0915"]
 # appear in sys.modules on module load (lazy-import contract, wave gate asserts
 # this with a python -c snapshot check).
 "corpus_forge/analyze/topics.py" = ["PLC0415"]
+# Phase O Wave 4: _dispatch_analyze.py — all analyze imports are lazy (function
+# bodies) so the MCP server does not load heavy deps on startup. PLR2004 for the
+# literal 2 used as minimum-cluster sentinel. ARG001 for writes_enabled on the
+# three read-only dispatch functions — the parameter is part of the uniform
+# dispatch API contract; it is used by _dispatch_score_quality.
+"corpus_forge/mcp/_dispatch_analyze.py" = ["PLC0415", "PLR2004", "ARG001"]
 # Tests use magic values, lambda args, broad raises, composite assertions freely
 "tests/**/*.py" = [
     "PLR2004",  # magic-value-comparison

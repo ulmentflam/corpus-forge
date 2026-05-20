@@ -161,6 +161,7 @@ class TestRegisteredTools:
         # J1:   estimate_sync_size is an always-available read tool (no backend writes).
         # J4:   next_curation_target + next_curation_batch are always-available read tools.
         # Phase M Wave 3: list_ignore + validate_ignore are always-available read tools.
+        # Phase O Wave 4: analyze_corpus + find_duplicates + cluster_topics + score_quality.
         server, _ = self._build()
         tools = _list_tools_via_handler(server)
         names = {t.name for t in tools}
@@ -175,10 +176,16 @@ class TestRegisteredTools:
             "next_curation_batch",
             "list_ignore",
             "validate_ignore",
+            # Phase O Wave 4 analyze read tools
+            "analyze_corpus",
+            "find_duplicates",
+            "cluster_topics",
+            "score_quality",
         }, (
-            f"Expected ten read tools (search/get_chunk/list_datasets/"
+            f"Expected fourteen read tools (search/get_chunk/list_datasets/"
             f"render_conversation/list_chat_templates/estimate_sync_size/"
-            f"next_curation_target/next_curation_batch/list_ignore/validate_ignore); "
+            f"next_curation_target/next_curation_batch/list_ignore/validate_ignore/"
+            f"analyze_corpus/find_duplicates/cluster_topics/score_quality); "
             f"got {names}"
         )
 
