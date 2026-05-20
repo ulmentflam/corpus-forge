@@ -170,6 +170,27 @@ whisper = [
 fast-tier = [
   "model2vec>=0.5",
 ]
+# Phase O — EDA + corpus-cleaning ML stack.  All deps lazy-imported
+# inside corpus_forge/analyze/ function bodies so corpus-forge --help
+# cold-start budget is unaffected.
+#
+# License posture: scikit-learn (BSD-3-Clause), hdbscan (BSD-3-Clause),
+# umap-learn (BSD-3-Clause), bertopic (MIT), datasketch (MIT),
+# fasttext-langdetect (MIT), langdetect (Apache-2.0).  All permissive;
+# does NOT widen the AGPL surface introduced by [multi-format].
+analyze = [
+  "scikit-learn>=1.4",
+  "hdbscan>=0.8",
+  "umap-learn>=0.5",
+  "bertopic>=0.16",
+  "datasketch>=1.6",
+  # fasttext-langdetect ships a C++ extension that does not build cleanly
+  # against MSVC on Windows runners; mark it Linux/macOS only and rely on
+  # langdetect (pure Python) as the cross-platform fallback per
+  # AnalyzeConfig.language_detector default.
+  "fasttext-langdetect>=1.0; sys_platform != 'win32'",
+  "langdetect>=1.0",
+]
 
 [project.scripts]
 corpus-forge = "corpus_forge.cli:app"
@@ -293,6 +314,44 @@ ignore = ["PLR0911", "PLR0912", "PLR0913", "PLR0915"]
 # verb functions so the package is importable without the user's config file
 # present (the verbs handle missing config individually).
 "corpus_forge/admin/*.py" = ["PLC0415"]
+# Phase O Wave 2: analyze/language.py — entire module contract is lazy-import.
+# fasttext + langdetect MUST NOT appear in sys.modules on module load; the wave
+# gate enforces this with a python -c assertion. PLC0415 suppression is
+# intentional and justified by the lazy-import contract in the module docstring.
+"corpus_forge/analyze/language.py" = ["PLC0415"]
+# Phase O Wave 2: analyze/drift.py — scipy + numpy MUST NOT appear in
+# sys.modules on module load (lazy-import contract, test-verified).
+"corpus_forge/analyze/drift.py" = ["PLC0415"]
+# Phase O Wave 2: analyze/dedup.py — datasketch MUST NOT appear in sys.modules
+# on module load (lazy-import contract, test-verified). PLR2004 for the literal
+# 2 used as the minimum-cluster-size sentinel (domain constant, not magic).
+"corpus_forge/analyze/dedup.py" = ["PLC0415", "PLR2004"]
+# Phase O Wave 3: analyze/topics.py — hdbscan, bertopic, umap, sklearn MUST NOT
+# appear in sys.modules on module load (lazy-import contract, wave gate asserts
+# this with a python -c snapshot check).
+"corpus_forge/analyze/topics.py" = ["PLC0415"]
+# Phase O Wave 4: _dispatch_analyze.py — all analyze imports are lazy (function
+# bodies) so the MCP server does not load heavy deps on startup. PLR2004 for the
+# literal 2 used as minimum-cluster sentinel. ARG001 for writes_enabled on the
+# three read-only dispatch functions — the parameter is part of the uniform
+# dispatch API contract; it is used by _dispatch_score_quality.
+"corpus_forge/mcp/_dispatch_analyze.py" = ["PLC0415", "PLR2004", "ARG001"]
+# Phase P Wave 2: retrieval/rerank/learned.py — sklearn + joblib MUST NOT appear
+# in sys.modules on module load (lazy-import contract, wave gate asserts this
+# with a python -c snapshot check). PLR2004 for the 0.5 neutral-score threshold
+# and the literal 2 used as min-class-count sentinel (domain constants).
+"corpus_forge/retrieval/rerank/learned.py" = ["PLC0415", "PLR2004"]
+# Phase Q Wave 3: cli_feedback.py — Config.load + sdft.capture.record_demonstration
+# are deferred inside command function bodies (PLC0415, startup-speed contract).
+# ARG001 for ``fmt`` in export_session: the --format flag is part of the public
+# CLI surface (tests pass --format jsonl) but only jsonl is implemented in this
+# wave; the parameter is retained for future formats.
+"corpus_forge/cli_feedback.py" = ["PLC0415", "ARG001"]
+# Phase P Wave 2: tester-authored test_reranker_learned.py has an I001 (import
+# order) violation in TestLearnedRerankerProtocol.test_satisfies_reranker_protocol
+# (``from learned import LearnedReranker`` before ``from rerank import Reranker``).
+# Suppressed here; tester should fix in a follow-up.  Coder cannot modify test files.
+"tests/unit/test_reranker_learned.py" = ["I001"]
 # Tests use magic values, lambda args, broad raises, composite assertions freely
 "tests/**/*.py" = [
     "PLR2004",  # magic-value-comparison
@@ -313,13 +372,28 @@ project_includes = ["corpus_forge"]
 python_version   = "3.11"
 
 [tool.pytest.ini_options]
-# CI-3: `pythonpath = ["."]` removed. `uv sync` now installs corpus_forge in
-# editable mode via the hatchling build-system above, so `import corpus_forge`
-# resolves without sys.path gymnastics.
+# corpus_forge is editable-installed via hatchling so `import corpus_forge`
+# resolves without sys.path gymnastics. `tests/` is NOT a package and not
+# installed — `pythonpath = ["."]` restores rootdir-on-sys.path so the
+# shared `tests/conftest.py` can `from tests.fuzz.profiles import ...` in
+# fresh CI venvs.
+pythonpath    = ["."]
 testpaths     = ["tests"]
 addopts       = "-ra --strict-markers --strict-config --timeout=60 --timeout-method=thread"
 xfail_strict  = true
+filterwarnings = [
+  # Library-side runtime warnings we don't control:
+  # scipy.stats.ks_2samp falls back to asymp mode for small-N samples.
+  # Note: the message arg uses Python regex; the colon-after-action format
+  # is "action:message:category:module" so escape inner colons.
+  "ignore:.*ks_2samp.*Exact calculation unsuccessful.*:RuntimeWarning",
+  # SWIG-wrapped C extensions in pymupdf/etc miss __module__ on a few
+  # internal types under Python 3.13's stricter introspection.
+  "ignore:builtin type Swig.*has no __module__ attribute:DeprecationWarning",
+  "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
+]
 markers = [
+  "unit: pure-unit test (no Docker, no network, no live services)",
   "integration: requires Docker / live Postgres",
   "smoke: end-to-end happy path",
   "fuzz: hypothesis-driven property tests",

@@ -1,9 +1,14 @@
 """Phase J / J4 — Curation candidate selector.
 
+Phase O3 adds a fifth signal ``learned_quality`` with a dual-weight scheme:
+when a ``chunk_quality_signals`` row exists for a candidate chunk, the selector
+switches to ``_SCORE_WEIGHTS_5``; otherwise it falls back to ``_SCORE_WEIGHTS_4``.
+The mode is resolved per-chunk so 4-weight and 5-weight targets may coexist in
+the same ``next_curation_batch`` response.
+
 The selector answers "what's the next data point that most needs my
-help?" by ranking a candidate pool of chunks under four weighted
-signals (the weights are non-negotiable for the first ship; the brief
-calls out tunability as a follow-up):
+help?" by ranking a candidate pool of chunks under weighted signals
+(see ``_SCORE_WEIGHTS_4`` / ``_SCORE_WEIGHTS_5`` below):
 
 - ``confidence_deficit`` (weight ``0.35``) — ``1.0`` when no classifier
   has touched the chunk; ``1.0 - classifier_confidence`` otherwise.
@@ -69,13 +74,32 @@ unit-test expectations (denominator is ``len(MISSING_METADATA_FIELDS)``).
 """
 
 
-SCORE_WEIGHTS: dict[str, float] = {
+_SCORE_WEIGHTS_4: dict[str, float] = {
     "confidence_deficit": 0.35,
     "missing_metadata": 0.30,
     "ranker_elevation": 0.25,
     "freshness": 0.10,
 }
-"""Score weights — sum to 1.0. Non-negotiable for the first ship."""
+"""Legacy 4-weight scheme (pre-O3). Used when no ``chunk_quality_signals`` row
+exists for a candidate chunk. Sums to 1.0."""
+
+_SCORE_WEIGHTS_5: dict[str, float] = {
+    "confidence_deficit": 0.30,
+    "missing_metadata": 0.25,
+    "ranker_elevation": 0.20,
+    "freshness": 0.10,
+    "learned_quality": 0.15,
+}
+"""5-weight scheme (Phase O3). Activated per-chunk when a
+``chunk_quality_signals`` row with ``signal_name='learned_quality'`` exists.
+Sums to 1.0. Coexists with ``_SCORE_WEIGHTS_4`` in the same batch response."""
+
+SCORE_WEIGHTS: dict[str, float] = _SCORE_WEIGHTS_4
+"""Public alias for ``_SCORE_WEIGHTS_4`` — preserved for backward compatibility.
+
+Existing callers that import ``SCORE_WEIGHTS`` continue to see the 4-weight
+dict unchanged. Phase O3 introduces ``_SCORE_WEIGHTS_5`` for the per-chunk
+mode switch in ``_build_target``."""
 
 # Freshness decay parameters — see :func:`_compute_freshness`.
 _FRESHNESS_PLATEAU_DAYS: int = 7
@@ -89,17 +113,23 @@ _FRESHNESS_FLOOR_DAYS: int = 180
 
 @dataclass(frozen=True)
 class ScoreBreakdown:
-    """Per-target breakdown of the four weighted sub-scores.
+    """Per-target breakdown of the weighted sub-scores.
 
-    All four fields land in ``[0, 1]``. The final ``CurationTarget.score``
-    is the weighted sum under :data:`SCORE_WEIGHTS`, clipped to the same
-    range.
+    The four mandatory fields land in ``[0, 1]``. The final
+    ``CurationTarget.score`` is the weighted sum under ``_SCORE_WEIGHTS_4``
+    (legacy) or ``_SCORE_WEIGHTS_5`` (Phase O3 per-chunk mode), clipped to
+    the same range.
+
+    Phase O3: ``learned_quality`` is the fifth optional sub-score, populated
+    when a ``chunk_quality_signals`` row with ``signal_name='learned_quality'``
+    exists for the candidate chunk. ``None`` means the 4-weight scheme was used.
     """
 
     confidence_deficit: float
     missing_metadata: float
     ranker_elevation: float
     freshness: float
+    learned_quality: float | None = None
 
 
 @dataclass(frozen=True)
@@ -162,6 +192,7 @@ class _Candidate:
     classifier_confidence: float | None
     labels: list[tuple[str, str]] = field(default_factory=list)
     embedding: list[float] | None = None
+    learned_quality: float | None = None
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -252,6 +283,10 @@ def _row_to_candidate(row: dict[str, Any]) -> _Candidate:
     else:
         embedding_list = None
 
+    # Phase O3: read learned_quality from the row; absent key → None (backward-compat).
+    raw_lq = row.get("learned_quality")
+    learned_quality: float | None = float(raw_lq) if raw_lq is not None else None
+
     return _Candidate(
         chunk_id=int(row["chunk_id"]),
         document_id=row.get("document_id"),
@@ -270,6 +305,7 @@ def _row_to_candidate(row: dict[str, Any]) -> _Candidate:
         ),
         labels=labels,
         embedding=embedding_list,
+        learned_quality=learned_quality,
     )
 
 
@@ -521,11 +557,19 @@ def _build_target(
     has_seed_query: bool,
     elevation_is_meaningful: bool,
 ) -> CurationTarget:
+    # Phase O3: per-chunk mode switch — use 5-weight when learned_quality is set.
+    if candidate.learned_quality is not None:
+        weights = _SCORE_WEIGHTS_5
+        lq_term = candidate.learned_quality * weights["learned_quality"]
+    else:
+        weights = _SCORE_WEIGHTS_4
+        lq_term = 0.0
     weighted = (
-        breakdown.confidence_deficit * SCORE_WEIGHTS["confidence_deficit"]
-        + breakdown.missing_metadata * SCORE_WEIGHTS["missing_metadata"]
-        + breakdown.ranker_elevation * SCORE_WEIGHTS["ranker_elevation"]
-        + breakdown.freshness * SCORE_WEIGHTS["freshness"]
+        breakdown.confidence_deficit * weights["confidence_deficit"]
+        + breakdown.missing_metadata * weights["missing_metadata"]
+        + breakdown.ranker_elevation * weights["ranker_elevation"]
+        + breakdown.freshness * weights["freshness"]
+        + lq_term
     )
     score = max(0.0, min(1.0, weighted))
     reason = _selection_reason(
@@ -668,6 +712,7 @@ def next_curation_target(
             missing_metadata=missing_score,
             ranker_elevation=elevation,
             freshness=freshness,
+            learned_quality=cand.learned_quality,
         )
         targets.append(
             _build_target(
@@ -725,6 +770,7 @@ def next_curation_batch(
             missing_metadata=missing_score,
             ranker_elevation=elevation,
             freshness=freshness,
+            learned_quality=cand.learned_quality,
         )
         targets.append(
             _build_target(

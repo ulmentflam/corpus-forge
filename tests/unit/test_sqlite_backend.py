@@ -221,6 +221,14 @@ class TestSchemaTablePresence:
             # H-01 (0008_feedback_sessions) adds feedback_sessions and feedback_events.
             "feedback_sessions",
             "feedback_events",
+            # O-01 (0012_analyze_signals) adds the EDA / quality signal tables.
+            "chunk_quality_signals",
+            "near_duplicate_clusters",
+            # P-01 (0013_search_sessions) adds search-session feedback tables.
+            "search_sessions",
+            "search_result_events",
+            # Q-01 (0014_sdft_demonstrations) adds SDFT capture table.
+            "sdft_demonstrations",
         ]
     )
 

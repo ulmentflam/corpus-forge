@@ -645,6 +645,47 @@ follow_symlinks = false
 workers = 1
 
 # ─────────────────────────────────────────────────────────────────────
+# Phase O Wave 1 — EDA + corpus-cleaning analysis.
+#
+# All fields are optional; omitting the block keeps default behaviour
+# (enabled = false, no analysis runs).  Heavy deps (scikit-learn,
+# hdbscan, umap-learn, bertopic, datasketch, fasttext-langdetect,
+# langdetect) are lazy-imported inside `corpus_forge/analyze/` function
+# bodies so `corpus-forge --help` cold-start budget is unaffected.
+# ─────────────────────────────────────────────────────────────────────
+[analyze]
+# Master on/off switch.  Set to true to enable EDA, dedup, and topic
+# clustering passes.
+enabled = false
+
+# Cosine-similarity floor for near-duplicate detection.  Pairs whose
+# similarity >= this threshold are grouped into the same cluster.
+dedup_threshold = 0.85
+
+# HDBSCAN minimum cluster size for topic clustering (must be >= 2).
+topic_min_cluster_size = 10
+
+# Language-detection backend: "langdetect" (pure-Python, default) or
+# "fasttext" for the faster binary model (requires fasttext-langdetect).
+language_detector = "langdetect"     # or "fasttext" for the binary
+
+# Base URL of the Ollama-compatible quality-judge endpoint.
+# Local-or-remote: same principle as [classifier].llm_url.
+judge_endpoint = "http://localhost:11434"   # Ollama default
+# judge_endpoint = "https://api.openai.com/v1"  # remote example
+
+# Ollama / OpenAI model tag for the quality judge.
+judge_model = "qwen2.5:7b-instruct"
+
+# Optional env-var name holding a bearer token for authenticated
+# endpoints.  Empty string (default) omits the Authorization header —
+# the right setting for a local unauthenticated Ollama instance.
+# judge_api_key_env = "OPENAI_API_KEY"
+
+# Per-request HTTP timeout in seconds (must be > 0).
+judge_timeout_s = 60.0
+
+# ─────────────────────────────────────────────────────────────────────
 # See `docs/architecture.md` for the full pipeline reference (every
 # protocol, every backend matrix, the local-or-remote URL principle as
 # a cross-cutting concern) and `docs/schema.md` for the database

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -221,6 +222,166 @@ def export_feedback_pairs(
         pq.write_table(table, str(out_path))
     else:
         raise ValueError(f"unsupported format: {format!r}; expected 'jsonl' or 'parquet'")
+
+
+def export_sdft(
+    dataset: str,
+    template: str,
+    out_path: Path,
+    format: str = "jsonl",
+    *,
+    backend=None,
+    held_out_fraction: float = 0.0,
+    include_sources: list[str] | None = None,
+    custom_jinja: str | None = None,
+    model_id: str | None = None,
+    push: str | None = None,
+) -> dict:
+    """Export a dataset's SDFT demonstrations as HF-compatible rows.
+
+    Row schema (exactly these keys):
+        {
+            "query": str,
+            "student_messages": list,
+            "teacher_messages": list,
+            "target": str,
+            "source": str,
+            "dataset_id": int,
+            "template": str,
+        }
+
+    When ``held_out_fraction > 0`` the rows are split deterministically
+    (via ``sha256(content_hash) % 100``) into two files:
+      - ``<out>.train.<ext>``
+      - ``<out>.held_out.<ext>``
+
+    Returns:
+        {
+            "row_count": int,
+            "train_count": int,
+            "held_out_count": int,
+            "out_paths": list[str],
+        }
+    """
+    if backend is None:
+        backend = _build_default_backend()
+
+    # 1. Find dataset_id by name.
+    dataset_id = backend.find_dataset_id_by_name(dataset)
+    if dataset_id is None:
+        raise ValueError(f"dataset {dataset!r} not found")
+
+    # Resolve template once before the loop (same path as export_chat).
+    resolved_model_id, resolved_custom_jinja = _tpl.resolve_template(
+        template,
+        backend=backend,
+        model_id=model_id,
+        custom_jinja=custom_jinja,
+    )
+
+    # 2. Fetch rows from the backend.
+    raw_rows = backend.list_sdft_demonstrations(dataset_id, include_sources=include_sources)
+
+    # 3. Build output rows.
+    rows: list[dict] = []
+    for raw in raw_rows:
+        # student_messages / teacher_messages may arrive as lists (Postgres JSONB)
+        # or as already-deserialized lists from the SQLite helper.
+        student_msgs = raw["student_messages"]
+        teacher_msgs = raw["teacher_messages"]
+        if isinstance(student_msgs, str):
+            student_msgs = json.loads(student_msgs)
+        if isinstance(teacher_msgs, str):
+            teacher_msgs = json.loads(teacher_msgs)
+
+        # Render template for completeness (result not stored in row schema,
+        # but resolve_template must not raise for known template names).
+        _tpl.render(
+            template,
+            student_msgs,
+            model_id=resolved_model_id,
+            custom_jinja=resolved_custom_jinja,
+        )
+
+        rows.append(
+            {
+                "query": raw["query"],
+                "student_messages": student_msgs,
+                "teacher_messages": teacher_msgs,
+                "target": raw["target"],
+                "source": raw["source"],
+                "dataset_id": raw["dataset_id"],
+                "template": template,
+            }
+        )
+
+    # 4. Split or write directly.
+    row_count = len(rows)
+
+    def _write_rows(dest: Path, row_list: list[dict]) -> None:
+        if format == "jsonl":
+            with dest.open("w", encoding="utf-8") as fh:
+                for row in row_list:
+                    fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        elif format == "parquet":
+            try:
+                import pyarrow as pa
+                import pyarrow.parquet as pq
+            except ImportError as exc:
+                raise RuntimeError(
+                    "parquet export requires pyarrow; install with `pip install 'corpus-forge[hf]'`"
+                ) from exc
+            table = pa.Table.from_pylist(row_list)
+            pq.write_table(table, str(dest))
+        else:
+            raise ValueError(f"unsupported format: {format!r}; expected 'jsonl' or 'parquet'")
+
+    # Derive file extension from out_path suffix.
+    suffix = out_path.suffix  # e.g. ".jsonl" or ".parquet"
+    stem = out_path.stem  # e.g. "sdft"
+    parent = out_path.parent
+
+    if held_out_fraction > 0.0 and row_count > 0:
+        # Deterministic split using sha256(content_hash) % 100.
+        threshold = int(held_out_fraction * 100)
+        train_rows: list[dict] = []
+        held_rows: list[dict] = []
+        for row, raw in zip(rows, raw_rows, strict=True):
+            content_hash = raw.get("content_hash") or ""
+            bucket = int(hashlib.sha256(content_hash.encode("utf-8")).hexdigest(), 16) % 100
+            if bucket < threshold:
+                held_rows.append(row)
+            else:
+                train_rows.append(row)
+
+        train_path = parent / f"{stem}.train{suffix}"
+        held_path = parent / f"{stem}.held_out{suffix}"
+        _write_rows(train_path, train_rows)
+        _write_rows(held_path, held_rows)
+
+        if push is not None:
+            _push_to_hub(train_path, push)
+            _push_to_hub(held_path, push)
+
+        return {
+            "row_count": row_count,
+            "train_count": len(train_rows),
+            "held_out_count": len(held_rows),
+            "out_paths": [str(train_path), str(held_path)],
+        }
+
+    # No split — write all rows to out_path directly.
+    _write_rows(out_path, rows)
+
+    if push is not None:
+        _push_to_hub(out_path, push)
+
+    return {
+        "row_count": row_count,
+        "train_count": row_count,
+        "held_out_count": 0,
+        "out_paths": [str(out_path)],
+    }
 
 
 def _build_default_backend():

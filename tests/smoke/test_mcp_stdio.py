@@ -165,9 +165,14 @@ def test_mcp_stdio_smoke(tmp_path: Path) -> None:
         "next_curation_batch",
         "list_ignore",
         "validate_ignore",
+        # Phase O Wave 4 — analyze read tools
+        "analyze_corpus",
+        "find_duplicates",
+        "cluster_topics",
+        "score_quality",
     }
     assert set(captured["tools"]) == _expected_read_tools, (
-        f"Expected ten read tools; got {captured['tools']}"
+        f"Expected {len(_expected_read_tools)} read tools; got {captured['tools']}"
     )
     assert not captured["search_isError"], (
         f"search returned isError=True; content={captured['search_content']}"

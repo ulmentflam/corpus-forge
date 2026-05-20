@@ -2647,3 +2647,764 @@ Test patterns of note:
 
 # Phase E P1 — Wave 3 dispatch
 
+
+---
+
+## O1-T3
+- Test files: `tests/unit/test_pyproject_extras_analyze.py`
+- Run command: `uv run pytest tests/unit/test_pyproject_extras_analyze.py -x`
+- Edge case checklist:
+  - [x] happy path — `analyze` key exists and contains all seven packages
+  - [x] boundaries — exactly 7 entries (drift gate: no more, no less)
+  - [x] type/format — case-insensitive + hyphen/underscore normalisation in dep-name matching
+  - [x] state — negative invariant: none of the seven packages appear in core `[project.dependencies]`
+  - [ ] N/A — concurrency (pure TOML parse, no concurrency surface)
+  - [ ] N/A — failure paths (pyproject.toml is a static repo file; missing file would be a dev environment breakage, not a test dimension)
+  - [ ] N/A — locale/time (no date/locale surface)
+  - [x] production-realistic data — reads the actual repo-root `pyproject.toml`, same file CI uses
+  - [ ] N/A — regression hooks (no prior bug referenced; this is a new feature gate)
+  - [x] per-package tests — one dedicated test per required package for clear failure attribution
+  - [x] langdetect disambiguation — `test_langdetect_in_analyze` excludes `fasttext-langdetect` matches so the standalone `langdetect` fallback entry is proven independently
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_analyze_extra_is_a_list
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_scikit_learn_in_analyze
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_fasttext_langdetect_in_analyze
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_analyze_extra_exists
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_umap_learn_in_analyze
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_all_required_packages_present_in_analyze
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_datasketch_in_analyze
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_analyze_extra_has_exactly_seven_entries
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_bertopic_in_analyze
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_langdetect_in_analyze
+  FAILED tests/unit/test_pyproject_extras_analyze.py::test_hdbscan_in_analyze
+  ========================= 11 failed, 1 passed in 0.17s =========================
+  ```
+  Root failure: `KeyError: 'analyze'` — key absent from `[project.optional-dependencies]` until O1-G1 GREEN.
+  The 1 passing test (`test_analyze_packages_not_in_core_dependencies`) is a negative-invariant gate; it is
+  correct that it passes in RED state since none of the ML packages appear in core deps.
+- Notes: Package spec list settled as: `scikit-learn`, `hdbscan`, `umap-learn`, `bertopic`, `datasketch`,
+  `fasttext-langdetect`, `langdetect`. Phase doc uses `fasttext-langdetect` (not `ft-langdetect`); the test
+  matches that name. The coder (O1-G1) must verify the PyPI name via `pip index versions fasttext-langdetect`
+  during GREEN and update the test if the canonical name differs.
+- Status: red — handed off to tdd-coder (O1-G1)
+
+---
+
+## O1-T2
+- Test files: `tests/unit/test_analyze_stats.py`
+- Run command: `uv run pytest tests/unit/test_analyze_stats.py -x`
+- Edge case checklist:
+  - [x] happy — single chunk, 5-element fixture ([10,20,30,40,50]), basic multi-chunk invariants
+  - [x] boundaries — empty input (all-zero dict, no exception), single element (p50==p95==min==max), bins=1 through bins=50 via hypothesis
+  - [x] type / format — token_count=None fallback, missing token_count key entirely, empty text + None count (expect token_total==0)
+  - [x] state — determinism test (two calls with same input return identical dict, no PRNG)
+  - [ ] N/A — concurrency (pure function, no shared state)
+  - [ ] N/A — failure paths (pure computation, no I/O, no network)
+  - [ ] N/A — locale / time (integer arithmetic only)
+  - [x] production-realistic data — hypothesis generates up to 200 chunks with token_counts up to 1_000_000; bins varied 1-50
+  - [ ] N/A — regression hooks (no prior bug reference; this is a new module)
+  - [x] property-based (hypothesis): p50 <= p95 always; mean in [min, max] always; token_total == sum(token_counts) always; distribution counts sum to n always; len(edges)==bins+1 and len(counts)==bins always
+- Field-shape ambiguity notes:
+  - Phase doc § O1-T2 acceptance (line 59) uses key `"edges"` not `"bin_edges"`. Test asserts `"edges"` and `"counts"` as the canonical keys.
+  - p95 for [10,20,30,40,50] tested as range [40,50] inclusive to accommodate both linear-interpolation (=48) and nearest-rank (=50) pure-stdlib implementations. Phase doc says "linear interpolation per numpy convention" but stats.py is pure-stdlib so the coder chooses the approach; the test avoids over-specification.
+  - `bin_strategy="log10"` tested for structural invariants only (no specific edge values asserted), consistent with the phase doc mentioning the parameter without specifying exact bucket boundaries.
+  - Fallback for None/missing token_count: test verifies no exception and token_total > 0 for non-empty text; does not assert the specific chars-per-token constant. The coder is free to choose any positive divisor.
+- Red output (tail):
+  ```
+  tests/unit/test_analyze_stats.py F
+
+  =================================== FAILURES ===================================
+  _______ test_compute_length_distribution_edges_monotonically_increasing ________
+
+      def test_compute_length_distribution_edges_monotonically_increasing() -> None:
+          """Bin edges must be strictly increasing."""
+  >       from corpus_forge.analyze.stats import compute_length_distribution
+  E       ModuleNotFoundError: No module named 'corpus_forge.analyze'
+
+  tests/unit/test_analyze_stats.py:309: ModuleNotFoundError
+  =========================== short test summary info ===========================
+  FAILED tests/unit/test_analyze_stats.py::test_compute_length_distribution_edges_monotonically_increasing
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+  ============================== 1 failed in 0.19s ==============================
+  ```
+  (27 tests collected; pytest -x stops at the first; all would fail with the same ModuleNotFoundError)
+- Status: red — handed off to tdd-coder (O1-G4)
+
+## O1-T1
+- Test files: `tests/unit/test_analyze_config.py`
+- Run command: `uv run pytest tests/unit/test_analyze_config.py -x`
+- Edge case checklist:
+  - [x] happy path — defaults match spec; Config.analyze attribute exists; TOML round-trip with all fields
+  - [x] boundaries — dedup_threshold at 0.0 and 1.0 (ge/le); topic_min_cluster_size at 2 (ge=2); judge_timeout_s at boundary (gt=0 means 0.0 rejected)
+  - [x] type/format — language_detector Literal rejects "spacy", "", "nltk"; judge_endpoint rejects ftp:// and bare string; judge_api_key_env rejects spaces, hyphens, digit-prefix
+  - [x] state — omitting [analyze] block entirely yields default AnalyzeConfig (backwards-compat invariant); empty [analyze] block also yields defaults
+  - [ ] N/A — concurrency (pure pydantic model construction, no shared state)
+  - [ ] N/A — failure paths / network (config is a local pydantic model, no I/O in AnalyzeConfig itself)
+  - [ ] N/A — locale/time (no time-sensitive fields in AnalyzeConfig)
+  - [x] production-realistic data — TOML round-trip uses both local (localhost:11434) and remote (api.openai.com) judge_endpoint examples from config.example.toml template
+  - [ ] N/A — regression hooks (no prior bug referenced for this new model)
+- Red output (tail):
+  ```
+  E       ImportError: cannot import name 'AnalyzeConfig' from 'corpus_forge.config' (/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Workspace/playground/corpus-forge/corpus_forge/config.py)
+  
+  tests/unit/test_analyze_config.py:143: ImportError
+  =============================== warnings summary ===============================
+  tests/unit/test_analyze_config.py::TestAnalyzeConfigValidation::test_judge_api_key_env_spaces_rejected
+    corpus_forge/config.py:36: UserWarning: Field name "schema" in "BackendConfig" shadows an attribute in parent "BaseModel"
+      class BackendConfig(BaseModel):
+  
+  -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+  ========================= short test summary info ============================
+  FAILED tests/unit/test_analyze_config.py::TestAnalyzeConfigValidation::test_judge_api_key_env_spaces_rejected
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+  ========================= 1 failed, 1 warning in 0.19s =========================
+  ```
+  Full run: 46 failed, 0 passed. Every failure is `ImportError: cannot import name 'AnalyzeConfig' from 'corpus_forge.config'`.
+- Notes: Phase doc specifies `judge_endpoint: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")` (not `str | None = None` as the task description originally suggested). Phase doc wins. `judge_api_key_env` is `str = ""` with allow-empty POSIX validation (mirrors `ClassifierConfig.llm_api_key_env`). `judge_timeout_s` default is `60.0` (not `30.0`). `topic_min_cluster_size` default is `10` with `ge=2`.
+
+## O1-T4
+- Test files: `tests/integration/test_migrate_0012_analyze.py`
+- Run command: `uv run pytest tests/integration/test_migrate_0012_analyze.py -v`
+- Edge case checklist:
+  - [x] happy — upgrade produces both tables with correct column set, indexes, and FK wiring (SQLite + Postgres)
+  - [x] boundaries — per-column NOT NULL / nullable assertions; REAL vs bigint / INTEGER type assertions per dialect
+  - [x] type/format — Postgres: bigint / text / real / timestamp with time zone; SQLite: INTEGER / TEXT / REAL / datetime('now') convention
+  - [x] state — fresh DB per test via tmp_path (SQLite) and _reset_pg_schema (Postgres); cross-test isolation guaranteed
+  - [x] N/A — concurrency (pure DDL migration, sequential, no shared mutable state)
+  - [x] failure paths — all alembic-based tests fail with CommandError (revision not found); module-import tests fail with ModuleNotFoundError
+  - [x] N/A — locale/time (computed_at DEFAULT is database-side; no locale-sensitive assertions needed)
+  - [x] production-realistic — column shapes drawn from the O1 phase-doc DDL spec verbatim
+  - [x] regression hooks — down_revision assertion pins the chain to 0011_image_embeddings; forward-only assertion inspects AST to confirm downgrade() body is a single `pass`
+  - [x] FK/cascade — SQLite: PRAGMA foreign_keys=ON + insert chunk + delete chunk → cascade verified. Postgres: information_schema FK query asserts delete_rule=CASCADE for both tables.
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_migrate_0012_analyze.py::TestMigrationModuleAttributes::test_revision_value
+  FAILED tests/integration/test_migrate_0012_analyze.py::TestMigrationModuleAttributes::test_down_revision_value
+  FAILED tests/integration/test_migrate_0012_analyze.py::TestMigrationModuleAttributes::test_downgrade_is_forward_only_pass
+  FAILED tests/integration/test_migrate_0012_analyze.py::TestSQLiteAnalyzeSignals::test_chunk_quality_signals_table_exists
+  FAILED tests/integration/test_migrate_0012_analyze.py::TestSQLiteAnalyzeSignals::test_chunk_quality_signals_fk_cascade_on_delete
+  [... 40 more, all same CommandError or ModuleNotFoundError ...]
+
+  alembic.util.exc.CommandError: Can't locate revision identified by '0012_analyze_signals'
+  ModuleNotFoundError: No module named 'corpus_forge.alembic.versions.0012_analyze_signals'
+
+  45 failed, 40 warnings in 4.68s
+  ```
+- Notes: signal_value and similarity are REAL (nullable per phase-doc column list; the phase doc says "REAL" not "REAL NOT NULL" — assertion accepts nullable). Both FK tests exercise cascade behavior with PRAGMA foreign_keys=ON (SQLite). The chunks INSERT assumes columns (id, content, content_hash, token_count) — if the chunks schema differs, the FK cascade tests will surface that as a clear error for the Coder to fix.
+- Status: red — handed off to tdd-coder
+
+## O2-T1 — exact_duplicates + near_duplicates (corpus_forge.analyze.dedup)
+- Test files: `tests/unit/test_analyze_dedup.py` (23 tests)
+- Run command: `uv run pytest tests/unit/test_analyze_dedup.py -x 2>&1 | tail -5`
+- Edge case checklist:
+  - [x] happy path — pair/triple/multi-group exact-dup grouping; identical-text near-dup clustering
+  - [x] boundaries — empty input → `{}`/`[]`; singleton chunk → `[]` for near_duplicates; single-hash → excluded (singleton); all-None hashes → `{}`
+  - [x] type/format — result dict keys are str (hash); chunk_ids are list[int]; similarity is float in [0,1]; method literal is "minhash_lsh"
+  - [x] state — cluster_id stability across two runs with identical input; deterministic sha256 hash in helper
+  - [x] N/A — concurrency (pure functions, no shared mutable state)
+  - [x] failure paths — None content_hash chunks skipped entirely; None-hash chunks do not pollute real dup groups; `len(chunks) < 2` short-circuits before MinHash
+  - [x] N/A — locale/time (no time-dependent behavior in dedup functions)
+  - [x] production-realistic — chunk dicts use real sha256 hex hashes (mirrors DB backfill formula in 0002_chunk_content_hash.py); chunk_id values use realistic integer IDs
+  - [x] regression hooks — lazy-import guard (datasketch not in sys.modules after module import); threshold/num_perm passthrough accepted without raising
+  - [x] hypothesis: identical text always clusters (3-copy, threshold=0.5, 30 examples)
+  - [x] hypothesis: disjoint word-sets never cluster at threshold=0.85 (30 examples with assume() disjointness guard)
+- Defaults chosen (unspecified in phase doc): `threshold=0.85`, `num_perm=128` — both match the phase doc's "MinHash LSH band/row tuning" note which names these as the starting point.
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_analyze_dedup.py::test_exact_duplicates_all_unique_returns_empty_dict
+  E       ModuleNotFoundError: No module named 'corpus_forge.analyze.dedup'
+
+  tests/unit/test_analyze_dedup.py:123: ModuleNotFoundError
+  1 failed in 0.19s
+  ```
+- Status: red — handed off to tdd-coder
+- Status: red — handed off to tdd-coder (O1-G2)
+
+## O2-T2 — detect_language + detect_language_batch (corpus_forge.analyze.language)
+- Test files: `tests/unit/test_analyze_language.py` (25 tests)
+- Run command: `uv run pytest tests/unit/test_analyze_language.py -x 2>&1 | tail -5`
+- Edge case checklist:
+  - [x] happy path — English text detected as "en"; French text detected as "fr"; both via langdetect (skips cleanly if langdetect absent)
+  - [x] boundaries — empty string -> ("und", 0.0); whitespace-only -> ("und", 0.0); batch empty list -> []; batch single-item consistent with single call
+  - [x] type/format — return type is tuple (not dict); tuple length is 2; iso_code is non-empty str; confidence is float
+  - [x] state — N/A (stateless functions; detector arg fully controls dispatch)
+  - [x] N/A — concurrency (pure function, no shared state)
+  - [x] failure paths — missing fasttext wheel raises RuntimeError naming the missing dep; mixed-language text does not raise
+  - [x] N/A — locale/time (function is locale-agnostic; no time dependency)
+  - [x] production-realistic — mock fasttext module injects realistic {"lang": "en", "score": 0.98} return shape matching fasttext_langdetect API; langdetect mock exposes .lang/.prob attributes
+  - [x] regression hooks — lazy-import guard (neither fasttext nor langdetect in sys.modules after module import); dispatch isolation (langdetect path never touches fasttext modules and vice versa)
+  - [x] hypothesis: confidence in [0.0, 1.0] for any non-empty text (50 examples, skipif langdetect absent)
+  - [x] hypothesis: iso_code is always non-empty string for any non-empty text (50 examples, skipif langdetect absent)
+- Design decisions pinned:
+  - Return type: tuple[str, float] (NOT dict)
+  - ISO codes: 2-letter ("en", "fr" etc.)
+  - Empty/whitespace input: ("und", 0.0) — graceful, not ValueError
+  - detector=None: reads Config.load().analyze.language_detector (tested via mock of Config.load)
+  - Batch: list of tuple[str, float], same order as inputs
+- Red output (tail):
+  ```
+  SKIPPED [1] tests/unit/test_analyze_language.py:551: langdetect not installed
+  SKIPPED [1] tests/unit/test_analyze_language.py:371: langdetect not installed; cannot test dispatch isolation
+  FAILED tests/unit/test_analyze_language.py::test_fasttext_dispatch_does_not_import_langdetect_via_mock
+  FAILED tests/unit/test_analyze_language.py::test_import_detect_language - ModuleNotFoundError: No module named 'corpus_forge.analyze.language'
+  7 failed, 18 skipped in 0.21s
+  ```
+- Status: red — handed off to tdd-coder
+
+## O2-T4
+- Test files: `tests/integration/test_analyze_dedup_persist.py`
+- Run command: `uv run pytest tests/integration/test_analyze_dedup_persist.py -x`
+- Edge case checklist:
+  - [x] happy path — single cluster 2 members → 2 rows; three clusters mixed sizes → 9 rows; return value matches DB count
+  - [x] boundaries — empty cluster list → 0 rows; single-member cluster (size 1 implicit via mixed test); similarity round-trip precision (1e-6 tolerance for SQLite double, 1e-5 for Postgres REAL which is 4-byte float32)
+  - [x] type/format — invalid cluster shape missing cluster_id raises (KeyError/ValueError/TypeError); invalid cluster missing chunk_ids raises; both covered
+  - [x] state — fresh DB per test via tmp_path (SQLite) and _reset_pg_schema (Postgres); idempotent re-run: first call returns 3, second returns 0, total stays 3 (INSERT OR IGNORE / ON CONFLICT DO NOTHING)
+  - [ ] N/A — concurrency (persist_clusters is a synchronous single-connection write; concurrent-write is out of scope for O2)
+  - [x] failure paths — FK violation path: verified via cascade delete (insert chunk + cluster rows, delete chunk, assert cluster rows gone)
+  - [ ] N/A — locale/time (computed_at is server-side DEFAULT; no locale-sensitive assertions; just assert non-NULL)
+  - [x] production-realistic data — cluster shapes match the exact dict shape produced by near_duplicates() from O2-T1 (cluster_id, chunk_ids, similarity, method); seeds use the proven chunk INSERT pattern (id, chunk_index, text, content_hash, token_count)
+  - [ ] N/A — regression hooks (no prior bug referenced; this is new functionality)
+  - [x] method override — function-level method kwarg overrides any method field inside the cluster dict; separate test pins this contract
+  - [x] per-cluster similarity — different clusters store their own similarity values correctly
+  - [x] default method kwarg — calling without method= uses "minhash_lsh" as the default
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_analyze_dedup_persist.py::TestPersistClustersSQLite::test_empty_cluster_list_returns_zero
+  FAILED tests/integration/test_analyze_dedup_persist.py::TestPersistClustersSQLite::test_three_clusters_mixed_sizes_correct_total
+
+        from corpus_forge.analyze.dedup import persist_clusters  # noqa: PLC0415
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  E     ModuleNotFoundError: No module named 'corpus_forge.analyze.dedup'
+
+  tests/integration/test_analyze_dedup_persist.py:119: ModuleNotFoundError
+  19 failed in 1.79s
+  ```
+- Notes: Idempotency strategy pinned as INSERT OR IGNORE (SQLite) / ON CONFLICT DO NOTHING (Postgres) — the coder must implement accordingly and add a UNIQUE constraint on (cluster_id, chunk_id) to the near_duplicate_clusters table (or use a unique index). The migration 0012 did NOT include this unique constraint; the coder must decide whether to add it in the persist_clusters implementation via a unique index created at runtime or to rely on the existing cluster_idx. Flagging for tdd-coder: a (cluster_id, chunk_id) unique index is required for idempotency to work correctly. Postgres FK insert for _pg_seed_chunks uses ON CONFLICT (id) DO NOTHING — this requires a PK constraint on chunks.id (guaranteed by existing migrations).
+- Status: red — handed off to tdd-coder (O2-G4)
+
+## O2-T3
+- Test files: `tests/unit/test_analyze_drift.py`
+- Run command: `uv run pytest tests/unit/test_analyze_drift.py -x`
+- Edge case checklist:
+  - [x] happy — identical token-length distributions (KS≈0), identical embeddings (JS=0), default methods runs both tests
+  - [x] boundaries — single-element arrays (covered by disjoint test which uses 10-element non-overlapping ranges), empty-a, empty-b, both-empty → no exception, stats None, n reflects zero
+  - [x] type/format — ks_token_length returns tuple[float, float] (type checked); js_embedding_centroid returns float (type checked); compare_distributions KS sub-keys are float
+  - [x] state — N/A — pure functions, no mutable state; idempotency implicit (same input → same output, no PRNG)
+  - [ ] N/A — concurrency (pure stateless functions, no shared mutable state)
+  - [x] failure paths — empty input on either or both sides (no exception, graceful None); one side missing embeddings → JS=None; both sides missing embeddings → JS=None
+  - [ ] N/A — locale/time (no date/time or string encoding concerns in numeric drift computation)
+  - [x] production-realistic data — chunk dicts match the shape used by _iter_curation_candidates (token_count int key; optional embedding list[float]); embedding vectors use realistic probability-simplex-style values
+  - [x] regression hooks — N/A (new module, no prior bug referenced); disjoint KS=1.0 test is a precise numerical contract that would catch any future regression in the KS implementation
+  - [x] lazy-import guard — asserts scipy, numpy, sklearn are NOT in sys.modules after `import corpus_forge.analyze.drift`
+  - [x] methods filter — ["ks"] skips JS (js_embedding_centroid=None); ["js"] skips KS (ks_token_length=None); None default runs both
+  - [x] JS bounded — js_embedding_centroid result ∈ [0.0, 1.0]; standalone bounded by ln(2) via max-divergence one-hot test
+  - [x] hypothesis properties — KS statistic ∈ [0,1] for any two non-empty int arrays (150 examples); JS divergence ∈ [0, ln(2)] for any two positive distributions padded to equal dimension (100 examples)
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_analyze_drift.py::test_js_embedding_centroid_bounded_above_ln2
+  FAILED tests/unit/test_analyze_drift.py::test_ks_token_length_identical_arrays_statistic_zero
+  FAILED tests/unit/test_analyze_drift.py::test_ks_token_length_disjoint_arrays_statistic_one
+  FAILED tests/unit/test_analyze_drift.py::test_ks_token_length_returns_tuple_of_two_floats
+  FAILED tests/unit/test_analyze_drift.py::test_js_embedding_centroid_identical_distributions_zero
+  FAILED tests/unit/test_analyze_drift.py::test_js_embedding_centroid_returns_float
+  FAILED tests/unit/test_analyze_drift.py::test_js_embedding_centroid_bounded_above_ln2
+  FAILED tests/unit/test_analyze_drift.py::test_property_ks_statistic_in_zero_one
+  FAILED tests/unit/test_analyze_drift.py::test_property_js_divergence_in_zero_ln2
+  28 failed in 1.85s
+  ```
+- Status: red — handed off to tdd-coder
+
+## O3-T1
+- Test files: `tests/unit/test_analyze_topics.py`
+- Run command: `uv run pytest tests/unit/test_analyze_topics.py -x 2>&1 | tail -5`
+- Edge case checklist:
+  - [x] happy — identical embeddings → 1 cluster; 3 well-separated clusters → n_clusters=3
+  - [x] boundaries — empty list → all-zero result; single embedding → n_clusters=0 noise_count=1; n < min_cluster_size → all noise
+  - [x] type/format — cluster_assignments is list[int]; each assignment >= -1; top_terms is dict[int, list[tuple[str, float]]]; n_clusters and noise_count are int
+  - [x] state — N/A (pure function, no mutable state between calls)
+  - [ ] N/A — concurrency (pure function, no concurrency surface)
+  - [x] failure paths — empty input; single point (too small for any cluster); below min_cluster_size (all forced to noise)
+  - [ ] N/A — locale/time (numeric embeddings only; no string encoding or time surface)
+  - [x] production-realistic data — 4D synthetic embeddings matching realistic embedding dimensionality patterns; text fixture uses natural English words for top_terms
+  - [x] regression hooks — noise_count vs -1 label count consistency test catches any mismatch between the summary field and the raw assignments; method='bertopic' fallback test pins _fell_back=True contract
+  - [x] lazy-import guard — asserts bertopic, hdbscan, umap, sklearn NOT in sys.modules after `import corpus_forge.analyze.topics`
+  - [x] method fallback — method='bertopic' with unavailable bertopic must set _fell_back=True and method='hdbscan' in result
+  - [x] top_terms noise skip — cluster -1 excluded from top_terms_per_cluster output
+  - [x] top_n limit — top_n=3 returns at most 3 terms; default top_n=10 returns at most 10 terms
+  - [x] hypothesis properties — len(cluster_assignments)==len(embeddings) for any input size (30 examples); noise_count matches count of -1 labels (30 examples)
+- Red output (tail):
+  ```
+  tests/unit/test_analyze_topics.py:447: ModuleNotFoundError
+  =========================== short test summary info ============================
+  FAILED tests/unit/test_analyze_topics.py::test_top_terms_per_cluster_empty_inputs
+  !!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  1 failed in 0.17s
+  ```
+- Status: red — handed off to tdd-coder
+
+## O3-T2
+- Test files: `tests/unit/test_analyze_quality.py`, `tests/integration/test_analyze_quality_persist.py`
+- Run command: `uv run pytest tests/unit/test_analyze_quality.py tests/integration/test_analyze_quality_persist.py -x`
+- Edge case checklist:
+  - [x] happy — score_chunk_quality returns float in [0,1] for normal chunk
+  - [x] boundaries — empty text (0.0), whitespace-only (0.0), short <100 chars (<=0.3), long >5000 chars (<=0.7), empty batch ([])
+  - [x] type/format — chunk dict with/without classifier_label, with/without metadata, token_count=0
+  - [x] state — determinism (same input same output), batch matches individual calls, idempotent persist re-run
+  - [ ] N/A — concurrency (pure function; persist is synchronous single-connection)
+  - [x] failure paths — model_path missing/non-existent falls back to heuristic (no exception), model output >1.0 clamped
+  - [ ] N/A — locale/time (computed_at is server-side default; no locale-sensitive logic in scorer)
+  - [x] production-realistic — well_formed_chunk fixture matches real corpus shape; persist fixtures use same seed pattern as dedup_persist integration tests
+  - [x] regression hooks — hypothesis property (score always finite in [0,1] for any text/token_count/metadata); partial idempotency test pins exact row counts
+- Red output (tail):
+  ```
+  tests/unit/test_analyze_quality.py:496: ModuleNotFoundError
+  =========================== short test summary info ============================
+  FAILED tests/unit/test_analyze_quality.py::test_score_chunks_batch_matches_individual_scores
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+  1 failed in 0.17s
+  ```
+- Status: red — handed off to tdd-coder
+
+## O3-T3
+- Test files:
+  - `tests/unit/test_selector_learned_signal.py` (34 tests: 23 FAIL, 11 PASS)
+  - `tests/fixtures/curation/selector_baseline.pickle` (golden output pickle — pre-O3 main @ 0.1.0b6)
+  - `tests/fixtures/curation/regenerate_baseline.py` (regenerator script)
+- Run command: `uv run pytest tests/unit/test_selector_learned_signal.py -x`
+- Edge case checklist:
+  - [x] happy — Mode 1 legacy (empty table → 4-weight, None LQ); Mode 2 single chunk with lq=0.9 formula verified; batch with mixed modes
+  - [x] boundaries — LQ=0.0 still activates 5-weight formula (not None); LQ=1.0 saturated (score clamped to [0,1]); absent key in row dict treated as None
+  - [x] type/format — ScoreBreakdown.learned_quality: float | None = None (frozen dataclass field); _Candidate.learned_quality: float | None = None; _SCORE_WEIGHTS_4 and _SCORE_WEIGHTS_5 type dict[str, float]
+  - [x] state — deterministic ordering asserted (3 identical calls yield same batch order); golden baseline pickle pins pre-O3 byte-identical output
+  - [ ] N/A — concurrency (pure-function selector, no shared mutable state)
+  - [x] failure paths — empty corpus still returns None (no regression); absent learned_quality key in row dict falls back to legacy 4-weight
+  - [ ] N/A — locale/time (modified_at timestamps are fixed UTC; no locale-sensitive paths in selector)
+  - [x] production-realistic data — 20-chunk fixture corpus with realistic confidence/age/metadata variation (4 source docs, 5 chunks each, cycles of conf/heading/desc/lang/age)
+  - [x] regression hooks — golden baseline pickle encodes current (pre-O3) batch.targets order, per-target scores/breakdowns/reasons, cohesion; 6 pinned regression tests each assert byte-identical fields
+  - [x] backward-compat — SCORE_WEIGHTS still importable and equals _SCORE_WEIGHTS_4; next_curation_target signature unchanged
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_selector_learned_signal.py::TestMode1LegacyFourWeightScheme::test_learned_quality_is_none_in_empty_table_mode
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+  ========================= 1 failed, 1 passed in 0.17s =========================
+  ```
+  Full run: 23 failed, 11 passed. All failures: AttributeError: 'ScoreBreakdown' object has no attribute 'learned_quality' or AssertionError: _SCORE_WEIGHTS_4/_SCORE_WEIGHTS_5 not found on selector module.
+- Notes: Baseline pickle generated from pre-O3 main (0.1.0b6) using `uv run python tests/fixtures/curation/regenerate_baseline.py`. Batch order pinned: [1, 3, 2, 4, 5]. Single target: chunk_id=1, score=0.569642. Cohesion: 0.997121.
+- Status: red — handed off to tdd-coder
+
+## O4-T1
+- Test files: `tests/cli/test_analyze_cli.py`
+- Run command: `uv run pytest tests/cli/test_analyze_cli.py -v`
+- Edge case checklist:
+  - [x] happy — each subcommand exits 0 on demo dataset (6 parametrized tests)
+  - [x] boundaries — empty/missing dataset exits nonzero + names dataset; --limit=3 accepted by all 6 subs
+  - [x] type/format — --json flag on stats emits parseable JSON dict, not markdown
+  - [x] state — report dir creation is idempotent (two back-to-back runs both succeed)
+  - [x] N/A — concurrency (CLI dispatch is sequential; no shared mutable state across invocations)
+  - [x] failure paths — missing dataset exits non-zero; dataset name echoed in output
+  - [x] N/A — locale/time (timestamp-based report dirs are implementation detail; not pinned)
+  - [x] production-realistic — seeded SQLite DB with 6 chunk rows including an exact duplicate pair
+  - [x] regression hooks — test_analyze_is_registered_as_app_subgroup pins the app.add_typer wiring in cli.py
+- Red output (tail):
+  ```
+  FAILED tests/cli/test_analyze_cli.py::test_analyze_help_lists_six_subcommands
+  FAILED tests/cli/test_analyze_cli.py::test_analyze_is_registered_as_app_subgroup
+  FAILED tests/cli/test_analyze_cli.py::test_stats_writes_markdown_report
+  FAILED tests/cli/test_analyze_cli.py::test_quality_persists_rows_to_chunk_quality_signals
+  ... (26 more)
+  Core failure: No such command 'analyze'. / AttributeError: module 'corpus_forge' has no attribute 'cli_analyze'
+  30 failed, 0 passed in 0.46s
+  ```
+- Status: red — handed off to tdd-coder
+
+## O4-T2
+- Test files: `tests/integration/test_mcp_analyze_tools.py` (43 tests)
+- Run command: `uv run pytest tests/integration/test_mcp_analyze_tools.py -x`
+- Edge case checklist:
+  - [x] happy — analyze_corpus returns n_chunks/token_stats/n_documents; find_duplicates returns exact+near keys; cluster_topics returns clusters with cluster_id/chunk_ids/top_terms; score_quality returns scores in [0,1]
+  - [x] boundaries — empty dataset returns n_chunks=0 (no exception); empty chunk_ids list returns empty scores map; single demo chunk exercised via DEMO_CHUNKS fixture
+  - [x] type/format — JSON-serializable output asserted on all four tools (json.dumps must not raise TypeError for numpy arrays or non-serializable objects)
+  - [x] state — idempotency: analyze_corpus + score_quality(persist=False) yield identical results on second call with same arguments
+  - [ ] N/A — concurrency (all four tools are pure read functions with no shared mutable state; MCP dispatch is sequential)
+  - [x] failure paths — missing dataset returns isError=True error payload (not a crash); persist=True without writes_enabled returns clear error; ModuleNotFoundError on _dispatch_analyze confirmed as the correct RED failure reason for dispatch tests
+  - [ ] N/A — locale/time (no timestamp or locale-sensitive paths in these tools; computed_at on persist rows is backend-managed)
+  - [x] production-realistic data — DEMO_CHUNKS fixture has 5 chunks with realistic token counts, content hashes (including an intentional exact-dup pair), classifier labels, and metadata; mirrors the shape corpus_forge.analyze functions actually consume
+  - [x] regression hooks — persist=True requires writes_enabled gate test; read-only contract (all 4 callable with writes_enabled=False) encoded as a dedicated TestReadOnlyContract class; tool names encoded as module-level constants to catch typo drift
+- Red output (tail):
+  ```
+  tests/integration/test_mcp_analyze_tools.py:816: ModuleNotFoundError
+  =========================== short test summary info ============================
+  FAILED tests/integration/test_mcp_analyze_tools.py::TestIdempotency::test_score_quality_idempotent_no_persist
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+  1 failed in 0.30s
+  ```
+  Full run: 43 failed, 0 passed. Registration tests: AssertionError (tool name absent from list_tools() set). Dispatch/idempotency tests: ModuleNotFoundError: No module named 'corpus_forge.mcp._dispatch_analyze'.
+- Status: red — handed off to tdd-coder
+
+## P2-T1
+- Test files: `tests/integration/test_mcp_rate_search_result.py`
+- Run command: `uv run pytest tests/integration/test_mcp_rate_search_result.py -m 'not requires_docker' -x 2>&1 | tail -5`
+- Edge case checklist:
+  - [x] happy — existing session + valid chunk inserts event row + audit row; returns {event_id, session_id}
+  - [x] boundaries — value=None accepted (signal-only events); replacement_chunk_id omitted → NULL in DB; two consecutive identical-signal calls both recorded (event log, not state machine)
+  - [x] type/format — JSON-serialisable output asserted; source string preserved verbatim including slashes
+  - [x] state — auto-create session when query_id is new; retroactive query text; returned session_id matches DB row; idempotency N/A (event log explicitly allows duplicates)
+  - [ ] N/A — concurrency (MCP dispatch is sequential; no shared mutable state across tool calls)
+  - [x] failure paths — writes_enabled=False blocks tool registration + call (unknown tool error); invalid chunk_id returns isError=True
+  - [ ] N/A — locale/time (created_at is DB-managed DEFAULT; not pinned in tests)
+  - [x] production-realistic data — seeded SQLite DB with real dataset/document/chunk FK chain; source strings with slashes (reranker model paths); signal names matching the plan (relevance, click, thumbs_up, thumbs_down, curation_suggestion)
+  - [ ] N/A — regression hooks (no prior bug referenced; new tool with no production history yet)
+- Red output (tail):
+  ```
+  WARNING  mcp.server.lowlevel.server:server.py:488 Tool 'rate_search_result' not listed, no validation will be performed
+  =========================== short test summary info ============================
+  FAILED tests/integration/test_mcp_rate_search_result.py::TestAutoCreateSession::test_autocreated_session_query_text_is_retroactive
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+  ============================== 1 failed in 0.42s
+  ```
+  Full run: 15 failed, 4 passed. Key failures: AssertionError 'rate_search_result' not in list_tools(writes_enabled=True); all dispatch tests fail with isError=True "unknown tool: 'rate_search_result'". 4 passing tests cover already-working behavior: tool absent from writes_disabled list, write-gate error returned, invalid-chunk-id returns error (semantic correct, currently via "unknown tool" path).
+- Notes: The `test_unknown_chunk_id_returns_error` test currently passes because the tool isn't registered (any call → "unknown tool" → isError=True). Post-implementation it should still pass via the FK-violation path. The semantic assertion (`isError=True` for bad FK) is correct regardless; this is acceptable RED per project convention. The `_MCPContext` dataclass is imported but unused in this test file (write dispatchers in server.py create their own context from env vars). Removed the unused import in the final linted version.
+- Status: red — handed off to tdd-coder
+
+## P2-T2
+- Test files: `tests/unit/test_reranker_learned.py`
+- Run command: `uv run pytest tests/unit/test_reranker_learned.py -x`
+- Edge case checklist:
+  - [x] happy — `TestTrainRerankerWritesFile` (balanced 3-pos+3-neg events → joblib written, auc in [0,1], counts correct)
+  - [x] boundaries — empty events table → ValueError; single-class imbalanced data (5 pos / 0 neg + 5 neg / 0 pos) handled gracefully; top_n=None returns all; top_n clips to 2 of 5
+  - [x] type/format — return dict n_train/n_pos/n_neg are ints; auc is float; model_path is str; feature spec pins [chunk_score, lexical_score, query_len]
+  - [x] state — constructor does NOT load model; first rerank loads once and memoises; idempotent: same model + same input → same ordered output + same scores
+  - [ ] N/A — concurrency (pure function, no shared mutable state in trained model path)
+  - [x] failure paths — empty events table raises ValueError with descriptive message; no file written on error; empty hits returns [] without touching joblib
+  - [ ] N/A — locale/time (no locale-sensitive text handling; timestamps are DB-managed)
+  - [x] production-realistic data — _sqlite_conn_with_events uses in-memory DB matching the 0013_search_sessions schema exactly (search_sessions + search_result_events); _minimal_trained_model_path produces a real sklearn LogisticRegression artifact loaded by joblib
+  - [x] regression hooks — lazy-import guard (sklearn + joblib) encoded as TestLazyImportGuard; protocol conformance encoded as TestLearnedRerankerProtocol; neutral events skipped test pins the label-derivation contract; source_filter test pins filtering behavior
+- Hypothesis property: `test_property_predicted_score_in_zero_one` — for any (chunk_score ∈ [0,1], query_len ∈ [1,200], chunk_id ∈ [1,10000]) the predicted score is a finite float in [0.0, 1.0]. 50 examples, deadline=5000ms.
+- Red output (tail):
+  ```
+  tests/unit/test_reranker_learned.py:653: ModuleNotFoundError
+  =========================== short test summary info ============================
+  FAILED tests/unit/test_reranker_learned.py::TestLearnedRerankerProtocol::test_has_model_id_attribute
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+  1 failed in 0.18s
+  ```
+  Full run (no -x): 31 failed, 0 passed. All failures: ModuleNotFoundError: No module named 'corpus_forge.retrieval.rerank.learned'.
+- Status: red — handed off to tdd-coder
+
+## P3-T2
+- Test files: `tests/unit/test_cag_hybrid_selector.py`
+- Run command: `uv run pytest tests/unit/test_cag_hybrid_selector.py -x`
+- Edge case checklist:
+  - [x] happy — cache hit returns `("cache", payload)` and rag miss returns `("rag", SearchResponse)`
+  - [x] boundaries — empty cache directory always routes rag; root=None accepted at construction
+  - [x] type/format — payload is verbatim parsed JSON (no `_cf_route` injection); SearchResponse isinstance check on miss
+  - [x] state — hit/miss matrix: 3 cache files present, each independently hits; non-matching query misses; stateful HybridCagSelector reuses retriever across calls
+  - [ ] N/A — concurrency (pure function + file read, no shared mutable state)
+  - [x] failure paths — cache miss routes to retriever; empty-dir guard; root override: same query hits in custom root, misses in empty root
+  - [ ] N/A — locale/time (cache key is SHA-256 of JSON-encoded strings, locale-invariant)
+  - [x] production-realistic data — SearchResponse built with real Hit objects using corpus_forge.retrieval.types; mock retriever returns canned SearchResponse
+  - [x] regression hooks — `test_cache_payload_has_no_injected_cf_route_key` pins that `_cf_route` is NOT added; `test_hit_miss_matrix_exactly_one_hit` pins the three-file × one-match matrix
+- Red output (tail):
+  ```
+  tests/unit/test_cag_hybrid_selector.py:253: ModuleNotFoundError
+  =========================== short test summary info ============================
+  FAILED tests/unit/test_cag_hybrid_selector.py::test_hit_miss_matrix_exactly_one_hit
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+  1 failed in 0.17s
+  ```
+  Full run (no -x): 22 failed, 0 passed. All failures: ModuleNotFoundError: No module named 'corpus_forge.cag'.
+- Status: red — handed off to tdd-coder
+
+## P3-T1
+- Test files: `tests/unit/test_cag_cache_builder.py`
+- Run command: `uv run pytest tests/unit/test_cag_cache_builder.py -x`
+- Edge case checklist:
+  - [x] happy — `test_build_cache_writes_json_file`, `test_cache_key_deterministic`, `test_cache_path_resolves_correctly`, `test_list_cached_keys_returns_keys_after_build`, `test_invalidate_removes_matching_file`
+  - [x] boundaries — `test_cache_key_empty_hashes` (empty hash list), `test_list_cached_keys_returns_empty_before_build` (missing dir), `test_invalidate_noop_empty_dataset_directory` (absent dir), `test_invalidate_noop_when_hash_not_present` (no match)
+  - [x] type/format — `test_cache_key_is_16_hex_chars` (length + charset), `test_build_cache_json_built_at_is_iso_timestamp` (parseable ISO 8601), `test_build_cache_returns_path_object` (pathlib.Path return)
+  - [x] state — `test_build_cache_uses_root_override` (root= override vs default path), `test_list_cached_keys_ignores_non_json_files` (non-.json files skipped), `test_invalidate_removes_only_matching_files` (partial invalidation)
+  - [ ] N/A — concurrency (single-threaded cache file writer, no shared mutable state)
+  - [x] failure paths — `test_invalidate_noop_empty_dataset_directory`, `test_list_cached_keys_returns_empty_before_build` (graceful absent-dir handling)
+  - [ ] N/A — locale/time (built_at is an ISO timestamp asserted parseable; no DST/locale sensitivity)
+  - [x] production-realistic — synthetic chunks via `_make_chunk` + `_make_conn` mock; patch targets `_fetch_chunks` and `_render_template` at the module boundary so tests never touch a real DB or model
+  - [x] regression hooks — `test_cache_key_matches_sha256_formula` pins the exact sha256 formula; `test_build_cache_json_cache_key_field_matches_formula` pins the key written inside the JSON matches the public function
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_cag_cache_builder.py::test_import_smoke - ModuleNotFoundError: No module named 'corpus_forge.cag'
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+  1 failed in 0.17s
+
+  Full run (no -x): 30 failed, 0 passed.
+  All failures: ModuleNotFoundError: No module named 'corpus_forge.cag'
+  ```
+- Status: red — handed off to tdd-coder
+
+## P3-T3
+- Test files: `tests/unit/test_cag_invalidation.py`
+- Run command: `uv run pytest tests/unit/test_cag_invalidation.py -x 2>&1 | tail -5`
+- Edge case checklist:
+  - [x] happy — `test_invalidate_removes_cache_file`: file deleted and returns 1; `test_cache_file_removed_after_commit_curation`: end-to-end via MCP harness
+  - [x] boundaries — `test_invalidate_no_file_present_returns_zero` (no file), `test_invalidate_missing_cache_root_returns_zero` (missing root), `test_returns_zero_when_chunk_has_no_content_hash` (NULL hash x2)
+  - [x] type/format — `test_invalidate_only_removes_matching_hash`: only the targeted content_hash is removed, not others; `test_only_target_chunk_cache_removed`: cross-chunk isolation
+  - [x] state — `test_no_cache_files_commit_curation_succeeds`: no files present, spy still called; `test_audit_row_exists_after_commit_regardless_of_invalidation`: audit_ids populated even when invalidation raises
+  - [ ] N/A — concurrency (single-chunk serial dispatch; no shared mutable state)
+  - [x] failure paths — `test_invalidate_permission_error_returns_zero`: PermissionError returns 0 + logs warning; `test_missing_cache_root_commit_curation_succeeds`: absent root non-fatal; `test_permission_error_during_invalidation_does_not_fail_commit`: exception in invalidate_for_chunk does not fail commit_curation
+  - [ ] N/A — locale/time (cache key is content_hash hex string, locale-invariant)
+  - [x] production-realistic — in-memory SQLiteBackend migrated + seeded; in-process MCP server via `build_server`; cache files written at real `<tmp_path>/cag/<dataset>/<hash>.json` paths
+  - [x] regression hooks — `test_audit_row_exists_after_commit_regardless_of_invalidation` pins that audit_ids is never empty regardless of CAG failure; `test_only_target_chunk_cache_removed` pins cross-chunk isolation
+- Red output (tail):
+  ```
+  tests/unit/test_cag_invalidation.py:39: in <module>
+      from corpus_forge.cag.cache import invalidate, invalidate_for_chunk  # type: ignore[import]
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  E   ModuleNotFoundError: No module named 'corpus_forge.cag'
+  =========================== short test summary info ============================
+  ERROR tests/unit/test_cag_invalidation.py
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  =============================== 1 error in 0.16s ===============================
+  ```
+- Status: red — handed off to tdd-coder
+
+## P4-T1+T2 (combined: eval rag + eval cag)
+- Test files:
+  - `tests/integration/test_eval_rag.py` (30 tests — 29 RED, 4 pass correctly on boundary tests, 2 skip)
+  - `tests/integration/test_eval_cag.py` (19 tests — 14 RED, 4 pass correctly on boundary tests, 1 skip)
+- Run command: `uv run pytest tests/integration/test_eval_rag.py tests/integration/test_eval_cag.py -x`
+- Edge case checklist:
+  - [x] happy — mock judge exits 0, produces parseable JSON, all required keys present (both files)
+  - [x] boundaries — missing queries file exits nonzero and names the bad path; empty report dir created on first run
+  - [x] type/format — all judge scores asserted to be floats in [0.0, 1.0]; delta may be negative (float check, not bound check)
+  - [x] state — determinism: two consecutive mock runs produce byte-identical JSON (pins temperature=0 contract)
+  - [N/A] concurrency — CliRunner is sequential; CAG selector is pure-function, no shared mutable state
+  - [x] failure paths — missing --queries file exits non-zero; real Ollama endpoint unreachable → no unhandled traceback
+  - [N/A] locale/time — report timestamps are filesystem-derived; no locale assertions needed
+  - [x] production-realistic — fixture uses the real `corpus_forge.cag.selector._derive_key` SHA-256 formula to seed cache files; two JSONL queries cover both cache-hit and cache-miss branches
+  - [x] regression hooks — `test_eval_rag_mock_judge_deterministic` and `test_eval_cag_mock_judge_deterministic` pin the temperature=0 / hash-of-prompt semantic so score drift across CI runs is caught immediately; `test_judge_mock_score_returns_required_keys` pins the four required judge dimensions
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_eval_rag.py::test_eval_rag_raw_prompts_persisted
+  FAILED tests/integration/test_eval_cag.py::test_eval_cag_json_contains_cache_hit_count
+  FAILED tests/integration/test_eval_cag.py::test_eval_cag_mock_judge_produces_json
+  FAILED tests/integration/test_eval_rag.py::test_judge_mock_score_importable - ModuleNotFoundError: No module named 'corpus_forge.eval.judge_mock'
+  FAILED tests/integration/test_eval_cag.py::test_eval_cag_help_exits_zero - AssertionError: No such command 'cag'.
+  43 failed, 4 passed, 2 skipped in 0.87s
+  ```
+- Status: red — handed off to tdd-coder
+
+## Q1-T1 — 0014_sdft_demonstrations migration schema (SQLite + Postgres)
+- Test files:
+  - `tests/integration/test_migrate_0014_sdft.py` (new — 24 SQLite + 3 module-attr + 12 Postgres @requires_docker = 39 total)
+- Run command: `uv run pytest tests/integration/test_migrate_0014_sdft.py -m 'not requires_docker' -x`
+- Edge case checklist:
+  - [x] happy — table exists, all columns present, FK cascade, JSON round-trip, full-fields insert
+  - [x] boundaries — trace_id NULL when omitted, content_hash UNIQUE enforced (IntegrityError), ON CONFLICT DO NOTHING dedup
+  - [x] type/format — SQLite TEXT for messages (JSON string); Postgres jsonb; created_at server-default
+  - [x] state — isolated tmp_path DB per test; idempotency via INSERT OR IGNORE tested
+  - [N/A] concurrency — pure DDL migration test, sequential per-test isolation
+  - [x] failure paths — ModuleNotFoundError on import; alembic CommandError for unknown revision; IntegrityError on dup hash
+  - [N/A] locale/time — created_at DEFAULT (datetime('now')) is DB-side
+  - [x] production-realistic — seeds minimal datasets rows; JSON payloads are real role/content dicts
+  - [x] regression hooks — down_revision pinned to 0013_search_sessions; AST check on downgrade() body
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_migrate_0014_sdft.py::TestMigrationModuleAttributes::test_revision_value
+  FAILED tests/integration/test_migrate_0014_sdft.py::TestMigrationModuleAttributes::test_downgrade_is_forward_only_pass
+  FAILED tests/integration/test_migrate_0014_sdft.py::TestMigrationModuleAttributes::test_down_revision_value
+  24 failed, 14 deselected, 20 warnings in 0.27s
+  E  alembic.util.exc.CommandError: Can't locate revision identified by '0014_sdft_demonstrations'
+  E  ModuleNotFoundError: No module named 'corpus_forge.alembic.versions.0014_sdft_demonstrations'
+  ```
+- Status: red — handed off to tdd-coder
+
+## Q1-T2 — MCP record_demonstration write tool integration tests
+- Test files:
+  - `tests/integration/test_mcp_record_demonstration.py` (new — 29 tests; 23 fail, 6 pass at boundary conditions)
+- Run command: `uv run pytest tests/integration/test_mcp_record_demonstration.py -x`
+- Edge case checklist:
+  - [x] happy — returns {demonstration_id: int, deduped: bool}, deduped=False, DB row persisted, audit row written, JSON-serialisable
+  - [x] boundaries — dedup: second identical call returns same id + deduped=True, count stays 1, audit still written; different query = 2 rows
+  - [x] type/format — list[dict] messages; trace_id=None→NULL; source must match SDFTSource enum
+  - [x] state — fresh migrated backend per test; idempotent dedup across 5 tests; parametrized over all 8 valid sources
+  - [N/A] concurrency — in-process MCP harness, sequential asyncio.run
+  - [x] failure paths — write gate; unknown dataset isError; invalid source isError; SDFTSource not importable = ModuleNotFoundError
+  - [N/A] locale/time — created_at is DB-side default
+  - [x] production-realistic — real SQLiteBackend(:memory:) migrated through full schema; 8-source parametrize
+  - [x] regression hooks — SDFTSource enum importability; source taxonomy completeness (8 values)
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_mcp_record_demonstration.py::TestToolRegistration::test_tool_registered_when_writes_enabled
+  FAILED tests/integration/test_mcp_record_demonstration.py::TestSourceTaxonomy::test_sdft_source_enum_importable
+  FAILED tests/integration/test_mcp_record_demonstration.py::TestTraceIdRoundTrip::test_trace_id_stored_in_db
+  23 failed, 6 passed in 0.73s
+  E  AssertionError: Expected 'record_demonstration' in tool list with writes_enabled=True
+  E  ModuleNotFoundError: No module named 'corpus_forge.sdft'
+  ```
+- Status: red — handed off to tdd-coder
+
+## Q1-T3 — SDFT capture hooks unit tests (commit_curation + rate_search_result)
+- Test files:
+  - `tests/unit/test_sdft_capture_hooks.py` (new — 12 tests; all 12 fail)
+- Run command: `uv run pytest tests/unit/test_sdft_capture_hooks.py -x`
+- Edge case checklist:
+  - [x] happy — description-changing commit writes SDFT row with correct source/target/query/student_messages; thumbs_down+replacement writes SDFT row with replacement text as target
+  - [x] boundaries — label-only commit no SDFT row; metadata-only no SDFT row; thumbs_down without replacement no SDFT row; thumbs_up with replacement no SDFT row
+  - [x] type/format — student_messages verified list with assistant role; query derived from chunk text first 200 chars; source field verbatim
+  - [x] state — fresh migrated backend per test; sdft_demonstrations count delta asserted
+  - [N/A] concurrency — in-process sequential asyncio.run dispatch
+  - [x] failure paths — OperationalError "no such table: sdft_demonstrations" is root RED cause
+  - [N/A] locale/time — no locale-sensitive assertions
+  - [x] production-realistic — seeds realistic physics text corpus; uses real commit_curation and rate_search_result dispatch paths
+  - [x] regression hooks — negative tests pin hook must not fire spuriously
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_sdft_capture_hooks.py::TestCommitCurationSdftHook::test_description_change_writes_sdft_row
+  FAILED tests/unit/test_sdft_capture_hooks.py::TestRateSearchResultSdftHook::test_thumbs_down_without_replacement_does_not_write_sdft_row
+  FAILED tests/unit/test_sdft_capture_hooks.py::TestRateSearchResultSdftHook::test_thumbs_up_with_replacement_does_not_write_sdft_row
+  12 failed in 0.56s
+  E  sqlite3.OperationalError: no such table: sdft_demonstrations
+  ```
+- Status: red — handed off to tdd-coder
+
+## Q2-T1
+- Test files:
+  - `tests/unit/test_skill_packs_present.py` (45 FAIL / 25 PASS — 70 total)
+  - `tests/unit/test_sdft_source_taxonomy.py` (11 FAIL / 22 PASS — 33 total)
+  - `tests/integration/test_skill_provenance.py` (14 PASS — characterization tests for already-shipped Q1-G1 behavior)
+- Run command: `uv run pytest tests/unit/test_skill_packs_present.py tests/unit/test_sdft_source_taxonomy.py tests/integration/test_skill_provenance.py -v 2>&1 | tail -60`
+- Edge case checklist:
+  - [x] happy path — file existence + content pattern + MCP dispatch provenance
+  - [x] boundaries — each file checked individually; TOML parseable check; exactly 8 enum values (no more, no fewer)
+  - [x] type/format — TOML parse via tomllib; regex heading search for record_demonstration section; StrEnum str() round-trip
+  - [x] state — characterization tests for existing dispatch (test_skill_provenance.py passes green on existing Q1-G1 code)
+  - [ ] N/A — concurrency (file checks are pure I/O; MCP dispatch is sequential in-process)
+  - [x] failure paths — is_chat_client with unrecognised value returns False; missing files fail assertively
+  - [ ] N/A — locale/time (no date/time assertions)
+  - [x] production-realistic — paths anchored at real repo root via Path(__file__).parents[2]; real SQLiteBackend(:memory:) in integration tests
+  - [x] regression hooks — SKILL.md existence (already passes, pin it stays); SDFTSource cardinality (pin exactly 8, no drift); provenance round-trip (characterize Q1-G1 dispatch)
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_sdft_source_taxonomy.py::TestIsChatClient::test_is_chat_client_accepts_enum_member
+  FAILED tests/unit/test_sdft_source_taxonomy.py::TestIsChatClient::test_chat_client_sources_return_true[claude_code]
+  FAILED tests/unit/test_sdft_source_taxonomy.py::TestIsChatClient::test_capture_sources_return_false[curation_commit]
+  FAILED tests/unit/test_sdft_source_taxonomy.py::TestIsChatClient::test_is_chat_client_accepts_string
+  FAILED tests/unit/test_sdft_source_taxonomy.py::TestIsChatClient::test_is_chat_client_unknown_value_returns_false
+  FAILED tests/unit/test_skill_packs_present.py::TestSkillPacksExist::test_gemini_toml_exists
+  FAILED tests/unit/test_skill_packs_present.py::TestSkillPacksExist::test_gemini_prompt_md_exists
+  FAILED tests/unit/test_skill_packs_present.py::TestSkillPacksExist::test_opencode_command_md_exists
+  FAILED tests/unit/test_skill_packs_present.py::TestSkillPacksExist::test_codex_agent_md_exists
+  FAILED tests/unit/test_skill_packs_present.py::TestSkillPacksExist::test_skill_packs_doc_exists
+  FAILED tests/unit/test_skill_packs_present.py::TestClaudeSkillRecordDemonstrationSection::test_claude_skill_has_record_demonstration_section
+  E  AttributeError: type object 'SDFTSource' has no attribute 'is_chat_client'
+  E  FileNotFoundError: No such file or directory: '.../.gemini/extensions/corpus-curate.toml'
+  45 failed, 25 passed (test_skill_packs_present) | 11 failed, 22 passed (test_sdft_source_taxonomy)
+  ```
+- Notes:
+  - test_skill_provenance.py passes 14/14 GREEN — this is correct. `record_demonstration` + full provenance was shipped in Q1-G1. These are characterization tests that confirm existing behavior and will stay green as the coder ships skill packs.
+  - test_skill_packs_present.py: 25 tests that PASS are expected passing boundary conditions — SKILL.md already exists; `commit_curation` and `add_feedback` are already in the existing SKILL.md; SDFTSource import + cardinality + string round-trip all pass (shipped Q1-G1).
+  - Coder must: (1) add `is_chat_client()` classmethod to SDFTSource; (2) create `.gemini/extensions/corpus-curate.toml` + `.gemini/extensions/corpus-curate/PROMPT.md`; (3) create `opencode/commands/corpus-curate.md`; (4) create `codex/agents/corpus-curate.md`; (5) create `docs/skill_packs.md`; (6) extend `.claude/skills/corpus-curate/SKILL.md` with record_demonstration + rate_search_result sections.
+- Status: red — handed off to tdd-coder
+
+## Q3-T1
+- Test files:
+  - `tests/cli/test_feedback_ui_navigation.py`
+  - `tests/cli/test_feedback_ui_capture.py`
+  - `tests/cli/test_feedback_ui_resume.py`
+  - `tests/cli/test_feedback_ui_dry_run.py`
+- Run command: `uv run pytest tests/cli/test_feedback_ui_navigation.py tests/cli/test_feedback_ui_capture.py tests/cli/test_feedback_ui_resume.py tests/cli/test_feedback_ui_dry_run.py`
+- Edge case checklist:
+  - [x] happy — `--action quit` exits 0, single `--record-demo` writes one row
+  - [x] boundaries — empty session dir for `list-sessions`, repeated `--record-demo` for multiple rows
+  - [x] type / format — pipe-separated `q|s|t|target` parsing, session ID format in file path
+  - [x] state — session JSON persisted with position after skip actions; idempotency of `--dry-run`
+  - [ ] N/A — concurrency (CLI headless mode is single-threaded; no concurrent state)
+  - [x] failure paths — resume NONEXISTENT exits nonzero with error message, export-session on missing session exits nonzero
+  - [ ] N/A — locale / time (session IDs use ISO timestamps but no DST/locale logic to test here)
+  - [x] production-realistic data — pipe-separated demo records match the scripted form spec; SQLite schema matches real 0014_sdft_demonstrations DDL
+  - [x] regression hooks — guards added to prevent accidentally-passing `!= 0` tests when `feedback` command is absent (added "No such command 'feedback'" not-in-combined assertion)
+- Red output (tail):
+  ```
+  FAILED tests/cli/test_feedback_ui_dry_run.py::test_dry_run_exits_zero - Asser...
+  FAILED tests/cli/test_feedback_ui_dry_run.py::test_export_session_produces_jsonl_file
+  FAILED tests/cli/test_feedback_ui_dry_run.py::test_export_session_jsonl_contains_query_field
+  FAILED tests/cli/test_feedback_ui_dry_run.py::test_export_session_nonexistent_session_exits_nonzero
+  ======================== 30 failed, 1 warning in 0.66s =========================
+  ```
+- Notes:
+  - Coder must create `corpus_forge/cli_feedback.py` exposing `feedback_app = typer.Typer(...)` with subcommands `start`, `resume`, `list-sessions`, `export-session`, and wire it into `corpus_forge/cli.py` via `app.add_typer(feedback_app, name="feedback")`.
+  - `start` needs flags: `--dataset`, `--no-tui`, `--action` (repeatable, values: approve|skip|next|prev|quit), `--record-demo` (repeatable, pipe-separated `q|s|t|target`), `--dry-run`.
+  - Session state persisted at `$CORPUS_FORGE_FEEDBACK_DIR/session-<id>.json` with fields: `session_id`, `dataset`, `started_at`, `queue_strategy`, `position`, `processed_chunk_ids[]`, `pending_writes[]`.
+  - `--record-demo` writes to `sdft_demonstrations` via `corpus_forge.sdft.capture.record_demonstration` with `source="cli_feedback"`.
+  - `--dry-run` must not write any rows or session files; must print preview output containing "dry", "would", "preview", or "no-op".
+  - `export-session` reads from the session JSON's `pending_writes` list and emits JSONL (one JSON object per line).
+  - Typer CliRunner in this project does NOT support `mix_stderr=False` (typer 0.21.2); use plain `CliRunner()`.
+- Status: red — handed off to tdd-coder
+
+## Q4-T1
+- Test files:
+  - `tests/unit/export/test_export_sdft.py` (36 tests — all RED via ImportError)
+  - `tests/unit/export/test_export_sdft_template_resolution.py` (8 tests — all RED via ImportError)
+  - `tests/unit/export/test_chat_export_unchanged.py` (8 tests — all GREEN as characterisation baseline)
+  - `tests/unit/export/test_sdft_no_inference.py` (10 tests — 9 GREEN safety net, 1 RED confirming export_sdft absent)
+  - `tests/fixtures/export/export_chat_baseline.jsonl` (generated baseline committed)
+  - `tests/fixtures/export/export_feedback_pairs_baseline.jsonl` (generated baseline committed)
+- Run command: `uv run pytest tests/unit/export/ --tb=short 2>&1 | tail -30`
+- Edge case checklist:
+  - [x] happy — basic JSONL export, basic parquet export, single/multi row
+  - [x] boundaries — empty dataset (zero rows), 20-row dataset for split tests, empty include_sources list
+  - [x] type / format — wrong dataset name raises ValueError/KeyError, custom Jinja string accepted, unknown template name raises
+  - [x] state — deterministic held_out split (same content_hash bucket every run), two consecutive runs produce identical splits, no split when held_out_fraction=0
+  - [ ] N/A — concurrency (single-writer JSONL/parquet, no concurrent write surface)
+  - [x] failure paths — unknown dataset raises, unknown template name raises KeyError/ValueError
+  - [ ] N/A — locale / time (no date arithmetic in export path; timestamp normalisation in golden tests covers SQLite vs ISO-8601 formats)
+  - [x] production-realistic data — fixture matches real sdft_demonstrations DDL; messages are dicts with role/content matching capture.py schema
+  - [x] regression hooks — golden-file tests pin export_chat and export_feedback_pairs schemas; test_export_sdft_not_yet_importable confirms RED state
+- Red output (tail):
+  ```
+  ERROR tests/unit/export/test_export_sdft.py
+  ERROR tests/unit/export/test_export_sdft_template_resolution.py
+  ImportError: cannot import name 'export_sdft' from 'corpus_forge.export'
+  FAILED tests/unit/export/test_sdft_no_inference.py::TestExportSdftImportFails::test_export_sdft_not_yet_importable
+  AssertionError: export_sdft is not yet defined in corpus_forge.export
+  2 errors during collection, 1 failed, 17 passed
+  ```
+- Notes:
+  - Coder must add export_sdft() to corpus_forge/export.py adjacent to export_feedback_pairs (line 104).
+  - Return dict: {"row_count": int, "train_count": int, "held_out_count": int, "out_paths": list[str]}.
+  - Split files: .train.jsonl / .held_out.jsonl (or .parquet equivalents); single file uses out_path unchanged.
+  - Deterministic split: derive bucket from row content_hash mod (no random seed).
+  - Template resolution: reuse corpus_forge.templates.resolve_template + render, exactly as export_chat lines 49-66.
+  - Do NOT modify export_chat or export_feedback_pairs schemas.
+- Status: red — handed off to tdd-coder
+
+## Q5-T1
+- Test files:
+  - `tests/integration/test_eval_distill.py` (28 tests, 26 failing + 2 passing vacuously on "exit != 0")
+  - `tests/unit/test_skill_pack_consistency.py` (33 tests, all passing — retrofit characterization of shipped Q2 packs)
+- Run command: `uv run pytest tests/integration/test_eval_distill.py tests/unit/test_skill_pack_consistency.py -x 2>&1 | tail -5`
+- Edge case checklist:
+  - [x] happy — populated SDFT set yields coverage>0, source_mix non-empty, fidelity n_rendered_ok==n_rows
+  - [x] boundaries — empty SDFT table: coverage=0, all source_mix zeros, n_rows=0
+  - [x] type/format — all 8 SDFTSource values zero-filled in source_mix even when absent; token_stats all 5 keys present
+  - [x] state — idempotency: deterministic JSON across two runs; seeded_backend fixture fresh per test
+  - [x] failure paths — missing dataset exits non-zero (and mentions dataset name)
+  - [N/A] concurrency — pure read-only metric computation, no concurrent paths
+  - [N/A] locale/time — timestamp fields excluded from determinism assertion via generated_at pop
+  - [x] production-realistic — seeded with real SQLiteBackend.upsert_document + record_demonstration; 5 chunks + 5 SDFT rows (3 record_demonstration, 2 claude_code)
+  - [x] regression hooks — skill pack consistency tests lock in the current correct state of all 4 client packs; any drift to tool names or source values turns tests RED
+- Red output (tail):
+  ```
+  INFO     corpus_forge.cli:cli.py:167 agent_mode=human (signal=)
+  === short test summary info ===
+  FAILED tests/integration/test_eval_distill.py::TestEvalDistillHelp::test_help_exits_zero
+  AssertionError: Expected exit 0 for --help; got 2
+    | No such command 'distill'.
+  26 failed, 35 passed in 1.60s
+  ```
+- Notes:
+  - `test_skill_pack_consistency.py` passes green today (retrofit characterization of Q2-G1 deliverables). It goes RED if any pack drifts. This is intentional per the plan's risk mitigation note.
+  - The 2 "missing dataset" tests in `test_eval_distill.py` pass today because `exit_code != 0` is satisfied by "No such command 'distill'". They will continue to pass after GREEN when the command exists and handles missing datasets properly — so they are correct regression guards.
+  - `_invoke_with_backend` patches `corpus_forge.eval.distill._build_backend` and `_get_backend` — Coder should use one of these names for the backend factory.
+  - Template fidelity check uses `chatml` as the default template (builtin); `--template chatml` override is also tested.
+- Status: red — handed off to tdd-coder

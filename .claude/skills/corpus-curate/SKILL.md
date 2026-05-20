@@ -127,3 +127,59 @@ From {title} ({source_uri}): {quote}
 
 Keep quotes ≤ 2 sentences; call `get_chunk` for the full text when the
 user needs more context.
+
+## When to call `record_demonstration`
+
+`record_demonstration` captures a *generalizable* edit as a supervised
+demonstration triple for fine-tuning (SDFT format). Use it when the
+curation session surfaces an improvement that would teach a future model
+*how to curate*, not merely *what this entry should say*.
+
+### Demonstration triple shape
+
+```json
+{
+  "query": "<the question or text that prompted the edit>",
+  "student_messages": [
+    {"role": "assistant", "content": "<original / before state>"}
+  ],
+  "teacher_messages": [
+    {"role": "assistant", "content": "<improved / after state>"}
+  ],
+  "target": "<the final committed value (description, label, etc.)>",
+  "source": "claude_code",
+  "dataset_id": "<dataset name>"
+}
+```
+
+### Call it for generalizable edits — not pure metadata fixes
+
+Call `record_demonstration` when:
+- You rewrote a description that was factually thin or misleading.
+- You reassigned labels and the rationale would transfer to other similar
+  entries (e.g. "short code snippets without docstrings get the
+  `needs_docstring` label").
+- The user articulated a *policy* during the fix ("always add the
+  language tag for multilingual docs").
+
+Do **not** call it when:
+- The edit is purely structural (adding a missing `language` metadata
+  key, fixing a typo in a field name).
+- The commit only adjusts numeric metadata (timestamps, token counts).
+- The fix is idiosyncratic to a single entry with no transfer value.
+
+### Source value for this client
+
+Always set `source="claude_code"` when recording demonstrations from a
+Claude Code session. This value identifies the capture origin in the
+`sdft_demonstrations` table and lets the fine-tuning pipeline filter by
+assistant client.
+
+### MCP tool names (all four)
+
+| Tool | When to call |
+|------|-------------|
+| `record_demonstration` | Capture a generalizable curated edit as an SDFT triple |
+| `commit_curation` | Atomically write label / metadata / description edits |
+| `rate_search_result` | Record thumbs-up/down on a retrieved chunk |
+| `add_feedback` | Attach free-text feedback to a chunk without a full curation commit |

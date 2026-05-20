@@ -411,6 +411,49 @@ _ADD_FEEDBACK_INPUT_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+# ── Phase P Wave 2 — rate_search_result ──────────────────────────────────
+
+_RATE_SEARCH_RESULT_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query_id": {
+            "type": "string",
+            "description": (
+                "Key into search_sessions.  If no matching row exists an "
+                "auto-created session with query='(retroactive)' is used."
+            ),
+        },
+        "chunk_id": {
+            "type": "integer",
+            "description": "Primary key of the result chunk being rated.",
+        },
+        "signal": {
+            "type": "string",
+            "description": (
+                "Signal type, e.g. 'relevance', 'click', 'thumbs_up', "
+                "'thumbs_down', 'curation_suggestion'."
+            ),
+        },
+        "value": {
+            "type": ["number", "null"],
+            "description": "Numeric magnitude (0-1) or null for boolean signals.",
+        },
+        "source": {
+            "type": "string",
+            "description": (
+                "Origin of the signal, e.g. 'human', 'ui', 'reranker', "
+                "'reranker-v2/bge-reranker-large'."
+            ),
+        },
+        "replacement_chunk_id": {
+            "type": ["integer", "null"],
+            "description": "Optional FK to chunks(id): preferred replacement chunk.",
+        },
+    },
+    "required": ["query_id", "chunk_id", "signal", "value", "source"],
+    "additionalProperties": False,
+}
+
 
 # ── JSON schemas for the three G-03 template tools ────────────────────────
 
@@ -502,6 +545,53 @@ _REGISTER_SESSION_INPUT_SCHEMA: dict[str, Any] = {
         },
     },
     "required": ["client", "session_id"],
+    "additionalProperties": False,
+}
+
+
+# ── Phase Q Wave 1 — record_demonstration schema ─────────────────────────
+
+_RECORD_DEMONSTRATION_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": "The search/curation query that prompted the correction.",
+        },
+        "student_messages": {
+            "type": "array",
+            "items": {"type": "object"},
+            "description": (
+                "Prior model output as [{role, content}] messages (student perspective)."
+            ),
+        },
+        "teacher_messages": {
+            "type": "array",
+            "items": {"type": "object"},
+            "description": "Curation prompt or expert correction as [{role, content}] (teacher).",
+        },
+        "target": {
+            "type": "string",
+            "description": "The corrected/improved output text.",
+        },
+        "source": {
+            "type": "string",
+            "description": (
+                "Signal source — must be one of the SDFTSource enum values: "
+                "curation_commit, rate_search_result, record_demonstration, "
+                "cli_feedback, claude_code, gemini, opencode, codex."
+            ),
+        },
+        "dataset": {
+            "type": "string",
+            "description": "Dataset name for FK resolution.",
+        },
+        "trace_id": {
+            "type": ["string", "null"],
+            "description": "Optional cross-system tracing key.",
+        },
+    },
+    "required": ["query", "student_messages", "teacher_messages", "target", "source"],
     "additionalProperties": False,
 }
 
@@ -620,6 +710,89 @@ _ZOTERO_SYNC_INPUT_SCHEMA: dict[str, Any] = {
         },
     },
     "required": ["dataset"],
+    "additionalProperties": False,
+}
+
+
+# ── Phase O Wave 4: analyze tool schemas ─────────────────────────────────
+
+
+_ANALYZE_CORPUS_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "dataset": {
+            "type": "string",
+            "description": "Dataset name to analyze.",
+        },
+    },
+    "required": ["dataset"],
+    "additionalProperties": False,
+}
+
+
+_FIND_DUPLICATES_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "dataset": {
+            "type": "string",
+            "description": "Dataset name to scan for duplicates.",
+        },
+        "threshold": {
+            "type": "number",
+            "description": (
+                "Jaccard similarity threshold for near-duplicate clustering "
+                "(default: 0.85).  Range [0.0, 1.0]."
+            ),
+        },
+    },
+    "required": ["dataset"],
+    "additionalProperties": False,
+}
+
+
+_CLUSTER_TOPICS_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "dataset": {
+            "type": "string",
+            "description": "Dataset name whose chunks to cluster.",
+        },
+        "min_cluster_size": {
+            "type": "integer",
+            "description": (
+                "Minimum number of chunks to form a cluster (default: 10; HDBSCAN constraint >= 2)."
+            ),
+            "minimum": 2,
+        },
+    },
+    "required": ["dataset"],
+    "additionalProperties": False,
+}
+
+
+_SCORE_QUALITY_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "chunk_ids": {
+            "type": "array",
+            "items": {"type": "integer"},
+            "description": "List of chunk primary-key IDs to score.",
+        },
+        "dataset": {
+            "type": "string",
+            "description": (
+                "Dataset name; all chunks in the dataset are scored.  "
+                "Provide either chunk_ids or dataset, not both."
+            ),
+        },
+        "persist": {
+            "type": "boolean",
+            "description": (
+                "When true, write scores to chunk_quality_signals.  "
+                "Requires writes_enabled=True on the server.  Default: false."
+            ),
+        },
+    },
     "additionalProperties": False,
 }
 
@@ -847,6 +1020,46 @@ def build_server(
                 ),
                 inputSchema=_VALIDATE_IGNORE_INPUT_SCHEMA,
             ),
+            # Phase O Wave 4 analyze tools — read-only, always available.
+            mt.Tool(
+                name="analyze_corpus",
+                description=(
+                    "Compute token and length statistics over all chunks in a "
+                    "dataset.  Returns n_chunks, token_stats (p50/p95/mean/min/"
+                    "max/token_total/n), and n_documents.  Read-only — no "
+                    "backend writes."
+                ),
+                inputSchema=_ANALYZE_CORPUS_INPUT_SCHEMA,
+            ),
+            mt.Tool(
+                name="find_duplicates",
+                description=(
+                    "Detect exact and near-duplicate chunks in a dataset.  "
+                    "Returns exact_duplicates (hash→[chunk_ids]) and "
+                    "near_duplicates (MinHash LSH clusters).  Read-only."
+                ),
+                inputSchema=_FIND_DUPLICATES_INPUT_SCHEMA,
+            ),
+            mt.Tool(
+                name="cluster_topics",
+                description=(
+                    "Cluster chunks by topic using HDBSCAN (or BERTopic).  "
+                    "Returns clusters, each with cluster_id, chunk_ids, and "
+                    "top_terms.  Read-only — no backend writes."
+                ),
+                inputSchema=_CLUSTER_TOPICS_INPUT_SCHEMA,
+            ),
+            mt.Tool(
+                name="score_quality",
+                description=(
+                    "Score chunk quality in [0, 1] using a fast heuristic.  "
+                    "Accepts chunk_ids (list) or dataset (all chunks).  "
+                    "persist=True writes scores to chunk_quality_signals — "
+                    "requires writes_enabled=True.  Default: persist=False "
+                    "(read-only)."
+                ),
+                inputSchema=_SCORE_QUALITY_INPUT_SCHEMA,
+            ),
         ]
         if writes_enabled:
             tools += [
@@ -966,6 +1179,29 @@ def build_server(
                     ),
                     inputSchema=_ZOTERO_SYNC_INPUT_SCHEMA,
                 ),
+                # Phase P Wave 2 — search result rating tool.
+                mt.Tool(
+                    name="rate_search_result",
+                    description=(
+                        "Record a signal (relevance score, click, thumbs_up, "
+                        "thumbs_down, curation_suggestion, …) for a search "
+                        "result chunk.  Looks up or auto-creates a "
+                        "search_sessions row keyed on query_id. "
+                        "Returns {event_id, session_id}."
+                    ),
+                    inputSchema=_RATE_SEARCH_RESULT_INPUT_SCHEMA,
+                ),
+                # Phase Q Wave 1 — SDFT demonstration capture tool.
+                mt.Tool(
+                    name="record_demonstration",
+                    description=(
+                        "Record a teacher→student demonstration pair for SDFT "
+                        "fine-tuning.  Deduplicates via content_hash "
+                        "(ON CONFLICT DO NOTHING).  Returns "
+                        "{demonstration_id, deduped}."
+                    ),
+                    inputSchema=_RECORD_DEMONSTRATION_INPUT_SCHEMA,
+                ),
             ]
         return tools
 
@@ -994,6 +1230,15 @@ def build_server(
             return await _dispatch_list_ignore(arguments)
         if name == "validate_ignore":
             return await _dispatch_validate_ignore(arguments)
+        # Phase O Wave 4 analyze read tools — always available
+        if name == "analyze_corpus":
+            return await _dispatch_analyze_corpus(arguments)
+        if name == "find_duplicates":
+            return await _dispatch_find_duplicates(arguments)
+        if name == "cluster_topics":
+            return await _dispatch_cluster_topics(arguments)
+        if name == "score_quality":
+            return await _dispatch_score_quality(arguments)
         if writes_enabled:
             if name == "add_label":
                 return await _dispatch_add_label(arguments)
@@ -1030,6 +1275,12 @@ def build_server(
             # Phase M Wave 4 write tool
             if name == "zotero_sync":
                 return await _dispatch_zotero_sync(arguments)
+            # Phase P Wave 2 write tool
+            if name == "rate_search_result":
+                return await _dispatch_rate_search_result(arguments)
+            # Phase Q Wave 1 write tool
+            if name == "record_demonstration":
+                return await _dispatch_record_demonstration(arguments)
         return _error_result(f"unknown tool: {name!r}")
 
     # ── dispatchers (closures share `_get_retriever` / `_get_reranker`)
@@ -1072,7 +1323,12 @@ def build_server(
             rerank_top_n=rerank_top_n,
         )
 
-        hits = retriever.search(query, options)
+        search_response = retriever.search(query, options)
+        # Support both SearchResponse (Phase P1+) and legacy list[Hit] return
+        # shapes so the MCP layer stays backward-compatible with any Retriever
+        # implementations that haven't been updated yet.
+        query_id: str | None = getattr(search_response, "query_id", None)
+        hits = search_response  # iter shim / list both support `for h in hits`
 
         # Enrichment: hydrate labels / description / feedback when the backend
         # exposes hydrate_hit_metadata.  One bulk call for chunk hits + one bulk
@@ -1141,7 +1397,10 @@ def build_server(
 
             wire_hits.append(hd)
 
-        return {"hits": wire_hits}
+        result: dict[str, Any] = {"hits": wire_hits}
+        if query_id is not None:
+            result["query_id"] = query_id
+        return result
 
     async def _dispatch_get_chunk(arguments: dict[str, Any]) -> Any:
         chunk_id = int(arguments["chunk_id"])
@@ -1369,6 +1628,40 @@ def build_server(
             return {"batch": None}
         return {"batch": asdict(batch)}
 
+    # ── Phase O Wave 4 analyze dispatchers ──────────────────────────────
+
+    async def _dispatch_analyze_corpus(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp._dispatch_analyze import (
+            _dispatch_analyze_corpus as _da_corpus,
+        )
+
+        backend = _get_write_backend()
+        return await _da_corpus(arguments, backend=backend, writes_enabled=writes_enabled)
+
+    async def _dispatch_find_duplicates(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp._dispatch_analyze import (
+            _dispatch_find_duplicates as _da_find_dups,
+        )
+
+        backend = _get_write_backend()
+        return await _da_find_dups(arguments, backend=backend, writes_enabled=writes_enabled)
+
+    async def _dispatch_cluster_topics(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp._dispatch_analyze import (
+            _dispatch_cluster_topics as _da_cluster,
+        )
+
+        backend = _get_write_backend()
+        return await _da_cluster(arguments, backend=backend, writes_enabled=writes_enabled)
+
+    async def _dispatch_score_quality(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp._dispatch_analyze import (
+            _dispatch_score_quality as _da_score,
+        )
+
+        backend = _get_write_backend()
+        return await _da_score(arguments, backend=backend, writes_enabled=writes_enabled)
+
     # ── write dispatchers (only reached when writes_enabled=True) ────────
 
     def _make_write_ctx() -> Any:
@@ -1534,6 +1827,120 @@ def build_server(
         )
         return result
 
+    async def _dispatch_rate_search_result(arguments: dict[str, Any]) -> Any:
+        """Phase P Wave 2 — record a signal for a search result chunk."""
+        from corpus_forge.mcp import writes
+
+        backend = _get_write_backend()
+        if backend is None:
+            return _error_result("retriever has no backend; cannot rate search result")
+        ctx = _make_write_ctx()
+        raw_value = arguments.get("value")
+        value: float | None = float(raw_value) if raw_value is not None else None
+        raw_repl = arguments.get("replacement_chunk_id")
+        replacement_chunk_id: int | None = int(raw_repl) if raw_repl is not None else None
+        try:
+            result = writes.rate_search_result(
+                backend,
+                ctx,
+                arguments["query_id"],
+                int(arguments["chunk_id"]),
+                arguments["signal"],
+                value,
+                arguments["source"],
+                replacement_chunk_id=replacement_chunk_id,
+            )
+        except Exception as exc:
+            return _error_result(str(exc))
+
+        # ── SDFT capture hook (best-effort; never fails rate_search_result) ──
+        # When signal=thumbs_down AND replacement_chunk_id is set, capture a
+        # rate_search_result demonstration.
+        _signal_val = arguments["signal"]
+        if _signal_val == "thumbs_down" and replacement_chunk_id is not None:
+            import logging as _rsr_log
+
+            try:
+                from corpus_forge.sdft.capture import (
+                    record_demonstration as _record_demo,
+                )
+
+                # Backend-aware placeholder: SQLite=?, Postgres=%s.
+                _is_pg = "postgres" in type(backend).__module__.lower()
+                _ph = "%s" if _is_pg else "?"
+
+                # Fetch the rated chunk and the replacement chunk.
+                _rated_rows = backend._execute(
+                    f"SELECT text FROM chunks WHERE id = {_ph}",
+                    (int(arguments["chunk_id"]),),
+                )
+                _repl_rows = backend._execute(
+                    f"SELECT text FROM chunks WHERE id = {_ph}",
+                    (replacement_chunk_id,),
+                )
+                if _rated_rows and _repl_rows:
+                    _rated_text = _rated_rows[0]["text"] or ""
+                    _repl_text = _repl_rows[0]["text"] or ""
+
+                    # Resolve dataset_id via rated chunk → document.
+                    _ds_rows = backend._execute(
+                        "SELECT d.dataset_id FROM chunks c"
+                        " JOIN documents d ON c.document_id = d.id"
+                        f" WHERE c.id = {_ph} LIMIT 1",
+                        (int(arguments["chunk_id"]),),
+                    )
+                    if _ds_rows:
+                        _ds_id = int(_ds_rows[0]["dataset_id"])
+                        _query_text = arguments["query_id"]
+                        with backend._get_connection() as _rsr_conn:
+                            _record_demo(
+                                _rsr_conn,
+                                query=_query_text[:200],
+                                student_messages=[{"role": "assistant", "content": _rated_text}],
+                                teacher_messages=[
+                                    {
+                                        "role": "user",
+                                        "content": "Prefer this result instead.",
+                                    }
+                                ],
+                                target=_repl_text,
+                                source="rate_search_result",
+                                dataset_id=_ds_id,
+                            )
+            except Exception as _rsr_exc:
+                _rsr_log.getLogger("corpus_forge.mcp.server").warning(
+                    "SDFT rate_search_result capture failed: %s",
+                    _rsr_exc,
+                )
+
+        return result
+
+    async def _dispatch_record_demonstration(arguments: dict[str, Any]) -> Any:
+        """Phase Q Wave 1 — record an SDFT teacher→student demonstration pair."""
+        from corpus_forge.mcp import writes
+
+        backend = _get_write_backend()
+        if backend is None:
+            return _error_result("retriever has no backend; cannot record demonstration")
+        ctx = _make_write_ctx()
+        try:
+            result = writes.record_demonstration(
+                backend,
+                ctx,
+                arguments["query"],
+                arguments["student_messages"],
+                arguments["teacher_messages"],
+                arguments["target"],
+                arguments["source"],
+                dataset=arguments.get("dataset"),
+                trace_id=arguments.get("trace_id"),
+            )
+        except ValueError as exc:
+            return _error_result(str(exc))
+        except Exception as exc:
+            return _error_result(str(exc))
+        return {"demonstration_id": result["demonstration_id"], "deduped": result["deduped"]}
+
     async def _dispatch_commit_curation(arguments: dict[str, Any]) -> Any:
         """J4 — atomic-ish multi-write composing the existing write surface.
 
@@ -1573,6 +1980,27 @@ def build_server(
             "add_feedback": 0,
         }
         audit_ids: list[int] = []
+
+        # ── Snapshot prior descriptions for SDFT hook ───────────────────────
+        # Capture BEFORE the write loop so we can compare after set_description.
+        _prior_descs: dict[int, str | None] = {}
+        if set_description_payload is not _SENTINEL_UNSET and not dry_run:
+            _snap_backend = _get_write_backend()
+            if _snap_backend is not None:
+                for _snap_cid in chunk_ids:
+                    # Use get_entity_description for chunks (get_chunk doesn't
+                    # return the description column).
+                    _get_desc_fn = getattr(_snap_backend, "get_entity_description", None)
+                    if _get_desc_fn is not None:
+                        _prior_descs[_snap_cid] = _get_desc_fn("chunk", _snap_cid)
+                    else:
+                        # Fallback: direct SQL for backends without get_entity_description.
+                        _desc_rows = _snap_backend._execute(
+                            "SELECT description FROM chunks WHERE id = ?",
+                            (_snap_cid,),
+                        )
+                        if _desc_rows:
+                            _prior_descs[_snap_cid] = _desc_rows[0].get("description")
 
         for cid in chunk_ids:
             for entry in add_labels:
@@ -1671,6 +2099,119 @@ def build_server(
                     if isinstance(aid, int):
                         audit_ids.append(aid)
                     counts["add_feedback"] += 1
+
+        # ── SDFT capture hook (best-effort; never fails commit) ─────────────
+        # When set_description was applied and differs from the snapshotted prior
+        # value, capture a curation_commit demonstration for SDFT fine-tuning.
+        if _prior_descs and set_description_payload is not _SENTINEL_UNSET and not dry_run:
+            import logging as _sdft_log
+
+            try:
+                from corpus_forge.sdft.capture import (
+                    _should_capture_curation,
+                    record_demonstration,
+                )
+
+                _sdft_backend = _get_write_backend()
+                if _sdft_backend is not None:
+                    for _cid in chunk_ids:
+                        _prior_desc = _prior_descs.get(_cid)
+                        _new_desc = set_description_payload
+                        if not _should_capture_curation(_prior_desc, _new_desc):
+                            continue
+
+                        # Fetch chunk text (it hasn't changed).
+                        _chunk_row = _sdft_backend.get_chunk(_cid)
+                        if _chunk_row is None:
+                            continue
+                        _chunk_text = (
+                            _chunk_row.get("text", "")
+                            if isinstance(_chunk_row, dict)
+                            else getattr(_chunk_row, "text", "")
+                        )
+
+                        # Resolve dataset_id via chunk → document.
+                        _ds_rows = _sdft_backend._execute(
+                            "SELECT d.dataset_id FROM chunks c"
+                            " JOIN documents d ON c.document_id = d.id"
+                            " WHERE c.id = ? LIMIT 1",
+                            (_cid,),
+                        )
+                        if not _ds_rows:
+                            continue
+                        _ds_id = int(_ds_rows[0]["dataset_id"])
+
+                        _feedback_text = ""
+                        if feedback_payload:
+                            _feedback_text = feedback_payload.get("text", "")
+
+                        with _sdft_backend._get_connection() as _sdft_conn:
+                            record_demonstration(
+                                _sdft_conn,
+                                query=_chunk_text[:200],
+                                student_messages=[
+                                    {"role": "assistant", "content": str(_prior_desc or "")}
+                                ],
+                                teacher_messages=[
+                                    {
+                                        "role": "user",
+                                        "content": _feedback_text or "Improve the description.",
+                                    }
+                                ],
+                                target=str(_new_desc or ""),
+                                source="curation_commit",
+                                dataset_id=_ds_id,
+                            )
+            except Exception as _sdft_exc:
+                _sdft_log.getLogger("corpus_forge.mcp.server").warning(
+                    "SDFT curation_commit capture failed for chunk_ids=%s: %s",
+                    chunk_ids,
+                    _sdft_exc,
+                )
+
+        # ── CAG cache invalidation (best-effort; never fails commit) ────────
+        import logging as _logging
+        import os as _os
+        from pathlib import Path as _Path
+
+        _cag_root_str = _os.environ.get("CF_CAG_CACHE_ROOT")
+        if _cag_root_str:
+            _cag_root = _Path(_cag_root_str)
+            _cag_backend = _get_write_backend()
+            if _cag_backend is not None:
+                try:
+                    from corpus_forge.cag import cache as _cag_cache
+
+                    with _cag_backend._get_connection() as _cag_conn:
+                        for _cid in chunk_ids:
+                            _ds_row = _cag_conn.execute(
+                                "SELECT d.dataset_id"
+                                " FROM chunks c"
+                                " JOIN documents d ON c.document_id = d.id"
+                                " WHERE c.id = ?",
+                                (_cid,),
+                            ).fetchone()
+                            if _ds_row is None:
+                                continue
+                            _dataset_id = (
+                                _ds_row[0]
+                                if not isinstance(_ds_row, dict)
+                                else _ds_row.get("dataset_id")
+                            )
+                            if _dataset_id is None:
+                                continue
+                            _cag_cache.invalidate_for_chunk(
+                                _cid,
+                                int(_dataset_id),
+                                root=_cag_root,
+                                conn=_cag_conn,
+                            )
+                except Exception as _exc:
+                    _logging.getLogger("corpus_forge.mcp.server").warning(
+                        "CAG cache invalidation failed for chunk_ids=%s: %s",
+                        chunk_ids,
+                        _exc,
+                    )
 
         return {
             "writes": counts,

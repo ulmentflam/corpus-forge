@@ -21,19 +21,30 @@ R3 adds ``evaluate_retriever`` and ``report`` once R3-04 lands.  The
 ``__init__`` will be extended at that point — public surface is stable.
 """
 
+from corpus_forge.eval.cag import run_cag_eval
 from corpus_forge.eval.dataset import GoldQuery, load_gold
+from corpus_forge.eval.distill import run_distill_eval
+from corpus_forge.eval.judge import JudgeClient, JudgeUnavailable
+from corpus_forge.eval.judge_mock import score as judge_mock_score
 from corpus_forge.eval.metrics import mrr_at_k, ndcg_at_k, recall_at_k
+from corpus_forge.eval.rag import run_rag_eval
 from corpus_forge.eval.runner import dump_json, evaluate_retriever, report
 from corpus_forge.retrieval.types import RetrievalMetrics
 
 __all__ = [
     "GoldQuery",
+    "JudgeClient",
+    "JudgeUnavailable",
     "RetrievalMetrics",
     "dump_json",
     "evaluate_retriever",
+    "judge_mock_score",
     "load_gold",
     "mrr_at_k",
     "ndcg_at_k",
     "recall_at_k",
     "report",
+    "run_cag_eval",
+    "run_distill_eval",
+    "run_rag_eval",
 ]

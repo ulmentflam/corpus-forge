@@ -688,6 +688,48 @@ def export_chat_cmd(
     ui_info(f"exported to {out}")
 
 
+@export_app.command("sdft")
+def export_sdft_cmd(
+    dataset: Annotated[str, typer.Option("--dataset", "-d", help="Dataset name to export.")],
+    out: Annotated[Path, typer.Option("--out", "-o", help="Output file path.")],
+    template: Annotated[
+        str, typer.Option("--template", "-t", help="Chat template name.")
+    ] = "chatml",
+    format: Annotated[
+        str, typer.Option("--format", "-f", help="Output format: jsonl or parquet.")
+    ] = "jsonl",
+    held_out_fraction: Annotated[
+        float,
+        typer.Option("--held-out-fraction", help="Fraction of rows to hold out (0.0 = no split)."),
+    ] = 0.0,
+    include_sources: Annotated[
+        str | None,
+        typer.Option("--include-sources", help="Comma-separated list of sources to include."),
+    ] = None,
+    custom_jinja: Annotated[
+        str | None, typer.Option("--custom-jinja", help="Inline Jinja override.")
+    ] = None,
+    push: Annotated[
+        str | None, typer.Option("--push", help="HF dataset repo to push to after writing.")
+    ] = None,
+) -> None:
+    """Export SDFT demonstrations as HF-format rows."""
+    from corpus_forge.export import export_sdft
+
+    sources = [s.strip() for s in include_sources.split(",")] if include_sources else None
+    result = export_sdft(
+        dataset=dataset,
+        template=template,
+        out_path=out,
+        format=format,
+        held_out_fraction=held_out_fraction,
+        include_sources=sources,
+        custom_jinja=custom_jinja,
+        push=push,
+    )
+    ui_info(f"exported {result['row_count']} rows to {result['out_paths']}")
+
+
 @export_app.command("feedback-pairs")
 def export_feedback_pairs_cmd(
     dataset: Annotated[str, typer.Option("--dataset", "-d", help="Dataset name to export.")],
@@ -1163,6 +1205,12 @@ eval_app = typer.Typer(
 )
 app.add_typer(eval_app, name="eval")
 
+from corpus_forge.cli_analyze import analyze_app  # noqa: E402
+from corpus_forge.cli_feedback import feedback_app  # noqa: E402
+
+app.add_typer(analyze_app, name="analyze")
+app.add_typer(feedback_app, name="feedback")
+
 
 _BUNDLED_DATASETS = {
     "forge_self": "corpus_forge/eval/datasets/forge_self.jsonl",
@@ -1438,6 +1486,236 @@ def eval_corpus_quality(
     Catch it here, not at training time.
     """
     _do_eval(dataset, k, metric, fusion, alpha, rerank, json_out)
+
+
+# ── eval rag subcommand (Phase P Wave 4) ─────────────────────────────────
+
+
+@eval_app.command("rag")
+def eval_rag(
+    queries: Path = typer.Option(
+        ...,
+        "--queries",
+        help="Path to a JSONL file with query/answer/contexts rows.",
+    ),
+    judge_endpoint: str = typer.Option(
+        None,
+        "--judge-endpoint",
+        help=(
+            "LLM judge endpoint URL, or 'mock' for deterministic offline scoring. "
+            "Defaults to CF_JUDGE_ENDPOINT env var, then 'mock'."
+        ),
+    ),
+    dataset: str = typer.Option(
+        "default",
+        "--dataset",
+        help="Dataset name (informational; included in the report).",
+    ),
+    k: int = typer.Option(5, "--k", help="Primary k cutoff for retrieval metrics."),
+    json_flag: bool = typer.Option(False, "--json", help="Print the result JSON to stdout."),
+    report_dir: Path = typer.Option(
+        None,
+        "--report-dir",
+        help="Directory for report output. Defaults to ~/.cache/corpus-forge/reports/<ts>/.",
+    ),
+) -> None:
+    """Evaluate RAG quality using an LLM judge.
+
+    Reads a JSONL queries fixture (query, answer, relevant_chunk_ids, contexts)
+    and scores each entry for nDCG@1/5/10, MRR, faithfulness, answer_relevance,
+    context_precision, and context_recall.  Writes Markdown + JSON reports and
+    persists raw judge prompts for auditability.
+    """
+    import os as _os
+
+    from corpus_forge.eval.judge import JudgeUnavailable
+    from corpus_forge.eval.rag import run_rag_eval
+
+    # Resolve judge endpoint: flag > env var > "mock".
+    if judge_endpoint is None:
+        judge_endpoint = _os.environ.get("CF_JUDGE_ENDPOINT", "mock")
+
+    # Validate queries file.
+    if not queries.exists():
+        ui_error(f"Queries file not found: {queries}")
+        raise typer.Exit(code=2)
+
+    # Load queries from JSONL.
+    import json as _json
+
+    rows = []
+    with queries.open(encoding="utf-8") as fh:
+        for _line in fh:
+            stripped = _line.strip()
+            if stripped:
+                rows.append(_json.loads(stripped))
+
+    try:
+        result = run_rag_eval(
+            dataset,
+            rows,
+            judge_endpoint=judge_endpoint,
+            k=k,
+            report_dir=report_dir,
+        )
+    except JudgeUnavailable as exc:
+        ui_error(f"Judge endpoint unavailable: {exc}")
+        raise typer.Exit(code=1) from None
+
+    if json_flag:
+        print(_json.dumps(result, indent=2, sort_keys=True))
+
+
+# ── eval cag subcommand (Phase P Wave 4) ─────────────────────────────────
+
+
+@eval_app.command("cag")
+def eval_cag(
+    queries: Path = typer.Option(
+        ...,
+        "--queries",
+        help="Path to a JSONL file with query/answer/contexts rows.",
+    ),
+    judge_endpoint: str = typer.Option(
+        None,
+        "--judge-endpoint",
+        help=(
+            "LLM judge endpoint URL, or 'mock' for deterministic offline scoring. "
+            "Defaults to CF_JUDGE_ENDPOINT env var, then 'mock'."
+        ),
+    ),
+    dataset: str = typer.Option(
+        "default",
+        "--dataset",
+        help="Dataset name; used as the cache subdirectory.",
+    ),
+    cache_root: Path = typer.Option(
+        None,
+        "--cache-root",
+        help="CAG cache root directory. Defaults to no-cache (all misses).",
+    ),
+    json_flag: bool = typer.Option(False, "--json", help="Print the result JSON to stdout."),
+    report_dir: Path = typer.Option(
+        None,
+        "--report-dir",
+        help="Directory for report output. Defaults to ~/.cache/corpus-forge/reports/<ts>/.",
+    ),
+) -> None:
+    """Evaluate CAG vs RAG quality using an LLM judge.
+
+    Routes each query through the CAG selector (cache hit vs RAG miss) and
+    scores each branch for quality.  Reports cache_hit_count, rag_count,
+    cache_quality_score, rag_quality_score, and cache_vs_rag_delta.
+    """
+    import os as _os
+
+    from corpus_forge.eval.cag import run_cag_eval
+    from corpus_forge.eval.judge import JudgeUnavailable
+
+    # Resolve judge endpoint: flag > env var > "mock".
+    if judge_endpoint is None:
+        judge_endpoint = _os.environ.get("CF_JUDGE_ENDPOINT", "mock")
+
+    # Validate queries file.
+    if not queries.exists():
+        ui_error(f"Queries file not found: {queries}")
+        raise typer.Exit(code=2)
+
+    # Load queries from JSONL.
+    import json as _json
+
+    rows = []
+    with queries.open(encoding="utf-8") as fh:
+        for _line in fh:
+            stripped = _line.strip()
+            if stripped:
+                rows.append(_json.loads(stripped))
+
+    try:
+        result = run_cag_eval(
+            dataset,
+            rows,
+            judge_endpoint=judge_endpoint,
+            root=cache_root,
+            report_dir=report_dir,
+        )
+    except JudgeUnavailable as exc:
+        ui_error(f"Judge endpoint unavailable: {exc}")
+        raise typer.Exit(code=1) from None
+
+    if json_flag:
+        print(_json.dumps(result, indent=2, sort_keys=True))
+
+
+# ── eval distill subcommand (Phase Q Wave 5) ─────────────────────────────
+
+
+@eval_app.command("distill")
+def eval_distill(
+    dataset: str = typer.Option(
+        "default",
+        "--dataset",
+        help="Dataset name to evaluate. Must exist in the backend.",
+    ),
+    template: str = typer.Option(
+        "chatml",
+        "--template",
+        help="Chat template for the fidelity check (e.g. chatml, llama3, alpaca).",
+    ),
+    json_flag: bool = typer.Option(False, "--json", help="Print the result JSON to stdout."),
+    report_dir: Path = typer.Option(
+        None,
+        "--report-dir",
+        help="Directory for report output. Defaults to ~/.cache/corpus-forge/reports/<ts>/.",
+    ),
+) -> None:
+    """Evaluate preprocessing health over the SDFT capture set.
+
+    Computes coverage, source_mix, template_fidelity, and token_stats over the
+    SDFT demonstrations captured for *dataset*.  No LLM judge calls — purely
+    stats.  Writes Markdown + JSON reports and optionally prints JSON to stdout.
+    """
+    import json as _json
+    import logging
+
+    from corpus_forge.eval.distill import (
+        _get_backend,
+        run_distill_eval,
+    )
+
+    try:
+        # `_get_backend()` reads the user's config + opens a DB connection;
+        # surface its failures (missing config, DB unreachable) through the
+        # same error path so the operator still sees the dataset name in
+        # the message and CliRunner / agent capture the output.
+        backend = _get_backend()
+        result = run_distill_eval(
+            dataset,
+            template=template,
+            report_dir=report_dir,
+            backend=backend,
+        )
+    except ValueError as exc:
+        # Expected "dataset not found" path — friendly user-facing message
+        # via both Rich (theme-aware) and plain print (CliRunner / agent
+        # capture).
+        msg = f"dataset {dataset!r} not found: {exc}"
+        ui_error(msg)
+        print(f"Error: {msg}")
+        raise typer.Exit(code=1) from None
+    except Exception as exc:
+        # Unexpected backend / DB error: do NOT mask as "dataset not
+        # found". Log full traceback for the operator and surface a
+        # generic exit-1 with the dataset name + exception class so
+        # support diagnostics are still possible.
+        logging.exception("eval distill failed unexpectedly for dataset=%r", dataset)
+        msg = f"dataset {dataset!r}: {type(exc).__name__}: {exc}"
+        ui_error(msg)
+        print(f"Error: {msg}")
+        raise typer.Exit(code=1) from exc
+
+    if json_flag:
+        print(_json.dumps(result, indent=2, sort_keys=True))
 
 
 # ── mcp subcommand group (Phase R5) ───────────────────────────────────────

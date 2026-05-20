@@ -242,7 +242,9 @@ class TestWritesEnabledGate:
         read tools, so the set is now 5 (not 3). J1 adds estimate_sync_size
         (also always-available, read-only) bumping the count to 6. J4 adds
         next_curation_target and next_curation_batch (both read-only,
-        always available) → 8.
+        always available) → 8. Phase M Wave 3 adds list_ignore + validate_ignore
+        → 10. Phase O Wave 4 adds analyze_corpus + find_duplicates +
+        cluster_topics + score_quality → 14.
         """
         server = _build_server(backend, writes_enabled=False)
         tools = _list_tools(server)
@@ -258,12 +260,17 @@ class TestWritesEnabledGate:
             # Phase M Wave 3 — .corpusignore read tools
             "list_ignore",
             "validate_ignore",
-        }, f"Expected exactly 10 read tools; got: {sorted(tools)}"
+            # Phase O Wave 4 — analyze read tools
+            "analyze_corpus",
+            "find_duplicates",
+            "cluster_topics",
+            "score_quality",
+        }, f"Expected exactly 14 read tools; got: {sorted(tools)}"
 
     def test_writes_enabled_exposes_all_11_tools(
         self, backend: SQLiteBackend, seeded: dict
     ) -> None:
-        """When writes_enabled=True, all tools (8 read + 11 write) are registered.
+        """When writes_enabled=True, all tools (read + write) are registered.
 
         H-02 adds register_session (write-gated) = 15 total.
         G-03 adds register_template (write-gated) + render_conversation +
@@ -271,6 +278,8 @@ class TestWritesEnabledGate:
         J1 adds estimate_sync_size (read, always available) = 16 total.
         J4 adds next_curation_target + next_curation_batch (read) and
         commit_curation (write) = 19 total.
+        Phase O Wave 4 adds 4 analyze read tools = 29 total.
+        Phase P Wave 2 adds rate_search_result (write) = 30 total.
         """
         server = _build_server(backend, writes_enabled=True)
         tools = _list_tools(server)
@@ -289,6 +298,11 @@ class TestWritesEnabledGate:
             # Phase M Wave 3 read tools
             "list_ignore",
             "validate_ignore",
+            # Phase O Wave 4 analyze read tools
+            "analyze_corpus",
+            "find_duplicates",
+            "cluster_topics",
+            "score_quality",
             # F-03 write tools
             "add_label",
             "remove_label",
@@ -310,9 +324,13 @@ class TestWritesEnabledGate:
             "sync_ignore",
             # Phase M Wave 4 write tool
             "zotero_sync",
+            # Phase P Wave 2 write tool
+            "rate_search_result",
+            # Phase Q Wave 1 write tool
+            "record_demonstration",
         }
         assert set(tools) == expected, (
-            f"Expected 25 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
+            f"Expected 31 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
         )
 
     def test_unknown_tool_returns_error_when_writes_disabled(

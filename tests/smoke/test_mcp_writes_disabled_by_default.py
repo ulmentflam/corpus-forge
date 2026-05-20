@@ -51,6 +51,11 @@ _READ_TOOL_NAMES = {
     # Phase M Wave 3 — .corpusignore read tools
     "list_ignore",
     "validate_ignore",
+    # Phase O Wave 4 — analyze read tools
+    "analyze_corpus",
+    "find_duplicates",
+    "cluster_topics",
+    "score_quality",
 }
 
 _WRITE_TOOL_NAMES = {
@@ -74,6 +79,10 @@ _WRITE_TOOL_NAMES = {
     "sync_ignore",
     # Phase M Wave 4 — Zotero ingest tool
     "zotero_sync",
+    # Phase P Wave 2 — search result rating tool
+    "rate_search_result",
+    # Phase Q Wave 1 — SDFT demonstration capture tool
+    "record_demonstration",
 }
 
 _ALL_TOOL_NAMES = _READ_TOOL_NAMES | _WRITE_TOOL_NAMES

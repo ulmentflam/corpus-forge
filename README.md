@@ -265,6 +265,7 @@ pip install 'corpus-forge[sqlite,openai,hf,tokens,retrieval,rerank,mcp,eval,code
 | `[ocr]` | VLM OCR HTTP clients (`requests`) + PDF rasterisation (`pdf2image`, `pillow`). Needs system `poppler-utils` (see "Distribution / licensing"). Permissive. |
 | `[whisper]` | Audio + video transcription via `faster-whisper` (local) or any OpenAI-compatible `/audio/transcriptions` endpoint (remote). Bundles `imageio-ffmpeg`. Permissive. |
 | `[fast-tier]` | Static-embedding fast tier (`model2vec` / `minishlab/potion-code-16M`) for the Phase N Wave 3 candidate-generator front-end of `HybridRetriever`. MIT. ~16 MB model weights downloaded on first use. Default search behaviour unchanged until the user opts in via `SearchOptions.fast_tier_mode`. |
+| `[analyze]` | Phase O EDA + corpus-cleaning ML stack: `scikit-learn`, `hdbscan`, `umap-learn`, `bertopic`, `datasketch`, `fasttext-langdetect`, `langdetect`. All permissive (BSD-3/MIT/Apache-2.0). Lazy-imported inside `corpus_forge/analyze/` — does NOT widen the AGPL surface and does not affect cold-start time. |
 
 ## Distribution / licensing
 

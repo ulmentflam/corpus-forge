@@ -692,6 +692,205 @@ def register_session(
     return {"feedback_session_id": feedback_session_id, "created": created}
 
 
+# ---------------------------------------------------------------------------
+# rate_search_result
+# ---------------------------------------------------------------------------
+
+
+def _q(backend: Any, sql: str) -> str:
+    """Translate ``?`` placeholders to ``%s`` for Postgres backends.
+
+    SQLiteBackend uses ``?``; PostgresBackend's psycopg cursor requires
+    ``%s``.  Detected via ``type(backend).__module__`` so we don't import
+    psycopg eagerly.
+    """
+    if "postgres" in type(backend).__module__.lower():
+        return sql.replace("?", "%s")
+    return sql
+
+
+def rate_search_result(
+    backend: Any,
+    ctx: Any,
+    query_id: str,
+    chunk_id: int,
+    signal: str,
+    value: float | None,
+    source: str,
+    *,
+    replacement_chunk_id: int | None = None,
+) -> dict:
+    """Record a signal (rating, click, thumbs, …) for a search result.
+
+    Looks up ``search_sessions`` by ``query`` = ``query_id``.  If no row
+    exists, auto-creates one with ``query=query_id`` (so subsequent calls
+    with the same ``query_id`` reuse the session) and resolves
+    ``dataset_id`` from the chunk's parent document.  Inserts one row into
+    ``search_result_events`` and emits one ``mcp_audit`` row.
+
+    Returns ``{"event_id": int, "session_id": int}``.
+    """
+    # Verify chunk_id exists; propagate FK violation as a clean error.
+    chunk_rows = backend._execute(
+        _q(backend, "SELECT id FROM chunks WHERE id = ?"),
+        (chunk_id,),
+    )
+    if not chunk_rows:
+        raise ValueError(f"chunk_id={chunk_id} does not exist in chunks table")
+
+    # Look up or auto-create the search session.
+    session_rows = backend._execute(
+        _q(backend, "SELECT id FROM search_sessions WHERE query = ? LIMIT 1"),
+        (query_id,),
+    )
+    if session_rows:
+        session_id: int = int(session_rows[0]["id"])
+    else:
+        # Resolve dataset_id via chunk → document.
+        doc_rows = backend._execute(
+            _q(
+                backend,
+                "SELECT d.dataset_id FROM chunks c"
+                " JOIN documents d ON d.id = c.document_id"
+                " WHERE c.id = ? LIMIT 1",
+            ),
+            (chunk_id,),
+        )
+        dataset_id: int | None = int(doc_rows[0]["dataset_id"]) if doc_rows else None
+        # Use the supplied query_id as the session's query column so that a
+        # subsequent rate_search_result with the same query_id finds and
+        # reuses this session instead of spawning a duplicate one.
+        new_session_rows = backend._execute(
+            _q(
+                backend,
+                "INSERT INTO search_sessions (query, dataset_id) VALUES (?, ?) RETURNING id",
+            ),
+            (query_id, dataset_id),
+        )
+        session_id = int(new_session_rows[0]["id"])
+
+    # Insert the event row.
+    event_rows = backend._execute(
+        _q(
+            backend,
+            "INSERT INTO search_result_events"
+            " (session_id, chunk_id, signal, value, source, replacement_chunk_id)"
+            " VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+        ),
+        (session_id, chunk_id, signal, value, source, replacement_chunk_id),
+    )
+    event_id: int = int(event_rows[0]["id"])
+
+    # Emit audit row (mirrors add_feedback pattern).
+    after: dict = {
+        "query_id": query_id,
+        "chunk_id": chunk_id,
+        "signal": signal,
+        "value": value,
+        "source": source,
+        "replacement_chunk_id": replacement_chunk_id,
+    }
+    backend.audit_event(
+        ctx.host,
+        ctx.client,
+        ctx.session_id,
+        "rate_search_result",
+        "chunk",
+        chunk_id,
+        None,
+        after,
+        False,
+    )
+
+    return {"event_id": event_id, "session_id": session_id}
+
+
+# ---------------------------------------------------------------------------
+# record_demonstration
+# ---------------------------------------------------------------------------
+
+
+def record_demonstration(
+    backend: Any,
+    ctx: Any,
+    query: str,
+    student_messages: list[dict],
+    teacher_messages: list[dict],
+    target: str,
+    source: str,
+    dataset: str | None = None,
+    dataset_id: int | None = None,
+    trace_id: str | None = None,
+) -> dict:
+    """Record a supervised demonstration pair in ``sdft_demonstrations``.
+
+    Exactly one of ``dataset`` (name → resolved to id) or ``dataset_id``
+    (direct int) must be provided.  ``source`` must be a valid
+    :class:`~corpus_forge.sdft.sources.SDFTSource` value.
+
+    Returns ``{"demonstration_id": int, "deduped": bool, "audit_id": int}``.
+    """
+    from corpus_forge.sdft.capture import record_demonstration as _record  # noqa: PLC0415
+    from corpus_forge.sdft.sources import SDFTSource  # noqa: PLC0415
+
+    # Validate source.
+    valid_values = {e.value for e in SDFTSource}
+    if source not in valid_values:
+        raise ValueError(
+            f"source {source!r} is not a valid SDFTSource; must be one of {sorted(valid_values)}"
+        )
+
+    # Resolve dataset_id. Enforce mutually-exclusive contract: exactly
+    # one of dataset / dataset_id is allowed so callers can't accidentally
+    # disagree about which dataset the demonstration belongs to.
+    if dataset is not None and dataset_id is not None:
+        raise ValueError(
+            "exactly one of dataset or dataset_id is required; "
+            f"got both (dataset={dataset!r}, dataset_id={dataset_id!r})"
+        )
+    if dataset_id is None:
+        if dataset is None:
+            raise ValueError("exactly one of dataset or dataset_id is required")
+        resolved = backend.find_dataset_id_by_name(dataset)
+        if resolved is None:
+            raise ValueError(f"dataset {dataset!r} not found")
+        dataset_id = resolved
+
+    with backend._get_connection() as conn:
+        result = _record(
+            conn,
+            query=query,
+            student_messages=student_messages,
+            teacher_messages=teacher_messages,
+            target=target,
+            source=source,
+            dataset_id=dataset_id,
+            trace_id=trace_id,
+        )
+
+    audit_id = backend.audit_event(
+        ctx.host,
+        ctx.client,
+        ctx.session_id,
+        "record_demonstration",
+        "chunk",
+        result["demonstration_id"],
+        None,
+        {
+            "query": query,
+            "source": source,
+            "dataset_id": dataset_id,
+            "deduped": result["deduped"],
+        },
+        False,
+    )
+    return {
+        "demonstration_id": result["demonstration_id"],
+        "deduped": result["deduped"],
+        "audit_id": audit_id,
+    }
+
+
 __all__ = [
     "WriteContext",
     "add_feedback",
@@ -699,6 +898,8 @@ __all__ = [
     "append_conversation",
     "append_message",
     "list_labels",
+    "rate_search_result",
+    "record_demonstration",
     "register_session",
     "remove_label",
     "set_description",

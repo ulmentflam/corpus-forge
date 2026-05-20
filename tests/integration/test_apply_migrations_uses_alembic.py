@@ -124,8 +124,8 @@ def test_apply_migrations_creates_alembic_version_table_pg(
 
     assert len(rows) == 1, f"Expected exactly 1 row in corpus.alembic_version, got {len(rows)}. "
     version_num = rows[0][0]
-    assert version_num == "0011_image_embeddings", (
-        f"Expected version_num='0011_image_embeddings', got {version_num!r}. "
+    assert version_num == "0014_sdft_demonstrations", (
+        f"Expected version_num='0014_sdft_demonstrations', got {version_num!r}. "
         "The rewired apply_migrations must call command.upgrade('head')."
     )
 
@@ -174,8 +174,8 @@ def test_apply_migrations_creates_alembic_version_table_sqlite(
 
     assert len(rows) == 1, f"Expected exactly 1 row in alembic_version, got {len(rows)}."
     version_num = rows[0][0]
-    assert version_num == "0011_image_embeddings", (
-        f"Expected version_num='0011_image_embeddings', got {version_num!r}. "
+    assert version_num == "0014_sdft_demonstrations", (
+        f"Expected version_num='0014_sdft_demonstrations', got {version_num!r}. "
         "The rewired apply_migrations must call command.upgrade('head')."
     )
 
