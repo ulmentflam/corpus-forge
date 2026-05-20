@@ -116,30 +116,24 @@ def train_reranker(
     # ------------------------------------------------------------------
     # Fetch rows
     # ------------------------------------------------------------------
-    if source_filter is not None:
-        placeholders = ",".join("?" * len(source_filter))
-        sql = f"""
-            SELECT
-                sre.signal,
-                sre.value,
-                sre.source,
-                ss.query
-            FROM search_result_events AS sre
-            JOIN search_sessions AS ss ON ss.id = sre.session_id
-            WHERE sre.source IN ({placeholders})
-        """
+    # Detect placeholder style from the connection — psycopg uses "%s",
+    # sqlite3 uses "?". Both backends expose `paramstyle` via class module.
+    is_postgres = "psycopg" in type(conn).__module__
+    ph = "%s" if is_postgres else "?"
+
+    base_sql = (
+        "SELECT sre.signal, sre.value, sre.source, ss.query "
+        "FROM search_result_events AS sre "
+        "JOIN search_sessions AS ss ON ss.id = sre.session_id"
+    )
+
+    if source_filter:  # non-None AND non-empty — empty list would produce IN ().
+        placeholders = ",".join([ph] * len(source_filter))
+        sql = f"{base_sql} WHERE sre.source IN ({placeholders})"
         cursor = conn.execute(sql, source_filter)
     else:
-        sql = """
-            SELECT
-                sre.signal,
-                sre.value,
-                sre.source,
-                ss.query
-            FROM search_result_events AS sre
-            JOIN search_sessions AS ss ON ss.id = sre.session_id
-        """
-        cursor = conn.execute(sql)
+        # Empty source_filter is treated the same as None — fetch everything.
+        cursor = conn.execute(base_sql)
 
     rows = cursor.fetchall()
 
@@ -186,19 +180,25 @@ def train_reranker(
     n_train = len(y)
 
     # ------------------------------------------------------------------
-    # Train
+    # Single-class guard — moved BEFORE clf.fit so sklearn never sees a
+    # one-class y (which raises its own less-helpful ValueError).
     # ------------------------------------------------------------------
-    clf = LogisticRegression(random_state=42, max_iter=500)
-    clf.fit(X, y)
-
-    # ------------------------------------------------------------------
-    # AUC — None when single class present
-    # ------------------------------------------------------------------
-    auc: float | None
     unique_labels = set(y)
+    auc: float | None = None
+
+    clf = LogisticRegression(random_state=42, max_iter=500)
     if len(unique_labels) < 2:
-        auc = None
+        # sklearn can't fit on a single class. Persist a degenerate model
+        # that always predicts the lone observed label so the caller still
+        # gets a usable artifact with auc=None recorded.
+        from sklearn.dummy import DummyClassifier
+
+        clf_to_persist: Any = DummyClassifier(strategy="most_frequent")
+        clf_to_persist.fit(X, y)
+        clf = clf_to_persist
     else:
+        clf.fit(X, y)
+
         import numpy as np
 
         probs = clf.predict_proba(np.asarray(X))[:, 1]

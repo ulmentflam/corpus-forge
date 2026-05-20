@@ -840,10 +840,17 @@ def record_demonstration(
             f"source {source!r} is not a valid SDFTSource; must be one of {sorted(valid_values)}"
         )
 
-    # Resolve dataset_id.
+    # Resolve dataset_id. Enforce mutually-exclusive contract: exactly
+    # one of dataset / dataset_id is allowed so callers can't accidentally
+    # disagree about which dataset the demonstration belongs to.
+    if dataset is not None and dataset_id is not None:
+        raise ValueError(
+            "exactly one of dataset or dataset_id is required; "
+            f"got both (dataset={dataset!r}, dataset_id={dataset_id!r})"
+        )
     if dataset_id is None:
         if dataset is None:
-            raise ValueError("one of dataset or dataset_id is required")
+            raise ValueError("exactly one of dataset or dataset_id is required")
         resolved = backend.find_dataset_id_by_name(dataset)
         if resolved is None:
             raise ValueError(f"dataset {dataset!r} not found")

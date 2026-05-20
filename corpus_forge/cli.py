@@ -1684,6 +1684,8 @@ def eval_distill(
 
     backend = _get_backend()
 
+    import logging
+
     try:
         result = run_distill_eval(
             dataset,
@@ -1691,16 +1693,24 @@ def eval_distill(
             report_dir=report_dir,
             backend=backend,
         )
-    except (ValueError, Exception) as exc:
-        # Catch ValueError ("Dataset not found") AND any DB-level error
-        # (no such table, etc.) so the operator always sees the dataset
-        # name in the failure message. Emit via ui.error (Rich-styled)
-        # AND a plain print so CliRunner / agent-mode captures see it
-        # regardless of theme.
+    except ValueError as exc:
+        # Expected "dataset not found" path — friendly user-facing message
+        # via both Rich (theme-aware) and plain print (CliRunner / agent
+        # capture).
         msg = f"dataset {dataset!r} not found: {exc}"
         ui_error(msg)
         print(f"Error: {msg}")
         raise typer.Exit(code=1) from None
+    except Exception as exc:
+        # Unexpected backend / DB error: do NOT mask as "dataset not
+        # found". Log full traceback for the operator and surface a
+        # generic exit-1 with the dataset name + exception class so
+        # support diagnostics are still possible.
+        logging.exception("eval distill failed unexpectedly for dataset=%r", dataset)
+        msg = f"dataset {dataset!r}: {type(exc).__name__}: {exc}"
+        ui_error(msg)
+        print(f"Error: {msg}")
+        raise typer.Exit(code=1) from exc
 
     if json_flag:
         print(_json.dumps(result, indent=2, sort_keys=True))

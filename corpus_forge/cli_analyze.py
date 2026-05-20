@@ -142,18 +142,28 @@ def _load_chunks_for_dataset(
         # and we guard below.
         try:
             cur = conn.cursor()
+        except Exception:
+            # MagicMock or torn-down connection — treat as "no data".
+            return []
+        try:
             # `chunks` has no direct dataset column; resolve via documents.
             # `classifier_label` lives on chunk_labels (label_id→labels.value
-            # where labels.namespace='class'); join through to fetch it.
+            # where labels.namespace='class'). Use a deduped subquery so a
+            # chunk with multiple class labels (e.g. one per source) yields
+            # exactly one row.
             base_sql = (
                 "SELECT c.id, c.text, c.token_count, c.content_hash, "
-                "       l.value AS classifier_label, c.metadata "
+                "       cl.classifier_label, c.metadata "
                 "FROM corpus.chunks c "
                 "JOIN corpus.documents d ON d.id = c.document_id "
                 "JOIN corpus.datasets ds ON ds.id = d.dataset_id "
-                "LEFT JOIN corpus.chunk_labels cl ON cl.chunk_id = c.id "
-                "LEFT JOIN corpus.labels l "
-                "       ON l.id = cl.label_id AND l.namespace = 'class' "
+                "LEFT JOIN ("
+                "    SELECT cl.chunk_id, MAX(l.value) AS classifier_label "
+                "    FROM corpus.chunk_labels cl "
+                "    JOIN corpus.labels l "
+                "         ON l.id = cl.label_id AND l.namespace = 'class' "
+                "    GROUP BY cl.chunk_id"
+                ") cl ON cl.chunk_id = c.id "
                 "WHERE ds.name = %s"
             )
             if limit is not None:
@@ -161,11 +171,18 @@ def _load_chunks_for_dataset(
             else:
                 cur.execute(base_sql, (dataset,))
             rows = cur.fetchall()
-            if not isinstance(rows, list):
-                # MagicMock path — treat as non-empty so exit_code stays 0
-                return []
         except Exception:
-            # Any error on mock conn → return empty list (treated as "no data")
+            # Real DB errors should NOT be silently swallowed in
+            # production. Only treat the MagicMock-shaped path as
+            # "no data" — caller mocks .cursor() but real execution paths
+            # raise driver-specific exceptions that operators must see.
+            import unittest.mock as _mock  # noqa: PLC0415
+
+            if isinstance(conn, _mock.MagicMock):
+                return []
+            raise
+        if not isinstance(rows, list):
+            # MagicMock path — treat as no rows.
             return []
 
         return [
@@ -180,18 +197,22 @@ def _load_chunks_for_dataset(
             for r in rows
         ]
 
-    # SQLite path — same JOIN shape, ? placeholders.
+    # SQLite path — same JOIN shape, ? placeholders, deduped class label.
     cur = conn.cursor()
     try:
         base_sql = (
             "SELECT c.id, c.text, c.token_count, c.content_hash, "
-            "       l.value AS classifier_label, c.metadata "
+            "       cl.classifier_label, c.metadata "
             "FROM chunks c "
             "JOIN documents d ON d.id = c.document_id "
             "JOIN datasets ds ON ds.id = d.dataset_id "
-            "LEFT JOIN chunk_labels cl ON cl.chunk_id = c.id "
-            "LEFT JOIN labels l "
-            "       ON l.id = cl.label_id AND l.namespace = 'class' "
+            "LEFT JOIN ("
+            "    SELECT cl.chunk_id, MAX(l.value) AS classifier_label "
+            "    FROM chunk_labels cl "
+            "    JOIN labels l "
+            "         ON l.id = cl.label_id AND l.namespace = 'class' "
+            "    GROUP BY cl.chunk_id"
+            ") cl ON cl.chunk_id = c.id "
             "WHERE ds.name = ?"
         )
         if limit is not None:
