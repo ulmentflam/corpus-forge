@@ -7,8 +7,6 @@ canned rows.
 
 from __future__ import annotations
 
-from typing import Any
-
 from corpus_forge.eval.distill import _list_chunks_for_dataset
 
 
