@@ -85,6 +85,7 @@ def record_demonstration(
         # connections. Without this the row is rolled back when
         # backend._get_connection's context manager closes the conn,
         # so callers see a phantom demonstration_id that doesn't exist.
+        # Regression coverage: tests/integration/test_sdft_capture_pg_commit_regression.py
         conn.commit()
         if row is not None:
             return {"demonstration_id": int(row[0]), "deduped": False}
