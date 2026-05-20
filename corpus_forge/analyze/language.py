@@ -148,7 +148,10 @@ def _detect_fasttext(text: str) -> tuple[str, float]:
             ) from None
 
     detector = getattr(_ft_mod, "fasttext", _ft_mod)
-    result = detector.detect(text)
+    # The fasttext_langdetect re-export exposes `.detect`; the bare
+    # fasttext stub does not. We probed for either shape above; suppress
+    # the static-analysis miss on the bare branch.
+    result = detector.detect(text)  # type: ignore[attr-defined]
     iso_code = result["lang"]
     confidence = float(result["score"])
     return (iso_code, confidence)
