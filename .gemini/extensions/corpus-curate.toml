@@ -1,0 +1,25 @@
+# corpus-curate Gemini CLI extension manifest
+# Phase Q Wave 2 — per-client skill bridge for SDFT capture
+#
+# Load via: gemini extension load .gemini/extensions/corpus-curate.toml
+
+[extension]
+name        = "corpus-curate"
+description = "corpus-forge data-improvement loop with SDFT demonstration capture."
+version     = "0.1.0"
+
+[extension.prompt]
+prompt_file = "PROMPT.md"
+
+[extension.mcp_tools]
+# Four MCP tools this extension relies on:
+tools = [
+  "record_demonstration",
+  "commit_curation",
+  "rate_search_result",
+  "add_feedback",
+]
+
+[extension.sdft]
+# SDFT source value written when recording demonstrations from Gemini CLI.
+source = "gemini"

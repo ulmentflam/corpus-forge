@@ -2,6 +2,24 @@
 
 Record of implementations written by tdd-coder.
 
+## Q2-G1
+- Source files:
+  - `corpus_forge/sdft/sources.py` (added `is_chat_client` classmethod)
+  - `.claude/skills/corpus-curate/SKILL.md` (extended with `record_demonstration` section)
+  - `.gemini/extensions/corpus-curate.toml` (new)
+  - `.gemini/extensions/corpus-curate/PROMPT.md` (new)
+  - `opencode/commands/corpus-curate.md` (new)
+  - `codex/agents/corpus-curate.md` (new)
+  - `docs/skill_packs.md` (new)
+- Gates:
+  - format: ✓ (`ruff format corpus_forge` — 199 files unchanged)
+  - lint: ✓ (`ruff check corpus_forge` — all checks passed)
+  - typecheck: skipped (no new type contracts; sources.py classmethod is pure str-set lookup)
+  - test: ✓ (target: 37 + 33 + 14 = 84 passed, 0 failed; regression: 5041 passed, 26 skipped, 0 failed)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes
+- Status: green — handed off to tdd-qa
+
 ## P4-G1
 - Source files: `corpus_forge/eval/judge_mock.py` (new), `corpus_forge/eval/judge.py` (new), `corpus_forge/eval/rag.py` (new), `corpus_forge/eval/__init__.py` (re-exports added), `corpus_forge/cli.py` (eval rag + eval cag subcommands added)
 - Gates:

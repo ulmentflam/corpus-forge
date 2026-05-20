@@ -3192,3 +3192,116 @@ Test patterns of note:
   43 failed, 4 passed, 2 skipped in 0.87s
   ```
 - Status: red — handed off to tdd-coder
+
+## Q1-T1 — 0014_sdft_demonstrations migration schema (SQLite + Postgres)
+- Test files:
+  - `tests/integration/test_migrate_0014_sdft.py` (new — 24 SQLite + 3 module-attr + 12 Postgres @requires_docker = 39 total)
+- Run command: `uv run pytest tests/integration/test_migrate_0014_sdft.py -m 'not requires_docker' -x`
+- Edge case checklist:
+  - [x] happy — table exists, all columns present, FK cascade, JSON round-trip, full-fields insert
+  - [x] boundaries — trace_id NULL when omitted, content_hash UNIQUE enforced (IntegrityError), ON CONFLICT DO NOTHING dedup
+  - [x] type/format — SQLite TEXT for messages (JSON string); Postgres jsonb; created_at server-default
+  - [x] state — isolated tmp_path DB per test; idempotency via INSERT OR IGNORE tested
+  - [N/A] concurrency — pure DDL migration test, sequential per-test isolation
+  - [x] failure paths — ModuleNotFoundError on import; alembic CommandError for unknown revision; IntegrityError on dup hash
+  - [N/A] locale/time — created_at DEFAULT (datetime('now')) is DB-side
+  - [x] production-realistic — seeds minimal datasets rows; JSON payloads are real role/content dicts
+  - [x] regression hooks — down_revision pinned to 0013_search_sessions; AST check on downgrade() body
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_migrate_0014_sdft.py::TestMigrationModuleAttributes::test_revision_value
+  FAILED tests/integration/test_migrate_0014_sdft.py::TestMigrationModuleAttributes::test_downgrade_is_forward_only_pass
+  FAILED tests/integration/test_migrate_0014_sdft.py::TestMigrationModuleAttributes::test_down_revision_value
+  24 failed, 14 deselected, 20 warnings in 0.27s
+  E  alembic.util.exc.CommandError: Can't locate revision identified by '0014_sdft_demonstrations'
+  E  ModuleNotFoundError: No module named 'corpus_forge.alembic.versions.0014_sdft_demonstrations'
+  ```
+- Status: red — handed off to tdd-coder
+
+## Q1-T2 — MCP record_demonstration write tool integration tests
+- Test files:
+  - `tests/integration/test_mcp_record_demonstration.py` (new — 29 tests; 23 fail, 6 pass at boundary conditions)
+- Run command: `uv run pytest tests/integration/test_mcp_record_demonstration.py -x`
+- Edge case checklist:
+  - [x] happy — returns {demonstration_id: int, deduped: bool}, deduped=False, DB row persisted, audit row written, JSON-serialisable
+  - [x] boundaries — dedup: second identical call returns same id + deduped=True, count stays 1, audit still written; different query = 2 rows
+  - [x] type/format — list[dict] messages; trace_id=None→NULL; source must match SDFTSource enum
+  - [x] state — fresh migrated backend per test; idempotent dedup across 5 tests; parametrized over all 8 valid sources
+  - [N/A] concurrency — in-process MCP harness, sequential asyncio.run
+  - [x] failure paths — write gate; unknown dataset isError; invalid source isError; SDFTSource not importable = ModuleNotFoundError
+  - [N/A] locale/time — created_at is DB-side default
+  - [x] production-realistic — real SQLiteBackend(:memory:) migrated through full schema; 8-source parametrize
+  - [x] regression hooks — SDFTSource enum importability; source taxonomy completeness (8 values)
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_mcp_record_demonstration.py::TestToolRegistration::test_tool_registered_when_writes_enabled
+  FAILED tests/integration/test_mcp_record_demonstration.py::TestSourceTaxonomy::test_sdft_source_enum_importable
+  FAILED tests/integration/test_mcp_record_demonstration.py::TestTraceIdRoundTrip::test_trace_id_stored_in_db
+  23 failed, 6 passed in 0.73s
+  E  AssertionError: Expected 'record_demonstration' in tool list with writes_enabled=True
+  E  ModuleNotFoundError: No module named 'corpus_forge.sdft'
+  ```
+- Status: red — handed off to tdd-coder
+
+## Q1-T3 — SDFT capture hooks unit tests (commit_curation + rate_search_result)
+- Test files:
+  - `tests/unit/test_sdft_capture_hooks.py` (new — 12 tests; all 12 fail)
+- Run command: `uv run pytest tests/unit/test_sdft_capture_hooks.py -x`
+- Edge case checklist:
+  - [x] happy — description-changing commit writes SDFT row with correct source/target/query/student_messages; thumbs_down+replacement writes SDFT row with replacement text as target
+  - [x] boundaries — label-only commit no SDFT row; metadata-only no SDFT row; thumbs_down without replacement no SDFT row; thumbs_up with replacement no SDFT row
+  - [x] type/format — student_messages verified list with assistant role; query derived from chunk text first 200 chars; source field verbatim
+  - [x] state — fresh migrated backend per test; sdft_demonstrations count delta asserted
+  - [N/A] concurrency — in-process sequential asyncio.run dispatch
+  - [x] failure paths — OperationalError "no such table: sdft_demonstrations" is root RED cause
+  - [N/A] locale/time — no locale-sensitive assertions
+  - [x] production-realistic — seeds realistic physics text corpus; uses real commit_curation and rate_search_result dispatch paths
+  - [x] regression hooks — negative tests pin hook must not fire spuriously
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_sdft_capture_hooks.py::TestCommitCurationSdftHook::test_description_change_writes_sdft_row
+  FAILED tests/unit/test_sdft_capture_hooks.py::TestRateSearchResultSdftHook::test_thumbs_down_without_replacement_does_not_write_sdft_row
+  FAILED tests/unit/test_sdft_capture_hooks.py::TestRateSearchResultSdftHook::test_thumbs_up_with_replacement_does_not_write_sdft_row
+  12 failed in 0.56s
+  E  sqlite3.OperationalError: no such table: sdft_demonstrations
+  ```
+- Status: red — handed off to tdd-coder
+
+## Q2-T1
+- Test files:
+  - `tests/unit/test_skill_packs_present.py` (45 FAIL / 25 PASS — 70 total)
+  - `tests/unit/test_sdft_source_taxonomy.py` (11 FAIL / 22 PASS — 33 total)
+  - `tests/integration/test_skill_provenance.py` (14 PASS — characterization tests for already-shipped Q1-G1 behavior)
+- Run command: `uv run pytest tests/unit/test_skill_packs_present.py tests/unit/test_sdft_source_taxonomy.py tests/integration/test_skill_provenance.py -v 2>&1 | tail -60`
+- Edge case checklist:
+  - [x] happy path — file existence + content pattern + MCP dispatch provenance
+  - [x] boundaries — each file checked individually; TOML parseable check; exactly 8 enum values (no more, no fewer)
+  - [x] type/format — TOML parse via tomllib; regex heading search for record_demonstration section; StrEnum str() round-trip
+  - [x] state — characterization tests for existing dispatch (test_skill_provenance.py passes green on existing Q1-G1 code)
+  - [ ] N/A — concurrency (file checks are pure I/O; MCP dispatch is sequential in-process)
+  - [x] failure paths — is_chat_client with unrecognised value returns False; missing files fail assertively
+  - [ ] N/A — locale/time (no date/time assertions)
+  - [x] production-realistic — paths anchored at real repo root via Path(__file__).parents[2]; real SQLiteBackend(:memory:) in integration tests
+  - [x] regression hooks — SKILL.md existence (already passes, pin it stays); SDFTSource cardinality (pin exactly 8, no drift); provenance round-trip (characterize Q1-G1 dispatch)
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_sdft_source_taxonomy.py::TestIsChatClient::test_is_chat_client_accepts_enum_member
+  FAILED tests/unit/test_sdft_source_taxonomy.py::TestIsChatClient::test_chat_client_sources_return_true[claude_code]
+  FAILED tests/unit/test_sdft_source_taxonomy.py::TestIsChatClient::test_capture_sources_return_false[curation_commit]
+  FAILED tests/unit/test_sdft_source_taxonomy.py::TestIsChatClient::test_is_chat_client_accepts_string
+  FAILED tests/unit/test_sdft_source_taxonomy.py::TestIsChatClient::test_is_chat_client_unknown_value_returns_false
+  FAILED tests/unit/test_skill_packs_present.py::TestSkillPacksExist::test_gemini_toml_exists
+  FAILED tests/unit/test_skill_packs_present.py::TestSkillPacksExist::test_gemini_prompt_md_exists
+  FAILED tests/unit/test_skill_packs_present.py::TestSkillPacksExist::test_opencode_command_md_exists
+  FAILED tests/unit/test_skill_packs_present.py::TestSkillPacksExist::test_codex_agent_md_exists
+  FAILED tests/unit/test_skill_packs_present.py::TestSkillPacksExist::test_skill_packs_doc_exists
+  FAILED tests/unit/test_skill_packs_present.py::TestClaudeSkillRecordDemonstrationSection::test_claude_skill_has_record_demonstration_section
+  E  AttributeError: type object 'SDFTSource' has no attribute 'is_chat_client'
+  E  FileNotFoundError: No such file or directory: '.../.gemini/extensions/corpus-curate.toml'
+  45 failed, 25 passed (test_skill_packs_present) | 11 failed, 22 passed (test_sdft_source_taxonomy)
+  ```
+- Notes:
+  - test_skill_provenance.py passes 14/14 GREEN — this is correct. `record_demonstration` + full provenance was shipped in Q1-G1. These are characterization tests that confirm existing behavior and will stay green as the coder ships skill packs.
+  - test_skill_packs_present.py: 25 tests that PASS are expected passing boundary conditions — SKILL.md already exists; `commit_curation` and `add_feedback` are already in the existing SKILL.md; SDFTSource import + cardinality + string round-trip all pass (shipped Q1-G1).
+  - Coder must: (1) add `is_chat_client()` classmethod to SDFTSource; (2) create `.gemini/extensions/corpus-curate.toml` + `.gemini/extensions/corpus-curate/PROMPT.md`; (3) create `opencode/commands/corpus-curate.md`; (4) create `codex/agents/corpus-curate.md`; (5) create `docs/skill_packs.md`; (6) extend `.claude/skills/corpus-curate/SKILL.md` with record_demonstration + rate_search_result sections.
+- Status: red — handed off to tdd-coder
