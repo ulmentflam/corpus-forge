@@ -50,14 +50,16 @@ that prevents accidental 600 MB model downloads.
 from __future__ import annotations
 
 import re
+import uuid
 from collections.abc import Sequence
 from dataclasses import replace as _dc_replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
 from corpus_forge.retrieval.fusion import alpha_blend, reciprocal_rank_fusion
 from corpus_forge.retrieval.normalize import min_max
 from corpus_forge.retrieval.query_shape import is_symbol_shaped
-from corpus_forge.retrieval.types import Hit, SearchOptions
+from corpus_forge.retrieval.types import Hit, SearchOptions, SearchResponse
 
 if TYPE_CHECKING:
     from corpus_forge.backends.base import StorageBackend
@@ -75,10 +77,11 @@ class Retriever(Protocol):
     """A pluggable retriever.
 
     Implementations promise: given a query string and ``SearchOptions``,
-    return a ranked ``list[Hit]`` of length ≤ ``options.k``.
+    return a ``SearchResponse`` whose ``results`` list has length ≤
+    ``options.k``.
     """
 
-    def search(self, query: str, options: SearchOptions) -> list[Hit]: ...
+    def search(self, query: str, options: SearchOptions) -> SearchResponse: ...
 
 
 class HybridRetriever:
@@ -132,7 +135,7 @@ class HybridRetriever:
 
     # ── public API ───────────────────────────────────────────────────────
 
-    def search(self, query: str, options: SearchOptions) -> list[Hit]:
+    def search(self, query: str, options: SearchOptions) -> SearchResponse:
         """Run the hybrid search.
 
         Steps:
@@ -149,8 +152,13 @@ class HybridRetriever:
            Wave 3 candidate pool.
         5. Fuse: RRF or alpha-blend per ``options.fusion``.
         6. Materialise into ``Hit`` objects with ``source="fused"`` and
-           return the top-``k``.
+           return the top-``k`` wrapped in a ``SearchResponse``.
         """
+        # Capture provenance metadata upfront — before any I/O so the
+        # started_at timestamp reflects the true start of the call.
+        started_at = datetime.now(UTC)
+        query_id = uuid.uuid4().hex
+
         # ── Step 1: dataset resolution ─────────────────────────────────
         dataset_id: int | None = None
         if options.dataset is not None:
@@ -160,7 +168,13 @@ class HybridRetriever:
                 # backend with dataset_id=None — that would silently
                 # search across all datasets, which is the leak the
                 # caller is explicitly trying to prevent.
-                return []
+                return SearchResponse(
+                    query_id=query_id,
+                    results=[],
+                    query=query,
+                    dataset_id=None,
+                    started_at=started_at,
+                )
 
         # ── Step 2: Phase N Wave 3 — fast-tier dispatch ────────────────
         # ``"only"`` short-circuits here.  ``"shortcut"`` computes the
@@ -184,7 +198,13 @@ class HybridRetriever:
             # we're enforcing.
             self._require_chunk_ids_filter()
             if options.fast_tier_mode == "only":
-                return self._search_fast_only(query, options, dataset_id=dataset_id)
+                return self._search_fast_only(
+                    query,
+                    options,
+                    dataset_id=dataset_id,
+                    query_id=query_id,
+                    started_at=started_at,
+                )
             # shortcut: build the candidate pool.
             candidate_ids = self._fast_tier_candidate_ids(query, options, dataset_id=dataset_id)
 
@@ -330,16 +350,35 @@ class HybridRetriever:
             # Wave 1's bench finding.  Same symbol-shape gate as the
             # pre-rerank pass.
             if boost_fires:
-                return self._apply_post_rerank_boost(
+                boosted = self._apply_post_rerank_boost(
                     query,
                     reranked,
                     multiplier=self.config.definition_boost_factor_post_rerank,
                 )
-            return reranked
+                return SearchResponse(
+                    query_id=query_id,
+                    results=boosted,
+                    query=query,
+                    dataset_id=dataset_id,
+                    started_at=started_at,
+                )
+            return SearchResponse(
+                query_id=query_id,
+                results=reranked,
+                query=query,
+                dataset_id=dataset_id,
+                started_at=started_at,
+            )
 
         # No rerank → return the fused top-k.  `top` is already truncated
         # to `options.k` in the materialisation step above.
-        return top
+        return SearchResponse(
+            query_id=query_id,
+            results=top,
+            query=query,
+            dataset_id=dataset_id,
+            started_at=started_at,
+        )
 
     # ── internals ────────────────────────────────────────────────────────
 
@@ -452,7 +491,9 @@ class HybridRetriever:
         options: SearchOptions,
         *,
         dataset_id: int | None,
-    ) -> list[Hit]:
+        query_id: str,
+        started_at: datetime,
+    ) -> SearchResponse:
         """Implement the ``"only"`` mode — fast tier + nothing else.
 
         No lexical fan-out, no reranker, no Wave 1 alpha bump, no
@@ -489,7 +530,13 @@ class HybridRetriever:
                     source="fused",
                 )
             )
-        return out
+        return SearchResponse(
+            query_id=query_id,
+            results=out,
+            query=query,
+            dataset_id=dataset_id,
+            started_at=started_at,
+        )
 
     @staticmethod
     def _apply_post_rerank_boost(

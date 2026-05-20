@@ -1204,7 +1204,12 @@ def build_server(
             rerank_top_n=rerank_top_n,
         )
 
-        hits = retriever.search(query, options)
+        search_response = retriever.search(query, options)
+        # Support both SearchResponse (Phase P1+) and legacy list[Hit] return
+        # shapes so the MCP layer stays backward-compatible with any Retriever
+        # implementations that haven't been updated yet.
+        query_id: str | None = getattr(search_response, "query_id", None)
+        hits = search_response  # iter shim / list both support `for h in hits`
 
         # Enrichment: hydrate labels / description / feedback when the backend
         # exposes hydrate_hit_metadata.  One bulk call for chunk hits + one bulk
@@ -1273,7 +1278,10 @@ def build_server(
 
             wire_hits.append(hd)
 
-        return {"hits": wire_hits}
+        result: dict[str, Any] = {"hits": wire_hits}
+        if query_id is not None:
+            result["query_id"] = query_id
+        return result
 
     async def _dispatch_get_chunk(arguments: dict[str, Any]) -> Any:
         chunk_id = int(arguments["chunk_id"])

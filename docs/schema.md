@@ -127,6 +127,21 @@ Revision `0004_sync` added the cross-host sync surface:
 - Both `chunk_id` FKs cascade on delete so removing a chunk reaps its analyze
   rows automatically. Forward-only downgrade per project convention.
 
+## Phase P Wave 1 — Search sessions (revision `0013`)
+
+- `0013_search_sessions` adds two tables for search-session telemetry:
+  - `search_sessions(query, dataset_id, started_at, client, host)` — one row
+    per `HybridRetriever.search()` call.  `dataset_id` FKs to `datasets(id)`
+    ON DELETE CASCADE.  A composite index on `(dataset_id, started_at)`
+    supports time-windowed per-dataset queries.
+  - `search_result_events(session_id, chunk_id, signal, value, source,
+    created_at, replacement_chunk_id)` — one row per result item returned in
+    a session.  `session_id` and `chunk_id` FKs both cascade on delete.
+    `replacement_chunk_id` is a nullable weak FK to `chunks(id)` (set when
+    a signal records a curation suggestion; the event is retained even if the
+    referenced replacement chunk is later removed).
+- Forward-only downgrade per project convention.
+
 ## Indexing strategy
 
 | Query path | Index |
@@ -190,6 +205,7 @@ Apply with `corpus-forge migrate` (idempotent). Each revision file lives at
 | `0010_document_label_confidence` | Adds `document_labels.confidence REAL` (Phase E classifier output). |
 | `0011_image_embeddings` | Adds `embedders.image BOOLEAN` column + reserves the dynamic `image_embeddings_<name>` family namespace (Phase G P1). |
 | `0012_analyze_signals` | Adds `chunk_quality_signals` (per-chunk learned-quality readouts) + `near_duplicate_clusters` (MinHash LSH groupings) for Phase O EDA / cleaning. Both tables FK to `chunks(id)` with `ON DELETE CASCADE`. |
+| `0013_search_sessions` | Adds `search_sessions` (one row per search call, FK to `datasets(id)` ON DELETE CASCADE) + `search_result_events` (per-result telemetry, FK to `search_sessions(id)` and `chunks(id)` ON DELETE CASCADE) for Phase P search-session tracking. |
 
 ## Design rationale
 

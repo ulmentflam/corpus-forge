@@ -224,6 +224,9 @@ class TestSchemaTablePresence:
             # O-01 (0012_analyze_signals) adds the EDA / quality signal tables.
             "chunk_quality_signals",
             "near_duplicate_clusters",
+            # P-01 (0013_search_sessions) adds search-session feedback tables.
+            "search_sessions",
+            "search_result_events",
         ]
     )
 

@@ -6,6 +6,7 @@ Frozen dataclasses describing the public retrieval surface:
 - ``SearchOptions``: caller-side knobs (k, dataset filter, fusion strategy,
   alpha for the alpha-fusion variant, rerank toggle + top-n).
 - ``RetrievalMetrics``: evaluation block (k → score for nDCG / MRR / Recall).
+- ``SearchResponse``: wrapper returned by ``HybridRetriever.search()`` (Phase P1).
 
 R1 emits ``Hit.source`` of "dense" and "lexical".  R2 (HybridRetriever) adds
 "fused" and R4 adds "reranked".  The Literal is forward-compat from day one
@@ -16,6 +17,7 @@ land.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Literal
 
 
@@ -100,3 +102,78 @@ class RetrievalMetrics:
     ndcg: dict[int, float] = field(default_factory=dict)
     mrr: dict[int, float] = field(default_factory=dict)
     recall: dict[int, float] = field(default_factory=dict)
+
+
+@dataclass(eq=False)
+class SearchResponse(list):  # type: ignore[type-arg]
+    """Result envelope returned by ``HybridRetriever.search()`` (Phase P1).
+
+    Wraps the ``list[Hit]`` results with provenance metadata so callers
+    can trace a response back to the originating query without coupling
+    to a running session.
+
+    Inherits from ``list`` for full backward compatibility with pre-P1 code
+    that checked ``isinstance(result, list)`` or compared to ``[]``.
+    The list content mirrors ``self.results``; both are kept in sync by
+    ``__post_init__``.
+
+    Attributes:
+        query_id:    UUID4 hex string generated per call.  Unique across
+                     concurrent searches in the same process.
+        results:     Ranked hit list — the same objects previously returned
+                     directly by ``HybridRetriever.search()``.
+        query:       The raw query string passed to ``search()``.
+        dataset_id:  Resolved dataset primary key (None when no dataset
+                     filter was requested or the name resolved to None).
+        started_at:  Wall-clock instant captured at the very start of the
+                     ``search()`` call (before dataset resolution).
+        session_id:  Optional search-session foreign key (Phase P1
+                     ``search_sessions`` table).  Populated by the MCP
+                     layer when session recording is enabled; defaults to
+                     ``None``.
+
+    Iteration shim — transparent backward compatibility:
+
+        for hit in response:          # same as: for hit in response.results
+        n = len(response)             # same as: len(response.results)
+        first = response[0]           # same as: response.results[0]
+        chunk = response[2:5]         # slice delegation to response.results
+        isinstance(response, list)    # True — preserves pre-P1 isinstance checks
+        response == []                # True when results is empty
+
+    Existing callers that loop over the search result directly, or that
+    checked ``isinstance(result, list)``, continue to work without
+    modification.
+    """
+
+    query_id: str
+    results: list[Hit]
+    query: str
+    dataset_id: int | None
+    started_at: datetime
+    session_id: int | None = None
+
+    def __post_init__(self) -> None:
+        """Populate the list content with results for backward-compat."""
+        # list.__init__ is NOT called by the dataclass-generated __init__,
+        # so we call it here to initialise the underlying C-level storage.
+        list.__init__(self, self.results)
+
+    # ── serialisation helper ──────────────────────────────────────────────
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-safe dict with ``started_at`` as an ISO-8601 string.
+
+        Use this instead of ``dataclasses.asdict`` when you need to serialise
+        to JSON directly.  ``dataclasses.asdict`` still works for round-trips
+        where the caller handles the datetime conversion themselves.
+        """
+        import dataclasses  # noqa: PLC0415 — deferred to keep import-time cheap
+
+        raw = dataclasses.asdict(self)
+        raw["started_at"] = (
+            self.started_at.isoformat()
+            if self.started_at.tzinfo is not None
+            else self.started_at.replace(tzinfo=None).isoformat()
+        )
+        return raw
