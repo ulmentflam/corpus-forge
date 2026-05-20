@@ -322,6 +322,10 @@ ignore = ["PLR0911", "PLR0912", "PLR0913", "PLR0915"]
 # on module load (lazy-import contract, test-verified). PLR2004 for the literal
 # 2 used as the minimum-cluster-size sentinel (domain constant, not magic).
 "corpus_forge/analyze/dedup.py" = ["PLC0415", "PLR2004"]
+# Phase O Wave 3: analyze/topics.py — hdbscan, bertopic, umap, sklearn MUST NOT
+# appear in sys.modules on module load (lazy-import contract, wave gate asserts
+# this with a python -c snapshot check).
+"corpus_forge/analyze/topics.py" = ["PLC0415"]
 # Tests use magic values, lambda args, broad raises, composite assertions freely
 "tests/**/*.py" = [
     "PLR2004",  # magic-value-comparison

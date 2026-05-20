@@ -2914,3 +2914,81 @@ Test patterns of note:
   28 failed in 1.85s
   ```
 - Status: red — handed off to tdd-coder
+
+## O3-T1
+- Test files: `tests/unit/test_analyze_topics.py`
+- Run command: `uv run pytest tests/unit/test_analyze_topics.py -x 2>&1 | tail -5`
+- Edge case checklist:
+  - [x] happy — identical embeddings → 1 cluster; 3 well-separated clusters → n_clusters=3
+  - [x] boundaries — empty list → all-zero result; single embedding → n_clusters=0 noise_count=1; n < min_cluster_size → all noise
+  - [x] type/format — cluster_assignments is list[int]; each assignment >= -1; top_terms is dict[int, list[tuple[str, float]]]; n_clusters and noise_count are int
+  - [x] state — N/A (pure function, no mutable state between calls)
+  - [ ] N/A — concurrency (pure function, no concurrency surface)
+  - [x] failure paths — empty input; single point (too small for any cluster); below min_cluster_size (all forced to noise)
+  - [ ] N/A — locale/time (numeric embeddings only; no string encoding or time surface)
+  - [x] production-realistic data — 4D synthetic embeddings matching realistic embedding dimensionality patterns; text fixture uses natural English words for top_terms
+  - [x] regression hooks — noise_count vs -1 label count consistency test catches any mismatch between the summary field and the raw assignments; method='bertopic' fallback test pins _fell_back=True contract
+  - [x] lazy-import guard — asserts bertopic, hdbscan, umap, sklearn NOT in sys.modules after `import corpus_forge.analyze.topics`
+  - [x] method fallback — method='bertopic' with unavailable bertopic must set _fell_back=True and method='hdbscan' in result
+  - [x] top_terms noise skip — cluster -1 excluded from top_terms_per_cluster output
+  - [x] top_n limit — top_n=3 returns at most 3 terms; default top_n=10 returns at most 10 terms
+  - [x] hypothesis properties — len(cluster_assignments)==len(embeddings) for any input size (30 examples); noise_count matches count of -1 labels (30 examples)
+- Red output (tail):
+  ```
+  tests/unit/test_analyze_topics.py:447: ModuleNotFoundError
+  =========================== short test summary info ============================
+  FAILED tests/unit/test_analyze_topics.py::test_top_terms_per_cluster_empty_inputs
+  !!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  1 failed in 0.17s
+  ```
+- Status: red — handed off to tdd-coder
+
+## O3-T2
+- Test files: `tests/unit/test_analyze_quality.py`, `tests/integration/test_analyze_quality_persist.py`
+- Run command: `uv run pytest tests/unit/test_analyze_quality.py tests/integration/test_analyze_quality_persist.py -x`
+- Edge case checklist:
+  - [x] happy — score_chunk_quality returns float in [0,1] for normal chunk
+  - [x] boundaries — empty text (0.0), whitespace-only (0.0), short <100 chars (<=0.3), long >5000 chars (<=0.7), empty batch ([])
+  - [x] type/format — chunk dict with/without classifier_label, with/without metadata, token_count=0
+  - [x] state — determinism (same input same output), batch matches individual calls, idempotent persist re-run
+  - [ ] N/A — concurrency (pure function; persist is synchronous single-connection)
+  - [x] failure paths — model_path missing/non-existent falls back to heuristic (no exception), model output >1.0 clamped
+  - [ ] N/A — locale/time (computed_at is server-side default; no locale-sensitive logic in scorer)
+  - [x] production-realistic — well_formed_chunk fixture matches real corpus shape; persist fixtures use same seed pattern as dedup_persist integration tests
+  - [x] regression hooks — hypothesis property (score always finite in [0,1] for any text/token_count/metadata); partial idempotency test pins exact row counts
+- Red output (tail):
+  ```
+  tests/unit/test_analyze_quality.py:496: ModuleNotFoundError
+  =========================== short test summary info ============================
+  FAILED tests/unit/test_analyze_quality.py::test_score_chunks_batch_matches_individual_scores
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+  1 failed in 0.17s
+  ```
+- Status: red — handed off to tdd-coder
+
+## O3-T3
+- Test files:
+  - `tests/unit/test_selector_learned_signal.py` (34 tests: 23 FAIL, 11 PASS)
+  - `tests/fixtures/curation/selector_baseline.pickle` (golden output pickle — pre-O3 main @ 0.1.0b6)
+  - `tests/fixtures/curation/regenerate_baseline.py` (regenerator script)
+- Run command: `uv run pytest tests/unit/test_selector_learned_signal.py -x`
+- Edge case checklist:
+  - [x] happy — Mode 1 legacy (empty table → 4-weight, None LQ); Mode 2 single chunk with lq=0.9 formula verified; batch with mixed modes
+  - [x] boundaries — LQ=0.0 still activates 5-weight formula (not None); LQ=1.0 saturated (score clamped to [0,1]); absent key in row dict treated as None
+  - [x] type/format — ScoreBreakdown.learned_quality: float | None = None (frozen dataclass field); _Candidate.learned_quality: float | None = None; _SCORE_WEIGHTS_4 and _SCORE_WEIGHTS_5 type dict[str, float]
+  - [x] state — deterministic ordering asserted (3 identical calls yield same batch order); golden baseline pickle pins pre-O3 byte-identical output
+  - [ ] N/A — concurrency (pure-function selector, no shared mutable state)
+  - [x] failure paths — empty corpus still returns None (no regression); absent learned_quality key in row dict falls back to legacy 4-weight
+  - [ ] N/A — locale/time (modified_at timestamps are fixed UTC; no locale-sensitive paths in selector)
+  - [x] production-realistic data — 20-chunk fixture corpus with realistic confidence/age/metadata variation (4 source docs, 5 chunks each, cycles of conf/heading/desc/lang/age)
+  - [x] regression hooks — golden baseline pickle encodes current (pre-O3) batch.targets order, per-target scores/breakdowns/reasons, cohesion; 6 pinned regression tests each assert byte-identical fields
+  - [x] backward-compat — SCORE_WEIGHTS still importable and equals _SCORE_WEIGHTS_4; next_curation_target signature unchanged
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_selector_learned_signal.py::TestMode1LegacyFourWeightScheme::test_learned_quality_is_none_in_empty_table_mode
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+  ========================= 1 failed, 1 passed in 0.17s =========================
+  ```
+  Full run: 23 failed, 11 passed. All failures: AttributeError: 'ScoreBreakdown' object has no attribute 'learned_quality' or AssertionError: _SCORE_WEIGHTS_4/_SCORE_WEIGHTS_5 not found on selector module.
+- Notes: Baseline pickle generated from pre-O3 main (0.1.0b6) using `uv run python tests/fixtures/curation/regenerate_baseline.py`. Batch order pinned: [1, 3, 2, 4, 5]. Single target: chunk_id=1, score=0.569642. Cohesion: 0.997121.
+- Status: red — handed off to tdd-coder
