@@ -109,28 +109,42 @@ class TestBackendConfig:
         (``[backend] schema = "corpus"``), so renaming is not an
         option. ``corpus_forge.config`` filters the specific message at
         module load — this regression guard asserts no such warning
-        leaks if someone re-imports the module fresh.
+        leaks on a *fresh* import of the module.
+
+        Subprocess (rather than ``importlib.reload`` in-process) so the
+        check doesn't rebind the ``Config`` class object on every other
+        in-flight test — under xdist + pytest-randomly that's enough
+        to invalidate every ``patch("corpus_forge.config.Config.load",
+        ...)`` set up by sibling tests.
         """
-        import importlib
-        import warnings
+        import subprocess
+        import sys
 
-        with warnings.catch_warnings(record=True) as captured:
-            warnings.simplefilter("always")
-            import corpus_forge.config as _cfg_mod
-
-            importlib.reload(_cfg_mod)
-
-        offenders = [
-            w
-            for w in captured
-            if issubclass(w.category, UserWarning)
-            and 'Field name "schema" in "BackendConfig"' in str(w.message)
-        ]
-        assert offenders == [], (
-            "BackendConfig.schema shadow UserWarning leaked out — the "
-            "filterwarnings() block in corpus_forge/config.py is no "
-            f"longer matching. Captured: {[str(w.message) for w in offenders]}"
+        # ``-W error::UserWarning`` makes the subprocess fail if any
+        # UserWarning is raised during the import. The filter block in
+        # ``corpus_forge/config.py`` must beat ``-W error`` for the
+        # known-shadow message specifically; everything else continues
+        # to be promoted, so the assertion stays narrow.
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-W",
+                "error::UserWarning",
+                "-c",
+                "import corpus_forge.config",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
+
+        assert result.returncode == 0, (
+            "fresh `import corpus_forge.config` raised a UserWarning — "
+            "the schema-shadow filter in config.py is no longer "
+            f"matching the pydantic message. stderr:\n{result.stderr}"
+        )
+        assert 'Field name "schema" in "BackendConfig"' not in result.stderr
 
 
 class TestDaemonConfig:
