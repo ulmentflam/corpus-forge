@@ -90,7 +90,7 @@ class _FakeCursor:
         self._exec_count = 0
         self.executed: list[tuple[str, tuple]] = []
 
-    def __enter__(self) -> "_FakeCursor":
+    def __enter__(self) -> _FakeCursor:
         return self
 
     def __exit__(self, *_a: Any) -> None:
