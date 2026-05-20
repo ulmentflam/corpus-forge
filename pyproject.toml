@@ -337,6 +337,12 @@ ignore = ["PLR0911", "PLR0912", "PLR0913", "PLR0915"]
 # with a python -c snapshot check). PLR2004 for the 0.5 neutral-score threshold
 # and the literal 2 used as min-class-count sentinel (domain constants).
 "corpus_forge/retrieval/rerank/learned.py" = ["PLC0415", "PLR2004"]
+# Phase Q Wave 3: cli_feedback.py — Config.load + sdft.capture.record_demonstration
+# are deferred inside command function bodies (PLC0415, startup-speed contract).
+# ARG001 for ``fmt`` in export_session: the --format flag is part of the public
+# CLI surface (tests pass --format jsonl) but only jsonl is implemented in this
+# wave; the parameter is retained for future formats.
+"corpus_forge/cli_feedback.py" = ["PLC0415", "ARG001"]
 # Phase P Wave 2: tester-authored test_reranker_learned.py has an I001 (import
 # order) violation in TestLearnedRerankerProtocol.test_satisfies_reranker_protocol
 # (``from learned import LearnedReranker`` before ``from rerank import Reranker``).

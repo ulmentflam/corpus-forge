@@ -3305,3 +3305,38 @@ Test patterns of note:
   - test_skill_packs_present.py: 25 tests that PASS are expected passing boundary conditions — SKILL.md already exists; `commit_curation` and `add_feedback` are already in the existing SKILL.md; SDFTSource import + cardinality + string round-trip all pass (shipped Q1-G1).
   - Coder must: (1) add `is_chat_client()` classmethod to SDFTSource; (2) create `.gemini/extensions/corpus-curate.toml` + `.gemini/extensions/corpus-curate/PROMPT.md`; (3) create `opencode/commands/corpus-curate.md`; (4) create `codex/agents/corpus-curate.md`; (5) create `docs/skill_packs.md`; (6) extend `.claude/skills/corpus-curate/SKILL.md` with record_demonstration + rate_search_result sections.
 - Status: red — handed off to tdd-coder
+
+## Q3-T1
+- Test files:
+  - `tests/cli/test_feedback_ui_navigation.py`
+  - `tests/cli/test_feedback_ui_capture.py`
+  - `tests/cli/test_feedback_ui_resume.py`
+  - `tests/cli/test_feedback_ui_dry_run.py`
+- Run command: `uv run pytest tests/cli/test_feedback_ui_navigation.py tests/cli/test_feedback_ui_capture.py tests/cli/test_feedback_ui_resume.py tests/cli/test_feedback_ui_dry_run.py`
+- Edge case checklist:
+  - [x] happy — `--action quit` exits 0, single `--record-demo` writes one row
+  - [x] boundaries — empty session dir for `list-sessions`, repeated `--record-demo` for multiple rows
+  - [x] type / format — pipe-separated `q|s|t|target` parsing, session ID format in file path
+  - [x] state — session JSON persisted with position after skip actions; idempotency of `--dry-run`
+  - [ ] N/A — concurrency (CLI headless mode is single-threaded; no concurrent state)
+  - [x] failure paths — resume NONEXISTENT exits nonzero with error message, export-session on missing session exits nonzero
+  - [ ] N/A — locale / time (session IDs use ISO timestamps but no DST/locale logic to test here)
+  - [x] production-realistic data — pipe-separated demo records match the scripted form spec; SQLite schema matches real 0014_sdft_demonstrations DDL
+  - [x] regression hooks — guards added to prevent accidentally-passing `!= 0` tests when `feedback` command is absent (added "No such command 'feedback'" not-in-combined assertion)
+- Red output (tail):
+  ```
+  FAILED tests/cli/test_feedback_ui_dry_run.py::test_dry_run_exits_zero - Asser...
+  FAILED tests/cli/test_feedback_ui_dry_run.py::test_export_session_produces_jsonl_file
+  FAILED tests/cli/test_feedback_ui_dry_run.py::test_export_session_jsonl_contains_query_field
+  FAILED tests/cli/test_feedback_ui_dry_run.py::test_export_session_nonexistent_session_exits_nonzero
+  ======================== 30 failed, 1 warning in 0.66s =========================
+  ```
+- Notes:
+  - Coder must create `corpus_forge/cli_feedback.py` exposing `feedback_app = typer.Typer(...)` with subcommands `start`, `resume`, `list-sessions`, `export-session`, and wire it into `corpus_forge/cli.py` via `app.add_typer(feedback_app, name="feedback")`.
+  - `start` needs flags: `--dataset`, `--no-tui`, `--action` (repeatable, values: approve|skip|next|prev|quit), `--record-demo` (repeatable, pipe-separated `q|s|t|target`), `--dry-run`.
+  - Session state persisted at `$CORPUS_FORGE_FEEDBACK_DIR/session-<id>.json` with fields: `session_id`, `dataset`, `started_at`, `queue_strategy`, `position`, `processed_chunk_ids[]`, `pending_writes[]`.
+  - `--record-demo` writes to `sdft_demonstrations` via `corpus_forge.sdft.capture.record_demonstration` with `source="cli_feedback"`.
+  - `--dry-run` must not write any rows or session files; must print preview output containing "dry", "would", "preview", or "no-op".
+  - `export-session` reads from the session JSON's `pending_writes` list and emits JSONL (one JSON object per line).
+  - Typer CliRunner in this project does NOT support `mix_stderr=False` (typer 0.21.2); use plain `CliRunner()`.
+- Status: red — handed off to tdd-coder

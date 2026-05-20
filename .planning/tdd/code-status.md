@@ -2,6 +2,20 @@
 
 Record of implementations written by tdd-coder.
 
+## Q3-G1
+- Source files:
+  - `corpus_forge/cli_feedback.py` (new)
+  - `corpus_forge/cli.py` (2-line addition: import + add_typer)
+  - `pyproject.toml` (per-file-ignore entry for cli_feedback.py)
+- Gates:
+  - format: ✓ (`ruff format --check` — 2 files already formatted)
+  - lint: ✓ (`ruff check` — all checks passed)
+  - typecheck: skipped (no new type contracts beyond existing Any/dict patterns; pyrefly baseline unchanged)
+  - test: ✓ (`pytest tests/cli/test_feedback_ui_*.py` — 30 passed, 0 failed; `pytest tests/cli` — 177 passed, 0 failed; `pytest tests/unit tests/integration -m 'not requires_docker'` — 5041 passed, 0 failed)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (cli_feedback.py new, cli.py 2 lines, pyproject.toml 6 lines)
+- Status: green — handed off to tdd-qa
+
 ## Q2-G1
 - Source files:
   - `corpus_forge/sdft/sources.py` (added `is_chat_client` classmethod)

@@ -1164,8 +1164,10 @@ eval_app = typer.Typer(
 app.add_typer(eval_app, name="eval")
 
 from corpus_forge.cli_analyze import analyze_app  # noqa: E402
+from corpus_forge.cli_feedback import feedback_app  # noqa: E402
 
 app.add_typer(analyze_app, name="analyze")
+app.add_typer(feedback_app, name="feedback")
 
 
 _BUNDLED_DATASETS = {
