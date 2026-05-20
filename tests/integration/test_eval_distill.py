@@ -620,10 +620,11 @@ def _invoke_with_backend(
 
 
 def _extract_json(output: str) -> dict:
-    """Extract the last JSON object from CLI output."""
+    """Extract the outer JSON object from CLI output."""
     output = output.strip()
-    # Find the last '{' and last '}' — Typer may prefix output with info lines.
-    start = output.rfind("{")
+    # Find the FIRST '{' (outer object) and the LAST '}' to bracket the
+    # whole top-level dict. Typer may prefix info lines before the JSON.
+    start = output.find("{")
     end = output.rfind("}") + 1
     if start == -1 or end <= start:
         raise ValueError(f"No JSON object found in output:\n{output}")

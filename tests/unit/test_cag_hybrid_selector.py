@@ -207,7 +207,6 @@ def test_select_cache_miss_returns_rag_tuple(tmp_path):
 def test_select_cache_miss_returns_search_response(tmp_path):
     """Cache miss: second element is the SearchResponse from the retriever."""
     from corpus_forge.cag.selector import select
-
     from corpus_forge.retrieval.types import SearchResponse
 
     expected = _make_search_response(3)
@@ -362,7 +361,6 @@ def test_hybrid_selector_cache_hit(tmp_path):
 def test_hybrid_selector_cache_miss(tmp_path):
     """``HybridCagSelector.select`` returns ``("rag", SearchResponse)`` on miss."""
     from corpus_forge.cag.selector import HybridCagSelector
-
     from corpus_forge.retrieval.types import SearchResponse
 
     retriever = _make_retriever()
