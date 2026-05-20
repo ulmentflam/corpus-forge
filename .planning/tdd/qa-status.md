@@ -317,3 +317,26 @@ E-10 P1 gate).
   6. BLOCKING: `test_apply_migrations_uses_alembic.py` (both variants) — hardcoded head assertion needs bumping to 0012_analyze_signals (O1-G3 coder fix)
 - Verdict: rework
 - Notes: The Wave O1 core deliverables (AnalyzeConfig, analyze.stats, the migration schema itself, pyproject extra, Config lazy-import guard, startup budget) are all correct and functional. The failures are mechanical bookkeeping: (a) test formatting/lint in the Tester's files, and (b) rot-detector tests adjacent to the migration surface that the Coder did not update. Minimum rework is: (1) tdd-tester runs `ruff format` + `ruff check --fix` on the 4 test files and re-submits; (2) tdd-coder updates test_sqlite_backend.py EXPECTED_TABLES (add chunk_quality_signals + near_duplicate_clusters), bumps test_apply_migrations_uses_alembic.py version_num assertion to 0012_analyze_signals, and adds a row to docs/schema.md migration log for 0012. No production code changes required.
+
+---
+
+## O2-Q1 (Phase O Wave 2 — De-dup, language detection, drift)
+
+- Suite (target — O2 tests, not requires_docker): 70 passed, 1 FAILED, 18 skipped (langdetect/fasttext absent), 6 deselected (requires_docker Postgres), 1.78s
+- Suite (full unit): 4074 passed, 1 FAILED, 20 skipped, 1 xfailed, 74.78s
+- Suite (integration, not requires_docker): 463 passed, 3 skipped (MISTRAL_API_KEY env-gate), 48 deselected (requires_docker), 0 failed, 121.65s
+- Coverage: n/a — not measured for this wave; full integration suite clean means no regressions in coverage-gated paths
+- Lazy-import guard: `uv run python -c "import ...; bad=[...]"` → LAZY OK (datasketch/fasttext/langdetect/scipy/numpy/sklearn/hdbscan all absent from sys.modules after import)
+- Startup: 3 runs — 0.395s / 0.154s / 0.151s (median ~0.154s; well within baseline+100ms)
+- Format gate (`ruff format --check corpus_forge tests`): PASS — 615 files already formatted
+- Lint gate (`ruff check corpus_forge tests`): PASS — All checks passed
+- Typecheck (`pyrefly check`): 4 errors (50 suppressed). Baseline at HEAD pre-O2 staging: 3 errors (all from language.py — langdetect/fasttext_langdetect missing-import; these are pre-existing from O2-G2). O2-G1 dedup.py introduces 1 NEW pyrefly error: `bad-argument-type` at `corpus_forge/analyze/dedup.py:131` — `int(nb_str)` where `nb_str` is typed as `Hashable` (datasketch LSH query return type lacks stubs). Gate says no new errors — this is a violation.
+- Smoke (lazy-import): PASS (documented above)
+- Smoke (startup): PASS
+- Regression sweep: Full integration suite (463 passed, 0 failed, not requires_docker) — no regressions from O2 surface in adjacent callers. Drift/dedup/language modules are new; no pre-existing callers outside of the new test files. pyproject.toml per-file-ignore additions are additive and scope-safe. No touches to corpus_forge/curation/, corpus_forge/mcp/, corpus_forge/retrieval/, corpus_forge/cli.py.
+- Git scope: 5 files changed vs HEAD (diff --stat): `.planning/tdd/code-status.md`, `.planning/tdd/tasks.md`, `.planning/tdd/test-status.md`, `corpus_forge/analyze/dedup.py` (staged/new), `pyproject.toml` (+12 lines per-file-ignores). Untracked: `corpus_forge/analyze/drift.py`, `corpus_forge/analyze/language.py`, `tests/integration/test_analyze_dedup_persist.py`, `tests/unit/test_analyze_dedup.py`, `tests/unit/test_analyze_drift.py`, `tests/unit/test_analyze_language.py`. No forbidden file touches confirmed.
+- Issues:
+  1. BLOCKING: `tests/unit/test_analyze_drift.py::test_property_js_divergence_in_zero_ln2` FAILS. Hypothesis falsified with input `raw_a=[10.0, 1.0, 10.0, 1.0, 1.0, 1.0, 1.0, 1.0]`, `raw_b=[10.0, 1.0, 9.999999999999998, 1.0, ...]`. `js_embedding_centroid` returns `nan` when softmax of near-identical centroids causes `scipy.spatial.distance.jensenshannon` to return `nan` (negative epsilon under sqrt). The `nan` fails `0.0 <= nan`. The Coder's claim of "28/28 drift tests green" was incorrect. Fix required: add a `nan` guard in `drift.py:js_embedding_centroid` — e.g. `result = float(js_sqrt**2); return 0.0 if math.isnan(result) else result`. This is a production defect.
+  2. INFORMATIONAL (non-blocking per gate wording, but flag for Principal): 1 new pyrefly error from `corpus_forge/analyze/dedup.py:131` (`bad-argument-type` — `int(nb_str)` where datasketch LSH query returns `Hashable`). Gate says "no new errors"; baseline was 3 errors (language.py); O2 brings total to 4. Add `# type: ignore[arg-type]` or a `str()` cast to suppress.
+- Verdict: rework
+- Notes: The dedup and language modules are correct and their tests pass. The drift module has a real nan-return bug in `js_embedding_centroid` that the Hypothesis property test correctly catches. Fix in `corpus_forge/analyze/drift.py` only — add a `math.isnan` guard on the return value. The pyrefly dedup error is a secondary issue that should be addressed in the same pass.
