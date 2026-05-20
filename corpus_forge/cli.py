@@ -1647,6 +1647,58 @@ def eval_cag(
         print(_json.dumps(result, indent=2, sort_keys=True))
 
 
+# ── eval distill subcommand (Phase Q Wave 5) ─────────────────────────────
+
+
+@eval_app.command("distill")
+def eval_distill(
+    dataset: str = typer.Option(
+        "default",
+        "--dataset",
+        help="Dataset name to evaluate. Must exist in the backend.",
+    ),
+    template: str = typer.Option(
+        "chatml",
+        "--template",
+        help="Chat template for the fidelity check (e.g. chatml, llama3, alpaca).",
+    ),
+    json_flag: bool = typer.Option(False, "--json", help="Print the result JSON to stdout."),
+    report_dir: Path = typer.Option(
+        None,
+        "--report-dir",
+        help="Directory for report output. Defaults to ~/.cache/corpus-forge/reports/<ts>/.",
+    ),
+) -> None:
+    """Evaluate preprocessing health over the SDFT capture set.
+
+    Computes coverage, source_mix, template_fidelity, and token_stats over the
+    SDFT demonstrations captured for *dataset*.  No LLM judge calls — purely
+    stats.  Writes Markdown + JSON reports and optionally prints JSON to stdout.
+    """
+    import json as _json
+
+    from corpus_forge.eval.distill import (
+        _get_backend,
+        run_distill_eval,
+    )
+
+    backend = _get_backend()
+
+    try:
+        result = run_distill_eval(
+            dataset,
+            template=template,
+            report_dir=report_dir,
+            backend=backend,
+        )
+    except ValueError as exc:
+        ui_error(str(exc))
+        raise typer.Exit(code=1) from None
+
+    if json_flag:
+        print(_json.dumps(result, indent=2, sort_keys=True))
+
+
 # ── mcp subcommand group (Phase R5) ───────────────────────────────────────
 
 

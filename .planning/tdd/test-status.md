@@ -3377,3 +3377,34 @@ Test patterns of note:
   - Template resolution: reuse corpus_forge.templates.resolve_template + render, exactly as export_chat lines 49-66.
   - Do NOT modify export_chat or export_feedback_pairs schemas.
 - Status: red — handed off to tdd-coder
+
+## Q5-T1
+- Test files:
+  - `tests/integration/test_eval_distill.py` (28 tests, 26 failing + 2 passing vacuously on "exit != 0")
+  - `tests/unit/test_skill_pack_consistency.py` (33 tests, all passing — retrofit characterization of shipped Q2 packs)
+- Run command: `uv run pytest tests/integration/test_eval_distill.py tests/unit/test_skill_pack_consistency.py -x 2>&1 | tail -5`
+- Edge case checklist:
+  - [x] happy — populated SDFT set yields coverage>0, source_mix non-empty, fidelity n_rendered_ok==n_rows
+  - [x] boundaries — empty SDFT table: coverage=0, all source_mix zeros, n_rows=0
+  - [x] type/format — all 8 SDFTSource values zero-filled in source_mix even when absent; token_stats all 5 keys present
+  - [x] state — idempotency: deterministic JSON across two runs; seeded_backend fixture fresh per test
+  - [x] failure paths — missing dataset exits non-zero (and mentions dataset name)
+  - [N/A] concurrency — pure read-only metric computation, no concurrent paths
+  - [N/A] locale/time — timestamp fields excluded from determinism assertion via generated_at pop
+  - [x] production-realistic — seeded with real SQLiteBackend.upsert_document + record_demonstration; 5 chunks + 5 SDFT rows (3 record_demonstration, 2 claude_code)
+  - [x] regression hooks — skill pack consistency tests lock in the current correct state of all 4 client packs; any drift to tool names or source values turns tests RED
+- Red output (tail):
+  ```
+  INFO     corpus_forge.cli:cli.py:167 agent_mode=human (signal=)
+  === short test summary info ===
+  FAILED tests/integration/test_eval_distill.py::TestEvalDistillHelp::test_help_exits_zero
+  AssertionError: Expected exit 0 for --help; got 2
+    | No such command 'distill'.
+  26 failed, 35 passed in 1.60s
+  ```
+- Notes:
+  - `test_skill_pack_consistency.py` passes green today (retrofit characterization of Q2-G1 deliverables). It goes RED if any pack drifts. This is intentional per the plan's risk mitigation note.
+  - The 2 "missing dataset" tests in `test_eval_distill.py` pass today because `exit_code != 0` is satisfied by "No such command 'distill'". They will continue to pass after GREEN when the command exists and handles missing datasets properly — so they are correct regression guards.
+  - `_invoke_with_backend` patches `corpus_forge.eval.distill._build_backend` and `_get_backend` — Coder should use one of these names for the backend factory.
+  - Template fidelity check uses `chatml` as the default template (builtin); `--template chatml` override is also tested.
+- Status: red — handed off to tdd-coder

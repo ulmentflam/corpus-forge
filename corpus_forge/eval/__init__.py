@@ -23,6 +23,7 @@ R3 adds ``evaluate_retriever`` and ``report`` once R3-04 lands.  The
 
 from corpus_forge.eval.cag import run_cag_eval
 from corpus_forge.eval.dataset import GoldQuery, load_gold
+from corpus_forge.eval.distill import run_distill_eval
 from corpus_forge.eval.judge import JudgeClient, JudgeUnavailable
 from corpus_forge.eval.judge_mock import score as judge_mock_score
 from corpus_forge.eval.metrics import mrr_at_k, ndcg_at_k, recall_at_k
@@ -44,5 +45,6 @@ __all__ = [
     "recall_at_k",
     "report",
     "run_cag_eval",
+    "run_distill_eval",
     "run_rag_eval",
 ]

@@ -1142,3 +1142,35 @@ Implementation notes:
 - Test files modified: rot-detectors only (test_sqlite_backend.py, test_apply_migrations_uses_alembic.py, test_mcp_server_enrichment.py, test_mcp_writes_disabled_by_default.py) — no tester test files modified
 - Diff scope: within surface — yes (migration, sdft package, mcp write tool, capture hooks, rot-detectors, docs)
 - Status: green — handed off to tdd-qa
+
+## Q5-G1
+- Source files:
+  - `corpus_forge/eval/distill.py` (new — preprocessing-health metrics: coverage, source_mix, template_fidelity, token_stats)
+  - `corpus_forge/eval/__init__.py` (added run_distill_eval import + __all__ entry)
+  - `corpus_forge/cli.py` (added eval_distill subcommand under eval_app)
+- Gates:
+  - format: n/a (blocked before gate run)
+  - lint: n/a (blocked before gate run)
+  - typecheck: n/a (blocked before gate run)
+  - test: PARTIAL — 10/28 distill tests pass (all help + report-dir + missing-dataset tests); 18 fail due to Tester bug (see below)
+- Test files modified: NONE
+- Diff scope: within surface — yes
+- Status: BLOCKED — escalated to Principal
+
+### Escalation: Tester bug in `_extract_json`
+
+**Root cause**: `_extract_json` in `tests/integration/test_eval_distill.py` uses `output.rfind("{")` to find the start of the JSON object. This works for FLAT JSON (like eval rag, where the result dict has only scalar values), but FAILS for NESTED JSON (like eval distill, where `source_mix`, `template_fidelity`, and `token_stats` are dicts).
+
+**Failure mechanism**: With `sort_keys=True` and indented JSON, `rfind("{")` finds the `{` of `token_stats` (alphabetically last nested dict). The extracted string is `{token_stats_content}\n}` — the token_stats dict plus the outer closing `}` — which `json.loads` rejects with "Extra data".
+
+**Why it cannot be fixed by changing CLI output format**: The tests simultaneously require:
+1. `rfind("{")` returns the OUTER dict's `{` (requires no `{` after the outer `{`)
+2. `data["source_mix"]["claude_code"]` works (requires source_mix to be a dict → requires `{` in the JSON after the outer `{`)
+
+These two constraints are mutually exclusive in standard JSON. No output format satisfies both.
+
+**Required fix (for Tester)**: Change `_extract_json` to use `output.find("{")` (first `{`) instead of `output.rfind("{")` (last `{`). Alternatively, use `json.JSONDecoder().raw_decode(output.lstrip())` or a brace-depth-counting extractor. The `rfind("}")` for `end` is correct and can stay.
+
+**Evidence**: Verified that using `find("{")` instead of `rfind("{")` produces the correct outer `{` position (index 0 for the first JSON object in the output). With `end = output.rfind("}") + 1` pointing to the outer closing `}`, `output[0:end]` is the complete valid JSON.
+
+**Current state**: All 10 non-JSON-parsing tests pass. The implementation is functionally correct. Only the test helper's `rfind` bug prevents the remaining 18 tests from passing.
