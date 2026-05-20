@@ -310,6 +310,18 @@ ignore = ["PLR0911", "PLR0912", "PLR0913", "PLR0915"]
 # verb functions so the package is importable without the user's config file
 # present (the verbs handle missing config individually).
 "corpus_forge/admin/*.py" = ["PLC0415"]
+# Phase O Wave 2: analyze/language.py — entire module contract is lazy-import.
+# fasttext + langdetect MUST NOT appear in sys.modules on module load; the wave
+# gate enforces this with a python -c assertion. PLC0415 suppression is
+# intentional and justified by the lazy-import contract in the module docstring.
+"corpus_forge/analyze/language.py" = ["PLC0415"]
+# Phase O Wave 2: analyze/drift.py — scipy + numpy MUST NOT appear in
+# sys.modules on module load (lazy-import contract, test-verified).
+"corpus_forge/analyze/drift.py" = ["PLC0415"]
+# Phase O Wave 2: analyze/dedup.py — datasketch MUST NOT appear in sys.modules
+# on module load (lazy-import contract, test-verified). PLR2004 for the literal
+# 2 used as the minimum-cluster-size sentinel (domain constant, not magic).
+"corpus_forge/analyze/dedup.py" = ["PLC0415", "PLR2004"]
 # Tests use magic values, lambda args, broad raises, composite assertions freely
 "tests/**/*.py" = [
     "PLR2004",  # magic-value-comparison

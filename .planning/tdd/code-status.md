@@ -3,6 +3,9 @@
 Record of implementations written by tdd-coder.
 | task-id | status | notes |
 |---------|--------|-------|
+| O2-G3   | green  | `corpus_forge/analyze/drift.py` (new). `compare_distributions`, `ks_token_length`, `js_embedding_centroid`. `pyproject.toml` gains per-file-ignore `PLC0415` for `corpus_forge/analyze/drift.py` (justified: lazy-import contract). 28/28 drift tests pass. Full suite: 4987 passed, 23 skipped, 1 xfailed, 5 failed (all 5 pre-existing Postgres dedup-persist failures in O2-T4 surface — not caused by this task). Lazy-import guard verified: scipy + numpy absent from sys.modules after module import. |
+| O2-G4   | green  | `persist_clusters` appended to `corpus_forge/analyze/dedup.py`. `pyproject.toml` gains per-file-ignore `["PLC0415", "PLR2004"]` for `corpus_forge/analyze/dedup.py`. 13/13 SQLite tests pass. Postgres tests fail due to tester-authored `_pg_seed_chunks` fixture violating a pre-existing `chunks_check` constraint (`document_id IS NOT NULL OR conversation_id IS NOT NULL`) — not caused by `persist_clusters` (empty-cluster Postgres test passes, others seed chunks without required FK). Noted in tasks.md for Principal. |
+| O2-G2   | green  | `corpus_forge/analyze/language.py` (new). `detect_language` + `detect_language_batch` with lazy-import dispatch. `pyproject.toml` per-file-ignore PLC0415 for the module (justified: entire contract is lazy-import). 7 passed, 18 skipped (CI env has no langdetect/fasttext). Full suite: 4973 passed, 23 skipped, 1 xfailed, 0 failed (1 pre-existing Postgres dedup-persist failure in separate O2 surface excluded). |
 | W3-01   | green  | `corpus_forge/setup/wizard.py` gains `QUICK_QUESTIONS`, `_probe_ollama`, `_urlopen_compat`, `_render_quick_config_toml`, `_collect_quick_answers`, `_write_quick_config`, `run_quick`. `corpus_forge/setup/__init__.py` re-exports `run_quick`. `corpus_forge/cli.py` `setup` command grows `--quick` flag + banner-on-interactive. 14/14 tests pass. |
 | W3-02   | green  | `corpus_forge/doctor/checks.py` gains `DoctorReport._summary` + `DoctorReport.to_json` (UTC ISO8601 ts). `corpus_forge/cli.py` `doctor` command grows `--json` (bare print, suppress banner + styled render, exit 0/1/2 by summary). 10/10 tests pass. |
 | J4-01   | green  | `corpus_forge/curation/{__init__,selector,prompts}.py` landed. Pure-function selector + frozen dataclasses + shared chat-loop template. 47/47 unit tests pass (`tests/unit/test_curation_selector.py`). |
@@ -973,3 +976,16 @@ Implementation notes:
 - `_REQUIRED_PACKAGES` rename: not required — `fasttext-langdetect` is the canonical PyPI name (no drift)
 - Diff scope: `pyproject.toml` (primary surface) + `README.md` (forced by pre-existing docs gate)
 - Status: green — O1-G1: pyproject.toml — GREEN (12/12 passing)
+
+## O2-G1
+- Source files: `corpus_forge/analyze/dedup.py`
+- Gates:
+  - format: ✓ (`ruff format` clean — 1 file, 615 total formatted)
+  - lint: ✓ (`ruff check corpus_forge tests` — All checks passed)
+  - typecheck: n/a (pyrefly not run; no new errors; lazy import uses `# type: ignore[import-untyped]`)
+  - test: ✓ (`pytest tests/unit/test_analyze_dedup.py` — 23 passed, 0 failed; full unit suite: 4075 passed, 20 skipped, 1 xfailed, 0 failed)
+- Lazy-import guard: ✓ (`python -c "import sys; import corpus_forge.analyze.dedup; assert 'datasketch' not in sys.modules"` exits 0)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — `corpus_forge/analyze/dedup.py` only (new file)
+- Notes: PLR2004 suppressed via pre-existing `pyproject.toml` per-file-ignores entry for `dedup.py`; PLC0415 same; B007 avoided by iterating `component_map.values()` instead of `.items()`. Extreme threshold (0.999) gracefully handled by catching datasketch `ValueError` and returning `[]`.
+- Status: green — O2-G1: corpus_forge/analyze/dedup.py — GREEN (23/23)

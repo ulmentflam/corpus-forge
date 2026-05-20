@@ -2793,4 +2793,124 @@ Test patterns of note:
   ```
 - Notes: signal_value and similarity are REAL (nullable per phase-doc column list; the phase doc says "REAL" not "REAL NOT NULL" — assertion accepts nullable). Both FK tests exercise cascade behavior with PRAGMA foreign_keys=ON (SQLite). The chunks INSERT assumes columns (id, content, content_hash, token_count) — if the chunks schema differs, the FK cascade tests will surface that as a clear error for the Coder to fix.
 - Status: red — handed off to tdd-coder
+
+## O2-T1 — exact_duplicates + near_duplicates (corpus_forge.analyze.dedup)
+- Test files: `tests/unit/test_analyze_dedup.py` (23 tests)
+- Run command: `uv run pytest tests/unit/test_analyze_dedup.py -x 2>&1 | tail -5`
+- Edge case checklist:
+  - [x] happy path — pair/triple/multi-group exact-dup grouping; identical-text near-dup clustering
+  - [x] boundaries — empty input → `{}`/`[]`; singleton chunk → `[]` for near_duplicates; single-hash → excluded (singleton); all-None hashes → `{}`
+  - [x] type/format — result dict keys are str (hash); chunk_ids are list[int]; similarity is float in [0,1]; method literal is "minhash_lsh"
+  - [x] state — cluster_id stability across two runs with identical input; deterministic sha256 hash in helper
+  - [x] N/A — concurrency (pure functions, no shared mutable state)
+  - [x] failure paths — None content_hash chunks skipped entirely; None-hash chunks do not pollute real dup groups; `len(chunks) < 2` short-circuits before MinHash
+  - [x] N/A — locale/time (no time-dependent behavior in dedup functions)
+  - [x] production-realistic — chunk dicts use real sha256 hex hashes (mirrors DB backfill formula in 0002_chunk_content_hash.py); chunk_id values use realistic integer IDs
+  - [x] regression hooks — lazy-import guard (datasketch not in sys.modules after module import); threshold/num_perm passthrough accepted without raising
+  - [x] hypothesis: identical text always clusters (3-copy, threshold=0.5, 30 examples)
+  - [x] hypothesis: disjoint word-sets never cluster at threshold=0.85 (30 examples with assume() disjointness guard)
+- Defaults chosen (unspecified in phase doc): `threshold=0.85`, `num_perm=128` — both match the phase doc's "MinHash LSH band/row tuning" note which names these as the starting point.
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_analyze_dedup.py::test_exact_duplicates_all_unique_returns_empty_dict
+  E       ModuleNotFoundError: No module named 'corpus_forge.analyze.dedup'
+
+  tests/unit/test_analyze_dedup.py:123: ModuleNotFoundError
+  1 failed in 0.19s
+  ```
+- Status: red — handed off to tdd-coder
 - Status: red — handed off to tdd-coder (O1-G2)
+
+## O2-T2 — detect_language + detect_language_batch (corpus_forge.analyze.language)
+- Test files: `tests/unit/test_analyze_language.py` (25 tests)
+- Run command: `uv run pytest tests/unit/test_analyze_language.py -x 2>&1 | tail -5`
+- Edge case checklist:
+  - [x] happy path — English text detected as "en"; French text detected as "fr"; both via langdetect (skips cleanly if langdetect absent)
+  - [x] boundaries — empty string -> ("und", 0.0); whitespace-only -> ("und", 0.0); batch empty list -> []; batch single-item consistent with single call
+  - [x] type/format — return type is tuple (not dict); tuple length is 2; iso_code is non-empty str; confidence is float
+  - [x] state — N/A (stateless functions; detector arg fully controls dispatch)
+  - [x] N/A — concurrency (pure function, no shared state)
+  - [x] failure paths — missing fasttext wheel raises RuntimeError naming the missing dep; mixed-language text does not raise
+  - [x] N/A — locale/time (function is locale-agnostic; no time dependency)
+  - [x] production-realistic — mock fasttext module injects realistic {"lang": "en", "score": 0.98} return shape matching fasttext_langdetect API; langdetect mock exposes .lang/.prob attributes
+  - [x] regression hooks — lazy-import guard (neither fasttext nor langdetect in sys.modules after module import); dispatch isolation (langdetect path never touches fasttext modules and vice versa)
+  - [x] hypothesis: confidence in [0.0, 1.0] for any non-empty text (50 examples, skipif langdetect absent)
+  - [x] hypothesis: iso_code is always non-empty string for any non-empty text (50 examples, skipif langdetect absent)
+- Design decisions pinned:
+  - Return type: tuple[str, float] (NOT dict)
+  - ISO codes: 2-letter ("en", "fr" etc.)
+  - Empty/whitespace input: ("und", 0.0) — graceful, not ValueError
+  - detector=None: reads Config.load().analyze.language_detector (tested via mock of Config.load)
+  - Batch: list of tuple[str, float], same order as inputs
+- Red output (tail):
+  ```
+  SKIPPED [1] tests/unit/test_analyze_language.py:551: langdetect not installed
+  SKIPPED [1] tests/unit/test_analyze_language.py:371: langdetect not installed; cannot test dispatch isolation
+  FAILED tests/unit/test_analyze_language.py::test_fasttext_dispatch_does_not_import_langdetect_via_mock
+  FAILED tests/unit/test_analyze_language.py::test_import_detect_language - ModuleNotFoundError: No module named 'corpus_forge.analyze.language'
+  7 failed, 18 skipped in 0.21s
+  ```
+- Status: red — handed off to tdd-coder
+
+## O2-T4
+- Test files: `tests/integration/test_analyze_dedup_persist.py`
+- Run command: `uv run pytest tests/integration/test_analyze_dedup_persist.py -x`
+- Edge case checklist:
+  - [x] happy path — single cluster 2 members → 2 rows; three clusters mixed sizes → 9 rows; return value matches DB count
+  - [x] boundaries — empty cluster list → 0 rows; single-member cluster (size 1 implicit via mixed test); similarity round-trip precision (1e-6 tolerance for SQLite double, 1e-5 for Postgres REAL which is 4-byte float32)
+  - [x] type/format — invalid cluster shape missing cluster_id raises (KeyError/ValueError/TypeError); invalid cluster missing chunk_ids raises; both covered
+  - [x] state — fresh DB per test via tmp_path (SQLite) and _reset_pg_schema (Postgres); idempotent re-run: first call returns 3, second returns 0, total stays 3 (INSERT OR IGNORE / ON CONFLICT DO NOTHING)
+  - [ ] N/A — concurrency (persist_clusters is a synchronous single-connection write; concurrent-write is out of scope for O2)
+  - [x] failure paths — FK violation path: verified via cascade delete (insert chunk + cluster rows, delete chunk, assert cluster rows gone)
+  - [ ] N/A — locale/time (computed_at is server-side DEFAULT; no locale-sensitive assertions; just assert non-NULL)
+  - [x] production-realistic data — cluster shapes match the exact dict shape produced by near_duplicates() from O2-T1 (cluster_id, chunk_ids, similarity, method); seeds use the proven chunk INSERT pattern (id, chunk_index, text, content_hash, token_count)
+  - [ ] N/A — regression hooks (no prior bug referenced; this is new functionality)
+  - [x] method override — function-level method kwarg overrides any method field inside the cluster dict; separate test pins this contract
+  - [x] per-cluster similarity — different clusters store their own similarity values correctly
+  - [x] default method kwarg — calling without method= uses "minhash_lsh" as the default
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_analyze_dedup_persist.py::TestPersistClustersSQLite::test_empty_cluster_list_returns_zero
+  FAILED tests/integration/test_analyze_dedup_persist.py::TestPersistClustersSQLite::test_three_clusters_mixed_sizes_correct_total
+
+        from corpus_forge.analyze.dedup import persist_clusters  # noqa: PLC0415
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  E     ModuleNotFoundError: No module named 'corpus_forge.analyze.dedup'
+
+  tests/integration/test_analyze_dedup_persist.py:119: ModuleNotFoundError
+  19 failed in 1.79s
+  ```
+- Notes: Idempotency strategy pinned as INSERT OR IGNORE (SQLite) / ON CONFLICT DO NOTHING (Postgres) — the coder must implement accordingly and add a UNIQUE constraint on (cluster_id, chunk_id) to the near_duplicate_clusters table (or use a unique index). The migration 0012 did NOT include this unique constraint; the coder must decide whether to add it in the persist_clusters implementation via a unique index created at runtime or to rely on the existing cluster_idx. Flagging for tdd-coder: a (cluster_id, chunk_id) unique index is required for idempotency to work correctly. Postgres FK insert for _pg_seed_chunks uses ON CONFLICT (id) DO NOTHING — this requires a PK constraint on chunks.id (guaranteed by existing migrations).
+- Status: red — handed off to tdd-coder (O2-G4)
+
+## O2-T3
+- Test files: `tests/unit/test_analyze_drift.py`
+- Run command: `uv run pytest tests/unit/test_analyze_drift.py -x`
+- Edge case checklist:
+  - [x] happy — identical token-length distributions (KS≈0), identical embeddings (JS=0), default methods runs both tests
+  - [x] boundaries — single-element arrays (covered by disjoint test which uses 10-element non-overlapping ranges), empty-a, empty-b, both-empty → no exception, stats None, n reflects zero
+  - [x] type/format — ks_token_length returns tuple[float, float] (type checked); js_embedding_centroid returns float (type checked); compare_distributions KS sub-keys are float
+  - [x] state — N/A — pure functions, no mutable state; idempotency implicit (same input → same output, no PRNG)
+  - [ ] N/A — concurrency (pure stateless functions, no shared mutable state)
+  - [x] failure paths — empty input on either or both sides (no exception, graceful None); one side missing embeddings → JS=None; both sides missing embeddings → JS=None
+  - [ ] N/A — locale/time (no date/time or string encoding concerns in numeric drift computation)
+  - [x] production-realistic data — chunk dicts match the shape used by _iter_curation_candidates (token_count int key; optional embedding list[float]); embedding vectors use realistic probability-simplex-style values
+  - [x] regression hooks — N/A (new module, no prior bug referenced); disjoint KS=1.0 test is a precise numerical contract that would catch any future regression in the KS implementation
+  - [x] lazy-import guard — asserts scipy, numpy, sklearn are NOT in sys.modules after `import corpus_forge.analyze.drift`
+  - [x] methods filter — ["ks"] skips JS (js_embedding_centroid=None); ["js"] skips KS (ks_token_length=None); None default runs both
+  - [x] JS bounded — js_embedding_centroid result ∈ [0.0, 1.0]; standalone bounded by ln(2) via max-divergence one-hot test
+  - [x] hypothesis properties — KS statistic ∈ [0,1] for any two non-empty int arrays (150 examples); JS divergence ∈ [0, ln(2)] for any two positive distributions padded to equal dimension (100 examples)
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_analyze_drift.py::test_js_embedding_centroid_bounded_above_ln2
+  FAILED tests/unit/test_analyze_drift.py::test_ks_token_length_identical_arrays_statistic_zero
+  FAILED tests/unit/test_analyze_drift.py::test_ks_token_length_disjoint_arrays_statistic_one
+  FAILED tests/unit/test_analyze_drift.py::test_ks_token_length_returns_tuple_of_two_floats
+  FAILED tests/unit/test_analyze_drift.py::test_js_embedding_centroid_identical_distributions_zero
+  FAILED tests/unit/test_analyze_drift.py::test_js_embedding_centroid_returns_float
+  FAILED tests/unit/test_analyze_drift.py::test_js_embedding_centroid_bounded_above_ln2
+  FAILED tests/unit/test_analyze_drift.py::test_property_ks_statistic_in_zero_one
+  FAILED tests/unit/test_analyze_drift.py::test_property_js_divergence_in_zero_ln2
+  28 failed in 1.85s
+  ```
+- Status: red — handed off to tdd-coder
