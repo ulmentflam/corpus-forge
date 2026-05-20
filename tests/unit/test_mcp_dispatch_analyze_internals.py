@@ -2,9 +2,12 @@
 
 The dispatch closures are also exercised by ``tests/integration/test_mcp_
 analyze_tools.py`` end-to-end, but those tests live in ``tests/integration``
-and don't count toward the unit-suite coverage gate.  These unit tests pin
-each dispatch's pure-function behavior with a MagicMock backend so coverage
-of ``mcp/_dispatch_analyze`` exceeds the threshold.
+and don't count toward the unit-suite coverage gate.
+
+These unit tests use a fake backend with the right interface so the REAL
+``_fetch_chunks_for_dataset`` / ``_fetch_chunks_by_ids`` / ``_persist_quality_
+signals`` helpers do the work — avoiding monkeypatch-on-module-level issues
+that surface under ``pytest -n auto --cov``.
 """
 
 from __future__ import annotations
@@ -41,15 +44,36 @@ def _error_text(result: Any) -> str:
     return "".join(getattr(b, "text", "") for b in content)
 
 
+class _FakeBackend:
+    """Backend whose ``list_chunks`` / ``get_chunk`` return canned data.
+
+    Defining real methods (not MagicMocks) keeps `_fetch_chunks_for_dataset`
+    + `_fetch_chunks_by_ids` honest under xdist + coverage instrumentation.
+    """
+
+    def __init__(
+        self,
+        *,
+        chunks_by_dataset: dict[str, list[dict] | None] | None = None,
+        chunks_by_id: dict[int, dict] | None = None,
+    ) -> None:
+        self._chunks_by_dataset = chunks_by_dataset or {}
+        self._chunks_by_id = chunks_by_id or {}
+        self.persist_calls: list[tuple[list[int], list[float], str]] = []
+
+    def list_chunks(self, *, dataset: str) -> list[dict] | None:
+        return self._chunks_by_dataset.get(dataset)
+
+    def get_chunk(self, cid: int) -> dict | None:
+        return self._chunks_by_id.get(cid)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # _json_safe / _json_safe_dict helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 def test_json_safe_passes_through_primitives() -> None:
-    # _json_safe is intentionally narrow — only coerces numeric types
-    # (incl. numpy scalars). Strings / None / containers pass through
-    # untouched.
     assert _json_safe(1) == 1
     assert _json_safe(1.5) == 1.5
     assert _json_safe("x") == "x"
@@ -66,7 +90,6 @@ def test_json_safe_returns_value_unchanged_for_unknown_types() -> None:
         pass
 
     obj = Custom()
-    # Falls through the type checks and returns the value as-is.
     assert _json_safe(obj) is obj
 
 
@@ -95,11 +118,11 @@ def test_json_safe_dict_returns_plain_dict() -> None:
 
 
 def test_fetch_chunks_for_dataset_returns_list() -> None:
-    backend = MagicMock()
-    backend.list_chunks.return_value = [{"id": 1, "text": "x"}, {"id": 2, "text": "y"}]
+    backend = _FakeBackend(
+        chunks_by_dataset={"demo": [{"id": 1, "text": "x"}, {"id": 2, "text": "y"}]}
+    )
     out = _fetch_chunks_for_dataset(backend, "demo")
     assert out == [{"id": 1, "text": "x"}, {"id": 2, "text": "y"}]
-    backend.list_chunks.assert_called_once_with(dataset="demo")
 
 
 def test_fetch_chunks_for_dataset_missing_method_raises() -> None:
@@ -109,10 +132,9 @@ def test_fetch_chunks_for_dataset_missing_method_raises() -> None:
 
 
 def test_fetch_chunks_for_dataset_none_result_raises_not_found() -> None:
-    backend = MagicMock()
-    backend.list_chunks.return_value = None
+    backend = _FakeBackend(chunks_by_dataset={"demo": None})
     with pytest.raises(ValueError, match="not found"):
-        _fetch_chunks_for_dataset(backend, "missing")
+        _fetch_chunks_for_dataset(backend, "demo")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -121,7 +143,7 @@ def test_fetch_chunks_for_dataset_none_result_raises_not_found() -> None:
 
 
 def test_fetch_chunks_by_ids_empty_input_returns_empty() -> None:
-    assert _fetch_chunks_by_ids(MagicMock(), []) == []
+    assert _fetch_chunks_by_ids(_FakeBackend(), []) == []
 
 
 def test_fetch_chunks_by_ids_missing_method_returns_empty() -> None:
@@ -130,15 +152,16 @@ def test_fetch_chunks_by_ids_missing_method_returns_empty() -> None:
 
 
 def test_fetch_chunks_by_ids_calls_get_chunk_per_id() -> None:
-    backend = MagicMock()
-    backend.get_chunk.side_effect = lambda cid: {"id": cid, "text": f"chunk-{cid}"}
+    backend = _FakeBackend(
+        chunks_by_id={cid: {"id": cid, "text": f"chunk-{cid}"} for cid in (10, 20, 30)}
+    )
     out = _fetch_chunks_by_ids(backend, [10, 20, 30])
     assert [c["id"] for c in out] == [10, 20, 30]
 
 
 def test_fetch_chunks_by_ids_skips_none_results() -> None:
-    backend = MagicMock()
-    backend.get_chunk.side_effect = [None, {"id": 2}, None, {"id": 4}]
+    backend = _FakeBackend(chunks_by_id={2: {"id": 2}, 4: {"id": 4}})
+    # Ids 1 and 3 are absent → get_chunk returns None → skipped.
     out = _fetch_chunks_by_ids(backend, [1, 2, 3, 4])
     assert [c["id"] for c in out] == [2, 4]
 
@@ -158,19 +181,20 @@ def test_persist_quality_signals_no_conn_returns_zero() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_dispatch_analyze_corpus_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "corpus_forge.mcp._dispatch_analyze._fetch_chunks_for_dataset",
-        lambda backend, dataset: [
-            {"id": 1, "text": "alpha", "token_count": 10, "document_id": 100},
-            {"id": 2, "text": "beta", "token_count": 12, "document_id": 100},
-            {"id": 3, "text": "gamma", "token_count": 8, "document_id": 200},
-        ],
+def test_dispatch_analyze_corpus_happy_path() -> None:
+    backend = _FakeBackend(
+        chunks_by_dataset={
+            "demo": [
+                {"id": 1, "text": "alpha", "token_count": 10, "document_id": 100},
+                {"id": 2, "text": "beta", "token_count": 12, "document_id": 100},
+                {"id": 3, "text": "gamma", "token_count": 8, "document_id": 200},
+            ]
+        }
     )
     out = _run(
         _dispatch_analyze_corpus(
             {"dataset": "demo"},
-            backend=MagicMock(),
+            backend=backend,
             writes_enabled=False,
         )
     )
@@ -179,20 +203,13 @@ def test_dispatch_analyze_corpus_happy_path(monkeypatch: pytest.MonkeyPatch) -> 
     assert "token_stats" in out
 
 
-def test_dispatch_analyze_corpus_missing_dataset_returns_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _raise(*_a: Any, **_kw: Any) -> Any:
-        raise ValueError("Dataset 'demo' not found")
-
-    monkeypatch.setattr(
-        "corpus_forge.mcp._dispatch_analyze._fetch_chunks_for_dataset",
-        _raise,
-    )
+def test_dispatch_analyze_corpus_missing_dataset_returns_error() -> None:
+    # chunks_by_dataset returns None for "demo" → _fetch_chunks raises ValueError.
+    backend = _FakeBackend(chunks_by_dataset={"demo": None})
     out = _run(
         _dispatch_analyze_corpus(
             {"dataset": "demo"},
-            backend=MagicMock(),
+            backend=backend,
             writes_enabled=False,
         )
     )
@@ -200,48 +217,53 @@ def test_dispatch_analyze_corpus_missing_dataset_returns_error(
     assert "analyze_corpus" in _error_text(out)
 
 
+def test_dispatch_analyze_corpus_unknown_dataset_returns_error() -> None:
+    # No "missing" key at all → list_chunks returns None.
+    backend = _FakeBackend(chunks_by_dataset={})
+    out = _run(
+        _dispatch_analyze_corpus(
+            {"dataset": "missing"},
+            backend=backend,
+            writes_enabled=False,
+        )
+    )
+    assert _is_error_result(out)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # _dispatch_find_duplicates
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_dispatch_find_duplicates_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "corpus_forge.mcp._dispatch_analyze._fetch_chunks_for_dataset",
-        lambda backend, dataset: [
-            {"id": 1, "text": "exact dup", "content_hash": "h1"},
-            {"id": 2, "text": "exact dup", "content_hash": "h1"},
-            {"id": 3, "text": "unique chunk text", "content_hash": "h2"},
-        ],
+def test_dispatch_find_duplicates_happy_path() -> None:
+    backend = _FakeBackend(
+        chunks_by_dataset={
+            "demo": [
+                {"id": 1, "text": "exact dup", "content_hash": "h1"},
+                {"id": 2, "text": "exact dup", "content_hash": "h1"},
+                {"id": 3, "text": "unique chunk text", "content_hash": "h2"},
+            ]
+        }
     )
     out = _run(
         _dispatch_find_duplicates(
             {"dataset": "demo", "threshold": 0.85},
-            backend=MagicMock(),
+            backend=backend,
             writes_enabled=False,
         )
     )
     assert "exact_duplicates" in out
     assert "near_duplicates" in out
-    # Exact dup contains hash 'h1' with chunk_ids [1, 2].
     assert "h1" in out["exact_duplicates"]
     assert sorted(out["exact_duplicates"]["h1"]) == [1, 2]
 
 
-def test_dispatch_find_duplicates_missing_dataset_returns_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _raise(*_a: Any, **_kw: Any) -> Any:
-        raise ValueError("missing dataset")
-
-    monkeypatch.setattr(
-        "corpus_forge.mcp._dispatch_analyze._fetch_chunks_for_dataset",
-        _raise,
-    )
+def test_dispatch_find_duplicates_missing_dataset_returns_error() -> None:
+    backend = _FakeBackend(chunks_by_dataset={"demo": None})
     out = _run(
         _dispatch_find_duplicates(
             {"dataset": "demo"},
-            backend=MagicMock(),
+            backend=backend,
             writes_enabled=False,
         )
     )
@@ -253,58 +275,87 @@ def test_dispatch_find_duplicates_missing_dataset_returns_error(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_dispatch_cluster_topics_empty_returns_empty_clusters(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "corpus_forge.mcp._dispatch_analyze._fetch_chunks_for_dataset",
-        lambda backend, dataset: [],
-    )
+def test_dispatch_cluster_topics_empty_returns_empty_clusters() -> None:
+    backend = _FakeBackend(chunks_by_dataset={"demo": []})
     out = _run(
         _dispatch_cluster_topics(
             {"dataset": "demo"},
-            backend=MagicMock(),
+            backend=backend,
             writes_enabled=False,
         )
     )
     assert out == {"clusters": []}
 
 
-def test_dispatch_cluster_topics_too_few_embeddings_returns_empty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "corpus_forge.mcp._dispatch_analyze._fetch_chunks_for_dataset",
-        lambda backend, dataset: [{"id": 1, "text": "x"}],  # no embedding
-    )
+def test_dispatch_cluster_topics_too_few_embeddings_returns_empty() -> None:
+    backend = _FakeBackend(chunks_by_dataset={"demo": [{"id": 1, "text": "x"}]})
     out = _run(
         _dispatch_cluster_topics(
             {"dataset": "demo"},
-            backend=MagicMock(),
+            backend=backend,
             writes_enabled=False,
         )
     )
     assert out == {"clusters": []}
 
 
-def test_dispatch_cluster_topics_missing_dataset_returns_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _raise(*_a: Any, **_kw: Any) -> Any:
-        raise ValueError("no dataset")
-
-    monkeypatch.setattr(
-        "corpus_forge.mcp._dispatch_analyze._fetch_chunks_for_dataset",
-        _raise,
-    )
+def test_dispatch_cluster_topics_missing_dataset_returns_error() -> None:
+    backend = _FakeBackend(chunks_by_dataset={"demo": None})
     out = _run(
         _dispatch_cluster_topics(
             {"dataset": "demo"},
-            backend=MagicMock(),
+            backend=backend,
             writes_enabled=False,
         )
     )
     assert _is_error_result(out)
+
+
+def test_dispatch_cluster_topics_runs_on_embedded_chunks() -> None:
+    """Exercises the real cluster_topics + top_terms_per_cluster pipeline."""
+    # Two visually-separable groups in 4-D space — small but enough to drive
+    # the HDBSCAN/c-TF-IDF path with min_cluster_size=2.
+    chunks = [
+        {"id": 1, "text": "apple banana orange fruit", "embedding": [1.0, 0.0, 0.0, 0.0]},
+        {"id": 2, "text": "apple banana grape", "embedding": [1.0, 0.05, 0.0, 0.0]},
+        {"id": 3, "text": "apple orange pear", "embedding": [1.0, 0.0, 0.05, 0.0]},
+        {"id": 4, "text": "car truck bus vehicle", "embedding": [0.0, 0.0, 0.0, 1.0]},
+        {"id": 5, "text": "car truck van", "embedding": [0.0, 0.05, 0.0, 1.0]},
+        {"id": 6, "text": "car van auto", "embedding": [0.0, 0.0, 0.05, 1.0]},
+    ]
+    backend = _FakeBackend(chunks_by_dataset={"demo": chunks})
+    out = _run(
+        _dispatch_cluster_topics(
+            {"dataset": "demo", "min_cluster_size": 2},
+            backend=backend,
+            writes_enabled=False,
+        )
+    )
+    assert "clusters" in out
+    # Each cluster has the three documented keys.
+    for c in out["clusters"]:
+        assert set(c) >= {"cluster_id", "chunk_ids", "top_terms"}
+        assert isinstance(c["cluster_id"], str)
+        assert isinstance(c["chunk_ids"], list)
+
+
+def test_dispatch_cluster_topics_filters_chunks_without_embedding() -> None:
+    """Chunks whose embedding is missing/None are skipped before clustering."""
+    chunks = [
+        {"id": 1, "text": "alpha", "embedding": None},
+        {"id": 2, "text": "beta"},  # no embedding key at all
+        {"id": 3, "text": "gamma", "embedding": [1.0, 0.0]},
+    ]
+    backend = _FakeBackend(chunks_by_dataset={"demo": chunks})
+    out = _run(
+        _dispatch_cluster_topics(
+            {"dataset": "demo", "min_cluster_size": 2},
+            backend=backend,
+            writes_enabled=False,
+        )
+    )
+    # Only 1 embedded chunk → short-circuit to no clusters.
+    assert out == {"clusters": []}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -336,17 +387,17 @@ def test_dispatch_score_quality_no_scope_returns_error() -> None:
     assert "chunk_ids or dataset" in _error_text(out)
 
 
-def test_dispatch_score_quality_by_chunk_ids(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "corpus_forge.mcp._dispatch_analyze._fetch_chunks_by_ids",
-        lambda backend, ids: [
-            {"id": cid, "text": f"chunk text {cid}", "token_count": 50 + cid} for cid in ids
-        ],
+def test_dispatch_score_quality_by_chunk_ids() -> None:
+    backend = _FakeBackend(
+        chunks_by_id={
+            cid: {"id": cid, "text": f"chunk text {cid}", "token_count": 50 + cid}
+            for cid in (10, 20)
+        }
     )
     out = _run(
         _dispatch_score_quality(
             {"chunk_ids": [10, 20]},
-            backend=MagicMock(),
+            backend=backend,
             writes_enabled=False,
         )
     )
@@ -356,87 +407,111 @@ def test_dispatch_score_quality_by_chunk_ids(monkeypatch: pytest.MonkeyPatch) ->
         assert 0.0 <= s <= 1.0
 
 
-def test_dispatch_score_quality_by_dataset(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "corpus_forge.mcp._dispatch_analyze._fetch_chunks_for_dataset",
-        lambda backend, dataset: [
-            {"id": 1, "text": "alpha beta gamma delta", "token_count": 10},
-            {"id": 2, "text": "another reasonable chunk", "token_count": 7},
-        ],
+def test_dispatch_score_quality_by_dataset() -> None:
+    backend = _FakeBackend(
+        chunks_by_dataset={
+            "demo": [
+                {"id": 1, "text": "alpha beta gamma delta", "token_count": 10},
+                {"id": 2, "text": "another reasonable chunk", "token_count": 7},
+            ]
+        }
     )
     out = _run(
         _dispatch_score_quality(
             {"dataset": "demo"},
-            backend=MagicMock(),
+            backend=backend,
             writes_enabled=False,
         )
     )
     assert set(out["scores"].keys()) == {"1", "2"}
 
 
-def test_dispatch_score_quality_empty_chunk_ids_returns_empty_map(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "corpus_forge.mcp._dispatch_analyze._fetch_chunks_by_ids",
-        lambda backend, ids: [],
-    )
+def test_dispatch_score_quality_empty_chunk_ids_returns_empty_map() -> None:
+    backend = _FakeBackend()
     out = _run(
         _dispatch_score_quality(
             {"chunk_ids": []},
-            backend=MagicMock(),
+            backend=backend,
             writes_enabled=False,
         )
     )
     assert out == {"scores": {}}
 
 
-def test_dispatch_score_quality_persist_writes_when_enabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, Any] = {}
-
-    def _fake_persist(backend: Any, chunk_ids: list[int], scores: list[float]) -> int:
-        captured["chunk_ids"] = chunk_ids
-        captured["scores"] = scores
-        return len(chunk_ids)
-
-    monkeypatch.setattr(
-        "corpus_forge.mcp._dispatch_analyze._fetch_chunks_by_ids",
-        lambda backend, ids: [{"id": cid, "text": f"text {cid}", "token_count": 5} for cid in ids],
-    )
-    monkeypatch.setattr(
-        "corpus_forge.mcp._dispatch_analyze._persist_quality_signals",
-        _fake_persist,
-    )
-
-    out = _run(
-        _dispatch_score_quality(
-            {"chunk_ids": [7, 9], "persist": True},
-            backend=MagicMock(),
-            writes_enabled=True,
-        )
-    )
-    assert set(out["scores"].keys()) == {"7", "9"}
-    assert captured["chunk_ids"] == [7, 9]
-    assert len(captured["scores"]) == 2
-
-
-def test_dispatch_score_quality_dataset_lookup_failure_returns_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _raise(*_a: Any, **_kw: Any) -> Any:
-        raise ValueError("no such dataset")
-
-    monkeypatch.setattr(
-        "corpus_forge.mcp._dispatch_analyze._fetch_chunks_for_dataset",
-        _raise,
-    )
+def test_dispatch_score_quality_dataset_lookup_failure_returns_error() -> None:
+    backend = _FakeBackend(chunks_by_dataset={"missing": None})
     out = _run(
         _dispatch_score_quality(
             {"dataset": "missing"},
-            backend=MagicMock(),
+            backend=backend,
             writes_enabled=False,
         )
     )
     assert _is_error_result(out)
+
+
+def test_dispatch_score_quality_persist_path_invokes_persist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When persist=True + writes_enabled=True, _persist_quality_signals fires."""
+    chunks = [{"id": 1, "text": "alpha", "token_count": 8}]
+    backend = _FakeBackend(chunks_by_id={1: chunks[0]})
+
+    captured: dict[str, Any] = {}
+
+    def _stub_persist(b: Any, ids: list[int], scores: list[float]) -> int:
+        captured["chunk_ids"] = ids
+        captured["scores"] = scores
+        return len(ids)
+
+    # Patch the module-level helper. Even if the dispatch resolves the
+    # reference through the module namespace, the runtime swap takes effect.
+    monkeypatch.setattr(
+        "corpus_forge.mcp._dispatch_analyze._persist_quality_signals",
+        _stub_persist,
+    )
+
+    out = _run(
+        _dispatch_score_quality(
+            {"chunk_ids": [1], "persist": True},
+            backend=backend,
+            writes_enabled=True,
+        )
+    )
+    assert set(out["scores"].keys()) == {"1"}
+    assert captured["chunk_ids"] == [1]
+    assert len(captured["scores"]) == 1
+
+
+def test_dispatch_score_quality_dataset_with_persist_aligns_resolved_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When persisting by-dataset, scores+ids must align with the resolved chunks."""
+    chunks = [
+        {"id": 11, "text": "a", "token_count": 8},
+        {"id": 22, "text": "b", "token_count": 9},
+    ]
+    backend = _FakeBackend(chunks_by_dataset={"demo": chunks})
+
+    captured: dict[str, Any] = {}
+
+    def _stub_persist(b: Any, ids: list[int], scores: list[float]) -> int:
+        captured["chunk_ids"] = ids
+        captured["scores"] = scores
+        return len(ids)
+
+    monkeypatch.setattr(
+        "corpus_forge.mcp._dispatch_analyze._persist_quality_signals",
+        _stub_persist,
+    )
+
+    out = _run(
+        _dispatch_score_quality(
+            {"dataset": "demo", "persist": True},
+            backend=backend,
+            writes_enabled=True,
+        )
+    )
+    # Resolved ids match the chunks returned by the dataset lookup.
+    assert captured["chunk_ids"] == [11, 22]
+    assert set(out["scores"].keys()) == {"11", "22"}

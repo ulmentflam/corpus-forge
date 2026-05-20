@@ -174,6 +174,87 @@ def test_list_sessions_unreadable_file_falls_back_to_filename(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# _do_record_demo — exercised directly (not through the TUI)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _make_seeded_conn() -> sqlite3.Connection:
+    c = sqlite3.connect(":memory:")
+    c.executescript(
+        """
+        CREATE TABLE datasets (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE);
+        CREATE TABLE sdft_demonstrations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dataset_id INTEGER NOT NULL,
+            query TEXT NOT NULL,
+            student_messages TEXT NOT NULL,
+            teacher_messages TEXT NOT NULL,
+            target TEXT NOT NULL,
+            source TEXT NOT NULL,
+            trace_id TEXT,
+            content_hash TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO datasets (name) VALUES ('demo');
+        """
+    )
+    c.commit()
+    return c
+
+
+def test_do_record_demo_dry_run_does_not_persist(capsys: pytest.CaptureFixture) -> None:
+    from corpus_forge.cli_feedback import _do_record_demo
+
+    conn = _make_seeded_conn()
+    pending: list[dict] = []
+    _do_record_demo(conn, "q|s|t|target", "demo", dry_run=True, pending_writes=pending)
+    captured = capsys.readouterr()
+    assert "dry-run" in captured.out
+    # No row written.
+    count = conn.execute("SELECT COUNT(*) FROM sdft_demonstrations").fetchone()[0]
+    assert count == 0
+
+
+def test_do_record_demo_persists_row_when_not_dry_run() -> None:
+    from corpus_forge.cli_feedback import _do_record_demo
+
+    conn = _make_seeded_conn()
+    pending: list[dict] = []
+    _do_record_demo(conn, "ask|stud|teach|targ", "demo", dry_run=False, pending_writes=pending)
+    count = conn.execute("SELECT COUNT(*) FROM sdft_demonstrations").fetchone()[0]
+    assert count == 1
+    # pending_writes is appended for export-session.
+    assert len(pending) == 1
+    assert pending[0]["query"] == "ask"
+
+
+def test_do_record_demo_bad_format_warns(capsys: pytest.CaptureFixture) -> None:
+    from corpus_forge.cli_feedback import _do_record_demo
+
+    conn = _make_seeded_conn()
+    pending: list[dict] = []
+    _do_record_demo(conn, "too|few", "demo", dry_run=False, pending_writes=pending)
+    captured = capsys.readouterr()
+    assert "must be 'query|student|teacher|target'" in captured.err
+    assert len(pending) == 0
+
+
+def test_do_record_demo_unknown_dataset_skips_and_warns(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    from corpus_forge.cli_feedback import _do_record_demo
+
+    conn = _make_seeded_conn()
+    pending: list[dict] = []
+    _do_record_demo(conn, "q|s|t|targ", "unknown_dataset", dry_run=False, pending_writes=pending)
+    captured = capsys.readouterr()
+    assert "not found in datasets" in captured.err
+    count = conn.execute("SELECT COUNT(*) FROM sdft_demonstrations").fetchone()[0]
+    assert count == 0
+    assert pending == []
+
+
 def test_export_session_writes_jsonl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fb_dir = tmp_path / "feedback"
     fb_dir.mkdir()

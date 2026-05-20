@@ -122,3 +122,102 @@ def test_persist_none_similarity_normalized_to_zero(conn: sqlite3.Connection) ->
     )
     rows = list(conn.execute("SELECT similarity FROM near_duplicate_clusters"))
     assert rows[0][0] == 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Postgres branch — exercised against a duck-typed fake connection so we
+# don't need testcontainers for unit coverage. Real Postgres behavior is
+# pinned by tests/integration/test_analyze_dedup_persist.py.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _FakeCursor:
+    """A psycopg-shaped cursor: supports context-manager + .execute + .rowcount."""
+
+    def __init__(self) -> None:
+        self.rowcount = 1
+        self.executed: list[tuple[str, tuple]] = []
+
+    def __enter__(self) -> _FakeCursor:
+        return self
+
+    def __exit__(self, *_a: Any) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple) -> None:
+        self.executed.append((sql, params))
+
+
+class _FakePgConn:
+    """Non-sqlite3 connection so persist_clusters routes through the PG branch."""
+
+    def __init__(self, fail_at: int | None = None) -> None:
+        self._cur = _FakeCursor()
+        self.commit_called = False
+        self.rollback_called = False
+        self._fail_at = fail_at  # raise after Nth execute (None = never)
+        self._exec_count = 0
+
+    def cursor(self) -> _FakeCursor:
+        # Wrap execute to optionally fail.
+        outer = self
+
+        class _Cur(_FakeCursor):
+            def execute(self, sql: str, params: tuple) -> None:
+                outer._exec_count += 1
+                if outer._fail_at is not None and outer._exec_count == outer._fail_at:
+                    raise RuntimeError("simulated db error")
+                outer._cur.executed.append((sql, params))
+
+        c = _Cur()
+        # Bridge state so the test can inspect.
+        self._cur_proxy = c
+        return c
+
+    def commit(self) -> None:
+        self.commit_called = True
+
+    def rollback(self) -> None:
+        self.rollback_called = True
+
+
+# Now import after the class definitions so we don't re-import Any.
+from typing import Any  # noqa: E402
+
+
+def test_persist_postgres_branch_uses_pct_s_placeholders() -> None:
+    conn = _FakePgConn()
+    n = persist_clusters(
+        conn,
+        [{"cluster_id": "pg-1", "chunk_ids": [1, 2], "similarity": 0.7}],
+    )
+    assert n == 2
+    assert conn.commit_called is True
+    # SQL uses corpus. schema-prefix + %s placeholders.
+    first_sql, _params = conn._cur.executed[0]
+    assert "corpus.near_duplicate_clusters" in first_sql
+    assert "%s" in first_sql
+
+
+def test_persist_postgres_rollback_on_exception() -> None:
+    # Fail on the 2nd execute → triggers rollback + re-raise.
+    conn = _FakePgConn(fail_at=2)
+    with pytest.raises(RuntimeError, match="simulated db error"):
+        persist_clusters(
+            conn,
+            [{"cluster_id": "pg-rb", "chunk_ids": [1, 2, 3], "similarity": 0.6}],
+        )
+    assert conn.rollback_called is True
+    assert conn.commit_called is False
+
+
+def test_persist_postgres_validates_chunk_ids_list_type() -> None:
+    conn = _FakePgConn()
+    with pytest.raises(ValueError, match="must be a list"):
+        persist_clusters(
+            conn,
+            [{"cluster_id": "g", "chunk_ids": "not-a-list"}],  # type: ignore[arg-type]
+        )
+    # Validation failure also rolls back (the Postgres branch wraps it
+    # in the same try/except, so rollback fires even on the type check).
+    assert conn.rollback_called is True

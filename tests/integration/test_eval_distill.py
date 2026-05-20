@@ -597,25 +597,22 @@ def _invoke_with_backend(
     if extra_args:
         args.extend(extra_args)
 
-    # Try to patch the backend factory that distill.py will use.
-    # The exact target depends on the Coder's implementation; we patch two
-    # likely candidates.  If neither applies, the command fails for a
-    # different reason (config not found) and the exit-code assertions catch it.
-    try:
-        with (
-            patch(
-                "corpus_forge.eval.distill._build_backend",
-                return_value=backend,
-            ),
-            patch(
-                "corpus_forge.eval.distill._get_backend",
-                return_value=backend,
-            ),
-        ):
-            return _RUNNER.invoke(app, args)
-    except (AttributeError, ModuleNotFoundError):
-        # If the module doesn't exist yet, return the raw invocation result
-        # so exit-code assertions see the correct RED failure.
+    # Patch each backend-factory target separately with `create=True` so a
+    # missing attribute on one symbol doesn't silently fall through and run
+    # the unpatched invocation. Real exceptions during the invocation still
+    # surface to the caller.
+    with (
+        patch(
+            "corpus_forge.eval.distill._build_backend",
+            return_value=backend,
+            create=True,
+        ),
+        patch(
+            "corpus_forge.eval.distill._get_backend",
+            return_value=backend,
+            create=True,
+        ),
+    ):
         return _RUNNER.invoke(app, args)
 
 
