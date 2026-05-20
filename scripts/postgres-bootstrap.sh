@@ -327,10 +327,11 @@ else
 fi
 log "       Append pg_hba.conf entry for ${CIDR} (idempotent — grep before append)."
 if (( DRY_RUN == 1 )); then
-  echo "  grep -qE \"^host[[:space:]]+${DB}[[:space:]]+${USR}[[:space:]]+${CIDR//\//\\/}\" ${PG_CONF_DIR}/pg_hba.conf || echo \"${HBA_LINE}\" >> ${PG_CONF_DIR}/pg_hba.conf"
-else
-  grep -qE "^host[[:space:]]+${DB}[[:space:]]+${USR}[[:space:]]+${CIDR//\//\\/}" "${PG_CONF_DIR}/pg_hba.conf" || echo "${HBA_LINE}" >> "${PG_CONF_DIR}/pg_hba.conf"
-fi
+  if (( DRY_RUN == 1 )); then
+    echo "  grep -qF \"${HBA_LINE}\" ${PG_CONF_DIR}/pg_hba.conf || echo \"${HBA_LINE}\" >> ${PG_CONF_DIR}/pg_hba.conf"
+  else
+    grep -qF "${HBA_LINE}" "${PG_CONF_DIR}/pg_hba.conf" || echo "${HBA_LINE}" >> "${PG_CONF_DIR}/pg_hba.conf"
+  fi
 
 # ---- Step 7: reload Postgres ----
 
