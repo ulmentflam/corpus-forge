@@ -60,10 +60,16 @@ EOF
 while (( $# > 0 )); do
   case "$1" in
     --help) print_help; exit 0 ;;
-    --ram) RAM_GB="$2"; shift 2 ;;
+    --ram)
+      (( $# >= 2 )) || { echo "${PROG_NAME}: --ram requires a value" >&2; exit 64; }
+      RAM_GB="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
-    --pg-version) PG_VERSION="$2"; shift 2 ;;
-    --config-dir) CONFIG_DIR="$2"; shift 2 ;;
+    --pg-version)
+      (( $# >= 2 )) || { echo "${PROG_NAME}: --pg-version requires a value" >&2; exit 64; }
+      PG_VERSION="$2"; shift 2 ;;
+    --config-dir)
+      (( $# >= 2 )) || { echo "${PROG_NAME}: --config-dir requires a value" >&2; exit 64; }
+      CONFIG_DIR="$2"; shift 2 ;;
     *)
       echo "${PROG_NAME}: unknown flag: $1" >&2
       echo "Run '${PROG_NAME} --help' for usage." >&2
