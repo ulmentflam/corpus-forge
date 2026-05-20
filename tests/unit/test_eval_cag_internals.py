@@ -166,7 +166,10 @@ def test_run_cag_eval_empty_queries(tmp_path: Path) -> None:
 def test_run_cag_eval_default_report_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "home"
     home.mkdir()
+    # Path.home() reads HOME on POSIX, USERPROFILE on Windows. Set both so
+    # the test passes on every CI matrix slot.
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
     run_cag_eval(
         "ds",
         [{"query": "q", "answer": "a", "contexts": []}],

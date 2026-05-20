@@ -198,34 +198,29 @@ def test_run_rag_eval_creates_report_dir_when_missing(tmp_path: Path) -> None:
     assert (target / "eval_rag.json").is_file()
 
 
-def test_run_rag_eval_default_report_dir_under_cache(tmp_path: Path) -> None:
-    # Redirect HOME so we don't pollute the real ~/.cache.
-    import os
-
+def test_run_rag_eval_default_report_dir_under_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default report dir lands under ~/.cache/corpus-forge/reports."""
     home = tmp_path / "home"
     home.mkdir()
-    prev = os.environ.get("HOME")
-    os.environ["HOME"] = str(home)
-    try:
-        result = run_rag_eval(
-            "ds",
-            [
-                {
-                    "query": "q",
-                    "answer": "a",
-                    "relevant_chunk_ids": [1],
-                    "contexts": ["c"],
-                    "ranked_chunk_ids": [1],
-                }
-            ],
-            judge_endpoint="mock",
-        )
-    finally:
-        if prev is None:
-            del os.environ["HOME"]
-        else:
-            os.environ["HOME"] = prev
+    # Path.home() reads HOME on POSIX, USERPROFILE on Windows. Set both.
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
 
+    result = run_rag_eval(
+        "ds",
+        [
+            {
+                "query": "q",
+                "answer": "a",
+                "relevant_chunk_ids": [1],
+                "contexts": ["c"],
+                "ranked_chunk_ids": [1],
+            }
+        ],
+        judge_endpoint="mock",
+    )
     assert "nDCG@1" in result
     # Default path lives under the tmp_path-rooted home.
     reports_root = home / ".cache" / "corpus-forge" / "reports"

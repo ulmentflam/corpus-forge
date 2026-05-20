@@ -278,7 +278,9 @@ def test_run_distill_eval_default_report_dir(
 
     home = tmp_path / "home"
     home.mkdir()
+    # Path.home() reads HOME on POSIX, USERPROFILE on Windows. Set both.
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
 
     backend = _FakeBackend(dataset_id=1, sdft_rows=[], chunks=[])
     monkeypatch.setattr(distill_mod, "_list_chunks_for_dataset", lambda b, d: [])
