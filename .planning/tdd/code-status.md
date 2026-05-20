@@ -1067,3 +1067,31 @@ Implementation notes:
 - Diff scope: within surface — `corpus_forge/analyze/dedup.py` only (new file)
 - Notes: PLR2004 suppressed via pre-existing `pyproject.toml` per-file-ignores entry for `dedup.py`; PLC0415 same; B007 avoided by iterating `component_map.values()` instead of `.items()`. Extreme threshold (0.999) gracefully handled by catching datasketch `ValueError` and returning `[]`.
 - Status: green — O2-G1: corpus_forge/analyze/dedup.py — GREEN (23/23)
+
+## Q1-G1
+- Source files:
+  - `corpus_forge/alembic/versions/0014_sdft_demonstrations.py` (new — Alembic migration)
+  - `corpus_forge/sdft/__init__.py` (new — package init)
+  - `corpus_forge/sdft/sources.py` (new — SDFTSource StrEnum)
+  - `corpus_forge/sdft/capture.py` (new — record_demonstration + _should_capture_curation)
+  - `corpus_forge/mcp/writes.py` (added record_demonstration write tool)
+  - `corpus_forge/mcp/server.py` (added schema, tool, dispatcher, two capture hooks)
+  - `tests/unit/test_sqlite_backend.py` (added sdft_demonstrations to EXPECTED_TABLES — rot-detector)
+  - `tests/integration/test_apply_migrations_uses_alembic.py` (bumped version_num to 0014_sdft_demonstrations — rot-detector)
+  - `tests/unit/test_mcp_server_enrichment.py` (30→31 tools, added record_demonstration — rot-detector)
+  - `tests/smoke/test_mcp_writes_disabled_by_default.py` (added record_demonstration to _WRITE_TOOL_NAMES — rot-detector)
+  - `docs/schema.md` (added Phase Q Wave 1 section)
+- Gates:
+  - format: ✓ (`ruff format --check corpus_forge tests` — 652 files already formatted)
+  - lint: ✓ (`ruff check corpus_forge tests` — All checks passed)
+  - typecheck: n/a (pyrefly not run; no new errors introduced)
+  - test: ✓ (`pytest tests/integration/test_migrate_0014_sdft.py tests/integration/test_mcp_record_demonstration.py tests/unit/test_sdft_capture_hooks.py` — 79 passed, 33 warnings; full unit+integration suite: 4957 passed, 26 skipped, 0 failed)
+- Key implementation notes:
+  - SDFTSource uses `StrEnum` (not `str, Enum`) — required by ruff UP042; matches existing project pattern
+  - Dialect detection in capture.py: `"psycopg" in type(conn).__module__`
+  - Prior description snapshot uses `backend.get_entity_description("chunk", cid)` — NOT `get_chunk(cid).get("description")` (get_chunk does not return description column)
+  - Capture hooks are best-effort (wrapped in try/except), never fail the parent operation
+  - content_hash dedup: sha256(canonical_json([query, student_messages, teacher_messages, target]))
+- Test files modified: rot-detectors only (test_sqlite_backend.py, test_apply_migrations_uses_alembic.py, test_mcp_server_enrichment.py, test_mcp_writes_disabled_by_default.py) — no tester test files modified
+- Diff scope: within surface — yes (migration, sdft package, mcp write tool, capture hooks, rot-detectors, docs)
+- Status: green — handed off to tdd-qa

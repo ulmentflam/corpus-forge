@@ -549,6 +549,53 @@ _REGISTER_SESSION_INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+# ── Phase Q Wave 1 — record_demonstration schema ─────────────────────────
+
+_RECORD_DEMONSTRATION_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": "The search/curation query that prompted the correction.",
+        },
+        "student_messages": {
+            "type": "array",
+            "items": {"type": "object"},
+            "description": (
+                "Prior model output as [{role, content}] messages (student perspective)."
+            ),
+        },
+        "teacher_messages": {
+            "type": "array",
+            "items": {"type": "object"},
+            "description": "Curation prompt or expert correction as [{role, content}] (teacher).",
+        },
+        "target": {
+            "type": "string",
+            "description": "The corrected/improved output text.",
+        },
+        "source": {
+            "type": "string",
+            "description": (
+                "Signal source — must be one of the SDFTSource enum values: "
+                "curation_commit, rate_search_result, record_demonstration, "
+                "cli_feedback, claude_code, gemini, opencode, codex."
+            ),
+        },
+        "dataset": {
+            "type": "string",
+            "description": "Dataset name for FK resolution.",
+        },
+        "trace_id": {
+            "type": ["string", "null"],
+            "description": "Optional cross-system tracing key.",
+        },
+    },
+    "required": ["query", "student_messages", "teacher_messages", "target", "source"],
+    "additionalProperties": False,
+}
+
+
 # ── Phase M Wave 3 — .corpusignore browse / edit schemas ─────────────────
 
 
@@ -1144,6 +1191,17 @@ def build_server(
                     ),
                     inputSchema=_RATE_SEARCH_RESULT_INPUT_SCHEMA,
                 ),
+                # Phase Q Wave 1 — SDFT demonstration capture tool.
+                mt.Tool(
+                    name="record_demonstration",
+                    description=(
+                        "Record a teacher→student demonstration pair for SDFT "
+                        "fine-tuning.  Deduplicates via content_hash "
+                        "(ON CONFLICT DO NOTHING).  Returns "
+                        "{demonstration_id, deduped}."
+                    ),
+                    inputSchema=_RECORD_DEMONSTRATION_INPUT_SCHEMA,
+                ),
             ]
         return tools
 
@@ -1220,6 +1278,9 @@ def build_server(
             # Phase P Wave 2 write tool
             if name == "rate_search_result":
                 return await _dispatch_rate_search_result(arguments)
+            # Phase Q Wave 1 write tool
+            if name == "record_demonstration":
+                return await _dispatch_record_demonstration(arguments)
         return _error_result(f"unknown tool: {name!r}")
 
     # ── dispatchers (closures share `_get_retriever` / `_get_reranker`)
@@ -1791,7 +1852,90 @@ def build_server(
             )
         except Exception as exc:
             return _error_result(str(exc))
+
+        # ── SDFT capture hook (best-effort; never fails rate_search_result) ──
+        # When signal=thumbs_down AND replacement_chunk_id is set, capture a
+        # rate_search_result demonstration.
+        _signal_val = arguments["signal"]
+        if _signal_val == "thumbs_down" and replacement_chunk_id is not None:
+            import logging as _rsr_log
+
+            try:
+                from corpus_forge.sdft.capture import (
+                    record_demonstration as _record_demo,
+                )
+
+                # Fetch the rated chunk and the replacement chunk.
+                _rated_rows = backend._execute(
+                    "SELECT text FROM chunks WHERE id = ?",
+                    (int(arguments["chunk_id"]),),
+                )
+                _repl_rows = backend._execute(
+                    "SELECT text FROM chunks WHERE id = ?",
+                    (replacement_chunk_id,),
+                )
+                if _rated_rows and _repl_rows:
+                    _rated_text = _rated_rows[0]["text"] or ""
+                    _repl_text = _repl_rows[0]["text"] or ""
+
+                    # Resolve dataset_id via rated chunk → document.
+                    _ds_rows = backend._execute(
+                        "SELECT d.dataset_id FROM chunks c"
+                        " JOIN documents d ON c.document_id = d.id"
+                        " WHERE c.id = ? LIMIT 1",
+                        (int(arguments["chunk_id"]),),
+                    )
+                    if _ds_rows:
+                        _ds_id = int(_ds_rows[0]["dataset_id"])
+                        _query_text = arguments["query_id"]
+                        with backend._get_connection() as _rsr_conn:
+                            _record_demo(
+                                _rsr_conn,
+                                query=_query_text[:200],
+                                student_messages=[{"role": "assistant", "content": _rated_text}],
+                                teacher_messages=[
+                                    {
+                                        "role": "user",
+                                        "content": "Prefer this result instead.",
+                                    }
+                                ],
+                                target=_repl_text,
+                                source="rate_search_result",
+                                dataset_id=_ds_id,
+                            )
+            except Exception as _rsr_exc:
+                _rsr_log.getLogger("corpus_forge.mcp.server").warning(
+                    "SDFT rate_search_result capture failed: %s",
+                    _rsr_exc,
+                )
+
         return result
+
+    async def _dispatch_record_demonstration(arguments: dict[str, Any]) -> Any:
+        """Phase Q Wave 1 — record an SDFT teacher→student demonstration pair."""
+        from corpus_forge.mcp import writes
+
+        backend = _get_write_backend()
+        if backend is None:
+            return _error_result("retriever has no backend; cannot record demonstration")
+        ctx = _make_write_ctx()
+        try:
+            result = writes.record_demonstration(
+                backend,
+                ctx,
+                arguments["query"],
+                arguments["student_messages"],
+                arguments["teacher_messages"],
+                arguments["target"],
+                arguments["source"],
+                dataset=arguments.get("dataset"),
+                trace_id=arguments.get("trace_id"),
+            )
+        except ValueError as exc:
+            return _error_result(str(exc))
+        except Exception as exc:
+            return _error_result(str(exc))
+        return {"demonstration_id": result["demonstration_id"], "deduped": result["deduped"]}
 
     async def _dispatch_commit_curation(arguments: dict[str, Any]) -> Any:
         """J4 — atomic-ish multi-write composing the existing write surface.
@@ -1832,6 +1976,27 @@ def build_server(
             "add_feedback": 0,
         }
         audit_ids: list[int] = []
+
+        # ── Snapshot prior descriptions for SDFT hook ───────────────────────
+        # Capture BEFORE the write loop so we can compare after set_description.
+        _prior_descs: dict[int, str | None] = {}
+        if set_description_payload is not _SENTINEL_UNSET and not dry_run:
+            _snap_backend = _get_write_backend()
+            if _snap_backend is not None:
+                for _snap_cid in chunk_ids:
+                    # Use get_entity_description for chunks (get_chunk doesn't
+                    # return the description column).
+                    _get_desc_fn = getattr(_snap_backend, "get_entity_description", None)
+                    if _get_desc_fn is not None:
+                        _prior_descs[_snap_cid] = _get_desc_fn("chunk", _snap_cid)
+                    else:
+                        # Fallback: direct SQL for backends without get_entity_description.
+                        _desc_rows = _snap_backend._execute(
+                            "SELECT description FROM chunks WHERE id = ?",
+                            (_snap_cid,),
+                        )
+                        if _desc_rows:
+                            _prior_descs[_snap_cid] = _desc_rows[0].get("description")
 
         for cid in chunk_ids:
             for entry in add_labels:
@@ -1930,6 +2095,75 @@ def build_server(
                     if isinstance(aid, int):
                         audit_ids.append(aid)
                     counts["add_feedback"] += 1
+
+        # ── SDFT capture hook (best-effort; never fails commit) ─────────────
+        # When set_description was applied and differs from the snapshotted prior
+        # value, capture a curation_commit demonstration for SDFT fine-tuning.
+        if _prior_descs and set_description_payload is not _SENTINEL_UNSET and not dry_run:
+            import logging as _sdft_log
+
+            try:
+                from corpus_forge.sdft.capture import (
+                    _should_capture_curation,
+                    record_demonstration,
+                )
+
+                _sdft_backend = _get_write_backend()
+                if _sdft_backend is not None:
+                    for _cid in chunk_ids:
+                        _prior_desc = _prior_descs.get(_cid)
+                        _new_desc = set_description_payload
+                        if not _should_capture_curation(_prior_desc, _new_desc):
+                            continue
+
+                        # Fetch chunk text (it hasn't changed).
+                        _chunk_row = _sdft_backend.get_chunk(_cid)
+                        if _chunk_row is None:
+                            continue
+                        _chunk_text = (
+                            _chunk_row.get("text", "")
+                            if isinstance(_chunk_row, dict)
+                            else getattr(_chunk_row, "text", "")
+                        )
+
+                        # Resolve dataset_id via chunk → document.
+                        _ds_rows = _sdft_backend._execute(
+                            "SELECT d.dataset_id FROM chunks c"
+                            " JOIN documents d ON c.document_id = d.id"
+                            " WHERE c.id = ? LIMIT 1",
+                            (_cid,),
+                        )
+                        if not _ds_rows:
+                            continue
+                        _ds_id = int(_ds_rows[0]["dataset_id"])
+
+                        _feedback_text = ""
+                        if feedback_payload:
+                            _feedback_text = feedback_payload.get("text", "")
+
+                        with _sdft_backend._get_connection() as _sdft_conn:
+                            record_demonstration(
+                                _sdft_conn,
+                                query=_chunk_text[:200],
+                                student_messages=[
+                                    {"role": "assistant", "content": str(_prior_desc or "")}
+                                ],
+                                teacher_messages=[
+                                    {
+                                        "role": "user",
+                                        "content": _feedback_text or "Improve the description.",
+                                    }
+                                ],
+                                target=str(_new_desc or ""),
+                                source="curation_commit",
+                                dataset_id=_ds_id,
+                            )
+            except Exception as _sdft_exc:
+                _sdft_log.getLogger("corpus_forge.mcp.server").warning(
+                    "SDFT curation_commit capture failed for chunk_ids=%s: %s",
+                    chunk_ids,
+                    _sdft_exc,
+                )
 
         # ── CAG cache invalidation (best-effort; never fails commit) ────────
         import logging as _logging

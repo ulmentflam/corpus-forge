@@ -326,9 +326,11 @@ class TestWritesEnabledGate:
             "zotero_sync",
             # Phase P Wave 2 write tool
             "rate_search_result",
+            # Phase Q Wave 1 write tool
+            "record_demonstration",
         }
         assert set(tools) == expected, (
-            f"Expected 30 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
+            f"Expected 31 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
         )
 
     def test_unknown_tool_returns_error_when_writes_disabled(

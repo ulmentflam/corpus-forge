@@ -780,6 +780,85 @@ def rate_search_result(
     return {"event_id": event_id, "session_id": session_id}
 
 
+# ---------------------------------------------------------------------------
+# record_demonstration
+# ---------------------------------------------------------------------------
+
+
+def record_demonstration(
+    backend: Any,
+    ctx: Any,
+    query: str,
+    student_messages: list[dict],
+    teacher_messages: list[dict],
+    target: str,
+    source: str,
+    dataset: str | None = None,
+    dataset_id: int | None = None,
+    trace_id: str | None = None,
+) -> dict:
+    """Record a supervised demonstration pair in ``sdft_demonstrations``.
+
+    Exactly one of ``dataset`` (name → resolved to id) or ``dataset_id``
+    (direct int) must be provided.  ``source`` must be a valid
+    :class:`~corpus_forge.sdft.sources.SDFTSource` value.
+
+    Returns ``{"demonstration_id": int, "deduped": bool, "audit_id": int}``.
+    """
+    from corpus_forge.sdft.capture import record_demonstration as _record  # noqa: PLC0415
+    from corpus_forge.sdft.sources import SDFTSource  # noqa: PLC0415
+
+    # Validate source.
+    valid_values = {e.value for e in SDFTSource}
+    if source not in valid_values:
+        raise ValueError(
+            f"source {source!r} is not a valid SDFTSource; must be one of {sorted(valid_values)}"
+        )
+
+    # Resolve dataset_id.
+    if dataset_id is None:
+        if dataset is None:
+            raise ValueError("one of dataset or dataset_id is required")
+        resolved = backend.find_dataset_id_by_name(dataset)
+        if resolved is None:
+            raise ValueError(f"dataset {dataset!r} not found")
+        dataset_id = resolved
+
+    with backend._get_connection() as conn:
+        result = _record(
+            conn,
+            query=query,
+            student_messages=student_messages,
+            teacher_messages=teacher_messages,
+            target=target,
+            source=source,
+            dataset_id=dataset_id,
+            trace_id=trace_id,
+        )
+
+    audit_id = backend.audit_event(
+        ctx.host,
+        ctx.client,
+        ctx.session_id,
+        "record_demonstration",
+        "chunk",
+        result["demonstration_id"],
+        None,
+        {
+            "query": query,
+            "source": source,
+            "dataset_id": dataset_id,
+            "deduped": result["deduped"],
+        },
+        False,
+    )
+    return {
+        "demonstration_id": result["demonstration_id"],
+        "deduped": result["deduped"],
+        "audit_id": audit_id,
+    }
+
+
 __all__ = [
     "WriteContext",
     "add_feedback",
@@ -788,6 +867,7 @@ __all__ = [
     "append_message",
     "list_labels",
     "rate_search_result",
+    "record_demonstration",
     "register_session",
     "remove_label",
     "set_description",

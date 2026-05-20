@@ -227,6 +227,8 @@ class TestSchemaTablePresence:
             # P-01 (0013_search_sessions) adds search-session feedback tables.
             "search_sessions",
             "search_result_events",
+            # Q-01 (0014_sdft_demonstrations) adds SDFT capture table.
+            "sdft_demonstrations",
         ]
     )
 

@@ -142,6 +142,26 @@ Revision `0004_sync` added the cross-host sync surface:
     referenced replacement chunk is later removed).
 - Forward-only downgrade per project convention.
 
+## Phase Q Wave 1 — SDFT demonstrations (revision `0014`)
+
+- `0014_sdft_demonstrations` adds one table for SDFT (Supervised Demo
+  Fine-Tuning) capture:
+  - `sdft_demonstrations(dataset_id, query, student_messages, teacher_messages,
+    target, source, trace_id, content_hash, created_at)` — one row per captured
+    teacher→student demonstration pair.  `dataset_id` FKs to `datasets(id)`
+    ON DELETE CASCADE.  `content_hash` has a UNIQUE constraint so duplicate
+    demonstrations are deduplicated via `INSERT ... ON CONFLICT DO NOTHING`.
+    `student_messages` and `teacher_messages` are JSONB on Postgres, TEXT on
+    SQLite (JSON serialised).  `source` must be one of the `SDFTSource` enum
+    values: `curation_commit`, `rate_search_result`, `record_demonstration`,
+    `cli_feedback`, `claude_code`, `gemini`, `opencode`, `codex`.
+  - Indexes: `(dataset_id, source)` for per-dataset source queries;
+    `(trace_id)` for cross-system trace lookup.
+- Capture hooks fire automatically from `commit_curation` (description change →
+  `source="curation_commit"`) and `rate_search_result` (thumbs_down +
+  replacement → `source="rate_search_result"`).
+- Forward-only downgrade per project convention.
+
 ## Indexing strategy
 
 | Query path | Index |
