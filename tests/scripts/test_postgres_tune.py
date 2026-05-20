@@ -75,7 +75,7 @@ def test_output_is_dropin_conf_d_file_not_postgresql_conf_edit() -> None:
     # mention that filename and explicitly NOT edit postgresql.conf.
     assert "corpus-forge.conf" in out
     # No sed/awk inline-edit of the main config.
-    assert "sed -i" not in out or "postgresql.conf" not in out.replace("conf.d", "")
+    assert "sed -i" not in out and "postgresql.conf" not in out.replace("conf.d", "")
 
 
 def test_small_ram_clamps_work_mem_to_floor() -> None:

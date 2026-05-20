@@ -86,11 +86,41 @@ while (( $# > 0 )); do
   case "$1" in
     --help) print_help; exit 0 ;;
     --dry-run) DRY_RUN=1; shift ;;
-    --db) DB="$2"; shift 2 ;;
-    --user) USR="$2"; shift 2 ;;
-    --password) PASSWORD="$2"; shift 2 ;;
-    --cidr) CIDR="$2"; shift 2 ;;
-    --pg-version) PG_VERSION="$2"; shift 2 ;;
+    --db)
+      if (( $# < 2 )); then
+        echo "${PROG_NAME}: --db requires a value" >&2
+        print_help
+        exit 64
+      fi
+      DB="$2"; shift 2 ;;
+    --user)
+      if (( $# < 2 )); then
+        echo "${PROG_NAME}: --user requires a value" >&2
+        print_help
+        exit 64
+      fi
+      USR="$2"; shift 2 ;;
+    --password)
+      if (( $# < 2 )); then
+        echo "${PROG_NAME}: --password requires a value" >&2
+        print_help
+        exit 64
+      fi
+      PASSWORD="$2"; shift 2 ;;
+    --cidr)
+      if (( $# < 2 )); then
+        echo "${PROG_NAME}: --cidr requires a value" >&2
+        print_help
+        exit 64
+      fi
+      CIDR="$2"; shift 2 ;;
+    --pg-version)
+      if (( $# < 2 )); then
+        echo "${PROG_NAME}: --pg-version requires a value" >&2
+        print_help
+        exit 64
+      fi
+      PG_VERSION="$2"; shift 2 ;;
     --no-listen) NO_LISTEN=1; shift ;;
     --quiet) QUIET=1; shift ;;
     *)
@@ -112,15 +142,12 @@ log() {
 }
 
 emit() {
-  # Print a command (dry-run) or execute it (live). We pass a single
-  # composed command string per call (with embedded `||` / pipes), so
-  # eval is the right tool here — the alternative `"$@"` would try to
-  # exec a binary literally named "apt-get install -y …".
-  # shellcheck disable=SC2294
+  # Print a command (dry-run) or execute it (live). Uses argv-style
+  # execution to avoid shell injection risks.
   if (( DRY_RUN == 1 )); then
     echo "  $*"
   else
-    eval "$@"
+    "$@"
   fi
 }
 
@@ -224,17 +251,25 @@ PGDG_LIST="/etc/apt/sources.list.d/pgdg.list"
 PGDG_LINE='deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main'
 
 log "Step 1/7: Ensure PGDG apt repo is configured."
-emit "apt-get install -y curl ca-certificates gnupg lsb-release"
-emit "install -d /usr/share/postgresql-common/pgdg"
-emit "[ -s ${PGDG_KEYRING} ] || curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o ${PGDG_KEYRING}"
-emit "[ -f ${PGDG_LIST} ] || echo \"${PGDG_LINE}\" > ${PGDG_LIST}"
-emit "apt-get update"
+emit apt-get install -y curl ca-certificates gnupg lsb-release
+emit install -d /usr/share/postgresql-common/pgdg
+if (( DRY_RUN == 1 )); then
+  echo "  [ -s ${PGDG_KEYRING} ] || curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o ${PGDG_KEYRING}"
+else
+  [ -s "${PGDG_KEYRING}" ] || curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o "${PGDG_KEYRING}"
+fi
+if (( DRY_RUN == 1 )); then
+  echo "  [ -f ${PGDG_LIST} ] || echo \"${PGDG_LINE}\" > ${PGDG_LIST}"
+else
+  [ -f "${PGDG_LIST}" ] || echo "${PGDG_LINE}" > "${PGDG_LIST}"
+fi
+emit apt-get update
 
 # ---- Step 2: Install Postgres + pgvector ----
 
 log "Step 2/7: Install postgresql-${PG_VERSION} + postgresql-${PG_VERSION}-pgvector."
-emit "apt-get install -y postgresql-${PG_VERSION} postgresql-${PG_VERSION}-pgvector"
-emit "systemctl enable --now postgresql"
+emit apt-get install -y "postgresql-${PG_VERSION}" "postgresql-${PG_VERSION}-pgvector"
+emit systemctl enable --now postgresql
 
 # ---- Step 3: Create role (idempotent via DO $$ ... $$) ----
 
@@ -242,44 +277,65 @@ log "Step 3/7: Create role '${USR}' if it does not exist."
 ROLE_SQL=$(cat <<SQL
 DO \$\$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${USR}') THEN
-    CREATE ROLE "${USR}" LOGIN PASSWORD '${PASSWORD}';
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'username') THEN
+    CREATE ROLE :username LOGIN PASSWORD :'password';
   END IF;
 END
 \$\$;
 SQL
 )
-emit "sudo -u postgres psql -v ON_ERROR_STOP=1 -c \"${ROLE_SQL//\"/\\\"}\""
+if (( DRY_RUN == 1 )); then
+  echo "  sudo -u postgres psql -v ON_ERROR_STOP=1 -v username=\"${USR}\" -v password=\"***\" -c \"${ROLE_SQL}\""
+else
+  sudo -u postgres psql -v ON_ERROR_STOP=1 -v "username=${USR}" -v "password=${PASSWORD}" -c "${ROLE_SQL}"
+fi
 
 # ---- Step 4: Create database (idempotent: skip if exists) ----
 
 log "Step 4/7: Create database '${DB}' if it does not exist."
-emit "sudo -u postgres psql -tAc \"SELECT 1 FROM pg_database WHERE datname = '${DB}'\" | grep -q 1 || sudo -u postgres psql -v ON_ERROR_STOP=1 -c \"CREATE DATABASE \\\"${DB}\\\" OWNER \\\"${USR}\\\"\""
+if (( DRY_RUN == 1 )); then
+  echo "  sudo -u postgres psql -tAc \"SELECT 1 FROM pg_database WHERE datname = '${DB}'\" | grep -q 1 || sudo -u postgres psql -v ON_ERROR_STOP=1 -v dbname=\"${DB}\" -v owner=\"${USR}\" -c \"CREATE DATABASE :dbname OWNER :owner\""
+else
+  if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname = '${DB}'" | grep -q 1; then
+    sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${DB}\" OWNER \"${USR}\""
+  fi
+fi
 
 # ---- Step 5: Enable pgvector extension in the target DB ----
 
 log "Step 5/7: CREATE EXTENSION IF NOT EXISTS vector in '${DB}'."
-emit "sudo -u postgres psql -v ON_ERROR_STOP=1 -d \"${DB}\" -c \"CREATE EXTENSION IF NOT EXISTS vector\""
+if (( DRY_RUN == 1 )); then
+  echo "  sudo -u postgres psql -v ON_ERROR_STOP=1 -d \"${DB}\" -c \"CREATE EXTENSION IF NOT EXISTS vector\""
+else
+  sudo -u postgres psql -v ON_ERROR_STOP=1 -d "${DB}" -c "CREATE EXTENSION IF NOT EXISTS vector"
+fi
 
 # ---- Step 6: listen_addresses + pg_hba.conf ----
 
 PG_CONF_DIR="/etc/postgresql/${PG_VERSION}/main"
-LISTEN_SED="sed -i \"s/^#\\?listen_addresses *=.*/listen_addresses = '*'/\" ${PG_CONF_DIR}/postgresql.conf"
 HBA_LINE="host    ${DB}             ${USR}             ${CIDR}            scram-sha-256"
 
 if (( NO_LISTEN == 1 )); then
   log "Step 6/7: --no-listen set — leaving listen_addresses at default."
 else
   log "Step 6/7: Edit listen_addresses in ${PG_CONF_DIR}/postgresql.conf."
-  emit "${LISTEN_SED}"
+  if (( DRY_RUN == 1 )); then
+    echo "  sed -i \"s/^#\\?listen_addresses *=.*/listen_addresses = '*'/\" ${PG_CONF_DIR}/postgresql.conf"
+  else
+    sed -i "s/^#\\?listen_addresses *=.*/listen_addresses = '*'/" "${PG_CONF_DIR}/postgresql.conf"
+  fi
 fi
 log "       Append pg_hba.conf entry for ${CIDR} (idempotent — grep before append)."
-emit "grep -qE \"^host[[:space:]]+${DB}[[:space:]]+${USR}[[:space:]]+${CIDR//\//\\/}\" ${PG_CONF_DIR}/pg_hba.conf || echo \"${HBA_LINE}\" >> ${PG_CONF_DIR}/pg_hba.conf"
+if (( DRY_RUN == 1 )); then
+  echo "  grep -qE \"^host[[:space:]]+${DB}[[:space:]]+${USR}[[:space:]]+${CIDR//\//\\/}\" ${PG_CONF_DIR}/pg_hba.conf || echo \"${HBA_LINE}\" >> ${PG_CONF_DIR}/pg_hba.conf"
+else
+  grep -qE "^host[[:space:]]+${DB}[[:space:]]+${USR}[[:space:]]+${CIDR//\//\\/}" "${PG_CONF_DIR}/pg_hba.conf" || echo "${HBA_LINE}" >> "${PG_CONF_DIR}/pg_hba.conf"
+fi
 
 # ---- Step 7: reload Postgres ----
 
 log "Step 7/7: Reload postgresql."
-emit "systemctl reload postgresql"
+emit systemctl reload postgresql
 
 # ---- Final ----
 
