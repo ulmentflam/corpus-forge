@@ -116,8 +116,8 @@ sub-waves; the surface is too small to benefit from internal gating.
   - Tuning formulae (locked in this phase, document in script comment):
     - `shared_buffers` = 25% of RAM
     - `effective_cache_size` = 75% of RAM
-    - `work_mem` = max(64MB, RAM_GB * 4 MB)
-    - `maintenance_work_mem` = max(512MB, RAM_GB * 32 MB)
+    - `work_mem` = max(64MB, RAM_GB * 8 MB)
+    - `maintenance_work_mem` = max(512MB, RAM_GB * 64 MB)
     - `wal_compression` = on
 - `scripts/docker-compose.postgres.yml`:
   - Single `postgres` service; `pgvector/pgvector:pg17`

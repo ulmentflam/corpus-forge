@@ -271,23 +271,29 @@ log "Step 2/7: Install postgresql-${PG_VERSION} + postgresql-${PG_VERSION}-pgvec
 emit apt-get install -y "postgresql-${PG_VERSION}" "postgresql-${PG_VERSION}-pgvector"
 emit systemctl enable --now postgresql
 
-# ---- Step 3: Create role (idempotent via DO $$ ... $$) ----
+# ---- Step 3: Create role (idempotent via \gexec at top-level) ----
+#
+# psql -v variables are NOT substituted inside DO $$ … $$ blocks (the body
+# is sent to the server as a single string literal). Instead we build the
+# CREATE ROLE statement at the top level, where :'name' substitution works,
+# and use \gexec to execute the resulting row only when the role is absent.
+# format() does the SQL-side identifier / literal quoting so credentials
+# with special characters are handled safely.
 
 log "Step 3/7: Create role '${USR}' if it does not exist."
-ROLE_SQL=$(cat <<SQL
-DO \$\$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'username') THEN
-    CREATE ROLE :username LOGIN PASSWORD :'password';
-  END IF;
-END
-\$\$;
+ROLE_SQL=$(cat <<'SQL'
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'username', :'password') AS cmd
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'username')
+\gexec
 SQL
 )
 if (( DRY_RUN == 1 )); then
-  echo "  sudo -u postgres psql -v ON_ERROR_STOP=1 -v username=\"${USR}\" -v password=\"***\" -c \"${ROLE_SQL}\""
+  echo "  sudo -u postgres psql -v ON_ERROR_STOP=1 -v username=\"${USR}\" -v password=\"***\" <<'SQL'"
+  echo "${ROLE_SQL}" | sed 's/^/  /'
+  echo "  SQL"
 else
-  sudo -u postgres psql -v ON_ERROR_STOP=1 -v "username=${USR}" -v "password=${PASSWORD}" -c "${ROLE_SQL}"
+  sudo -u postgres psql -v ON_ERROR_STOP=1 \
+    -v "username=${USR}" -v "password=${PASSWORD}" <<<"${ROLE_SQL}"
 fi
 
 # ---- Step 4: Create database (idempotent: skip if exists) ----
@@ -327,11 +333,10 @@ else
 fi
 log "       Append pg_hba.conf entry for ${CIDR} (idempotent — grep before append)."
 if (( DRY_RUN == 1 )); then
-  if (( DRY_RUN == 1 )); then
-    echo "  grep -qF \"${HBA_LINE}\" ${PG_CONF_DIR}/pg_hba.conf || echo \"${HBA_LINE}\" >> ${PG_CONF_DIR}/pg_hba.conf"
-  else
-    grep -qF "${HBA_LINE}" "${PG_CONF_DIR}/pg_hba.conf" || echo "${HBA_LINE}" >> "${PG_CONF_DIR}/pg_hba.conf"
-  fi
+  echo "  grep -qF \"${HBA_LINE}\" ${PG_CONF_DIR}/pg_hba.conf || echo \"${HBA_LINE}\" >> ${PG_CONF_DIR}/pg_hba.conf"
+else
+  grep -qF "${HBA_LINE}" "${PG_CONF_DIR}/pg_hba.conf" || echo "${HBA_LINE}" >> "${PG_CONF_DIR}/pg_hba.conf"
+fi
 
 # ---- Step 7: reload Postgres ----
 
