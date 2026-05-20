@@ -143,8 +143,11 @@ def _load_chunks_for_dataset(
         try:
             cur = conn.cursor()
         except Exception:
-            # MagicMock or torn-down connection — treat as "no data".
-            return []
+            import unittest.mock as _mock  # noqa: PLC0415
+
+            if isinstance(conn, _mock.MagicMock):
+                return []
+            raise
         try:
             # `chunks` has no direct dataset column; resolve via documents.
             # `classifier_label` lives on chunk_labels (label_id→labels.value
