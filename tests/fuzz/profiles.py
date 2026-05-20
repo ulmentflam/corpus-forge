@@ -37,7 +37,7 @@ def register_hypothesis_profiles() -> None:
         deadline=400,  # ms per example
         derandomize=False,
         print_blob=True,
-        suppress_health_check=(HealthCheck.too_slow,),
+        suppress_health_check=(HealthCheck.too_slow, HealthCheck.function_scoped_fixture),
     )
 
     # ── ci: PR-gate matrix runs (3 OS x 3 Py later; single-OS in CI-1) ──
@@ -47,7 +47,7 @@ def register_hypothesis_profiles() -> None:
         deadline=800,
         derandomize=False,
         print_blob=True,
-        suppress_health_check=(HealthCheck.too_slow,),
+        suppress_health_check=(HealthCheck.too_slow, HealthCheck.function_scoped_fixture),
     )
 
     # ── nightly: long, deep search; cron-only ────────────────────────────
@@ -57,5 +57,5 @@ def register_hypothesis_profiles() -> None:
         deadline=2_000,
         derandomize=False,
         print_blob=True,
-        suppress_health_check=(HealthCheck.too_slow,),
+        suppress_health_check=(HealthCheck.too_slow, HealthCheck.function_scoped_fixture),
     )

@@ -3091,3 +3091,78 @@ Test patterns of note:
   ```
   Full run (no -x): 31 failed, 0 passed. All failures: ModuleNotFoundError: No module named 'corpus_forge.retrieval.rerank.learned'.
 - Status: red — handed off to tdd-coder
+
+## P3-T2
+- Test files: `tests/unit/test_cag_hybrid_selector.py`
+- Run command: `uv run pytest tests/unit/test_cag_hybrid_selector.py -x`
+- Edge case checklist:
+  - [x] happy — cache hit returns `("cache", payload)` and rag miss returns `("rag", SearchResponse)`
+  - [x] boundaries — empty cache directory always routes rag; root=None accepted at construction
+  - [x] type/format — payload is verbatim parsed JSON (no `_cf_route` injection); SearchResponse isinstance check on miss
+  - [x] state — hit/miss matrix: 3 cache files present, each independently hits; non-matching query misses; stateful HybridCagSelector reuses retriever across calls
+  - [ ] N/A — concurrency (pure function + file read, no shared mutable state)
+  - [x] failure paths — cache miss routes to retriever; empty-dir guard; root override: same query hits in custom root, misses in empty root
+  - [ ] N/A — locale/time (cache key is SHA-256 of JSON-encoded strings, locale-invariant)
+  - [x] production-realistic data — SearchResponse built with real Hit objects using corpus_forge.retrieval.types; mock retriever returns canned SearchResponse
+  - [x] regression hooks — `test_cache_payload_has_no_injected_cf_route_key` pins that `_cf_route` is NOT added; `test_hit_miss_matrix_exactly_one_hit` pins the three-file × one-match matrix
+- Red output (tail):
+  ```
+  tests/unit/test_cag_hybrid_selector.py:253: ModuleNotFoundError
+  =========================== short test summary info ============================
+  FAILED tests/unit/test_cag_hybrid_selector.py::test_hit_miss_matrix_exactly_one_hit
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+  1 failed in 0.17s
+  ```
+  Full run (no -x): 22 failed, 0 passed. All failures: ModuleNotFoundError: No module named 'corpus_forge.cag'.
+- Status: red — handed off to tdd-coder
+
+## P3-T1
+- Test files: `tests/unit/test_cag_cache_builder.py`
+- Run command: `uv run pytest tests/unit/test_cag_cache_builder.py -x`
+- Edge case checklist:
+  - [x] happy — `test_build_cache_writes_json_file`, `test_cache_key_deterministic`, `test_cache_path_resolves_correctly`, `test_list_cached_keys_returns_keys_after_build`, `test_invalidate_removes_matching_file`
+  - [x] boundaries — `test_cache_key_empty_hashes` (empty hash list), `test_list_cached_keys_returns_empty_before_build` (missing dir), `test_invalidate_noop_empty_dataset_directory` (absent dir), `test_invalidate_noop_when_hash_not_present` (no match)
+  - [x] type/format — `test_cache_key_is_16_hex_chars` (length + charset), `test_build_cache_json_built_at_is_iso_timestamp` (parseable ISO 8601), `test_build_cache_returns_path_object` (pathlib.Path return)
+  - [x] state — `test_build_cache_uses_root_override` (root= override vs default path), `test_list_cached_keys_ignores_non_json_files` (non-.json files skipped), `test_invalidate_removes_only_matching_files` (partial invalidation)
+  - [ ] N/A — concurrency (single-threaded cache file writer, no shared mutable state)
+  - [x] failure paths — `test_invalidate_noop_empty_dataset_directory`, `test_list_cached_keys_returns_empty_before_build` (graceful absent-dir handling)
+  - [ ] N/A — locale/time (built_at is an ISO timestamp asserted parseable; no DST/locale sensitivity)
+  - [x] production-realistic — synthetic chunks via `_make_chunk` + `_make_conn` mock; patch targets `_fetch_chunks` and `_render_template` at the module boundary so tests never touch a real DB or model
+  - [x] regression hooks — `test_cache_key_matches_sha256_formula` pins the exact sha256 formula; `test_build_cache_json_cache_key_field_matches_formula` pins the key written inside the JSON matches the public function
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_cag_cache_builder.py::test_import_smoke - ModuleNotFoundError: No module named 'corpus_forge.cag'
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+  1 failed in 0.17s
+
+  Full run (no -x): 30 failed, 0 passed.
+  All failures: ModuleNotFoundError: No module named 'corpus_forge.cag'
+  ```
+- Status: red — handed off to tdd-coder
+
+## P3-T3
+- Test files: `tests/unit/test_cag_invalidation.py`
+- Run command: `uv run pytest tests/unit/test_cag_invalidation.py -x 2>&1 | tail -5`
+- Edge case checklist:
+  - [x] happy — `test_invalidate_removes_cache_file`: file deleted and returns 1; `test_cache_file_removed_after_commit_curation`: end-to-end via MCP harness
+  - [x] boundaries — `test_invalidate_no_file_present_returns_zero` (no file), `test_invalidate_missing_cache_root_returns_zero` (missing root), `test_returns_zero_when_chunk_has_no_content_hash` (NULL hash x2)
+  - [x] type/format — `test_invalidate_only_removes_matching_hash`: only the targeted content_hash is removed, not others; `test_only_target_chunk_cache_removed`: cross-chunk isolation
+  - [x] state — `test_no_cache_files_commit_curation_succeeds`: no files present, spy still called; `test_audit_row_exists_after_commit_regardless_of_invalidation`: audit_ids populated even when invalidation raises
+  - [ ] N/A — concurrency (single-chunk serial dispatch; no shared mutable state)
+  - [x] failure paths — `test_invalidate_permission_error_returns_zero`: PermissionError returns 0 + logs warning; `test_missing_cache_root_commit_curation_succeeds`: absent root non-fatal; `test_permission_error_during_invalidation_does_not_fail_commit`: exception in invalidate_for_chunk does not fail commit_curation
+  - [ ] N/A — locale/time (cache key is content_hash hex string, locale-invariant)
+  - [x] production-realistic — in-memory SQLiteBackend migrated + seeded; in-process MCP server via `build_server`; cache files written at real `<tmp_path>/cag/<dataset>/<hash>.json` paths
+  - [x] regression hooks — `test_audit_row_exists_after_commit_regardless_of_invalidation` pins that audit_ids is never empty regardless of CAG failure; `test_only_target_chunk_cache_removed` pins cross-chunk isolation
+- Red output (tail):
+  ```
+  tests/unit/test_cag_invalidation.py:39: in <module>
+      from corpus_forge.cag.cache import invalidate, invalidate_for_chunk  # type: ignore[import]
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  E   ModuleNotFoundError: No module named 'corpus_forge.cag'
+  =========================== short test summary info ============================
+  ERROR tests/unit/test_cag_invalidation.py
+  !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  =============================== 1 error in 0.16s ===============================
+  ```
+- Status: red — handed off to tdd-coder

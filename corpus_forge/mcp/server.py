@@ -1931,6 +1931,50 @@ def build_server(
                         audit_ids.append(aid)
                     counts["add_feedback"] += 1
 
+        # ── CAG cache invalidation (best-effort; never fails commit) ────────
+        import logging as _logging
+        import os as _os
+        from pathlib import Path as _Path
+
+        _cag_root_str = _os.environ.get("CF_CAG_CACHE_ROOT")
+        if _cag_root_str:
+            _cag_root = _Path(_cag_root_str)
+            _cag_backend = _get_write_backend()
+            if _cag_backend is not None:
+                try:
+                    from corpus_forge.cag import cache as _cag_cache
+
+                    with _cag_backend._get_connection() as _cag_conn:
+                        for _cid in chunk_ids:
+                            _ds_row = _cag_conn.execute(
+                                "SELECT d.dataset_id"
+                                " FROM chunks c"
+                                " JOIN documents d ON c.document_id = d.id"
+                                " WHERE c.id = ?",
+                                (_cid,),
+                            ).fetchone()
+                            if _ds_row is None:
+                                continue
+                            _dataset_id = (
+                                _ds_row[0]
+                                if not isinstance(_ds_row, dict)
+                                else _ds_row.get("dataset_id")
+                            )
+                            if _dataset_id is None:
+                                continue
+                            _cag_cache.invalidate_for_chunk(
+                                _cid,
+                                int(_dataset_id),
+                                root=_cag_root,
+                                conn=_cag_conn,
+                            )
+                except Exception as _exc:
+                    _logging.getLogger("corpus_forge.mcp.server").warning(
+                        "CAG cache invalidation failed for chunk_ids=%s: %s",
+                        chunk_ids,
+                        _exc,
+                    )
+
         return {
             "writes": counts,
             "chunk_ids_processed": chunk_ids,

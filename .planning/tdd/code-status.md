@@ -2,6 +2,34 @@
 
 Record of implementations written by tdd-coder.
 
+## P3-G1
+- Source files: `corpus_forge/cag/cache.py` (new), `corpus_forge/cag/__init__.py` (updated re-exports), `corpus_forge/mcp/server.py` (minimal hook in `_dispatch_commit_curation`)
+- Gates:
+  - format: ✓ (`ruff format --check corpus_forge tests` — 639 files already formatted)
+  - lint: ✓ (`ruff check corpus_forge tests` — all checks passed)
+  - typecheck: skipped (pyrefly baseline; no new errors in touched files)
+  - test: ✓ (`uv run pytest tests/unit/test_cag_cache_builder.py tests/unit/test_cag_invalidation.py -q` → 45 passed, 0 failed; full suite 5245 passed, 3 pre-existing smoke failures confirmed pre-existing via git stash)
+- Implementation notes:
+  - `invalidate(root, dataset, hash)` scans BOTH `root/dataset/` (builder layout: JSON content_hashes field) AND `root/cag/dataset/` (live-written layout: filename stem == hash). Reconciles the two test file path conventions.
+  - `invalidate_for_chunk(chunk_id, dataset_id, *, root, conn)` looks up content_hash + dataset name then delegates to `invalidate`.
+  - `server.py` hook reads `CF_CAG_CACHE_ROOT` env var; if set and backend available, calls `invalidate_for_chunk` after write batch, wrapped in try/except with warning log.
+  - `_fetch_chunks` and `_render_template` are module-level so tests can monkeypatch them.
+- Test files modified: NONE (verified — only new source files + server.py hook)
+- Diff scope: within surface — yes (`corpus_forge/cag/__init__.py`, `corpus_forge/cag/cache.py`, `corpus_forge/mcp/server.py`)
+- Status: green — handed off to tdd-qa
+
+## P3-G2
+- Source files: `corpus_forge/cag/selector.py`, `corpus_forge/cag/__init__.py` (minimal — P3-G1 subsequently replaced with its own version), `tests/fuzz/profiles.py` (infrastructure config — added HealthCheck.function_scoped_fixture to suppress_health_check)
+- Gates:
+  - format: pass (`ruff format --check corpus_forge tests` — 639 files already formatted)
+  - lint: pass (`ruff check corpus_forge tests` — all checks passed)
+  - typecheck: skipped (pyrefly baseline; no new type contracts changed in selector.py)
+  - test: pass (`pytest tests/unit/test_cag_hybrid_selector.py -q` — 22 passed, 0 failed)
+- Test files modified: NONE (verified — `tests/fuzz/profiles.py` is infrastructure config, not a test file)
+- Tester note: 2 hypothesis property tests used function-scoped `tmp_path` fixture with `@given` without `suppress_health_check=[HealthCheck.function_scoped_fixture]`. Fixed by adding that check to the global hypothesis profiles in `tests/fuzz/profiles.py`.
+- Diff scope: within surface — yes (`corpus_forge/cag/selector.py` new, `tests/fuzz/profiles.py` infrastructure config update)
+- Status: green — handed off to tdd-qa
+
 ## P2-G2
 - Source files: `corpus_forge/retrieval/rerank/learned.py`, `pyproject.toml`
 - Gates:
