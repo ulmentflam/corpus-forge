@@ -1676,17 +1676,19 @@ def eval_distill(
     stats.  Writes Markdown + JSON reports and optionally prints JSON to stdout.
     """
     import json as _json
+    import logging
 
     from corpus_forge.eval.distill import (
         _get_backend,
         run_distill_eval,
     )
 
-    backend = _get_backend()
-
-    import logging
-
     try:
+        # `_get_backend()` reads the user's config + opens a DB connection;
+        # surface its failures (missing config, DB unreachable) through the
+        # same error path so the operator still sees the dataset name in
+        # the message and CliRunner / agent capture the output.
+        backend = _get_backend()
         result = run_distill_eval(
             dataset,
             template=template,
