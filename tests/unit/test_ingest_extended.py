@@ -228,6 +228,90 @@ class TestGetActiveEmbedders:
             result = get_active_embedders(config)
             assert result == []
 
+    def test_get_active_embedders_does_not_pass_device_to_openai_provider(self):
+        """Regression: ``OpenAIEmbedder.__init__()`` does not accept a
+        ``device`` kwarg — its underlying HTTP transport has no
+        local-accelerator concept. Earlier revisions of
+        ``get_active_embedders`` unconditionally added ``device`` to
+        every embedder's kwargs, blowing up first-run ingest against
+        an Ollama-backed OpenAI-compatible endpoint with:
+
+            TypeError: OpenAIEmbedder.__init__() got an unexpected
+            keyword argument 'device'
+        """
+        config = MagicMock()
+        e_cfg = MagicMock()
+        e_cfg.active = True
+        e_cfg.provider = "openai"
+        e_cfg.name = "qwen3-2048"
+        e_cfg.model_id = "qwen3-embedding:8b"
+        e_cfg.dimension = 2048
+        e_cfg.normalize = True
+        e_cfg.distance = "cosine"
+        e_cfg.api_key_env = "OPENAI_API_KEY"
+        e_cfg.base_url = "http://localhost:11434/v1"
+        config.embedders = [e_cfg]
+
+        with patch("corpus_forge.ingest.registry") as mock_registry:
+            mock_registry.register = MagicMock(return_value=MagicMock())
+            get_active_embedders(config)
+
+        call_kwargs = mock_registry.register.call_args.kwargs
+        assert "device" not in call_kwargs, (
+            f"openai-provider embedder must NOT receive `device=` "
+            f"(OpenAIEmbedder rejects it). Got kwargs: {sorted(call_kwargs)}"
+        )
+        # api_key_env + base_url ARE expected on the openai path.
+        assert call_kwargs.get("api_key_env") == "OPENAI_API_KEY"
+        assert call_kwargs.get("base_url") == "http://localhost:11434/v1"
+
+    def test_get_active_embedders_passes_device_to_sentence_transformers(self):
+        """SentenceTransformersEmbedder DOES accept ``device``; the
+        per-provider gate must let it through, not strip it
+        universally."""
+        config = MagicMock()
+        e_cfg = MagicMock()
+        e_cfg.active = True
+        e_cfg.provider = "sentence_transformers"
+        e_cfg.name = "st-base"
+        e_cfg.model_id = "BAAI/bge-base-en-v1.5"
+        e_cfg.dimension = 768
+        e_cfg.normalize = True
+        e_cfg.distance = "cosine"
+        e_cfg.device = "auto"
+        config.embedders = [e_cfg]
+
+        with patch("corpus_forge.ingest.registry") as mock_registry:
+            mock_registry.register = MagicMock(return_value=MagicMock())
+            get_active_embedders(config)
+
+        call_kwargs = mock_registry.register.call_args.kwargs
+        assert call_kwargs.get("device") == "auto", (
+            f"sentence_transformers provider must receive device=; got {call_kwargs}"
+        )
+
+    def test_get_active_embedders_does_not_pass_device_to_model2vec(self):
+        """model2vec is CPU-only static embeddings; no device concept."""
+        config = MagicMock()
+        e_cfg = MagicMock()
+        e_cfg.active = True
+        e_cfg.provider = "model2vec"
+        e_cfg.name = "potion"
+        e_cfg.model_id = "minishlab/potion-code-16M"
+        e_cfg.dimension = 256
+        e_cfg.normalize = True
+        e_cfg.distance = "cosine"
+        config.embedders = [e_cfg]
+
+        with patch("corpus_forge.ingest.registry") as mock_registry:
+            mock_registry.register = MagicMock(return_value=MagicMock())
+            get_active_embedders(config)
+
+        call_kwargs = mock_registry.register.call_args.kwargs
+        assert "device" not in call_kwargs, (
+            f"model2vec provider must NOT receive `device=`; got {sorted(call_kwargs)}"
+        )
+
 
 class TestGetOrCreateDataset:
     """Tests for _get_or_create_dataset."""
