@@ -58,7 +58,12 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     """Run the bootstrap script with stdin piped (non-TTY)."""
     cmd = ["bash", str(SCRIPT), *args]
-    merged_env = {**os.environ, **(env or {})}
+    base_env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("CF_PG_") and key != "CF_OS_RELEASE"
+    }
+    merged_env = {**base_env, **(env or {})}
     # Force the "non-TTY" path: subprocess.PIPE on stdin guarantees
     # ``[ -t 0 ]`` is false inside the script.
     return subprocess.run(
