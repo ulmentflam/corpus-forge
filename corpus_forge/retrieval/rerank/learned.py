@@ -309,8 +309,29 @@ class LearnedReranker:
             lexical_score = 1.0 if hit.source == "lexical" else 0.0
             features.append([chunk_score, lexical_score, query_len])
 
-        # Predict positive-class probabilities
-        probs: list[float] = [float(p) for p in clf.predict_proba(features)[:, 1]]
+        # Predict positive-class probabilities. Resolve the column index
+        # for the positive label (1) instead of assuming column 1 — that
+        # breaks on single-class artifacts produced by train_reranker's
+        # DummyClassifier fallback. Guard for estimators without
+        # predict_proba (fall back to predict / uniform scores).
+        positive_label = 1
+        if hasattr(clf, "predict_proba"):
+            raw_probs = clf.predict_proba(features)
+            classes = list(getattr(clf, "classes_", [positive_label]))
+            if positive_label in classes:
+                col = classes.index(positive_label)
+            elif raw_probs.shape[1] == 1:
+                col = 0
+            else:
+                # Multi-class but no positive label seen — pick the last
+                # column as a deterministic fallback.
+                col = raw_probs.shape[1] - 1
+            probs: list[float] = [float(p) for p in raw_probs[:, col]]
+        elif hasattr(clf, "predict"):
+            preds = clf.predict(features)
+            probs = [1.0 if int(p) == positive_label else 0.0 for p in preds]
+        else:
+            probs = [0.5] * len(features)
 
         # Sort descending by predicted score
         indexed = list(zip(hits, probs, strict=True))
