@@ -302,17 +302,55 @@ fi
 PGDG_LINE="deb [signed-by=${PGDG_KEYRING}] https://apt.postgresql.org/pub/repos/apt ${PGDG_CODENAME}-pgdg main"
 
 log "Step 1/7: Ensure PGDG apt repo is configured."
-emit apt-get install -y curl ca-certificates gnupg lsb-release
-emit install -d /usr/share/postgresql-common/pgdg
-if (( DRY_RUN == 1 )); then
-  echo "  [ -s ${PGDG_KEYRING} ] || curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o ${PGDG_KEYRING}"
+
+# Pre-existing PGDG entry detection.
+#
+# An LXC / VM may already have apt.postgresql.org configured via a
+# different file (e.g. /etc/apt/sources.list.d/pgdg.sources or any
+# user-managed list pointing at /etc/apt/keyrings/pgdg.gpg). Writing
+# OUR own pgdg.list on top creates a Signed-By conflict like:
+#
+#   E: Conflicting values set for option Signed-By regarding source
+#      https://apt.postgresql.org/pub/repos/apt/ trixie-pgdg:
+#      /usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg
+#      != /etc/apt/keyrings/pgdg.gpg
+#
+# To avoid that, scan every file under /etc/apt/sources.list.d/ AND
+# /etc/apt/sources.list itself for any line referencing
+# apt.postgresql.org. If we find one, skip Step 1's write entirely —
+# the host is already configured to fetch from PGDG and apt-get update
+# will pick up postgresql-${PG_VERSION} from there in Step 2.
+#
+# ``grep -rlI``: -l = list filenames only, -I = skip binary files.
+# 2>/dev/null suppresses "no such file or directory" if either path
+# is absent (e.g. on macOS during tests).
+PGDG_EXISTING="$(
+  grep -rlI 'apt\.postgresql\.org' \
+    /etc/apt/sources.list.d/ \
+    /etc/apt/sources.list \
+    2>/dev/null \
+    | head -1 \
+    || true
+)"
+
+if [[ -n "${PGDG_EXISTING}" ]]; then
+  log "  PGDG repo already configured in ${PGDG_EXISTING} — skipping apt-source write."
+  if (( DRY_RUN == 1 )); then
+    echo "  [skipped] PGDG repo already present in ${PGDG_EXISTING}"
+  fi
 else
-  [ -s "${PGDG_KEYRING}" ] || curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o "${PGDG_KEYRING}"
-fi
-if (( DRY_RUN == 1 )); then
-  echo "  [ -f ${PGDG_LIST} ] || echo \"${PGDG_LINE}\" > ${PGDG_LIST}"
-else
-  [ -f "${PGDG_LIST}" ] || echo "${PGDG_LINE}" > "${PGDG_LIST}"
+  emit apt-get install -y curl ca-certificates gnupg lsb-release
+  emit install -d /usr/share/postgresql-common/pgdg
+  if (( DRY_RUN == 1 )); then
+    echo "  [ -s ${PGDG_KEYRING} ] || curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o ${PGDG_KEYRING}"
+  else
+    [ -s "${PGDG_KEYRING}" ] || curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o "${PGDG_KEYRING}"
+  fi
+  if (( DRY_RUN == 1 )); then
+    echo "  echo \"${PGDG_LINE}\" > ${PGDG_LIST}"
+  else
+    echo "${PGDG_LINE}" > "${PGDG_LIST}"
+  fi
 fi
 emit apt-get update
 
