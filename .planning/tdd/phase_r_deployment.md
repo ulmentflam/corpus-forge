@@ -128,7 +128,7 @@ sub-waves; the surface is too small to benefit from internal gating.
   - Restart policy `unless-stopped`
 - `scripts/.env.postgres.example`:
   - `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, plus a
-    commented `# rename to .env.postgres before `docker compose up``
+    commented `# rename to .env.postgres before docker compose up`
     note
 - `scripts/postgres-initdb.sql`:
   - `CREATE EXTENSION IF NOT EXISTS vector;` — runs on first container
