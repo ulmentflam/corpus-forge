@@ -264,3 +264,56 @@ E-10 P1 gate).
 
 # Phase E P1 — Wave 3 dispatch
 
+
+---
+
+## O1-Q1 (Phase O Wave 1 — EDA foundations)
+
+- Suite (target tests): 109 passed, 0 failed, 21 deselected (requires_docker Postgres), 21 warnings — PASS
+- Suite (full unit): 4014 passed, 3 failed, 2 skipped, 1 xfailed, 71.24s — FAIL (3 regressions)
+- Suite (integration, not requires_docker): 448 passed, 2 failed, 3 skipped, 42 deselected, 156.31s — FAIL (2 regressions)
+- Coverage: n/a — not measured for this wave (pyproject extras + config + stdlib stats module; prior baseline 92%+ across the project)
+- Smoke (Config without [analyze] block): `Config.load()` with BASE_TOML omitting [analyze] → `analyze.enabled = False` — PASS
+- Smoke (lazy-import guard): import corpus_forge.analyze.stats; assert numpy/sklearn/hdbscan not in sys.modules — PASS
+- Smoke (alembic upgrade head, fresh SQLite): alembic upgrade head: OK — PASS
+- Smoke (startup time): 3 runs via `uv run corpus-forge --help` — 0.42s / 0.35s / 0.30s (median ~0.35s, well under any baseline + 100ms) — PASS
+- Smoke (doctor): exits 2 (WARN — "corpusignore missing" in user env, pre-existing, not a regression) — PASS (pre-existing)
+- Format gate (`ruff format --check corpus_forge tests`): FAIL — 4 files would be reformatted:
+  - tests/integration/test_migrate_0012_analyze.py
+  - tests/unit/test_analyze_config.py
+  - tests/unit/test_analyze_stats.py
+  - tests/unit/test_pyproject_extras_analyze.py
+- Lint gate (`ruff check corpus_forge tests`): FAIL — 8 errors in 4 files:
+  - tests/integration/test_migrate_0012_analyze.py:342,435,762 — E501 (line too long)
+  - tests/integration/test_migrate_0012_analyze.py:802 — F541 (f-string without placeholders)
+  - tests/unit/test_analyze_config.py:12 — I001 (import block unsorted)
+  - tests/unit/test_analyze_stats.py:25,30 — I001 (import block unsorted), F401 (unused pytest import)
+  - tests/unit/test_pyproject_extras_analyze.py:179 — E501 (line too long, 121 chars)
+- Typecheck gate (`pyrefly check corpus_forge`): 0 errors (48 suppressed) — PASS
+- Regression sweep — 5 new failures introduced by Wave O1 (all caused by migration 0012 being added without updating adjacent rot-detectors):
+
+  **Unit regressions (not in O1 surface):**
+  1. `tests/unit/test_sqlite_backend.py::TestSchemaTablePresence::test_exact_table_count`
+     — EXPECTED_TABLES list hardcodes 23 tables; migration 0012 adds `chunk_quality_signals` and `near_duplicate_clusters`, producing 25. Fix: add both to EXPECTED_TABLES.
+  2. `tests/unit/test_sqlite_backend.py::TestMigrateIdempotency::test_migrate_from_separate_backend_instance`
+     — same root cause (uses TestSchemaTablePresence.EXPECTED_TABLES).
+  3. `tests/unit/test_docs_consistency.py::test_every_alembic_revision_is_documented`
+     — `docs/schema.md` "Migration log" table has no entry for `0012_analyze_signals`. Fix: add a row to the migration log in docs/schema.md.
+
+  **Integration regressions (not in O1 surface):**
+  4. `tests/integration/test_apply_migrations_uses_alembic.py::test_apply_migrations_creates_alembic_version_table_sqlite`
+     — asserts `version_num == "0011_image_embeddings"` but head is now `0012_analyze_signals`. Fix: bump assertion.
+  5. `tests/integration/test_apply_migrations_uses_alembic.py::test_apply_migrations_creates_alembic_version_table_pg`
+     — same assertion, Postgres path.
+
+- Git scope: CORRECT — working tree shows only expected Wave O1 files (pyproject.toml, config.py, config.example.toml, 0012_analyze_signals.py, corpus_forge/analyze/, test_analyze_config.py, test_analyze_stats.py, test_pyproject_extras_analyze.py, test_migrate_0012_analyze.py, .planning/tdd/*.md, README.md, uv.lock). No rogue touches to corpus_forge/curation/, corpus_forge/mcp/, corpus_forge/retrieval/, or corpus_forge/cli.py. PASS.
+- O1-G3 status: coder's escalation note (FK cascade tester bug) is RESOLVED — the test file uses `text` (correct) not `content` (wrong), and all 24 SQLite tests including both FK cascade tests now pass. O1-G3 production migration is complete and correct. The regressions are all in adjacent rot-detector files that O1-G3 did not update.
+- Issues:
+  1. BLOCKING: `ruff format --check` — 4 test files need formatting (O1-T1/T2/T4 tester files + O1-G1 file)
+  2. BLOCKING: `ruff check` — 8 lint errors across 4 test files (E501/F541/I001/F401)
+  3. BLOCKING: `test_sqlite_backend.py::TestSchemaTablePresence::test_exact_table_count` — EXPECTED_TABLES missing 2 new tables (O1-G3 coder fix)
+  4. BLOCKING: `test_sqlite_backend.py::TestMigrateIdempotency::test_migrate_from_separate_backend_instance` — same (O1-G3 coder fix)
+  5. BLOCKING: `test_docs_consistency.py::test_every_alembic_revision_is_documented` — docs/schema.md missing 0012 entry (O1-G3 coder fix)
+  6. BLOCKING: `test_apply_migrations_uses_alembic.py` (both variants) — hardcoded head assertion needs bumping to 0012_analyze_signals (O1-G3 coder fix)
+- Verdict: rework
+- Notes: The Wave O1 core deliverables (AnalyzeConfig, analyze.stats, the migration schema itself, pyproject extra, Config lazy-import guard, startup budget) are all correct and functional. The failures are mechanical bookkeeping: (a) test formatting/lint in the Tester's files, and (b) rot-detector tests adjacent to the migration surface that the Coder did not update. Minimum rework is: (1) tdd-tester runs `ruff format` + `ruff check --fix` on the 4 test files and re-submits; (2) tdd-coder updates test_sqlite_backend.py EXPECTED_TABLES (add chunk_quality_signals + near_duplicate_clusters), bumps test_apply_migrations_uses_alembic.py version_num assertion to 0012_analyze_signals, and adds a row to docs/schema.md migration log for 0012. No production code changes required.

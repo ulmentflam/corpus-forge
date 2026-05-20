@@ -1,112 +1,184 @@
-# TDD Task Board — Phase N Wave 0 (Broaden bench corpus + query set)
+# TDD Task Board — Phase O Wave 1 (EDA foundations)
 
 _Owner: tdd-principal. Workers: tdd-tester / tdd-coder / tdd-qa._
 _Date: 2026-05-19._
-_Branch: `phase-n-retrieval-quality` (plan commit `dcb2222` in place)._
-_Phase doc: `.planning/tdd/phase_n_retrieval_quality.md` § Wave 0._
-_Predecessor: `.planning/tdd/phase_m_wave5_semble.md` (semble investigation spike)._
+_Branch: `main` (Phase N closed at `6612a8e` — "0.1.0b6 — Phase N: retrieval quality")._
+_Phase doc: `.planning/tdd/phase_o_eda_cleaning.md` § Wave O1._
+_Predecessor: `.planning/tdd/phase_n_retrieval_quality.md` (Phase N closed, Phase O begins fresh)._
 
-Brief: Lock the Phase N retrieval-quality baseline before any technique lands. Vendor a second OSS code corpus, grow the query set from 25 → 50–75, modify the bench harness to iterate both corpora and emit per-corpus + aggregated metrics, then run the bench against the **current** `HybridRetriever` and commit `tests/perf/out/phase_n_baseline.json` as the number Waves 1–3 must beat.
+Brief: Lay the structural foundations for Phase O — a `[analyze]` optional dep extra, an `AnalyzeConfig` Pydantic block defaulted to off, the `0012_analyze_signals` migration provisioning `chunk_quality_signals` + `near_duplicate_clusters`, and a pure-stdlib `corpus_forge.analyze.stats` module with `compute_token_stats` + `compute_length_distribution`. No sklearn / no LSH / no topics in this wave — those land in O2/O3.
 
-**Hard scope contract**: ZERO changes under `corpus_forge/`. Wave 0 is fixture + queries + bench-harness + baseline JSON only. Any production code touch is a hard fail and triggers immediate rework.
+**Hard scope contract**: zero touches to `corpus_forge/curation/`, `corpus_forge/mcp/`, `corpus_forge/cli.py`, or `corpus_forge/retrieval/`. Wave O1 stays in foundation territory (`pyproject.toml`, `config.py`, `config.example.toml`, alembic, new `corpus_forge/analyze/`, new tests). Any other production touch is a hard fail and triggers immediate rework.
+
+**Critical rebase from the plan**: the source plan reserved alembic revision `0013` for Phase O. Phase N shipped no migration, so the actual head is `0011_image_embeddings`. **Phase O's migration is `0012_analyze_signals.py`.** Verified against `ls corpus_forge/alembic/versions/` and `0011_image_embeddings.py:33`.
 
 ## Project gates
 - format:    `uv run ruff format --check corpus_forge tests`
 - lint:      `uv run ruff check corpus_forge tests`
-- typecheck: `uv run pyrefly check corpus_forge` (baseline 9 errors from Phase M; no regression)
+- typecheck: `uv run pyrefly check corpus_forge` (baseline 10 errors as of Phase N close; no new errors)
 - test:      `uv run pytest tests/unit tests/integration tests/admin tests/mcp tests/smoke -x`
-- bench:     `CF_PHASE_N_BENCH=1 uv run pytest tests/perf/test_phase_n_bench.py -v` (gated; produces baseline JSON)
+- startup:   `time corpus-forge --help` ≤ current baseline + 100 ms
+- doctor:    `uv run corpus-forge doctor` exits 0 with no new warnings
 
 ## Tasks
-| id   | title                                                          | depends_on        | surface                                                                                                                                  | risk | status      | claimed_by      | notes |
-|------|----------------------------------------------------------------|-------------------|------------------------------------------------------------------------------------------------------------------------------------------|------|-------------|-----------------|-------|
-| N0-T1 | RED: query-set assertions (≥50, ≥10/cat, ground truth present) | —                 | `tests/perf/test_semble_queries.py`                                                                                                      | low  | done        | tdd-principal   | 13 ungated tests; RED verified (file had 25 entries) → GREEN after N0-G2 lands. |
-| N0-T2 | RED: phase-N bench shape + baseline-rot assertions              | —                 | `tests/perf/test_phase_n_bench.py`, `tests/perf/test_phase_n_baseline.py`                                                                | med  | done        | tdd-principal   | Bench file is gated by `CF_PHASE_N_BENCH=1`; rot-detector file is ungated and pins the committed JSON shape. 11 ungated assertions. |
-| N0-G1 | GREEN: vendor corpus snapshot script + run                     | —                 | `tests/fixtures/external/build_snapshots.py`, `tests/fixtures/external/flask-snapshot/`, `tests/fixtures/external/README.md`              | med  | done        | tdd-principal   | **Selected pallets/flask** (BSD-3-Clause, ~230 raw files / 213 after suffix filter / 1.15 MB). Pinned commit `954f5684e4841aad84a8eec7ace7b81a0d3f6831` (2026-05-18). Rationale in script header. |
-| N0-G2 | GREEN: expand queries from 25 → 50–75                          | N0-G1             | `tests/perf/data/semble_queries.jsonl`                                                                                                   | med  | done        | tdd-principal   | Grew to **61 queries** (25 existing kept + 36 new). Per-corpus: 34 current / 27 vendored. Per-category floor met: identifier=17, error=13, callsite=11, concept=10, config=10. All byte offsets hand-verified. |
-| N0-G3 | GREEN: extend bench harness for multi-corpus                   | —                 | `tests/perf/test_phase_n_bench.py`                                                                                                       | med  | done        | tdd-principal   | New gated harness iterates both corpora, emits `by_corpus` + `aggregated` JSON shape, env-var corpus selection (`CF_PHASE_N_CORPUS={current,vendored,all}`). Reuses `tests/perf/metrics.py` verbatim. |
-| N0-G4 | GREEN: run bench, capture `phase_n_baseline.json`              | N0-G1, N0-G2, N0-G3 | `tests/perf/out/phase_n_baseline_20260519T190638Z.json`, `tests/perf/out/phase_n_baseline.json`                                      | low  | done        | tdd-principal   | Bench ran in 86 s. Aggregated: **MRR@10=0.522, Recall@5=0.656, p50=1172ms, p95=1280ms** across 61 queries. Per-corpus + per-category breakdown captured. This is the number Waves 1-3 must beat. |
-| N0-Q1 | QA: gates + scope verification                                 | N0-T1..N0-G4      | —                                                                                                                                       | low  | done        | tdd-principal   | `git diff --stat`: zero `corpus_forge/` touches. Format ✅, lint ✅, pyrefly 10 errors (matches pre-existing dcb2222 baseline — **not introduced**), Wave 0 tests 60/60 green, full suite same 13 pre-existing failures as clean tree. |
+| id    | title                                                                | depends_on    | surface                                                                                                                                                          | risk | status   | claimed_by | notes |
+|-------|----------------------------------------------------------------------|---------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------|------|----------|------------|-------|
+| O1-T1 | RED: AnalyzeConfig pydantic block + TOML round-trip                 | —             | `tests/unit/test_analyze_config.py`                                                                                                                              | low  | done     | tdd-tester | 46 tests RED — all fail with `ImportError: cannot import name 'AnalyzeConfig' from 'corpus_forge.config'`. Covers defaults, validation (dedup_threshold bounds, topic_min_cluster_size ge=2, language_detector Literal, judge_endpoint AnyHttpUrl, judge_timeout_s gt=0, judge_api_key_env allow-empty POSIX), Config wiring, and TOML round-trip. |
+| O1-T2 | RED: stats.py token + length distribution                            | —             | `tests/unit/test_analyze_stats.py`                                                                                                                               | low  | done     | tdd-tester | Pure stdlib spec. Empty / singleton / multi-chunk paths plus a `sum`-invariant property. 27 tests RED (ModuleNotFoundError: No module named 'corpus_forge.analyze'). |
+| O1-T3 | RED: pyproject `analyze` extra contents                              | —             | `tests/unit/test_pyproject_extras_analyze.py`                                                                                                                    | low  | done     | tdd-tester | `tomllib`-parse pyproject; assert the seven deps are listed: scikit-learn, hdbscan, umap-learn, bertopic, datasketch, fasttext-langdetect, langdetect. 11/12 tests RED (KeyError: 'analyze'); 1 passes (negative core-dep invariant, correct). |
+| O1-T4 | RED: 0012_analyze_signals migration (Postgres + SQLite)              | —             | `tests/integration/test_migrate_0012_analyze.py`                                                                                                                 | med  | done     | tdd-tester | 45 tests RED. TestSQLiteAnalyzeSignals (21 tests, no Docker) + TestPostgresAnalyzeSignals (21 tests, requires_docker) + TestMigrationModuleAttributes (3 tests). All fail: alembic CommandError (can't locate 0012_analyze_signals) or ModuleNotFoundError. |
+| O1-G1 | GREEN: `[analyze]` extra in pyproject.toml                           | O1-T3         | `pyproject.toml`                                                                                                                                                  | low  | done     | tdd-coder  | Insert the new extra after `fast-tier` (~line 173). License-posture comment in extra header. fasttext-langdetect canonical name confirmed (no drift). README.md updated per pre-existing docs consistency gate. 12/12 tests green. |
+| O1-G2 | GREEN: `AnalyzeConfig` + `Config.analyze` wiring                     | O1-T1         | `corpus_forge/config.py`, `config.example.toml`                                                                                                                  | low  | done     | tdd-coder  | 46/46 tests green. AnalyzeConfig slotted between ScanConfig and Config. Mirror of ClassifierConfig local-or-remote pattern. config.example.toml ships local + remote judge_endpoint examples. |
+| O1-G3 | GREEN: 0012_analyze_signals migration                                | O1-T4         | `corpus_forge/alembic/versions/0012_analyze_signals.py`                                                                                                          | med  | in_progress | tdd-coder  | Migration file complete; all 24 SQLite + 3 module tests pass. Tester bug (content→text) was self-fixed in test file. QA rework: coder must update 3 adjacent rot-detectors — (1) test_sqlite_backend.py EXPECTED_TABLES add chunk_quality_signals + near_duplicate_clusters; (2) test_apply_migrations_uses_alembic.py bump hardcoded version_num 0011_image_embeddings→0012_analyze_signals (both pg + sqlite paths); (3) docs/schema.md migration log add 0012 row. |
+| O1-G4 | GREEN: `corpus_forge/analyze/` package + stats module                | O1-T2         | `corpus_forge/analyze/__init__.py`, `corpus_forge/analyze/stats.py`                                                                                              | low  | done     | tdd-coder  | Pure stdlib. NO `numpy` import. `__init__.py` is the canonical "what is corpus-forge analyze" entry — names the four MCP tools coming in O4. |
+| O1-Q1 | QA: gates + scope verification                                       | O1-G1..O1-G4  | —                                                                                                                                                                | low  | in_progress | tdd-qa     | REWORK: 5 suite regressions + ruff format/lint failures. Core deliverables correct. Blocking: (1) ruff format 4 test files; (2) ruff lint 8 errors in 4 test files; (3) test_sqlite_backend EXPECTED_TABLES missing 2 new tables; (4) test_apply_migrations_uses_alembic version_num hardcoded to 0011; (5) docs/schema.md missing 0012 entry. Route: tdd-tester fixes format/lint on own test files; tdd-coder fixes rot-detectors + schema.md. |
 
 ## Acceptance details
 
-### N0-T1 (RED — query assertions)
-- New file `tests/perf/test_semble_queries.py` (ungated; runs in default unit suite).
-- Loads `tests/perf/data/semble_queries.jsonl`.
+### O1-T1 (RED — AnalyzeConfig pydantic block)
+- New file `tests/unit/test_analyze_config.py` (ungated; runs in default unit suite).
+- Asserts on `Config(...).analyze`:
+  - Fields: `enabled: bool = False`, `dedup_threshold: float = 0.85`, `topic_min_cluster_size: int = 10`, `language_detector: Literal["fasttext", "langdetect"] = "langdetect"`, `judge_endpoint: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")`, `judge_model: str = "qwen2.5:7b-instruct"`, `judge_api_key_env: str = ""`, `judge_timeout_s: float = 60.0`.
+  - `dedup_threshold` validated to `[0.0, 1.0]` (`ge=0.0`, `le=1.0`).
+  - `topic_min_cluster_size` validated to `>= 2`.
+  - `judge_timeout_s` validated to `> 0`.
+  - `judge_api_key_env` validated as POSIX identifier when non-empty (mirrors `ClassifierConfig._check_llm_api_key_env_name`).
+  - `model_config.extra == "forbid"` — unknown keys reject.
+- TOML round-trip: dump → parse → equality.
+- **Default-factory path**: a minimal valid TOML that OMITS the `[analyze]` block validates and yields the default `AnalyzeConfig()`. This is the backwards-compat invariant.
+- RED: the test file is added BEFORE `AnalyzeConfig` exists in `corpus_forge/config.py`, so `from corpus_forge.config import AnalyzeConfig` fails with ImportError → test fails.
+
+### O1-T2 (RED — stats.py)
+- New file `tests/unit/test_analyze_stats.py`.
+- Asserts on `corpus_forge.analyze.stats.compute_token_stats(chunks)`:
+  - Returns a dict with keys `p50`, `p95`, `mean`, `min`, `max`, `token_total`, `n` (`int`s for p50/p95/min/max/token_total/n; `float` for mean).
+  - Empty input → all-zero dict (no exception, no ZeroDivisionError).
+  - Single chunk → p50 == p95 == min == max == token_count; mean == float(token_count); n == 1.
+  - Property: `result["token_total"] == sum(c["token_count"] for c in chunks)` over a Hypothesis-generated chunk list.
+- Asserts on `compute_length_distribution(chunks, bins=10)`:
+  - Returns dict `{"edges": list[int|float], "counts": list[int]}` with `len(edges) == bins + 1`, `len(counts) == bins`.
+  - `sum(counts) == len(chunks)`.
+  - Monotonically increasing edges.
+  - Bins parameter respected: `bins=5` returns 6 edges + 5 counts.
+- **Lazy-import smoke**: `import corpus_forge.analyze.stats; assert "numpy" not in sys.modules` (the wave gate enforces stats.py stays pure-stdlib).
+- RED: the module doesn't exist yet; ImportError on `from corpus_forge.analyze.stats import compute_token_stats`.
+
+### O1-T3 (RED — pyproject `analyze` extra)
+- New file `tests/unit/test_pyproject_extras_analyze.py`.
+- `tomllib.load` the repo root `pyproject.toml`.
 - Asserts:
-  - File has ≥ 50 entries.
-  - Each of the 5 categories (`identifier`, `callsite`, `concept`, `error`, `config`) has ≥ 10 entries.
-  - Every entry has a non-empty `ground_truth_chunks` list, and each chunk has `file`, `byte_start`, `byte_end` keys with `byte_end > byte_start`.
-  - Every referenced `file` exists on disk (resolved against repo root for paths starting with `corpus_forge/` / `config.example.toml` / `README.md`, and against `tests/fixtures/external/` for vendored-corpus paths).
-- Test must FAIL on RED (the file still has only 25 entries — assertion `len(entries) >= 50` fails).
+  - `project.optional-dependencies.analyze` is a list.
+  - Required entries (each verified by `dep_name in dep_string`): `scikit-learn`, `hdbscan`, `umap-learn`, `bertopic`, `datasketch`, `fasttext-langdetect`, `langdetect`.
+  - No entry pulls a known-AGPL dep (negative assertion — defends the existing AGPL boundary at `[multi-format]`).
+- RED: `analyze` key absent from `pyproject.toml` → KeyError → test fails.
 
-### N0-T2 (RED — bench shape)
-- New file `tests/perf/test_phase_n_bench.py`, gated by `CF_PHASE_N_BENCH=1` (pytest skipif).
-- The bench test itself runs to completion (will be made to pass in N0-G3) and must produce a JSON dump satisfying:
-  - Top-level keys: `schema_version`, `phase` (= "N"), `wave` (= 0), `kind` (= "phase_n_baseline"), `generated_at`, `repo_root`, `git_head`, `n_queries`, `corpus_metadata`, `by_corpus`, `aggregated`.
-  - `by_corpus` is a dict keyed by corpus name (`"current"`, `"vendored"`) and each value has `mrr_at_10`, `recall_at_5`, `p50_latency_ms`, `p95_latency_ms`, `n_queries`, plus a `by_category` block.
-  - `aggregated` has the same headline keys spanning all queries.
-  - `n_queries` matches `len(by_corpus["current"]["per_query"]) + len(by_corpus["vendored"]["per_query"])` (or whatever the integration shape is — coder chooses, test asserts whatever shape is chosen).
-- On RED phase: this test does not yet exist; tester writes the assertions; coder (N0-G3) wires the harness to produce that exact shape.
+### O1-T4 (RED — 0012_analyze_signals migration)
+- New file `tests/integration/test_migrate_0012_analyze.py`. `pytestmark = [pytest.mark.integration]`.
+- Two test classes:
+  - **`TestPostgresAnalyzeSignals`** (`@pytest.mark.requires_docker`):
+    - After `PostgresBackend(dsn=pg_dsn, schema="corpus").migrate()`:
+      - `chunk_quality_signals` table exists with columns: `id BIGSERIAL PK`, `chunk_id BIGINT NOT NULL` (FK to `corpus.chunks(id) ON DELETE CASCADE`), `signal_name TEXT NOT NULL`, `signal_value REAL`, `source TEXT NOT NULL`, `computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`.
+      - Index `chunk_quality_signals_chunk_signal_idx` on `(chunk_id, signal_name)`.
+      - `near_duplicate_clusters` table exists with columns: `id BIGSERIAL PK`, `cluster_id TEXT NOT NULL`, `chunk_id BIGINT NOT NULL` (FK to `corpus.chunks(id) ON DELETE CASCADE`), `similarity REAL`, `method TEXT NOT NULL`, `computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`.
+      - Index `near_duplicate_clusters_cluster_idx` on `(cluster_id)`.
+    - FK behavior: deleting a chunk cascade-deletes its rows in both new tables.
+  - **`TestSQLiteAnalyzeSignals`** (no docker required):
+    - Same tables / columns / indexes (INTEGER PK, FK syntax adapted, TEXT timestamps with `DEFAULT (datetime('now'))` per `0008` precedent).
+- **Down-revision assertion** (both classes): import the migration module and assert `down_revision == "0011_image_embeddings"`. Catches accidental rebase drift in CI.
+- **Forward-only assertion**: the migration's `downgrade()` body is a single `pass` (mirrors `0010` and `0011` project convention; the plan's "Clean downgrade" wording is overridden — see phase doc).
+- RED: migration file doesn't exist; `from corpus_forge.alembic.versions.0012_analyze_signals import down_revision` fails.
 
-### N0-G1 (vendor corpus snapshot)
-- Candidate evaluation: pydantic/pydantic (small, ~1k files) is the plan default. Stronger candidates: `huggingface/transformers` (~3k files), `pallets/flask` (~600 files), `tiangolo/fastapi` (~1k files), `tensorflow/models` (~2k files). **Pick the strongest license+size+language-mix candidate; document rationale in the script header.**
-- License screen: MIT / Apache-2.0 / BSD only. AGPL/GPL is a hard reject (would AGPL-bind the corpus-forge test tree).
-- Snapshot mechanics:
-  - Script at `tests/fixtures/external/build_snapshots.py`.
-  - Snapshots a pinned commit into `tests/fixtures/external/<corpus>-snapshot/`.
-  - NOT a git submodule. Self-contained files so the bench is reproducible without network at test time.
-  - Snapshot must be byte-deterministic across machines.
-  - Script header documents: chosen corpus, license, pinned commit hash + date, file count, total bytes, language mix (counts by suffix), rationale for selection over alternatives.
-- `tests/fixtures/external/README.md` summarises the same metadata for humans.
-- File-suffix filter: keep `.py`, `.md`, `.toml`, `.rst`, `.txt`, `.yaml`, `.yml`, `.cfg`, `.ini`, `.json` (drop binaries, lockfiles, generated assets). Document the filter in the script header.
+### O1-G1 (pyproject extra)
+- Insert after the `fast-tier` extra (~line 173 of `pyproject.toml`):
+  ```toml
+  # Phase O — EDA + corpus-cleaning ML stack.  All deps lazy-imported
+  # inside corpus_forge/analyze/ function bodies so corpus-forge --help
+  # cold-start budget is unaffected.
+  #
+  # License posture: scikit-learn (BSD-3-Clause), hdbscan (BSD-3-Clause),
+  # umap-learn (BSD-3-Clause), bertopic (MIT), datasketch (MIT),
+  # fasttext-langdetect (MIT), langdetect (Apache-2.0).  All permissive;
+  # does NOT widen the AGPL surface introduced by [multi-format].
+  analyze = [
+    "scikit-learn>=1.4",
+    "hdbscan>=0.8",
+    "umap-learn>=0.5",
+    "bertopic>=0.16",
+    "datasketch>=1.6",
+    "fasttext-langdetect>=1.0",
+    "langdetect>=1.0",
+  ]
+  ```
+- **Verify the PyPI name** for `fasttext-langdetect` before committing: `pip index versions fasttext-langdetect` (the canonical distribution name has fluctuated; if it's `ft-langdetect` instead, lock the right one and update the test's expected list in `tests/unit/test_pyproject_extras_analyze.py` accordingly).
 
-### N0-G2 (expanded queries)
-- Grow `tests/perf/data/semble_queries.jsonl` from 25 → 50–75 entries (target 60).
-- Keep all 25 existing entries (they remain valid against corpus-forge).
-- Add 25–50 new entries; distribution constraint:
-  - ≥ 10 entries per category across the WHOLE file.
-  - Roughly half the new entries against corpus-forge (deepening existing categories), half against the vendored corpus.
-- For every new query, ground truth (file + byte_start + byte_end) must be hand-verified by reading the file at the recorded byte offset. **No retriever output may be used to label ground truth.**
-- New schema additions per entry: optional `corpus` field with value `"current"` or `"vendored"`. Entries without the field default to `"current"` (preserves the 25 existing).
-- Entries against the vendored corpus must use file paths relative to `tests/fixtures/external/<corpus>-snapshot/`.
+### O1-G2 (AnalyzeConfig + Config wiring + config.example.toml)
+- `corpus_forge/config.py`:
+  - Slot `AnalyzeConfig(BaseModel)` between `ScanConfig` (ends ~line 625) and `class Config` (starts at 627).
+  - Docstring documents the local-or-remote `judge_endpoint` / `judge_model` pattern, references `ClassifierConfig.llm_url` (line 492) as the proven template.
+  - `model_config = ConfigDict(extra="forbid")`.
+  - `_check_judge_api_key_env_name` validator mirrors `ClassifierConfig._check_llm_api_key_env_name` (line 501) — allow-empty POSIX-identifier validation.
+- `corpus_forge/config.py:627–661` — add `analyze: AnalyzeConfig = Field(default_factory=AnalyzeConfig)` to `Config` with a leading `# Phase O — ...` comment that explicitly notes "defaults to `enabled=False` so existing configs without an `[analyze]` block continue to validate."
+- `config.example.toml` — append the `[analyze]` block with BOTH local (default) and remote examples per `project_model_local_or_remote.md`. Use the snippet from the phase doc Wave O1 GREEN section verbatim.
 
-### N0-G3 (bench harness)
-- File: `tests/perf/test_phase_n_bench.py` (separate from the existing `test_semble_bench.py` — Wave 5 semble bench is preserved unchanged for reproducibility).
-- Gate: `CF_PHASE_N_BENCH=1`.
-- Behaviour:
-  - Loads `tests/perf/data/semble_queries.jsonl`.
-  - Splits queries by their `corpus` field into `current` (corpus-forge) and `vendored` (snapshot fixture) groups.
-  - For each corpus, stages it, builds a `HybridRetriever` over it (mirroring `_build_hybrid_retriever` from `test_semble_bench.py`), and runs every query through it.
-  - Reuses `tests/perf/metrics.py` (`mrr_at_k`, `recall_at_k`, `percentile`, `hit_matches_ground_truth`, `compute_metrics`) verbatim — no fork.
-  - Emits JSON with the shape pinned in N0-T2.
-  - Writes to `tests/perf/out/phase_n_baseline_<ISO>.json`.
-  - Test passes iff the JSON dump is well-formed and `n_queries` matches the input file's count.
-- CLI flag: a pytest fixture / env var to filter to `current` / `vendored` / `all` (default `all`). Implementation choice: `CF_PHASE_N_CORPUS={current,vendored,all}` env var keeps it simple (no pytest-collection-time CLI plumbing).
+### O1-G3 (0012_analyze_signals migration)
+- `corpus_forge/alembic/versions/0012_analyze_signals.py` — follow `0008_feedback_sessions.py:1–86` shape:
+  - Header docstring documenting the two tables and the Phase O context.
+  - `revision = "0012_analyze_signals"`, `down_revision = "0011_image_embeddings"`.
+  - `upgrade()` dispatches on `dialect.name` to `_upgrade_postgres()` / `_upgrade_sqlite()`.
+  - `downgrade(): pass` (forward-only per project convention).
+  - Postgres path: explicit `op.execute("CREATE TABLE corpus.chunk_quality_signals ...")` with PK / FK / NOT NULL / DEFAULT NOW(); separate `op.execute("CREATE INDEX ...")` for the two indexes; then the same for `near_duplicate_clusters`.
+  - SQLite path: same shape with INTEGER PK, `DEFAULT (datetime('now'))` for timestamps.
+- Run `uv run alembic upgrade head` against a temp SQLite DB to smoke-verify before staging.
 
-### N0-G4 (baseline capture)
-- After N0-G1/G2/G3 land, run `CF_PHASE_N_BENCH=1 uv run pytest tests/perf/test_phase_n_bench.py -v`.
-- Commit the produced `tests/perf/out/phase_n_baseline_<ISO>.json`.
-- Also commit a copy as `tests/perf/out/phase_n_baseline.json` (no symlink — iCloud-safe). This is the canonical baseline Waves 1–3 will compare against.
-- The JSON must contain populated `mrr_at_10`, `recall_at_5`, `p50_latency_ms`, `p95_latency_ms` for both `current` and `vendored` corpora, plus the `aggregated` block.
-- Headline numbers (`aggregated.mrr_at_10`, `aggregated.recall_at_5`, `aggregated.p50_latency_ms`, `aggregated.p95_latency_ms`, plus the per-category breakdown) get echoed in the final principal report so the user can read them at-a-glance.
+### O1-G4 (`corpus_forge/analyze/` package + stats.py)
+- `corpus_forge/analyze/__init__.py`:
+  - Module docstring is the canonical "what is corpus-forge analyze" entry. Documents:
+    - The four MCP tools Phase O surfaces in Wave O4 (`analyze_corpus`, `find_duplicates`, `cluster_topics`, `score_quality`).
+    - The lazy-import contract: heavy deps (sklearn, hdbscan, umap, bertopic, datasketch, fasttext, langdetect) load on first use inside function bodies. Module top is import-cheap.
+    - Cross-link to `.planning/tdd/phase_o_eda_cleaning.md`.
+  - Re-exports `compute_token_stats`, `compute_length_distribution`.
+- `corpus_forge/analyze/stats.py`:
+  - Pure stdlib (`statistics`, `bisect`, `math`). **No `numpy` import** even though sklearn brings it transitively — `stats.py` is callable on a fresh `pip install corpus-forge` with no extras at all.
+  - `compute_token_stats(chunks: Iterable[dict[str, Any]]) -> dict[str, Any]`:
+    - Reads `c["token_count"]` per chunk (treated as authoritative; the module does NOT tokenize).
+    - Returns `{"p50": int, "p95": int, "mean": float, "min": int, "max": int, "token_total": int, "n": int}`.
+    - Empty input → all-zero dict.
+  - `compute_length_distribution(chunks, *, bins: int = 10) -> dict[str, Any]`:
+    - Returns `{"edges": list, "counts": list}` with `len(edges) == bins + 1`, `len(counts) == bins`.
+    - Bin edges chosen via min/max + uniform width; counts populated via `bisect`.
 
-### N0-Q1 (QA)
-- `git diff --stat` shows ONLY: `tests/fixtures/external/**`, `tests/perf/data/semble_queries.jsonl`, `tests/perf/test_semble_queries.py`, `tests/perf/test_phase_n_bench.py`, `tests/perf/out/phase_n_baseline*.json`, `.planning/tdd/*.md`. **Any `corpus_forge/**` line is rework.**
-- `uv run pytest tests/unit tests/integration tests/admin tests/mcp tests/smoke -x` → green.
-- `uv run ruff check corpus_forge tests` → clean.
+### O1-Q1 (QA)
+- `git diff --cached --stat` (per `feedback_icloud_commit_check.md` — verify the N-files / +X / -Y summary before reporting back to the orchestrator) shows ONLY:
+  - `pyproject.toml`
+  - `corpus_forge/config.py`
+  - `config.example.toml`
+  - `corpus_forge/alembic/versions/0012_analyze_signals.py`
+  - `corpus_forge/analyze/__init__.py`
+  - `corpus_forge/analyze/stats.py`
+  - `tests/unit/test_analyze_config.py`
+  - `tests/unit/test_analyze_stats.py`
+  - `tests/unit/test_pyproject_extras_analyze.py`
+  - `tests/integration/test_migrate_0012_analyze.py`
+  - `.planning/tdd/phase_o_eda_cleaning.md`
+  - `.planning/tdd/tasks.md`
+- **Any file under `corpus_forge/curation/`, `corpus_forge/mcp/`, `corpus_forge/retrieval/`, `corpus_forge/cli.py` is rework — Wave O1 stays in foundations territory.**
 - `uv run ruff format --check corpus_forge tests` → clean.
-- `uv run pyrefly check corpus_forge` → ≤ 9 errors (baseline).
-- `tests/perf/test_semble_queries.py` (ungated) → green.
-- Baseline JSON exists, is well-formed, has populated headline numbers.
+- `uv run ruff check corpus_forge tests` → clean.
+- `uv run pyrefly check corpus_forge` → ≤ 10 errors (Phase N baseline; no new errors introduced).
+- `uv run pytest tests/unit tests/integration tests/admin tests/mcp tests/smoke -x` → all Wave O1 new tests green + no regressions.
+- `python -c "from corpus_forge.config import Config; ..."` works without the `[analyze]` extra installed (env without sklearn/hdbscan/etc. — verified via a temp venv or `uv pip install -e .` without the extra).
+- `uv run corpus-forge doctor` → exits 0, no new warnings vs. Phase N baseline.
+- `time uv run corpus-forge --help` → ≤ baseline + 100 ms. Baseline measured at the start of Wave O1 RED and recorded in the wave gate report.
 
 ## DAG
-- Wave 0a (RED, parallel): **N0-T1, N0-T2** — disjoint files, no deps. Tester dispatched once per task.
-- Wave 0b (GREEN-vendor, parallel with RED): **N0-G1** — disjoint surface (vendored corpus snapshot). Coder dispatched immediately alongside RED tests.
-- Wave 0c (GREEN-queries): **N0-G2** — depends on N0-G1 (need vendored corpus to author against).
-- Wave 0d (GREEN-bench): **N0-G3** — parallel with N0-G2 (different file; can be authored using the existing 25 queries + extrapolated vendored shape).
-- Wave 0e (GREEN-baseline): **N0-G4** — depends on G1+G2+G3.
-- Wave 0f (QA): **N0-Q1** — final gate.
+- **Wave 1a (RED, fan out 4-wide)**: **O1-T1, O1-T2, O1-T3, O1-T4** — disjoint surfaces, no deps. Dispatch all four tdd-tester agents in one message.
+- **Wave 1b (GREEN, gated on RED)**: once tdd-tester reports red across all four → fan out:
+  - **O1-G1** (depends on O1-T3) → tdd-coder.
+  - **O1-G2** (depends on O1-T1) → tdd-coder (parallel).
+  - **O1-G3** (depends on O1-T4) → tdd-coder (parallel — different file).
+  - **O1-G4** (depends on O1-T2) → tdd-coder (parallel — different file).
+- **Wave 1c (QA)**: **O1-Q1** — after all four GREEN tasks report green. tdd-qa runs the full gate matrix.
+- **Wave gate**: orchestrator stages + commits per `feedback_tdd_worker_commits.md`. Proposed commit message: `"0.1.0b7 — Phase O Wave 1: EDA foundations"` (matches the existing release-cadence pattern: `6612a8e 0.1.0b6 — Phase N: retrieval quality`, `d226c7c 0.1.0b5 — Phase M: …`, etc).
 
 ## Status files
 - `.planning/tdd/test-status.md` — owned by tdd-tester.
@@ -114,75 +186,6 @@ Brief: Lock the Phase N retrieval-quality baseline before any technique lands. V
 - `.planning/tdd/qa-status.md` — owned by tdd-qa.
 - This file (`tasks.md`) — owned by tdd-principal.
 
-## Summary
-
-**Wave 0 complete.** Baseline locked; ready for Wave 1 (adaptive lexical-weight bump on symbol queries).
-
-### Files staged (Wave 0 scope — zero corpus_forge/ touches)
-- `.planning/tdd/tasks.md` — this file.
-- `tests/fixtures/external/README.md` — corpus inventory.
-- `tests/fixtures/external/build_snapshots.py` — reproducible snapshot builder (pallets/flask @ 954f5684).
-- `tests/fixtures/external/flask-snapshot/` — 213 vendored files / 1.15 MB / BSD-3-Clause.
-- `tests/perf/data/semble_queries.jsonl` — expanded 25 → 61 queries.
-- `tests/perf/test_semble_queries.py` — query-set rot-detector (13 ungated tests).
-- `tests/perf/test_phase_n_baseline.py` — baseline-JSON rot-detector (11 ungated tests).
-- `tests/perf/test_phase_n_bench.py` — broadened multi-corpus bench (gated by `CF_PHASE_N_BENCH=1`).
-- `tests/perf/out/phase_n_baseline.json` — canonical baseline.
-- `tests/perf/out/phase_n_baseline_20260519T190638Z.json` — ISO-stamped run artifact.
-
-### Verification gates
-| Gate | Result |
-|------|--------|
-| `ruff format --check corpus_forge tests` | ✅ 588 files clean |
-| `ruff check corpus_forge tests` | ✅ All checks passed |
-| `pyrefly check corpus_forge` | ✅ 10 errors — **matches dcb2222 clean tree** (env drift since Phase M, not Wave 0) |
-| Wave 0 new tests (24): `test_semble_queries.py`, `test_phase_n_baseline.py` | ✅ 24/24 green |
-| Full perf suite (60): + `test_metrics.py` | ✅ 60/60 green |
-| Full suite: unit + integration + admin + smoke + ui + cli + diagnostics + embedders + backends | 5019 passed / 13 failed / 30 skipped — **all 13 failures pre-existing on clean tree** (sqlite-vec absent, code chunker tree-sitter, OCR/whisper extras) |
-| `git diff --stat` scope contract | ✅ ZERO files under `corpus_forge/` modified |
-
-### Phase N baseline headlines (Waves 1-3 must beat)
-
-**Aggregated (61 queries across both corpora):**
-- MRR@10 = **0.522**
-- Recall@5 = **0.656**
-- p50 latency = **1172 ms**
-- p95 latency = **1280 ms**
-
-**Per-corpus:**
-
-| Corpus  | MRR@10 | Recall@5 | p50 ms  | p95 ms  | n  |
-|---------|--------|----------|---------|---------|----|
-| current | 0.550  | 0.735    | 1204    | 1279    | 34 |
-| vendored| 0.486  | 0.556    | 1138    | 1294    | 27 |
-
-**Per-category (aggregated):**
-
-| Category    | MRR@10 | Recall@5 | n  |
-|-------------|--------|----------|----|
-| identifier  | 0.430  | 0.529    | 17 |
-| callsite    | 0.248  | 0.455    | 11 |
-| concept     | 0.720  | 0.900    | 10 |
-| error       | 0.827  | 0.923    | 13 |
-| config      | 0.383  | 0.500    | 10 |
-
-**Observations for Wave 1+ planners:**
-- **identifier** (0.430) is the biggest improvement target for Wave 1 (adaptive lexical-weight bump).  Phase M Wave 5 measured 0.40 identifier MRR on 5 queries; the broadened 17-query slice agrees (0.430).
-- **callsite** (0.248) is the second-weakest aggregated category — Wave 1's lexical bump may help here as well.
-- **vendored corpus identifier MRR is much lower (0.292 vs 0.553 on current)** — likely because Flask's class-keyword-only queries (e.g. "Blueprint", "JSONProvider", "class FlaskClient") get diluted in MarkdownChunker's 1500-char windows.  Wave 1's symbol-query alpha bump should help disproportionately here.
-- **concept** + **error** are already strong (0.720 / 0.827) — Wave 1's gate must NOT regress these (Pareto rule).
-
-### Corpus selection rationale (recap)
-**pallets/flask @ 954f5684e4841aad84a8eec7ace7b81a0d3f6831 (BSD-3-Clause, 2026-05-18)** selected over pydantic/pydantic, huggingface/transformers, tiangolo/fastapi, tensorflow/models. Won on:
-1. License — BSD-3-Clause most permissive of candidates.
-2. Size — 213 files / 1.15 MB after filter (keeps git tree small; HF cache + reranker dominate bench wall-clock).
-3. Idiom diversity — decorators / blueprints / request lifecycle / Werkzeug interop differs sharply from corpus-forge's retrieval/embedder/backend patterns. That's the broadening that actually matters for the bench.
-4. Content mix — `.py` (83) + `.rst` (79) + `.html` (20) + `.txt` (10) + `.yaml` (7) + `.md` (6) + `.toml` (5) + `.json` (2) + `.yml` (1) — broader text-extension surface than corpus-forge.
-
-### Notes / deviations from spec
-- **Bench file split**: spec said "modify `tests/perf/test_semble_bench.py` (or split out a `tests/perf/test_phase_n_bench.py`)". Chose to **split** — the existing semble bench depends on the `experiments/semble_adapter` import and its 25-query schema; preserving it unchanged keeps the Phase M Wave 5 reproducibility story intact while the new Phase N bench is self-contained.
-- **Test split**: spec described one `test_phase_n_bench.py` housing both bench-execution AND shape assertions. Split into two files: `test_phase_n_bench.py` (gated, runs the bench) and `test_phase_n_baseline.py` (ungated, rot-detects the committed JSON). The second one is the actual RED → GREEN gate and runs in every dev's default `pytest` invocation.
-- **CLI flag**: spec said "Accept `--corpus={current,vendored,all}` CLI flag". Used `CF_PHASE_N_CORPUS` env var instead — pytest plugin-level CLI flags are awkward to add for one-off bench files; env var keeps the implementation simple and CI-overridable.
-- **Symlink vs copy** for the canonical baseline: spec said "symlink or copy". Used **copy** (per the iCloud-sync-and-symlinks lesson from `feedback_icloud_commit_check.md`).
-- **HF cache offline mode**: ran bench with `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1` to skip a 60s HEAD-check hang against `sentence-transformers/all-MiniLM-L6-v2` (the cache was present but the hub probe was timing out). Bench finished in 86 s instead of timing out.
-- **Pyrefly baseline**: Wave 0 sees 10 errors instead of 9. Verified the same count on `dcb2222` (clean tree) — env drift since the Phase M close, not a Wave 0 regression. No Wave 0 file is in the error list.
+## Open questions for the user (none blocking O1)
+- **PyPI name for fasttext-langdetect**: coder verifies during O1-G1; if the canonical distribution name is different (e.g. `ft-langdetect`), update O1-T3's expected list before committing.
+- **BERTopic transient deps for O3**: plotly + pandas come in via bertopic 0.16. Whether to pin `plotly>=5.0` explicitly in the `analyze` extra is an O3-time decision (deferred; revisit when O3 RED tests fail on a fresh venv).
