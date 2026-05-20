@@ -65,7 +65,7 @@ def _seed_sqlite_db(db_path: Path) -> sqlite3.Connection:
         """
         CREATE TABLE IF NOT EXISTS documents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            dataset TEXT NOT NULL,
+            dataset_id INTEGER NOT NULL,
             source_uri TEXT NOT NULL,
             content_hash TEXT,
             title TEXT,
@@ -79,11 +79,9 @@ def _seed_sqlite_db(db_path: Path) -> sqlite3.Connection:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             document_id INTEGER,
             conversation_id INTEGER,
-            dataset TEXT NOT NULL,
             text TEXT NOT NULL,
             token_count INTEGER NOT NULL DEFAULT 0,
             content_hash TEXT,
-            classifier_label TEXT,
             metadata TEXT
         )
         """
@@ -106,16 +104,17 @@ def _seed_sqlite_db(db_path: Path) -> sqlite3.Connection:
     )
 
     conn.execute("INSERT OR IGNORE INTO datasets (name) VALUES (?)", ("demo",))
+    dataset_id = conn.execute("SELECT id FROM datasets WHERE name = 'demo'").fetchone()[0]
     conn.execute(
-        "INSERT INTO documents (dataset, source_uri, title, modified_at) VALUES (?, ?, ?, ?)",
-        ("demo", "file:///demo/a.md", "A", 1_700_000_000.0),
+        "INSERT INTO documents (dataset_id, source_uri, title, modified_at) VALUES (?, ?, ?, ?)",
+        (dataset_id, "file:///demo/a.md", "A", 1_700_000_000.0),
     )
     doc_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     # Seed several chunks so skip actions have something to traverse
     for i in range(5):
         conn.execute(
-            "INSERT INTO chunks (document_id, dataset, text, token_count) VALUES (?, ?, ?, ?)",
-            (doc_id, "demo", f"Chunk {i} for feedback resume testing.", 6 + i),
+            "INSERT INTO chunks (document_id, text, token_count) VALUES (?, ?, ?)",
+            (doc_id, f"Chunk {i} for feedback resume testing.", 6 + i),
         )
     conn.commit()
     return conn

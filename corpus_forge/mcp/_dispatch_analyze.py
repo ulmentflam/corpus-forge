@@ -302,9 +302,8 @@ async def _dispatch_score_quality(
 
     # Resolve chunks.
     if chunk_ids_arg is not None:
-        chunk_ids = [int(c) for c in chunk_ids_arg]
         try:
-            chunks = _fetch_chunks_by_ids(backend, chunk_ids)
+            chunks = _fetch_chunks_by_ids(backend, [int(c) for c in chunk_ids_arg])
         except Exception as exc:
             return _error_result(f"score_quality: {exc}")
     elif dataset_arg is not None:
@@ -312,7 +311,6 @@ async def _dispatch_score_quality(
             chunks = _fetch_chunks_for_dataset(backend, dataset_arg)
         except Exception as exc:
             return _error_result(f"score_quality: {exc}")
-        chunk_ids = [int(c["id"]) for c in chunks]
     else:
         return _error_result("score_quality: provide either chunk_ids or dataset")
 
@@ -321,12 +319,16 @@ async def _dispatch_score_quality(
 
     scores = score_chunks_batch(chunks)
 
+    # Derive ids from the resolved chunk set (some inputs may be missing in
+    # the backend); this keeps chunk_ids, scores and scores_map all aligned.
+    resolved_ids = [int(c["id"]) for c in chunks]
+
     scores_map: dict[str, float] = {
         str(int(c["id"])): float(s) for c, s in zip(chunks, scores, strict=True)
     }
 
     if persist:
-        _persist_quality_signals(backend, chunk_ids, scores)
+        _persist_quality_signals(backend, resolved_ids, scores)
 
     return {"scores": scores_map}
 

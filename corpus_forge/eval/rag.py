@@ -169,10 +169,30 @@ def run_rag_eval(
         relevant_ids: list[int] = [int(x) for x in q.get("relevant_chunk_ids", [])]
         contexts: list[str] = q.get("contexts", [])
 
-        # Build a synthetic ranked list from relevant_chunk_ids order.
-        # In a real eval the retriever would produce this; here we use the
-        # fixture's ordering so the harness works fully offline.
-        ranked_ids = list(relevant_ids)
+        # Build the ranked list from the fixture's `ranked_chunk_ids` if
+        # provided (the realistic harness shape — retriever output). Fall
+        # back to interleaving relevant + distractor ids so nDCG/MRR are
+        # non-trivial even on minimal fixtures (a naive `list(relevant_ids)`
+        # makes every metric trivially 1.0 and hides regressions).
+        fixture_ranked = q.get("ranked_chunk_ids")
+        if fixture_ranked is not None:
+            ranked_ids = [int(x) for x in fixture_ranked]
+        else:
+            distractor_ids: list[int] = [int(x) for x in q.get("distractor_chunk_ids", [])]
+            # Interleave so relevant items are NOT all at the top.
+            ranked_ids = []
+            r_iter = iter(relevant_ids)
+            d_iter = iter(distractor_ids)
+            for i in range(max(len(relevant_ids) + len(distractor_ids), 1)):
+                src = d_iter if i % 2 == 0 and distractor_ids else r_iter
+                try:
+                    ranked_ids.append(next(src))
+                except StopIteration:
+                    other = r_iter if src is d_iter else d_iter
+                    try:
+                        ranked_ids.append(next(other))
+                    except StopIteration:
+                        break
 
         sums["nDCG@1"] += _ndcg_at_k(ranked_ids, relevant_ids, 1)
         sums["nDCG@5"] += _ndcg_at_k(ranked_ids, relevant_ids, 5)

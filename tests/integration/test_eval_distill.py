@@ -554,7 +554,7 @@ class TestEvalDistillMissingDataset:
         combined = (result.output or "") + (
             result.stderr if hasattr(result, "stderr") and result.stderr else ""
         )
-        assert bad_name in combined or "not found" in combined.lower() or result.exit_code != 0, (
+        assert bad_name in combined or "not found" in combined.lower(), (
             f"Expected dataset name or 'not found' in error output; got:\n{combined}"
         )
 

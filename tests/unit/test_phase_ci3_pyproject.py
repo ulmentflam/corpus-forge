@@ -212,12 +212,20 @@ class TestProjectURLs:
 
 
 class TestPythonPathRemoved:
-    """The CI-3 plan: editable install replaces `pythonpath = ['.']`."""
+    """CI-3 originally removed `pythonpath = ['.']` once corpus_forge was
+    editable-installed. Phase O re-introduced ``from tests.fuzz.profiles
+    import …`` in ``tests/conftest.py`` for hypothesis-profile registration;
+    that import only resolves in a fresh CI venv when ``pythonpath = ['.']``
+    is back. The CI-3 rot-detector is therefore re-inverted: pythonpath
+    MUST be ``['.']`` so the shared conftest works on CI runners.
+    """
 
-    def test_pythonpath_absent(self, pytest_opts: dict) -> None:
-        assert "pythonpath" not in pytest_opts, (
-            f"`pythonpath` must be removed in CI-3 once editable install works; "
-            f"got pythonpath = {pytest_opts.get('pythonpath')!r}"
+    def test_pythonpath_is_repo_root(self, pytest_opts: dict) -> None:
+        assert pytest_opts.get("pythonpath") == ["."], (
+            "pyproject.toml `[tool.pytest.ini_options].pythonpath` must stay "
+            "['.'] so tests/conftest.py can `from tests.fuzz.profiles import …` "
+            "on fresh CI venvs. See the comment in pyproject.toml."
+            f"\nGot pythonpath = {pytest_opts.get('pythonpath')!r}"
         )
 
     def test_addopts_still_intact(self, pytest_opts: dict) -> None:

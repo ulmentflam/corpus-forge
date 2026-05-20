@@ -102,14 +102,18 @@ def detect_language_batch(
 def _detect_langdetect(text: str) -> tuple[str, float]:
     """Dispatch to the langdetect backend (pure-Python)."""
     try:
-        from langdetect import detect_langs  # lazy
+        from langdetect import detect_langs  # type: ignore[import-not-found,import-untyped]  # lazy
 
         try:
-            from langdetect.lang_detect_exception import LangDetectException
+            from langdetect.lang_detect_exception import (
+                LangDetectException,  # type: ignore[import-not-found,import-untyped]
+            )
         except ImportError:
             # Fallback: the module may expose it directly.
             try:
-                from langdetect import LangDetectException  # type: ignore[no-redef]
+                from langdetect import (
+                    LangDetectException,  # type: ignore[no-redef,import-not-found,import-untyped]
+                )
             except ImportError:
                 LangDetectException = Exception  # type: ignore[misc,assignment]
 
@@ -126,19 +130,25 @@ def _detect_langdetect(text: str) -> tuple[str, float]:
 
 
 def _detect_fasttext(text: str) -> tuple[str, float]:
-    """Dispatch to the fasttext_langdetect backend."""
+    """Dispatch to the fasttext_langdetect backend.
+
+    `fasttext_langdetect` exposes a `.fasttext.detect` re-export, while the
+    bare `fasttext` package exposes a top-level `.detect`. We probe for the
+    nested attribute first so either shape works without pyrefly tripping
+    on the missing attribute on the bare-fasttext branch.
+    """
     try:
-        import fasttext_langdetect as _ft_mod  # lazy
+        import fasttext_langdetect as _ft_mod  # type: ignore[import-untyped]
     except ImportError:
-        # Also try the bare fasttext package name.
         try:
-            import fasttext as _ft_mod  # type: ignore[no-redef]  # lazy
+            import fasttext as _ft_mod  # type: ignore[no-redef,import-untyped]
         except ImportError:
             raise RuntimeError(
                 "fasttext is not installed; install with: pip install fasttext-langdetect"
             ) from None
 
-    result = _ft_mod.fasttext.detect(text)
+    detector = getattr(_ft_mod, "fasttext", _ft_mod)
+    result = detector.detect(text)
     iso_code = result["lang"]
     confidence = float(result["score"])
     return (iso_code, confidence)

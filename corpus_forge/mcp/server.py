@@ -1865,13 +1865,17 @@ def build_server(
                     record_demonstration as _record_demo,
                 )
 
+                # Backend-aware placeholder: SQLite=?, Postgres=%s.
+                _is_pg = "postgres" in type(backend).__module__.lower()
+                _ph = "%s" if _is_pg else "?"
+
                 # Fetch the rated chunk and the replacement chunk.
                 _rated_rows = backend._execute(
-                    "SELECT text FROM chunks WHERE id = ?",
+                    f"SELECT text FROM chunks WHERE id = {_ph}",
                     (int(arguments["chunk_id"]),),
                 )
                 _repl_rows = backend._execute(
-                    "SELECT text FROM chunks WHERE id = ?",
+                    f"SELECT text FROM chunks WHERE id = {_ph}",
                     (replacement_chunk_id,),
                 )
                 if _rated_rows and _repl_rows:
@@ -1882,7 +1886,7 @@ def build_server(
                     _ds_rows = backend._execute(
                         "SELECT d.dataset_id FROM chunks c"
                         " JOIN documents d ON c.document_id = d.id"
-                        " WHERE c.id = ? LIMIT 1",
+                        f" WHERE c.id = {_ph} LIMIT 1",
                         (int(arguments["chunk_id"]),),
                     )
                     if _ds_rows:

@@ -230,7 +230,7 @@ def test_eval_cag_mock_judge_produces_json(
     )
     assert result.exit_code == 0, result.output
     raw = result.output.strip()
-    start = raw.rfind("{")
+    start = raw.find("{")
     end = raw.rfind("}") + 1
     assert start != -1 and end > start, f"No JSON object found in:\n{raw}"
     parsed = json.loads(raw[start:end])
@@ -274,7 +274,7 @@ def test_eval_cag_mock_judge_deterministic(
     out2 = run()
 
     def extract_json(raw: str) -> dict:
-        start = raw.rfind("{")
+        start = raw.find("{")
         end = raw.rfind("}") + 1
         return json.loads(raw[start:end])
 
@@ -309,7 +309,7 @@ def _run_cag_and_parse(cag_queries_fixture: Path, cag_cache_root: Path, report_d
     )
     assert result.exit_code == 0, result.output
     raw = result.output
-    start = raw.rfind("{")
+    start = raw.find("{")
     end = raw.rfind("}") + 1
     return json.loads(raw[start:end])
 
@@ -448,7 +448,7 @@ def test_eval_cag_missing_queries_file_names_path(cag_cache_root: Path, report_d
         ],
     )
     combined = (result.output or "") + (result.stderr if hasattr(result, "stderr") else "")
-    assert bad_path in combined or "not found" in combined.lower() or result.exit_code != 0
+    assert bad_path in combined or "not found" in combined.lower()
 
 
 # ---------------------------------------------------------------------------

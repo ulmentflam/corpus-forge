@@ -184,7 +184,7 @@ def test_eval_rag_mock_judge_produces_json(rag_queries_fixture: Path, report_dir
     # Find JSON in stdout — it may be preceded by informational lines.
     output = result.output.strip()
     # Try to find JSON block in output.
-    start = output.rfind("{")
+    start = output.find("{")
     end = output.rfind("}") + 1
     assert start != -1 and end > start, f"No JSON object found in:\n{output}"
     parsed = json.loads(output[start:end])
@@ -229,7 +229,7 @@ def test_eval_rag_mock_judge_deterministic(rag_queries_fixture: Path, tmp_path: 
 
     # Extract JSON from each output.
     def extract_json(raw: str) -> dict:
-        start = raw.rfind("{")
+        start = raw.find("{")
         end = raw.rfind("}") + 1
         return json.loads(raw[start:end])
 
@@ -260,7 +260,7 @@ def test_eval_rag_json_contains_ndcg_at_1(rag_queries_fixture: Path, report_dir:
     )
     assert result.exit_code == 0
     raw = result.output
-    start = raw.rfind("{")
+    start = raw.find("{")
     data = json.loads(raw[start : raw.rfind("}") + 1])
     assert "nDCG@1" in data or any("ndcg" in k.lower() and "1" in k for k in data), (
         f"nDCG@1 not in {list(data.keys())}"
@@ -284,7 +284,7 @@ def test_eval_rag_json_contains_ndcg_at_5(rag_queries_fixture: Path, report_dir:
     )
     assert result.exit_code == 0
     raw = result.output
-    start = raw.rfind("{")
+    start = raw.find("{")
     data = json.loads(raw[start : raw.rfind("}") + 1])
     assert "nDCG@5" in data or any("ndcg" in k.lower() and "5" in k for k in data), (
         f"nDCG@5 not in {list(data.keys())}"
@@ -308,7 +308,7 @@ def test_eval_rag_json_contains_ndcg_at_10(rag_queries_fixture: Path, report_dir
     )
     assert result.exit_code == 0
     raw = result.output
-    start = raw.rfind("{")
+    start = raw.find("{")
     data = json.loads(raw[start : raw.rfind("}") + 1])
     assert "nDCG@10" in data or any("ndcg" in k.lower() and "10" in k for k in data), (
         f"nDCG@10 not in {list(data.keys())}"
@@ -332,7 +332,7 @@ def test_eval_rag_json_contains_mrr(rag_queries_fixture: Path, report_dir: Path)
     )
     assert result.exit_code == 0
     raw = result.output
-    start = raw.rfind("{")
+    start = raw.find("{")
     data = json.loads(raw[start : raw.rfind("}") + 1])
     assert any("mrr" in k.lower() for k in data), f"MRR not in {list(data.keys())}"
 
@@ -359,7 +359,7 @@ def test_eval_rag_json_contains_faithfulness(rag_queries_fixture: Path, report_d
     )
     assert result.exit_code == 0
     raw = result.output
-    start = raw.rfind("{")
+    start = raw.find("{")
     data = json.loads(raw[start : raw.rfind("}") + 1])
     assert any("faithfulness" in k.lower() for k in data), (
         f"faithfulness not in {list(data.keys())}"
@@ -383,7 +383,7 @@ def test_eval_rag_json_contains_answer_relevance(rag_queries_fixture: Path, repo
     )
     assert result.exit_code == 0
     raw = result.output
-    start = raw.rfind("{")
+    start = raw.find("{")
     data = json.loads(raw[start : raw.rfind("}") + 1])
     assert any("answer_relevance" in k.lower() or "relevance" in k.lower() for k in data), (
         f"answer_relevance not in {list(data.keys())}"
@@ -407,7 +407,7 @@ def test_eval_rag_json_contains_context_precision(rag_queries_fixture: Path, rep
     )
     assert result.exit_code == 0
     raw = result.output
-    start = raw.rfind("{")
+    start = raw.find("{")
     data = json.loads(raw[start : raw.rfind("}") + 1])
     assert any("context_precision" in k.lower() or "precision" in k.lower() for k in data), (
         f"context_precision not in {list(data.keys())}"
@@ -431,7 +431,7 @@ def test_eval_rag_json_contains_context_recall(rag_queries_fixture: Path, report
     )
     assert result.exit_code == 0
     raw = result.output
-    start = raw.rfind("{")
+    start = raw.find("{")
     data = json.loads(raw[start : raw.rfind("}") + 1])
     assert any("context_recall" in k.lower() or "recall" in k.lower() for k in data), (
         f"context_recall not in {list(data.keys())}"
@@ -455,7 +455,7 @@ def test_eval_rag_judge_scores_in_unit_interval(rag_queries_fixture: Path, repor
     )
     assert result.exit_code == 0
     raw = result.output
-    start = raw.rfind("{")
+    start = raw.find("{")
     data = json.loads(raw[start : raw.rfind("}") + 1])
     judge_keys = {
         k
@@ -576,7 +576,7 @@ def test_eval_rag_missing_queries_file_names_path():
         ],
     )
     combined = (result.output or "") + (result.stderr if hasattr(result, "stderr") else "")
-    assert bad_path in combined or "not found" in combined.lower() or result.exit_code != 0
+    assert bad_path in combined or "not found" in combined.lower()
 
 
 # ---------------------------------------------------------------------------

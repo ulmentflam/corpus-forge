@@ -106,7 +106,7 @@ def _seed_sqlite_db(db_path: Path) -> sqlite3.Connection:
     )
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS mcp_audit_log (
+        CREATE TABLE IF NOT EXISTS mcp_audit (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tool_name TEXT NOT NULL,
             args_json TEXT,

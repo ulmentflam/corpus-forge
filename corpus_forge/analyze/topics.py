@@ -88,7 +88,9 @@ def cluster_topics(
     if method == "bertopic":
         try:
             import numpy as np  # lazy import
-            from bertopic import BERTopic  # lazy import
+            from bertopic import (
+                BERTopic,  # type: ignore[import-not-found,import-untyped]  # lazy import
+            )
 
             topic_model = BERTopic(min_topic_size=min_cluster_size)
             arr = np.array(embeddings, dtype=float)
@@ -196,8 +198,10 @@ def top_terms_per_cluster(
     feature_names: list[str] = vectorizer.get_feature_names_out().tolist()
 
     result: dict[int, list[tuple[str, float]]] = {}
+    # `tfidf_matrix` is a scipy sparse matrix; `getrow()` is the supported way
+    # to index by row without tripping pyrefly on the spmatrix __getitem__.
     for row_idx, cid in enumerate(cluster_ids):
-        row = tfidf_matrix[row_idx]
+        row = tfidf_matrix.getrow(row_idx)  # type: ignore[attr-defined]
         # Convert sparse row to dense array.
         dense = row.toarray().flatten()
         # Sort by weight descending, pick top_n.

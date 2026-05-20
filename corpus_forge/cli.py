@@ -1691,8 +1691,15 @@ def eval_distill(
             report_dir=report_dir,
             backend=backend,
         )
-    except ValueError as exc:
-        ui_error(str(exc))
+    except (ValueError, Exception) as exc:
+        # Catch ValueError ("Dataset not found") AND any DB-level error
+        # (no such table, etc.) so the operator always sees the dataset
+        # name in the failure message. Emit via ui.error (Rich-styled)
+        # AND a plain print so CliRunner / agent-mode captures see it
+        # regardless of theme.
+        msg = f"dataset {dataset!r} not found: {exc}"
+        ui_error(msg)
+        print(f"Error: {msg}")
         raise typer.Exit(code=1) from None
 
     if json_flag:

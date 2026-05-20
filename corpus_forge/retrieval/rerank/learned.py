@@ -199,7 +199,9 @@ def train_reranker(
     if len(unique_labels) < 2:
         auc = None
     else:
-        probs = clf.predict_proba(X)[:, 1]
+        import numpy as np
+
+        probs = clf.predict_proba(np.asarray(X))[:, 1]
         auc = float(roc_auc_score(y, probs))
 
     # ------------------------------------------------------------------

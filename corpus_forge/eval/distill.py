@@ -70,7 +70,7 @@ def _build_backend() -> Any:
 
         return SQLiteBackend(
             path=config.backend.dsn,
-            schema=getattr(config.backend, "schema", None),
+            schema=getattr(config.backend, "schema", "") or "",
         )
     from corpus_forge.backends.postgres import PostgresBackend  # noqa: PLC0415
 
@@ -335,10 +335,14 @@ def _list_chunks_for_dataset(backend: Any, dataset_id: int) -> list[dict]:
     conn_type = type(backend).__name__
 
     if "Postgres" in conn_type:
-        # PostgresBackend: uses %s placeholders and corpus. schema prefix.
+        # PostgresBackend: %s placeholders + a configurable schema prefix
+        # (defaults to "corpus"). Resolve via the backend attribute so
+        # non-default schemas work; fall back to "corpus" for backward compat.
+        schema = getattr(backend, "schema", None) or "corpus"
+        prefix = f"{schema}."
         rows = backend._execute(
-            "SELECT c.text FROM corpus.chunks c"
-            " JOIN corpus.documents d ON d.id = c.document_id"
+            f"SELECT c.text FROM {prefix}chunks c"
+            f" JOIN {prefix}documents d ON d.id = c.document_id"
             " WHERE d.dataset_id = %s",
             (dataset_id,),
         )

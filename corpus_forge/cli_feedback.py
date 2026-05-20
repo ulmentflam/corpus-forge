@@ -133,18 +133,29 @@ def _fetch_chunks(conn: Any, dataset: str) -> list[dict]:
     """
     is_postgres = "psycopg" in type(conn).__module__
 
+    # Chunks are owned by documents (or conversations); join through documents
+    # and filter by the dataset *name* on datasets.name.
     try:
         if is_postgres:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, text, token_count FROM corpus.chunks "
-                    "WHERE dataset = %s ORDER BY id ASC",
+                    "SELECT c.id, c.text, c.token_count "
+                    "FROM corpus.chunks c "
+                    "JOIN corpus.documents d ON d.id = c.document_id "
+                    "JOIN corpus.datasets ds ON ds.id = d.dataset_id "
+                    "WHERE ds.name = %s "
+                    "ORDER BY c.id ASC",
                     (dataset,),
                 )
                 rows = cur.fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, text, token_count FROM chunks WHERE dataset = ? ORDER BY id ASC",
+                "SELECT c.id, c.text, c.token_count "
+                "FROM chunks c "
+                "JOIN documents d ON d.id = c.document_id "
+                "JOIN datasets ds ON ds.id = d.dataset_id "
+                "WHERE ds.name = ? "
+                "ORDER BY c.id ASC",
                 (dataset,),
             ).fetchall()
     except Exception:
@@ -209,8 +220,15 @@ def _do_record_demo(
 
     dataset_id = _get_dataset_id(conn, dataset)
     if dataset_id is None:
-        # Fallback: use 0 as dataset_id if table absent (non-blocking for scripted mode)
-        dataset_id = 0
+        # Fail loudly rather than persist a row under a sentinel id — a
+        # missing dataset is almost always a config / typo issue the
+        # operator wants to see.
+        print(
+            f"[feedback] dataset {dataset!r} not found in datasets table; "
+            "skipping --record-demo (no rows written)",
+            file=sys.stderr,
+        )
+        return
 
     from corpus_forge.sdft.capture import record_demonstration
 

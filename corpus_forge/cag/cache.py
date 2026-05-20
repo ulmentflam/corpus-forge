@@ -97,12 +97,16 @@ def _fetch_chunks(conn: Any, dataset: str, top_k: int) -> tuple[int, list[dict[s
         raise ValueError(f"dataset {dataset!r} not found")
     dataset_id: int = int(row[0]) if not isinstance(row, dict) else int(row["id"])
 
+    # `chunks` and `documents` both have an `id` column — qualify each
+    # selected column so the JOIN resolves unambiguously.
     cursor = conn.execute(
-        "SELECT id, content_hash, text FROM chunks"
-        " JOIN documents ON chunks.document_id = documents.id"
-        " WHERE documents.dataset_id = ?"
-        " ORDER BY chunks.id"
-        " LIMIT ?",
+        "SELECT chunks.id AS id, chunks.content_hash AS content_hash, "
+        "       chunks.text AS text "
+        "FROM chunks "
+        "JOIN documents ON chunks.document_id = documents.id "
+        "WHERE documents.dataset_id = ? "
+        "ORDER BY chunks.id "
+        "LIMIT ?",
         (dataset_id, top_k),
     )
     rows = cursor.fetchall()

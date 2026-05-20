@@ -697,6 +697,18 @@ def register_session(
 # ---------------------------------------------------------------------------
 
 
+def _q(backend: Any, sql: str) -> str:
+    """Translate ``?`` placeholders to ``%s`` for Postgres backends.
+
+    SQLiteBackend uses ``?``; PostgresBackend's psycopg cursor requires
+    ``%s``.  Detected via ``type(backend).__module__`` so we don't import
+    psycopg eagerly.
+    """
+    if "postgres" in type(backend).__module__.lower():
+        return sql.replace("?", "%s")
+    return sql
+
+
 def rate_search_result(
     backend: Any,
     ctx: Any,
@@ -711,7 +723,8 @@ def rate_search_result(
     """Record a signal (rating, click, thumbs, …) for a search result.
 
     Looks up ``search_sessions`` by ``query`` = ``query_id``.  If no row
-    exists, auto-creates one with ``query="(retroactive)"`` and resolves
+    exists, auto-creates one with ``query=query_id`` (so subsequent calls
+    with the same ``query_id`` reuse the session) and resolves
     ``dataset_id`` from the chunk's parent document.  Inserts one row into
     ``search_result_events`` and emits one ``mcp_audit`` row.
 
@@ -719,7 +732,7 @@ def rate_search_result(
     """
     # Verify chunk_id exists; propagate FK violation as a clean error.
     chunk_rows = backend._execute(
-        "SELECT id FROM chunks WHERE id = ?",
+        _q(backend, "SELECT id FROM chunks WHERE id = ?"),
         (chunk_id,),
     )
     if not chunk_rows:
@@ -727,7 +740,7 @@ def rate_search_result(
 
     # Look up or auto-create the search session.
     session_rows = backend._execute(
-        "SELECT id FROM search_sessions WHERE query = ? LIMIT 1",
+        _q(backend, "SELECT id FROM search_sessions WHERE query = ? LIMIT 1"),
         (query_id,),
     )
     if session_rows:
@@ -735,23 +748,35 @@ def rate_search_result(
     else:
         # Resolve dataset_id via chunk → document.
         doc_rows = backend._execute(
-            "SELECT d.dataset_id FROM chunks c"
-            " JOIN documents d ON d.id = c.document_id"
-            " WHERE c.id = ? LIMIT 1",
+            _q(
+                backend,
+                "SELECT d.dataset_id FROM chunks c"
+                " JOIN documents d ON d.id = c.document_id"
+                " WHERE c.id = ? LIMIT 1",
+            ),
             (chunk_id,),
         )
         dataset_id: int | None = int(doc_rows[0]["dataset_id"]) if doc_rows else None
+        # Use the supplied query_id as the session's query column so that a
+        # subsequent rate_search_result with the same query_id finds and
+        # reuses this session instead of spawning a duplicate one.
         new_session_rows = backend._execute(
-            "INSERT INTO search_sessions (query, dataset_id) VALUES (?, ?) RETURNING id",
-            ("(retroactive)", dataset_id),
+            _q(
+                backend,
+                "INSERT INTO search_sessions (query, dataset_id) VALUES (?, ?) RETURNING id",
+            ),
+            (query_id, dataset_id),
         )
         session_id = int(new_session_rows[0]["id"])
 
     # Insert the event row.
     event_rows = backend._execute(
-        "INSERT INTO search_result_events"
-        " (session_id, chunk_id, signal, value, source, replacement_chunk_id)"
-        " VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+        _q(
+            backend,
+            "INSERT INTO search_result_events"
+            " (session_id, chunk_id, signal, value, source, replacement_chunk_id)"
+            " VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+        ),
         (session_id, chunk_id, signal, value, source, replacement_chunk_id),
     )
     event_id: int = int(event_rows[0]["id"])

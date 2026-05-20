@@ -430,10 +430,15 @@ class TestAutoCreateSession:
             "Expected one new search_sessions row for an unknown query_id"
         )
 
-    def test_autocreated_session_query_text_is_retroactive(
+    def test_autocreated_session_query_text_matches_query_id(
         self, backend: SQLiteBackend, seeded: dict, server_rw: Any
     ) -> None:
-        """Auto-created session uses '(retroactive)' as the query text."""
+        """Auto-created session stores the supplied query_id as its query text.
+
+        Using query_id as the row's query column means a subsequent
+        rate_search_result with the same query_id finds and reuses the
+        same session instead of spawning a duplicate.
+        """
         _call_raw(
             server_rw,
             _TOOL_NAME,
@@ -449,8 +454,8 @@ class TestAutoCreateSession:
             "SELECT query FROM search_sessions WHERE id IS NOT NULL ORDER BY id DESC LIMIT 1"
         )
         assert rows, "Expected at least one search_sessions row after auto-create"
-        assert rows[0]["query"] == "(retroactive)", (
-            f"Expected query='(retroactive)' on auto-created session; got {rows[0]['query']!r}"
+        assert rows[0]["query"] == "retro-qid-001", (
+            f"Expected query='retro-qid-001' on auto-created session; got {rows[0]['query']!r}"
         )
 
     def test_autocreated_session_id_is_returned(

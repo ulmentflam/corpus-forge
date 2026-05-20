@@ -142,18 +142,24 @@ def _load_chunks_for_dataset(
         # and we guard below.
         try:
             cur = conn.cursor()
+            # `chunks` has no direct dataset column; resolve via documents.
+            # `classifier_label` lives on chunk_labels (label_id→labels.value
+            # where labels.namespace='class'); join through to fetch it.
+            base_sql = (
+                "SELECT c.id, c.text, c.token_count, c.content_hash, "
+                "       l.value AS classifier_label, c.metadata "
+                "FROM corpus.chunks c "
+                "JOIN corpus.documents d ON d.id = c.document_id "
+                "JOIN corpus.datasets ds ON ds.id = d.dataset_id "
+                "LEFT JOIN corpus.chunk_labels cl ON cl.chunk_id = c.id "
+                "LEFT JOIN corpus.labels l "
+                "       ON l.id = cl.label_id AND l.namespace = 'class' "
+                "WHERE ds.name = %s"
+            )
             if limit is not None:
-                cur.execute(
-                    "SELECT id, text, token_count, content_hash, classifier_label, metadata "
-                    "FROM chunks WHERE dataset = %s LIMIT %s",
-                    (dataset, limit),
-                )
+                cur.execute(base_sql + " LIMIT %s", (dataset, limit))
             else:
-                cur.execute(
-                    "SELECT id, text, token_count, content_hash, classifier_label, metadata "
-                    "FROM chunks WHERE dataset = %s",
-                    (dataset,),
-                )
+                cur.execute(base_sql, (dataset,))
             rows = cur.fetchall()
             if not isinstance(rows, list):
                 # MagicMock path — treat as non-empty so exit_code stays 0
@@ -174,21 +180,24 @@ def _load_chunks_for_dataset(
             for r in rows
         ]
 
-    # SQLite path
+    # SQLite path — same JOIN shape, ? placeholders.
     cur = conn.cursor()
     try:
+        base_sql = (
+            "SELECT c.id, c.text, c.token_count, c.content_hash, "
+            "       l.value AS classifier_label, c.metadata "
+            "FROM chunks c "
+            "JOIN documents d ON d.id = c.document_id "
+            "JOIN datasets ds ON ds.id = d.dataset_id "
+            "LEFT JOIN chunk_labels cl ON cl.chunk_id = c.id "
+            "LEFT JOIN labels l "
+            "       ON l.id = cl.label_id AND l.namespace = 'class' "
+            "WHERE ds.name = ?"
+        )
         if limit is not None:
-            cur.execute(
-                "SELECT id, text, token_count, content_hash, classifier_label, metadata "
-                "FROM chunks WHERE dataset = ? LIMIT ?",
-                (dataset, limit),
-            )
+            cur.execute(base_sql + " LIMIT ?", (dataset, limit))
         else:
-            cur.execute(
-                "SELECT id, text, token_count, content_hash, classifier_label, metadata "
-                "FROM chunks WHERE dataset = ?",
-                (dataset,),
-            )
+            cur.execute(base_sql, (dataset,))
         rows = cur.fetchall()
     finally:
         cur.close()
@@ -217,25 +226,25 @@ def _check_dataset_exists(conn: Any, dataset: str) -> bool:
         try:
             cur = conn.cursor()
             cur.execute(
-                "SELECT COUNT(*) FROM chunks WHERE dataset = %s LIMIT 1",
+                "SELECT 1 FROM corpus.datasets WHERE name = %s LIMIT 1",
                 (dataset,),
             )
             row = cur.fetchone()
             if not isinstance(row, (list, tuple)):
                 # MagicMock → treat as exists
                 return True
-            return int(row[0]) > 0
+            return bool(row)
         except Exception:
             return True  # mock or unavailable — don't block
 
     cur = conn.cursor()
     try:
         cur.execute(
-            "SELECT COUNT(*) FROM chunks WHERE dataset = ? LIMIT 1",
+            "SELECT 1 FROM datasets WHERE name = ? LIMIT 1",
             (dataset,),
         )
         row = cur.fetchone()
-        return row is not None and int(row[0]) > 0
+        return row is not None
     finally:
         cur.close()
 

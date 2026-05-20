@@ -65,12 +65,23 @@ def _seed_sqlite_db(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     cur = conn.cursor()
 
-    # Minimal documents table (no FK enforcement needed here)
+    # Datasets table (matches 0001_core; chunks reach it via documents.dataset_id).
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS datasets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            kind TEXT NOT NULL DEFAULT 'text'
+        )
+        """
+    )
+
+    # Minimal documents table (FK to datasets).
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS documents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            dataset TEXT NOT NULL,
+            dataset_id INTEGER NOT NULL,
             source_uri TEXT NOT NULL,
             content_hash TEXT,
             title TEXT,
@@ -79,19 +90,41 @@ def _seed_sqlite_db(db_path: Path) -> sqlite3.Connection:
         """
     )
 
-    # Minimal chunks table
+    # Minimal chunks table (no direct dataset column — chunks reach the
+    # dataset via documents.dataset_id, matching the real 0001_core shape).
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS chunks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             document_id INTEGER,
             conversation_id INTEGER,
-            dataset TEXT NOT NULL,
             text TEXT NOT NULL,
             token_count INTEGER NOT NULL DEFAULT 0,
             content_hash TEXT,
-            classifier_label TEXT,
             metadata TEXT
+        )
+        """
+    )
+
+    # Minimal labels / chunk_labels tables so the analyze classifier-label
+    # join resolves cleanly (LEFT JOIN handles empty rows).
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS labels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            namespace TEXT NOT NULL,
+            value TEXT NOT NULL,
+            UNIQUE(namespace, value)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chunk_labels (
+            chunk_id INTEGER NOT NULL,
+            label_id INTEGER NOT NULL,
+            confidence REAL,
+            source TEXT
         )
         """
     )
@@ -110,35 +143,38 @@ def _seed_sqlite_db(db_path: Path) -> sqlite3.Connection:
         """
     )
 
-    # Seed a document
+    # Seed a dataset row.
+    cur.execute("INSERT INTO datasets (name, kind) VALUES (?, ?)", ("demo", "text"))
+    dataset_id = cur.lastrowid
+
+    # Seed a document under the dataset.
     cur.execute(
-        "INSERT INTO documents (dataset, source_uri, content_hash, title, modified_at) "
+        "INSERT INTO documents (dataset_id, source_uri, content_hash, title, modified_at) "
         "VALUES (?, ?, ?, ?, ?)",
-        ("demo", "file:///demo/note1.md", "hash_doc1", "Demo note", 1_700_000_000.0),
+        (dataset_id, "file:///demo/note1.md", "hash_doc1", "Demo note", 1_700_000_000.0),
     )
     doc_id = cur.lastrowid
 
-    # Seed chunks with varied token counts and hashes
+    # Seed chunks with varied token counts and hashes (no `dataset` column —
+    # chunks reach the dataset via document_id → documents.dataset_id).
     chunk_rows = [
-        (doc_id, "demo", "Hello world, this is a test chunk with enough tokens.", 12, "h1"),
-        (doc_id, "demo", "Another chunk about machine learning and embeddings.", 9, "h2"),
-        (doc_id, "demo", "Exact duplicate content for dedup testing purposes.", 8, "h3"),
-        (doc_id, "demo", "Exact duplicate content for dedup testing purposes.", 8, "h3"),
+        (doc_id, "Hello world, this is a test chunk with enough tokens.", 12, "h1"),
+        (doc_id, "Another chunk about machine learning and embeddings.", 9, "h2"),
+        (doc_id, "Exact duplicate content for dedup testing purposes.", 8, "h3"),
+        (doc_id, "Exact duplicate content for dedup testing purposes.", 8, "h3"),
         (
             doc_id,
-            "demo",
             "A longer chunk with more text to exercise the stats percentile "
             "calculations across a wider range of token counts.",
             28,
             "h4",
         ),
-        (doc_id, "demo", "Short.", 1, "h5"),
+        (doc_id, "Short.", 1, "h5"),
     ]
-    for doc_id_val, dataset, text, token_count, content_hash in chunk_rows:
+    for doc_id_val, text, token_count, content_hash in chunk_rows:
         cur.execute(
-            "INSERT INTO chunks (document_id, dataset, text, token_count, content_hash) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (doc_id_val, dataset, text, token_count, content_hash),
+            "INSERT INTO chunks (document_id, text, token_count, content_hash) VALUES (?, ?, ?, ?)",
+            (doc_id_val, text, token_count, content_hash),
         )
 
     conn.commit()

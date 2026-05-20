@@ -51,6 +51,11 @@ _READ_TOOL_NAMES = {
     # Phase M Wave 3 — .corpusignore read tools
     "list_ignore",
     "validate_ignore",
+    # Phase O Wave 4 — analyze read tools
+    "analyze_corpus",
+    "find_duplicates",
+    "cluster_topics",
+    "score_quality",
 }
 
 _WRITE_TOOL_NAMES = {
