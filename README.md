@@ -534,7 +534,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the full reference.
 See `config.example.toml` for the full reference (every field carries an inline
 comment + a commented-out remote example for every `*_url`). Key sections:
 
-- `[backend]` — `kind` is `"postgres"` or `"sqlite"`; `dsn` is the Postgres connection string OR the SQLite file path. `schema = "corpus"` for Postgres; ignored on SQLite.
+- `[backend]` — `kind` is `"postgres"` or `"sqlite"`; `dsn` is the Postgres connection string OR the SQLite file path. `schema = "corpus"` for Postgres; ignored on SQLite. For provisioning a fresh Postgres host see [`docs/deployment/postgres.md`](docs/deployment/postgres.md) (bare-metal Debian/Ubuntu via the `scripts/postgres-bootstrap.sh` helper), [`docs/deployment/docker.md`](docs/deployment/docker.md) (self-contained pgvector Compose stack), or [`docs/deployment/lxc.md`](docs/deployment/lxc.md) (Proxmox LXC sizing + Tailscale + backups).
 - `[daemon]` — `debounce_seconds`, `log_level`, `log_format`, `sync_poll_interval_s`, `trash_dir`, `conflict_dir`, `host_id`.
 - `[[datasets]]` — repeated. `name`, `kind` (`text` | `chat`), `description`, `sync_enabled` (Postgres only — SQLite rejects `sync_enabled = true` at config-load).
 - `[[datasets.sources]]` — repeated. `plugin` (`markdown_vault` | `claude_code` | `opencode` | `filesystem` | `chatgpt_export` | `codex_cli` | `gemini_cli` | `jsonl_chat`), source-specific paths, `chunker`, `chunker_config`. An optional `[datasets.sources.extraction]` block tunes the Phase D extractor registry (`enable_pdf`, `enable_office`, `csv_max_rows`, `max_bytes`, `ocr_enabled`, `ocr_dpi`, …).

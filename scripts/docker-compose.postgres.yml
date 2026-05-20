@@ -1,0 +1,40 @@
+# corpus-forge — self-contained Postgres + pgvector Docker stack.
+#
+# Quick start:
+#   1. Install corpus-forge (recommended on macOS/Linux/WSL):
+#      uv tool install 'corpus-forge[postgres,hf]'
+#   2. Configure corpus-forge:
+#      corpus-forge setup
+#      # Or unattended: CF_NON_INTERACTIVE=1 corpus-forge setup --backend postgres --embedder qwen3_8b
+#   3. Run migrations (idempotent, run after every install/upgrade):
+#      corpus-forge migrate
+#   4. Start Postgres container:
+#      cp scripts/.env.postgres.example scripts/.env.postgres
+#      # edit scripts/.env.postgres and replace CHANGEME_LONG_RANDOM
+#      docker compose -f scripts/docker-compose.postgres.yml up -d
+#
+# See docs/deployment/docker.md for the production hardening checklist
+# (password, TLS, reverse proxy, backups).
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: corpus-forge-postgres
+    restart: unless-stopped
+    env_file:
+      - .env.postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-initdb.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  postgres-data:
+    name: corpus-forge-postgres-data
