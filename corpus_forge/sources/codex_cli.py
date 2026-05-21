@@ -71,7 +71,6 @@ class CodexCLISource(WatchedSource):
         messages: list[RawMessage] = []
         meta: dict[str, object] = {}
         external_id: str | None = None
-        title: str | None = None
 
         for raw_line in raw_bytes.decode("utf-8", errors="replace").splitlines():
             stripped = raw_line.strip()
@@ -223,7 +222,7 @@ class CodexCLISource(WatchedSource):
             source_uri=f"codex-cli://{path}",
             external_id=external_id,
             content_hash=content_hash,
-            title=title,
+            title=None,
             started_at=messages[0].ts,
             ended_at=messages[-1].ts,
             messages=messages,

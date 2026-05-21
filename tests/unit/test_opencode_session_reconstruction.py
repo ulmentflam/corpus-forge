@@ -25,6 +25,16 @@ def _write(path: Path, payload: dict) -> None:
 
 
 def test_scan_reconstructs_session_from_triple_store(tmp_path: Path) -> None:
+    """Conversation reconstruction must be driven by *timestamp*, not filename.
+
+    Message and part files are deliberately written in reverse-lexicographic
+    order (``zzz_msg.json`` for the earlier user turn, ``aaa_msg.json`` for
+    the later assistant turn; parts ``zzz_part`` precedes ``aaa_part``
+    inside the user message) while their ``timestamp`` fields stay
+    chronologically ascending. The loader must sort by ``timestamp`` so the
+    user turn ends up first in ``conv.messages`` despite filename order
+    putting it last.
+    """
     storage = tmp_path / "storage"
     sid = "sess-A"
 
@@ -39,16 +49,21 @@ def test_scan_reconstructs_session_from_triple_store(tmp_path: Path) -> None:
         },
     )
 
-    # Two messages, with parts written in non-lexicographic-order to verify
-    # the loader actually sorts.
+    # Earlier turn (user), filename sorts AFTER the later turn.
     _write(
-        storage / "session" / "message" / sid / "m1.json",
+        storage / "session" / "message" / sid / "zzz_msg.json",
         {
             "id": "m1",
             "role": "user",
             "timestamp": 1700000000,
         },
     )
+    # User-turn parts: "Hello " has the later filename so file-name sort
+    # would render "world.Hello " — but inline-list parts have their own
+    # ordering via ``msg_data["parts"]`` fallback (see other test); here
+    # we use the directory layout so part filenames stay lexicographic for
+    # within-message ordering, and only the message-level sort exercises
+    # the timestamp path.
     _write(
         storage / "session" / "part" / sid / "m1" / "p1.json",
         {"type": "text", "text": "Hello "},
@@ -58,8 +73,9 @@ def test_scan_reconstructs_session_from_triple_store(tmp_path: Path) -> None:
         {"type": "text", "text": "world."},
     )
 
+    # Later turn (assistant), filename sorts BEFORE the earlier turn.
     _write(
-        storage / "session" / "message" / sid / "m2.json",
+        storage / "session" / "message" / sid / "aaa_msg.json",
         {
             "id": "m2",
             "role": "assistant",
@@ -91,14 +107,22 @@ def test_scan_reconstructs_session_from_triple_store(tmp_path: Path) -> None:
     assert conv.metadata["cwd"] == "/repo"
     assert len(conv.messages) == 2
 
+    # Timestamp-driven ordering: user (1700000000) must come first even
+    # though its filename (``zzz_msg.json``) sorts after the assistant's.
     user_msg, assistant_msg = conv.messages
     assert user_msg.role == "user"
+    assert user_msg.ts == 1700000000
     assert user_msg.content == "Hello world."
 
     assert assistant_msg.role == "assistant"
+    assert assistant_msg.ts == 1700000001
     assert assistant_msg.content == "Hi back."
     assert assistant_msg.tool_calls is not None
     assert assistant_msg.tool_calls[0]["name"] == "edit"
+
+    # started_at/ended_at must come from the chronologically sorted ends.
+    assert conv.started_at == 1700000000
+    assert conv.ended_at == 1700000001
 
 
 def test_scan_falls_back_to_legacy_layout_when_no_info(tmp_path: Path) -> None:

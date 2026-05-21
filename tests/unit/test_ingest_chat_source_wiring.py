@@ -65,6 +65,25 @@ def test_missing_path_field_raises(plugin: str, field: str) -> None:
         _instantiate_source(cfg)
 
 
+@pytest.mark.parametrize(
+    ("plugin", "field", "blank"),
+    [
+        ("gemini_cli", "chats_root", ""),
+        ("gemini_cli", "chats_root", "   "),
+        ("codex_cli", "sessions_root", ""),
+        ("chatgpt_export", "export_root", "  "),
+        ("jsonl_chat", "path", ""),
+    ],
+)
+def test_blank_path_field_raises(plugin: str, field: str, blank: str) -> None:
+    """Empty / whitespace-only path values must raise the same hint as None
+    so we don't silently fall back to ``Path("")`` (which resolves to CWD).
+    """
+    cfg = _make(plugin, **{field: blank})
+    with pytest.raises(ValueError, match=field):
+        _instantiate_source(cfg)
+
+
 def test_uri_to_client_table_includes_new_clients() -> None:
     assert _SOURCE_URI_TO_CLIENT["codex-cli://"] == "codex-cli"
     assert _SOURCE_URI_TO_CLIENT["chatgpt-export://"] == "chatgpt-export"

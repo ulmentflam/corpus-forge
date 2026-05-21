@@ -266,9 +266,7 @@ class ClaudeCodeSource(WatchedSource):
     def scan(self) -> Iterator[RawConversation]:
         """Iterate per-session JSONLs, then optionally yield prompt-history sessions."""
         for path in self.discover():
-            result = self.parse(path)
-            if result is not None:
-                yield result
+            yield self.parse(path)
 
         if self.history_path is None or not self.history_path.is_file():
             return

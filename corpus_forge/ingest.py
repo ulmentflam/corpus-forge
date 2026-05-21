@@ -579,7 +579,10 @@ def _instantiate_source(source_config, *, config: Config | None = None):
 
         from .sources.gemini_cli import GeminiCLISource  # noqa: PLC0415
 
-        if source_config.chats_root is None:
+        # ``ExpandedPath`` is a typed str, so an unset field is None but a
+        # field set to "" / "   " in TOML slips past type validation and
+        # would resolve to CWD via ``Path("")``. Treat blank as missing.
+        if not (source_config.chats_root and str(source_config.chats_root).strip()):
             raise ValueError(
                 "DatasetSourceConfig.plugin = 'gemini_cli' requires `chats_root` "
                 "(typically `~/.gemini/tmp`)."
@@ -590,7 +593,7 @@ def _instantiate_source(source_config, *, config: Config | None = None):
 
         from .sources.codex_cli import CodexCLISource  # noqa: PLC0415
 
-        if source_config.sessions_root is None:
+        if not (source_config.sessions_root and str(source_config.sessions_root).strip()):
             raise ValueError(
                 "DatasetSourceConfig.plugin = 'codex_cli' requires `sessions_root` "
                 "(typically `~/.codex/sessions`)."
@@ -601,7 +604,7 @@ def _instantiate_source(source_config, *, config: Config | None = None):
 
         from .sources.chatgpt_export import ChatGPTExportSource  # noqa: PLC0415
 
-        if source_config.export_root is None:
+        if not (source_config.export_root and str(source_config.export_root).strip()):
             raise ValueError(
                 "DatasetSourceConfig.plugin = 'chatgpt_export' requires `export_root` "
                 "(directory containing `conversations.json`)."
@@ -612,7 +615,7 @@ def _instantiate_source(source_config, *, config: Config | None = None):
 
         from .sources.jsonl_chat import JSONLChatSource  # noqa: PLC0415
 
-        if source_config.path is None:
+        if not (source_config.path and str(source_config.path).strip()):
             raise ValueError(
                 "DatasetSourceConfig.plugin = 'jsonl_chat' requires `path` "
                 "(a directory of *.jsonl files or a single file)."

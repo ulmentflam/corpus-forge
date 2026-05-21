@@ -259,6 +259,71 @@ def test_history_jsonl_yields_extra_conversations(tmp_path: Path) -> None:
     assert abc_history.metadata["source_kind"] == "history"
 
 
+def test_event_type_inferred_from_message_role_when_missing(tmp_path: Path) -> None:
+    """Pre-typed sessions emit ``{"message": {"role": ..., "content": ...}}``
+    with no top-level ``type`` field. The parser infers ``user`` /
+    ``assistant`` from ``message.role`` so those rows aren't silently dropped.
+    """
+    projects = tmp_path / "projects"
+    project = projects / "p1"
+    _write_session(
+        project,
+        "s5",
+        [
+            # No "type"; should be inferred as "user"
+            {
+                "uuid": "u1",
+                "sessionId": "s5",
+                "message": {"role": "user", "content": "where am I"},
+            },
+            # No "type"; should be inferred as "assistant"
+            {
+                "uuid": "a1",
+                "sessionId": "s5",
+                "message": {"role": "assistant", "content": "in a JSONL"},
+            },
+        ],
+    )
+    source = ClaudeCodeSource(projects_root=projects)
+    conv = source.parse(project / "s5.jsonl")
+    assert [(m.role, m.content) for m in conv.messages] == [
+        ("user", "where am I"),
+        ("assistant", "in a JSONL"),
+    ]
+
+
+def test_event_type_inference_skips_unknown_roles_and_missing_message(tmp_path: Path) -> None:
+    """Negative case: no ``type``, no ``message`` dict, or a role that isn't
+    user/assistant — the row is dropped (no inference).
+    """
+    projects = tmp_path / "projects"
+    project = projects / "p1"
+    _write_session(
+        project,
+        "s6",
+        [
+            # No type, no message dict at all -> dropped.
+            {"uuid": "x1", "sessionId": "s6"},
+            # No type, message present but role is neither user nor assistant.
+            {
+                "uuid": "x2",
+                "sessionId": "s6",
+                "message": {"role": "system", "content": "ignored"},
+            },
+            # Real user turn, so we can verify the rest of the file parses.
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "s6",
+                "message": {"role": "user", "content": "kept"},
+            },
+        ],
+    )
+    source = ClaudeCodeSource(projects_root=projects)
+    conv = source.parse(project / "s6.jsonl")
+    assert [m.content for m in conv.messages] == ["kept"]
+
+
 def test_history_jsonl_missing_is_silent(tmp_path: Path) -> None:
     projects = tmp_path / "projects"
     projects.mkdir()

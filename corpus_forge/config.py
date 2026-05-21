@@ -32,7 +32,15 @@ from pydantic.functional_validators import AfterValidator  # noqa: E402
 
 
 def expand_user(path: str) -> str:
-    """Expand ~ to user's home directory."""
+    """Expand ~ to user's home directory.
+
+    Empty / whitespace-only values are passed through unchanged so they
+    can be distinguished from a literal ``"."`` (which is what
+    ``Path("").expanduser()`` would otherwise produce, silently aliasing
+    "field unset" to "current working directory").
+    """
+    if not path or not path.strip():
+        return path
     return str(Path(path).expanduser())
 
 

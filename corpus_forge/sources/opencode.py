@@ -183,10 +183,22 @@ class OpenCodeSource(WatchedSource):
                         if isinstance(part_data, dict):
                             parts_for_msg.append(part_data)
 
-                messages.append(_message_from_record(msg_data, parts=parts_for_msg))
+                # Pass ``None`` when no part files were read so
+                # ``_message_from_record`` falls back to ``msg_data["parts"]``
+                # instead of seeing an empty list and skipping the fallback.
+                messages.append(
+                    _message_from_record(msg_data, parts=parts_for_msg if parts_for_msg else None)
+                )
 
             if not messages:
                 continue
+
+            # Filenames sort lexicographically (``m1`` < ``m10`` < ``m2``)
+            # which doesn't match chronological order. Re-sort by timestamp
+            # before computing started_at/ended_at so the conversation reads
+            # in turn order. ``content_hash`` is already computed above so
+            # this sort doesn't affect it.
+            messages.sort(key=lambda m: m.ts if m.ts is not None else 0.0)
 
             content_hash = hashlib.sha256(b"".join(hash_input)).hexdigest()
             title = info.get("title")
