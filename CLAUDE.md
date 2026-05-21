@@ -59,7 +59,7 @@ The config lives at `~/.config/corpus-forge/config.toml` on macOS/Linux and `%AP
 corpus-forge migrate
 ```
 
-Brings the database schema up to date (idempotent). Run this once after install and after every upgrade.
+Brings the database schema up to date (idempotent). `install.sh` and `install.ps1` already run this for you on first install (failures are warned and ignored so an unreachable Postgres at install time doesn't break the installer); re-running it is a safe no-op. Run it again manually after every upgrade.
 
 ## 4. Wire the MCP server into Claude
 

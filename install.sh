@@ -370,21 +370,40 @@ case ":$PATH:" in
     *) export PATH="$HOME/.local/bin:$PATH" ;;
 esac
 
-info "Launching the post-install setup wizard"
-if command -v corpus-forge >/dev/null 2>&1; then
-    # ALWAYS pass --non-interactive. The CF_* env vars are already
-    # populated above (interactive prompts feed into them via
-    # ``set_answer``; non-interactive flow inherits them directly from
-    # the caller's environment). If we omit ``--non-interactive``, the
-    # wizard reprompts on the same stdin that this script has already
-    # consumed (or was never a TTY when piped via ``curl | sh``), so
-    # the prompts get empty replies and silently take defaults —
-    # discarding every answer the user just typed.  See PR fixing
-    # "install.sh post-install wizard ignores collected answers".
-    corpus-forge setup --non-interactive
-else
-    warn "corpus-forge not on PATH yet. Open a new shell and run \`corpus-forge setup\`."
-fi
+# Post-install handoff. Wrapped in a function so tests/scripts/test_install_sh.py
+# can source and exercise this block without re-running uv provisioning.
+__cf_post_install_handoff() {
+    info "Launching the post-install setup wizard"
+    if command -v corpus-forge >/dev/null 2>&1; then
+        # ALWAYS pass --non-interactive. The CF_* env vars are already
+        # populated above (interactive prompts feed into them via
+        # ``set_answer``; non-interactive flow inherits them directly from
+        # the caller's environment). If we omit ``--non-interactive``, the
+        # wizard reprompts on the same stdin that this script has already
+        # consumed (or was never a TTY when piped via ``curl | sh``), so
+        # the prompts get empty replies and silently take defaults —
+        # discarding every answer the user just typed.  See PR fixing
+        # "install.sh post-install wizard ignores collected answers".
+        corpus-forge setup --non-interactive
 
-echo
-ok "Done. Run \`corpus-forge --help\` to get started."
+        # Run schema migrations now so first-run `ingest`/`embed` doesn't
+        # fail on an empty DB. Tolerate failure (e.g. Postgres unreachable
+        # at install time) — the installer prints a warning and exits 0
+        # instead of leaving the user with a half-installed CLI.
+        local cf_migrate_log
+        cf_migrate_log="$(mktemp -t corpus-forge-migrate.XXXXXX.log 2>/dev/null || mktemp)"
+        if ! corpus-forge migrate >"$cf_migrate_log" 2>&1; then
+            warn "corpus-forge migrate failed — see $cf_migrate_log for details. Re-run \`corpus-forge migrate\` once your database is reachable."
+        else
+            rm -f "$cf_migrate_log"
+        fi
+    else
+        warn "corpus-forge not on PATH yet. Open a new shell and run \`corpus-forge setup && corpus-forge migrate\`."
+    fi
+
+    echo
+    ok "Done. Run \`corpus-forge --help\` to get started."
+}
+# END __cf_post_install_handoff
+
+__cf_post_install_handoff
