@@ -8,6 +8,18 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Fixed
+
+- `corpus-forge mcp serve` no longer surfaces a Rich-formatted
+  traceback when the optional `mcp` package isn't installed. A
+  pre-flight `import mcp` in the CLI catches `ImportError` and prints a
+  single-line install hint
+  (`uv tool install 'corpus-forge\[mcp]'` or
+  `pip install 'corpus-forge\[mcp]'`) before exiting 1. The Rich
+  markup escape on `\[mcp]` keeps the extras specifier from being
+  silently eaten as an unknown style tag. Regression test
+  `test_missing_mcp_extra_shows_install_hint`.
+
 ## [0.1.0b7] - 2026-05-20
 
 ### Added
