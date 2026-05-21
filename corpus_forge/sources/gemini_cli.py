@@ -33,8 +33,12 @@ class GeminiCLISource(WatchedSource):
     dataset_kind = "chat"
     _session_link_client: str = "gemini-cli"
 
-    def __init__(self, projects_root: Path = Path("~/.gemini/tmp"), **kwargs):
-        super().__init__(projects_root.expanduser(), **kwargs)
+    def __init__(
+        self,
+        projects_root: Path | str = Path("~/.gemini/tmp"),
+        **kwargs,
+    ):
+        super().__init__(Path(projects_root).expanduser(), **kwargs)
 
     def discover(self) -> Iterator[Path]:
         """Yield *.json files from <projects_root>/<projectHash>/chats/."""

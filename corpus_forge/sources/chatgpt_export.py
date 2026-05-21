@@ -83,8 +83,8 @@ class ChatGPTExportSource(WatchedSource):
     dataset_kind = "chat"
     _session_link_client: str = "chatgpt-export"
 
-    def __init__(self, export_root: Path, **kwargs):
-        super().__init__(export_root, **kwargs)
+    def __init__(self, export_root: Path | str, **kwargs):
+        super().__init__(Path(export_root).expanduser(), **kwargs)
 
     def discover(self) -> Iterator[Path]:
         """Yield the single conversations.json file if it exists."""

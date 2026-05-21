@@ -193,7 +193,23 @@ class DatasetSourceConfig(BaseModel):
     # Chat source fields
     projects_root: ExpandedPath | None = None
     include_subagents: bool = Field(default=True)
+    # Optional ``~/.claude/history.jsonl`` location for the ``claude_code``
+    # plugin. When set, the user's typed-prompt log (incl. pasted content)
+    # is ingested as additional history-only conversations distinct from
+    # the per-session JSONLs under ``projects_root``.
+    history_path: ExpandedPath | None = None
     storage_root: ExpandedPath | None = None
+    # ``gemini_cli`` walks ``<chats_root>/<projectHash>/chats/*.json``.
+    chats_root: ExpandedPath | None = None
+    # ``codex_cli`` walks ``<sessions_root>`` recursively for
+    # ``rollout-*.jsonl`` (modern) or flat ``*.jsonl`` (legacy).
+    sessions_root: ExpandedPath | None = None
+    # ``chatgpt_export`` reads ``<export_root>/conversations.json``.
+    export_root: ExpandedPath | None = None
+    # ``jsonl_chat`` reads either a directory of ``*.jsonl`` files or a
+    # single file. Use this generic plugin for any non-CLI chat exports
+    # already in ``{role, content, ts}`` shape.
+    path: ExpandedPath | None = None
     # Phase D / Wave 2 (D-15) — generic root for the ``filesystem`` source.
     # Existing per-plugin path fields (``vault_root``, etc.) stay for
     # backwards compatibility. New ``filesystem`` plugin uses ``root``.

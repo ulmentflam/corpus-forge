@@ -32,8 +32,8 @@ class JSONLChatSource(WatchedSource):
     dataset_kind = "chat"
     _session_link_client: str | None = None
 
-    def __init__(self, path: Path, **kwargs):
-        super().__init__(path, **kwargs)
+    def __init__(self, path: Path | str, **kwargs):
+        super().__init__(Path(path).expanduser(), **kwargs)
 
     def discover(self) -> Iterator[Path]:
         """Yield *.jsonl files from root (or root itself if it is a file)."""
