@@ -87,9 +87,7 @@ class TestPerProviderExtras:
         'API key not found in environment variable OPENAI_API_KEY'
         the moment a local-substitution config lands.
         """
-        extras = _per_provider_extras(
-            _cfg("openai", base_url="http://localhost:11434/v1")
-        )
+        extras = _per_provider_extras(_cfg("openai", base_url="http://localhost:11434/v1"))
         assert extras["base_url"] == "http://localhost:11434/v1"
 
     def test_openai_omits_base_url_when_none(self) -> None:
@@ -103,9 +101,7 @@ class TestPerProviderExtras:
         """pydantic's ``AnyHttpUrl`` appends a trailing slash to bare
         hosts and that breaks the OpenAI SDK's path construction.
         """
-        extras = _per_provider_extras(
-            _cfg("openai", base_url="http://localhost:11434/v1/")
-        )
+        extras = _per_provider_extras(_cfg("openai", base_url="http://localhost:11434/v1/"))
         assert extras["base_url"] == "http://localhost:11434/v1"
 
     def test_model2vec_omits_both_device_and_api_key(self) -> None:
@@ -119,8 +115,7 @@ class TestPerProviderExtras:
         for provider in ("sentence_transformers", "openai", "model2vec"):
             extras = _per_provider_extras(_cfg(provider))
             assert common.issubset(extras.keys()), (
-                f"{provider!r} dropped a common kwarg: missing "
-                f"{common - extras.keys()}"
+                f"{provider!r} dropped a common kwarg: missing {common - extras.keys()}"
             )
 
 
@@ -186,9 +181,10 @@ class TestRegisterFromConfig:
         assert embedder.device == "cpu"
         # And ``api_key_env`` must NOT have been forwarded — sentence
         # transformers' constructor would TypeError on it.
-        assert not hasattr(embedder, "api_key_env") or embedder.__dict__.get(
-            "api_key_env"
-        ) != "WONT_BE_FORWARDED"
+        assert (
+            not hasattr(embedder, "api_key_env")
+            or embedder.__dict__.get("api_key_env") != "WONT_BE_FORWARDED"
+        )
 
 
 # ── Call-site parity: every config-to-registry helper uses the shared one ─
@@ -238,4 +234,26 @@ class TestCallSiteRouting:
             "register_from_config — ``corpus-forge embedder test`` "
             "will crash with the same kwarg-mismatch bugs we hit "
             "on ingest and search."
+        )
+
+    def test_embed_backfill_calls_register_from_config(self) -> None:
+        """The ``corpus-forge embed`` backfill verb is the fourth and
+        final ``EmbedderConfig`` → ``Embedder`` site. The original
+        registry-refactor commit (b5538db) missed this one and
+        ``corpus-forge embed -e <openai-provider>`` crashed with
+        ``TypeError: OpenAIEmbedder.__init__() got an unexpected
+        keyword argument 'device'`` — exact same bug as the original
+        ingest failure (surfaced again by the E2E #2 dim=4096
+        round-trip against live Postgres + Ollama).
+        """
+        import inspect
+
+        from corpus_forge.embed import backfill_embedder
+
+        src = inspect.getsource(backfill_embedder)
+        assert "register_from_config" in src, (
+            "corpus_forge.embed.backfill_embedder no longer routes "
+            "through register_from_config — "
+            "`corpus-forge embed -e <openai-provider>` will crash "
+            "with a 'device kwarg' TypeError again."
         )
