@@ -546,18 +546,43 @@ def audit_embedder_indexes(backend) -> list[IndexAuditRow]:
         )
         current = idx_rows[0]["def"] if idx_rows else None
 
-        from corpus_forge.backends.postgres import _dense_index_strategy
-
-        index_expr, _search_expr, ops = _dense_index_strategy(dim)
-        target_fragment = f"hnsw ({index_expr} {ops}"
+        from corpus_forge.backends.postgres import (
+            _HALFVEC_INDEX_LIMIT,
+            _PGVECTOR_INDEX_LIMIT,
+        )
 
         target = _target_indexdef(table_name, dim)
+
+        # ``pg_get_indexdef`` re-renders index expressions with its own
+        # parenthesisation/whitespace conventions (e.g. an extra outer
+        # paren around the ``::`` cast: ``((subvector(...))::halfvec(N))``
+        # vs our canonical ``(subvector(...)::halfvec(N))``). A naive
+        # ``target_fragment in current`` substring match flags these
+        # semantically-identical indexes as DRIFT. Compare on the
+        # key tokens that actually distinguish the strategies instead:
+        #
+        # - ``ops`` class (vector_cosine_ops vs halfvec_cosine_ops) —
+        #   the only thing the planner cares about for operator-class
+        #   match.
+        # - For halfvec, the projection width ``halfvec(N)`` AND the
+        #   ``subvector(`` marker (so an old broken
+        #   ``embedding::halfvec(N)`` index — without ``subvector`` —
+        #   is still flagged as DRIFT and gets rebuilt).
+        def _norm(s: str) -> str:
+            return s.replace(" ", "").lower()
+
         if current is None:
             status = "MISSING"
-        elif target_fragment in current:
-            status = "OK"
+        elif dim <= _PGVECTOR_INDEX_LIMIT:
+            # dim <= 2000: just check the ops class.
+            status = "OK" if "vector_cosine_ops" in current else "DRIFT"
         else:
-            status = "DRIFT"
+            index_dim = min(dim, _HALFVEC_INDEX_LIMIT)
+            current_n = _norm(current)
+            has_ops = "halfvec_cosine_ops" in current_n
+            has_dim = f"halfvec({index_dim})" in current_n
+            has_subvector = "subvector(" in current_n
+            status = "OK" if (has_ops and has_dim and has_subvector) else "DRIFT"
         rows.append(
             IndexAuditRow(
                 name=name,
