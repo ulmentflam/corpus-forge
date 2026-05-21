@@ -4,6 +4,12 @@ CREATE TABLE IF NOT EXISTS corpus.embeddings_{name} (
   embedding   vector({dim}) NOT NULL,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- HNSW index strategy mirrors ``_dense_index_strategy`` in
+-- corpus_forge/backends/postgres.py.
+-- - ``dim <= 2000``: ``USING hnsw (embedding vector_cosine_ops)``
+-- - ``dim >  2000``: ``USING hnsw ((embedding::halfvec(min(dim,4000))) halfvec_cosine_ops)``
+-- The search query must use the SAME projection expression for the
+-- planner to use the index.
 CREATE INDEX IF NOT EXISTS embeddings_{name}_hnsw
   ON corpus.embeddings_{name}
-  USING hnsw (embedding vector_cosine_ops);
+  USING hnsw ({index_expr} {index_ops});

@@ -1,9 +1,73 @@
 """Embedder registry for corpus-forge."""
 
+from typing import Any
+
 from .base import Embedder
 from .model2vec import Model2VecEmbedder
 from .openai import OpenAIEmbedder
 from .sentence_transformers import SentenceTransformersEmbedder
+
+
+def _per_provider_extras(embedder_config) -> dict[str, Any]:
+    """Build the provider-specific kwargs dict for ``EmbedderRegistry.register``.
+
+    Different providers accept different optional kwargs:
+
+    - ``sentence_transformers``: ``device`` (auto-resolves
+      ``"auto"`` to mps / cuda / cpu via ``resolve_device``); rejects
+      ``api_key_env`` and ``base_url`` (the OpenAI SDK args).
+    - ``openai``: ``api_key_env`` + optional ``base_url``; rejects
+      ``device`` — the HTTP transport has no local-accelerator
+      concept and passing it raised ``TypeError`` on every first-run
+      ingest against Ollama's OpenAI-compatible endpoint.
+    - ``model2vec``: CPU-only static embeddings; same "no device"
+      story as openai.
+
+    Pulled into a single helper so the three call sites
+    (``corpus_forge.ingest.get_active_embedders``,
+    ``corpus_forge.cli._build_retriever_for_eval``,
+    ``corpus_forge.admin.embedder.run_embedder_smoke``) can't drift
+    apart again — they were all reimplementing this in subtly
+    different ways and ``_build_retriever_for_eval`` in particular
+    was forgetting to forward ``base_url`` + ``api_key_env``, which
+    broke every dense ``corpus-forge search`` against a local
+    Ollama OpenAI-compat endpoint.
+    """
+    extras: dict[str, Any] = {
+        "normalized": getattr(embedder_config, "normalize", True),
+        "distance": getattr(embedder_config, "distance", "cosine"),
+        "batch_size": getattr(embedder_config, "batch_size", 32),
+    }
+    provider = getattr(embedder_config, "provider", "")
+    if provider == "sentence_transformers":
+        extras["device"] = getattr(embedder_config, "device", "auto")
+    elif provider == "openai":
+        extras["api_key_env"] = getattr(embedder_config, "api_key_env", "OPENAI_API_KEY")
+        base_url = getattr(embedder_config, "base_url", None)
+        if base_url is not None:
+            # ``base_url`` may be a pydantic AnyHttpUrl — cast to str
+            # and strip the trailing slash so the OpenAI SDK accepts
+            # it unchanged.
+            extras["base_url"] = str(base_url).rstrip("/")
+    # ``model2vec`` and any future CPU-only / static providers fall
+    # through with just the common kwargs.
+    return extras
+
+
+def register_from_config(registry: "EmbedderRegistry", embedder_config) -> Embedder:
+    """Register an embedder using the per-provider kwarg policy.
+
+    Every call site that builds an :class:`Embedder` from a config
+    object should route through here so the provider-specific
+    kwargs don't drift between ingest, search, and admin paths.
+    """
+    return registry.register(
+        name=embedder_config.name,
+        provider=embedder_config.provider,
+        model_id=embedder_config.model_id,
+        dimension=embedder_config.dimension,
+        **_per_provider_extras(embedder_config),
+    )
 
 
 class EmbedderRegistry:

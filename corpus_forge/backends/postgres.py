@@ -31,6 +31,67 @@ if TYPE_CHECKING:
 # readable without a ruff ``PLR2004`` magic-number flag.
 _LEGACY_CHUNK_TUPLE_LEN = 2
 
+# pgvector index-building limits (8 KB Postgres page constraint).
+# Source: pgvector README §"Vector Type" / §"Half Vector Type".
+#
+# - ``vector(N)`` HNSW: max N = 2000
+# - ``halfvec(N)`` HNSW: max N = 4000
+# - ``bit(N)`` HNSW: max N = 64000 (binary embeddings only)
+#
+# Storage is unconstrained up to 16000 dims for both ``vector`` and
+# ``halfvec``; the limit is purely on what fits in an index tuple.
+# Models like Qwen3-Embedding-8B (native 4096 dims, Matryoshka-trained)
+# exceed BOTH index ceilings, so we keep the storage column at the
+# user's full configured dimension and build the HNSW index over a
+# half-precision projection of the first ``min(dim, 4000)`` dims. The
+# search query uses the SAME projection expression so the planner can
+# match the index — see ``_dense_index_strategy``.
+_PGVECTOR_INDEX_LIMIT = 2000
+_HALFVEC_INDEX_LIMIT = 4000
+
+
+def _dense_index_strategy(dimension: int) -> tuple[str, str, str]:
+    """Pick the HNSW index/search SQL pair for a given embedding width.
+
+    Returns ``(index_expression, search_expression, ops_class)``.
+
+    The two expressions are kept byte-identical (modulo the ``e.``
+    table-alias prefix used in the search query) because Postgres
+    will only choose an expression-based index when the query's
+    ``ORDER BY`` matches the indexed expression exactly. Drifting
+    them turns every dense search into a sequential scan.
+
+    Branches:
+
+    - ``dim <= 2000``: full ``vector_cosine_ops`` index — back-compat
+      with every pre-existing ``embeddings_*`` table in the wild. No
+      schema migration required for older deployments.
+    - ``dim >  2000``: ``(subvector(embedding, 1, N)::halfvec(N))``
+      indexed with ``halfvec_cosine_ops``, where ``N = min(dim,
+      4000)``. Storage stays full ``vector(dim)`` so the float32
+      vectors are preserved; the half-precision projection is
+      search-side only.
+
+      The ``subvector(v, 1, N)`` call is required even when ``dim ==
+      N`` because pgvector's ``::halfvec(N)`` cast does NOT truncate
+      — it asserts the source vector is already ``N``-dimensional and
+      raises ``DataException: expected N dimensions, not <actual>``
+      when the source is wider. ``subvector`` does the truncation
+      (returning a ``vector(N)``), then the cast becomes a same-dim
+      narrowing. For Matryoshka-trained models the leading-N prefix
+      is the N-dim embedding, so the truncation is search-quality-
+      coherent. For dim > 4000 the index expression always truncates
+      to 4000 (pgvector's halfvec HNSW ceiling).
+    """
+    if dimension <= _PGVECTOR_INDEX_LIMIT:
+        return ("embedding", "e.embedding", "vector_cosine_ops")
+    index_dim = min(dimension, _HALFVEC_INDEX_LIMIT)
+    return (
+        f"(subvector(embedding, 1, {index_dim})::halfvec({index_dim}))",
+        f"(subvector(e.embedding, 1, {index_dim})::halfvec({index_dim}))",
+        "halfvec_cosine_ops",
+    )
+
 
 def _coerce_to_textchunk(item: Any) -> TextChunk:
     """Normalize a chunk input to a :class:`TextChunk`.
@@ -345,6 +406,7 @@ class PostgresBackend(StorageBackend):
         # Sanitize the name so it forms a valid SQL identifier (replace hyphens with underscores).
         safe_name = embedder.name.replace("-", "_")
         table_name = f"embeddings_{safe_name}"
+        index_expr, _, index_ops = _dense_index_strategy(embedder.dimension)
         self._execute(
             f"""
             CREATE TABLE IF NOT EXISTS corpus.{table_name} (
@@ -355,7 +417,7 @@ class PostgresBackend(StorageBackend):
             );
             CREATE INDEX IF NOT EXISTS {table_name}_hnsw
               ON corpus.{table_name}
-              USING hnsw (embedding vector_cosine_ops);
+              USING hnsw ({index_expr} {index_ops});
             """
         )
 
@@ -1013,6 +1075,7 @@ class PostgresBackend(StorageBackend):
             )
             embedder_id = result[0]["id"]
 
+        index_expr, _, index_ops = _dense_index_strategy(dimension)
         self._execute(
             f"""
             CREATE TABLE IF NOT EXISTS corpus.{table_name_val} (
@@ -1024,7 +1087,7 @@ class PostgresBackend(StorageBackend):
             );
             CREATE INDEX IF NOT EXISTS {table_name_val}_hnsw
               ON corpus.{table_name_val}
-              USING hnsw (embedding vector_cosine_ops);
+              USING hnsw ({index_expr} {index_ops});
             """
         )
         return embedder_id
@@ -1439,17 +1502,34 @@ class PostgresBackend(StorageBackend):
         if chunk_ids is not None and not chunk_ids:
             return []
 
-        # Look up the per-embedder table (e.g. corpus.embeddings_qwen3_8b).
+        # Look up the per-embedder table (e.g. corpus.embeddings_qwen3_8b)
+        # plus the dimension so we can pick the matching index strategy.
         rows = self._execute(
-            "SELECT table_name FROM corpus.embedders WHERE id = %s", (embedder_id,)
+            "SELECT table_name, dimension FROM corpus.embedders WHERE id = %s",
+            (embedder_id,),
         )
         if not rows:
             return []
         table_name = rows[0]["table_name"]
+        dim = int(rows[0]["dimension"])
 
         # pgvector expects the literal vector(...) cast for psycopg's
         # parameter binding.  Serialise to "[v1,v2,...]" form.
-        vec_str = "[" + ",".join(repr(float(x)) for x in np.asarray(query_vector).ravel()) + "]"
+        #
+        # For the halfvec-projection strategy (dim > 2000), the indexed
+        # column is ``subvector(embedding, 1, N)::halfvec(N)`` — so the
+        # query vector must ALSO be exactly N dims wide before casting
+        # to ``halfvec(N)``. The Matryoshka prefix is a quality-
+        # preserving truncation. We slice Python-side instead of
+        # wrapping in another ``subvector`` SQL call so the literal
+        # passed to psycopg already has the right shape and pgvector
+        # doesn't reject the cast with ``DataException: expected N
+        # dimensions, not <dim>``.
+        flat = np.asarray(query_vector).ravel()
+        if dim > _PGVECTOR_INDEX_LIMIT:
+            index_dim = min(dim, _HALFVEC_INDEX_LIMIT)
+            flat = flat[:index_dim]
+        vec_str = "[" + ",".join(repr(float(x)) for x in flat) + "]"
 
         params: list = [vec_str]
         ds_filter = ""
@@ -1462,6 +1542,20 @@ class PostgresBackend(StorageBackend):
             params.append(list(chunk_ids))
         params.append(k)
 
+        # Pick the search expression + query cast that MATCH the HNSW
+        # index built in ``_create_embedder_table``. The expressions
+        # must be byte-identical (modulo the ``e.`` alias) or Postgres
+        # falls back to a sequential scan.
+        _, search_expr, _ = _dense_index_strategy(dim)
+        if dim <= _PGVECTOR_INDEX_LIMIT:
+            query_cast = "%s::vector"
+        else:
+            index_dim = min(dim, _HALFVEC_INDEX_LIMIT)
+            # Query vector is already truncated to index_dim above, so
+            # the cast is a same-dim narrowing and matches the index
+            # expression's ``halfvec(index_dim)`` exactly.
+            query_cast = f"%s::halfvec({index_dim})"
+
         # NB: f-string interpolation of table_name is safe — register_embedder
         # synthesises it from a sanitised embedder name.
         result = self._execute(
@@ -1469,13 +1563,13 @@ class PostgresBackend(StorageBackend):
             SELECT c.id, c.text, c.document_id, c.conversation_id, c.metadata,
                    COALESCE(d.dataset_id, cv.dataset_id) AS dataset_id,
                    d.source_uri, d.title,
-                   (e.embedding <=> %s::vector) AS distance
+                   ({search_expr} <=> {query_cast}) AS distance
             FROM corpus.{table_name} e
             JOIN corpus.chunks c ON c.id = e.chunk_id
             LEFT JOIN corpus.documents d ON d.id = c.document_id
             LEFT JOIN corpus.conversations cv ON cv.id = c.conversation_id
             WHERE TRUE{ds_filter}{chunk_filter}
-            ORDER BY e.embedding <=> %s::vector
+            ORDER BY {search_expr} <=> {query_cast}
             LIMIT %s
             """,
             (vec_str, *params[1:-1], vec_str, params[-1]),

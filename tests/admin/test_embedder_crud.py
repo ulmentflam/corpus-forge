@@ -287,3 +287,269 @@ def test_cli_test_reports_dim_and_timing(fake_config: Path, monkeypatch) -> None
     assert result.exit_code == 0
     combined = (result.stdout or "") + (result.stderr or "")
     assert "dim=4096" in combined
+
+
+# ── repair-indexes ─────────────────────────────────────────────────────
+
+
+class _AuditBackend:
+    """Minimal stand-in for PostgresBackend used by ``audit_embedder_indexes``.
+
+    ``__class__.__name__`` must be ``PostgresBackend`` so the audit
+    doesn't short-circuit (SQLite path returns an empty list).
+    """
+
+    def __init__(self, execute_responses):
+        self._execute_responses = list(execute_responses)
+        self.executed: list[tuple[str, tuple]] = []
+
+    def _execute(self, sql, params=()):
+        self.executed.append((sql, params))
+        return self._execute_responses.pop(0)
+
+
+# Make the class name match PostgresBackend so the audit path runs.
+_AuditBackend.__name__ = "PostgresBackend"
+
+
+def test_audit_returns_ok_when_index_matches_small_dim() -> None:
+    backend = _AuditBackend(
+        [
+            # embedders listing
+            [{"name": "small", "dimension": 1024, "table_name": "embeddings_small"}],
+            # information_schema.tables exists
+            [{"exists": 1}],
+            # pg_get_indexdef returns the matching definition
+            [
+                {
+                    "def": (
+                        "CREATE INDEX embeddings_small_hnsw ON corpus.embeddings_small "
+                        "USING hnsw (embedding vector_cosine_ops)"
+                    )
+                }
+            ],
+        ]
+    )
+    rows = embedder_admin.audit_embedder_indexes(backend)
+    assert len(rows) == 1
+    assert rows[0].status == "OK"
+    assert rows[0].dimension == 1024
+
+
+def test_audit_flags_drift_for_oversized_dim_with_legacy_index() -> None:
+    """A dim=4096 embedder whose index is still ``vector_cosine_ops``
+    is the exact failure mode the migration + repair tooling
+    exists to fix. Audit must surface it as DRIFT.
+    """
+    backend = _AuditBackend(
+        [
+            [{"name": "qwen3_4096", "dimension": 4096, "table_name": "embeddings_qwen3_4096"}],
+            [{"exists": 1}],
+            [
+                {
+                    "def": (
+                        "CREATE INDEX embeddings_qwen3_4096_hnsw ON corpus.embeddings_qwen3_4096 "
+                        "USING hnsw (embedding vector_cosine_ops)"
+                    )
+                }
+            ],
+        ]
+    )
+    rows = embedder_admin.audit_embedder_indexes(backend)
+    assert len(rows) == 1
+    assert rows[0].status == "DRIFT"
+    # Target should be the halfvec(4000) projection, not vector_cosine_ops.
+    assert "halfvec(4000)" in rows[0].target_indexdef
+    assert "halfvec_cosine_ops" in rows[0].target_indexdef
+
+
+def test_audit_flags_table_missing_when_no_chunks_table() -> None:
+    backend = _AuditBackend(
+        [
+            [{"name": "stub", "dimension": 768, "table_name": "embeddings_stub"}],
+            [],  # information_schema returns no row
+        ]
+    )
+    rows = embedder_admin.audit_embedder_indexes(backend)
+    assert len(rows) == 1
+    assert rows[0].status == "TABLE_MISSING"
+
+
+def test_audit_flags_missing_index_when_pg_get_indexdef_empty() -> None:
+    backend = _AuditBackend(
+        [
+            [{"name": "halfvec_ok", "dimension": 4096, "table_name": "embeddings_halfvec_ok"}],
+            [{"exists": 1}],
+            [],  # no index row
+        ]
+    )
+    rows = embedder_admin.audit_embedder_indexes(backend)
+    assert len(rows) == 1
+    assert rows[0].status == "MISSING"
+
+
+def test_audit_ok_for_4096_when_halfvec_projection_present() -> None:
+    """An already-correct index must report OK so the migration +
+    repair tooling don't thrash on idempotent re-runs. The matching
+    indexdef uses the ``subvector(...)::halfvec(N)`` truncate-then-cast
+    shape required by pgvector when storage is ``vector(dim)`` and
+    ``dim > N``.
+    """
+    backend = _AuditBackend(
+        [
+            [{"name": "qwen3_4096", "dimension": 4096, "table_name": "embeddings_qwen3_4096"}],
+            [{"exists": 1}],
+            [
+                {
+                    "def": (
+                        "CREATE INDEX embeddings_qwen3_4096_hnsw "
+                        "ON corpus.embeddings_qwen3_4096 "
+                        "USING hnsw ("
+                        "(subvector(embedding, 1, 4000)::halfvec(4000)) "
+                        "halfvec_cosine_ops)"
+                    )
+                }
+            ],
+        ]
+    )
+    rows = embedder_admin.audit_embedder_indexes(backend)
+    assert rows[0].status == "OK"
+
+
+def test_repair_emits_drop_then_create() -> None:
+    """The repair helper must drop the stale index BEFORE creating the
+    new one — running them in the other order would crash on the
+    name collision — AND it must run both inside a single
+    connection/transaction so a CREATE failure rolls back the DROP.
+    """
+    from contextlib import contextmanager
+    from unittest.mock import MagicMock
+
+    # Capture SQL through a single mock cursor so the order assertion
+    # also verifies the two statements share a connection.
+    cur = MagicMock()
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__ = MagicMock(return_value=cur)
+    conn.cursor.return_value.__exit__ = MagicMock(return_value=None)
+
+    @contextmanager
+    def _get_connection_stub():
+        yield conn
+
+    backend = MagicMock()
+    backend.__class__.__name__ = "PostgresBackend"
+    backend._get_connection = _get_connection_stub
+
+    row = embedder_admin.IndexAuditRow(
+        name="qwen3_4096",
+        dimension=4096,
+        table_name="embeddings_qwen3_4096",
+        current_indexdef="CREATE INDEX ... USING hnsw (embedding vector_cosine_ops)",
+        target_indexdef=(
+            "CREATE INDEX ... USING hnsw "
+            "((subvector(embedding, 1, 4000)::halfvec(4000)) halfvec_cosine_ops)"
+        ),
+        status="DRIFT",
+    )
+    embedder_admin.repair_embedder_index(backend, row)
+
+    # Both statements executed on the same cursor in order.
+    assert cur.execute.call_count == 2
+    drop_call, create_call = cur.execute.call_args_list
+    drop_sql = drop_call.args[0].as_string()
+    create_sql = create_call.args[0].as_string()
+    assert "DROP INDEX" in drop_sql
+    assert "embeddings_qwen3_4096_hnsw" in drop_sql
+    assert "CREATE INDEX" in create_sql
+    assert "halfvec(4000)" in create_sql
+    assert "halfvec_cosine_ops" in create_sql
+    assert "subvector(embedding, 1, 4000)" in create_sql
+
+    # And ``commit`` must fire ONCE at the end so the DROP+CREATE
+    # is atomic — calling ``conn.commit()`` between them would
+    # break the rollback-on-CREATE-failure contract.
+    conn.commit.assert_called_once()
+
+
+def test_cli_repair_dry_run_does_not_apply(monkeypatch) -> None:
+    """No ``--apply`` flag → CLI prints the audit + exits non-zero
+    when there's drift, but never calls the repair helper."""
+
+    drifted = embedder_admin.IndexAuditRow(
+        name="qwen3_4096",
+        dimension=4096,
+        table_name="embeddings_qwen3_4096",
+        current_indexdef="CREATE INDEX ... vector_cosine_ops",
+        target_indexdef="CREATE INDEX ... halfvec_cosine_ops",
+        status="DRIFT",
+    )
+    monkeypatch.setattr(embedder_admin, "_load_config", MagicMock)
+    monkeypatch.setattr(embedder_admin, "_get_backend", lambda _cfg: MagicMock())
+    monkeypatch.setattr(embedder_admin, "audit_embedder_indexes", lambda _b: [drifted])
+    called = []
+    monkeypatch.setattr(
+        embedder_admin,
+        "repair_embedder_index",
+        lambda _b, _r: called.append(_r),
+    )
+
+    result = runner.invoke(embedder_admin.embedder_app, ["repair-indexes"])
+    assert result.exit_code == 1  # drift detected without --apply
+    assert called == []
+
+
+def test_cli_repair_apply_invokes_helper_for_each_drifted_row(monkeypatch) -> None:
+    drifted_rows = [
+        embedder_admin.IndexAuditRow(
+            name=f"e{i}",
+            dimension=4096,
+            table_name=f"embeddings_e{i}",
+            current_indexdef="vector_cosine_ops",
+            target_indexdef="halfvec_cosine_ops",
+            status="DRIFT",
+        )
+        for i in range(3)
+    ]
+    monkeypatch.setattr(embedder_admin, "_load_config", MagicMock)
+    monkeypatch.setattr(embedder_admin, "_get_backend", lambda _cfg: MagicMock())
+    monkeypatch.setattr(embedder_admin, "audit_embedder_indexes", lambda _b: drifted_rows)
+    called = []
+    monkeypatch.setattr(
+        embedder_admin,
+        "repair_embedder_index",
+        lambda _b, _r: called.append(_r.name),
+    )
+
+    result = runner.invoke(embedder_admin.embedder_app, ["repair-indexes", "--apply"])
+    assert result.exit_code == 0
+    assert called == ["e0", "e1", "e2"]
+
+
+def test_cli_repair_clean_audit_returns_success(monkeypatch) -> None:
+    clean_rows = [
+        embedder_admin.IndexAuditRow(
+            name="small",
+            dimension=1024,
+            table_name="embeddings_small",
+            current_indexdef="CREATE INDEX ... vector_cosine_ops",
+            target_indexdef="CREATE INDEX ... vector_cosine_ops",
+            status="OK",
+        )
+    ]
+    monkeypatch.setattr(embedder_admin, "_load_config", MagicMock)
+    monkeypatch.setattr(embedder_admin, "_get_backend", lambda _cfg: MagicMock())
+    monkeypatch.setattr(embedder_admin, "audit_embedder_indexes", lambda _b: clean_rows)
+
+    result = runner.invoke(embedder_admin.embedder_app, ["repair-indexes"])
+    assert result.exit_code == 0
+
+
+def test_audit_short_circuits_on_sqlite_backend() -> None:
+    """SQLite has no HNSW index to audit; the function must return
+    an empty list immediately rather than try to query pg_class."""
+
+    class _SqliteStub:
+        pass
+
+    _SqliteStub.__name__ = "SQLiteBackend"
+    assert embedder_admin.audit_embedder_indexes(_SqliteStub()) == []
