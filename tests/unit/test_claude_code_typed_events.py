@@ -324,6 +324,68 @@ def test_event_type_inference_skips_unknown_roles_and_missing_message(tmp_path: 
     assert [m.content for m in conv.messages] == ["kept"]
 
 
+def test_history_jsonl_digest_is_per_session(tmp_path: Path) -> None:
+    """Each history-derived conversation's content_hash must depend only on
+    that session's rows. Adding rows for one session must not change the
+    digest of any other session — otherwise touching a single prompt in
+    one session triggers a re-ingest of every session in the file.
+    """
+    projects = tmp_path / "projects"
+    projects.mkdir()
+
+    base_rows = [
+        {
+            "display": "abc prompt 1",
+            "pastedContents": {},
+            "timestamp": 1779292572403,
+            "project": "/work/p",
+            "sessionId": "abc",
+        },
+        {
+            "display": "xyz prompt 1",
+            "pastedContents": {},
+            "timestamp": 1779292672403,
+            "project": "/work/p",
+            "sessionId": "xyz",
+        },
+    ]
+
+    history_a = tmp_path / "history-a.jsonl"
+    history_a.write_text("\n".join(json.dumps(r) for r in base_rows))
+    convs_a = {
+        c.metadata["session_id"]: c.content_hash
+        for c in ClaudeCodeSource(projects_root=projects, history_path=history_a).scan()
+        if c.source_uri.startswith("claude-code-history://")
+    }
+
+    # Append a brand-new row for session "xyz". Session "abc" rows are
+    # untouched — its digest must stay identical.
+    history_b = tmp_path / "history-b.jsonl"
+    history_b.write_text(
+        "\n".join(
+            json.dumps(r)
+            for r in [
+                *base_rows,
+                {
+                    "display": "xyz prompt 2",
+                    "pastedContents": {},
+                    "timestamp": 1779292772403,
+                    "project": "/work/p",
+                    "sessionId": "xyz",
+                },
+            ]
+        )
+    )
+    convs_b = {
+        c.metadata["session_id"]: c.content_hash
+        for c in ClaudeCodeSource(projects_root=projects, history_path=history_b).scan()
+        if c.source_uri.startswith("claude-code-history://")
+    }
+
+    assert convs_a["abc"] == convs_b["abc"], "abc digest must not change when xyz changes"
+    assert convs_a["xyz"] != convs_b["xyz"], "xyz digest must change when xyz gains a row"
+
+
 def test_history_jsonl_missing_is_silent(tmp_path: Path) -> None:
     projects = tmp_path / "projects"
     projects.mkdir()

@@ -287,7 +287,6 @@ class ClaudeCodeSource(WatchedSource):
             raw = history_path.read_bytes()
         except OSError:
             return
-        hash_input = raw
         for line in raw.decode("utf-8", errors="replace").splitlines():
             stripped = line.strip()
             if not stripped:
@@ -305,6 +304,12 @@ class ClaudeCodeSource(WatchedSource):
 
         for sid, entries in by_session.items():
             entries.sort(key=lambda e: e.get("timestamp") or 0)
+            # Hash only this session's entries so a new prompt in one session
+            # doesn't invalidate the digest (and trigger re-ingest) of every
+            # other session in the file.
+            session_hash_bytes = "\n".join(
+                json.dumps(e, sort_keys=True, separators=(",", ":")) for e in entries
+            ).encode("utf-8")
             messages: list[RawMessage] = []
             project_cwd: str | None = None
             for entry in entries:
@@ -338,7 +343,7 @@ class ClaudeCodeSource(WatchedSource):
                 )
             if not messages:
                 continue
-            digest = hashlib.sha256(hash_input + sid.encode()).hexdigest()
+            digest = hashlib.sha256(session_hash_bytes).hexdigest()
             yield RawConversation(
                 # Distinct URI scheme so this doesn't collide with the
                 # project-session conversation that shares the sessionId.

@@ -125,6 +125,45 @@ def test_scan_reconstructs_session_from_triple_store(tmp_path: Path) -> None:
     assert conv.ended_at == 1700000001
 
 
+def test_scan_places_untimestamped_messages_after_timed_turns(tmp_path: Path) -> None:
+    """Messages with ``ts is None`` must sort to the end so ``started_at``
+    picks the earliest real timestamp instead of being clobbered by a
+    missing one. Regression for the ``0.0``-sentinel pitfall.
+    """
+    storage = tmp_path / "storage"
+    sid = "sess-tsmix"
+    _write(
+        storage / "session" / "info" / f"{sid}.json",
+        {"id": sid, "title": "Mixed ts session"},
+    )
+    # User turn has no timestamp at all.
+    _write(
+        storage / "session" / "message" / sid / "m_user.json",
+        {"id": "m1", "role": "user"},
+    )
+    _write(
+        storage / "session" / "part" / sid / "m1" / "p1.json",
+        {"type": "text", "text": "no ts here"},
+    )
+    # Assistant turn has a real timestamp.
+    _write(
+        storage / "session" / "message" / sid / "m_assistant.json",
+        {"id": "m2", "role": "assistant", "timestamp": 1700000005},
+    )
+    _write(
+        storage / "session" / "part" / sid / "m2" / "p1.json",
+        {"type": "text", "text": "answered"},
+    )
+
+    convs = list(OpenCodeSource(storage_root=storage).scan())
+    assert len(convs) == 1
+    conv = convs[0]
+    # Real-ts message must come first; None-ts message goes to the end.
+    assert [m.ts for m in conv.messages] == [1700000005, None]
+    # started_at must be the real timestamp, not None.
+    assert conv.started_at == 1700000005
+
+
 def test_scan_falls_back_to_legacy_layout_when_no_info(tmp_path: Path) -> None:
     """Without ``session/info/*.json`` the legacy ``message.json`` walker runs.
 

@@ -198,7 +198,17 @@ class OpenCodeSource(WatchedSource):
             # before computing started_at/ended_at so the conversation reads
             # in turn order. ``content_hash`` is already computed above so
             # this sort doesn't affect it.
-            messages.sort(key=lambda m: m.ts if m.ts is not None else 0.0)
+            #
+            # Tuple key keeps untimestamped messages (``m.ts is None``) at
+            # the end instead of clustering them at 0.0 — that way
+            # ``started_at`` picks the earliest *real* timestamp, not a
+            # missing one.
+            messages.sort(
+                key=lambda m: (
+                    m.ts is None,
+                    m.ts if m.ts is not None else float("inf"),
+                )
+            )
 
             content_hash = hashlib.sha256(b"".join(hash_input)).hexdigest()
             title = info.get("title")
