@@ -244,3 +244,47 @@ def test_revision_chain_is_well_formed() -> None:
 
 # ── Sentinel (must be module-level so _load_revision_module can reference it) ──
 _SENTINEL = object()
+
+
+# ── Test 5: revision id length ≤ 32 chars (alembic VARCHAR(32) cap) ────────
+
+
+# Alembic's default ``alembic_version.version_num`` column is
+# ``VARCHAR(32)``. Once that table exists (created on the first
+# migration), every subsequent ``alembic upgrade`` ends with an
+# ``UPDATE alembic_version SET version_num = '<new_rev_id>'``. If
+# any later-added revision uses an id longer than 32 chars, that
+# UPDATE raises ``psycopg.errors.StringDataRightTruncation`` AFTER
+# the migration's ``upgrade()`` body has already run — and the
+# whole step rolls back transactionally, but the operator-visible
+# failure is opaque ("value too long for type character varying(32)")
+# and the schema is wedged at the previous revision.
+#
+# This regression test pins ``len(rev_id) <= 32`` for every
+# revision so a 37-char id like
+# ``0015_halfvec_index_for_wide_embedders`` (the original 0015,
+# fixed in the follow-up commit) can never sneak through code
+# review again.
+_ALEMBIC_VERSION_NUM_VARCHAR_LIMIT = 32
+
+
+def test_every_revision_id_fits_alembic_version_num_column() -> None:
+    revision_files = _discover_revision_modules()
+    if not revision_files:
+        return  # no revisions yet — D-01 RED-time path
+
+    too_long: list[str] = []
+    for path in revision_files:
+        mod = _load_revision_module(path)
+        rev_id = getattr(mod, "revision", "")
+        if not isinstance(rev_id, str):
+            continue
+        if len(rev_id) > _ALEMBIC_VERSION_NUM_VARCHAR_LIMIT:
+            too_long.append(f"{path.name}: {rev_id!r} = {len(rev_id)} chars")
+
+    assert not too_long, (
+        "Revision id(s) longer than alembic's VARCHAR(32) "
+        "version_num column would break `corpus-forge migrate` "
+        "with `StringDataRightTruncation` at the end of the upgrade. "
+        "Shorten:\n  " + "\n  ".join(too_long)
+    )

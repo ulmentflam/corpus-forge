@@ -1297,16 +1297,16 @@ def _build_retriever_for_eval(
 
     # Build the embedder via a local registry instance so we don't poison
     # the global one (multiple eval calls in the same process would otherwise
-    # accumulate instances).
+    # accumulate instances). Route through ``register_from_config`` so the
+    # provider-specific kwargs (api_key_env + base_url for openai, device for
+    # sentence_transformers) are forwarded the same way ingest does — the
+    # pre-refactor inline ``reg.register(...)`` call dropped both and
+    # crashed every search against a local Ollama OpenAI-compat endpoint
+    # with ``API key not found in environment variable OPENAI_API_KEY``.
+    from corpus_forge.embedders.registry import register_from_config
+
     reg = EmbedderRegistry()
-    embedder = reg.register(
-        name=active.name,
-        provider=active.provider,
-        model_id=active.model_id,
-        dimension=active.dimension,
-        normalized=getattr(active, "normalize", True),
-        distance=getattr(active, "distance", "cosine"),
-    )
+    embedder = register_from_config(reg, active)
     eid = backend.register_embedder(embedder)
     return HybridRetriever(backend=backend, embedder=embedder, embedder_id=eid, reranker=reranker)
 
