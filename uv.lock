@@ -471,6 +471,7 @@ source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "httpx" },
+    { name = "openai" },
     { name = "pgvector" },
     { name = "platformdirs" },
     { name = "psycopg", extra = ["binary"] },
@@ -525,9 +526,6 @@ ocr = [
     { name = "pdf2image" },
     { name = "pillow" },
     { name = "requests" },
-]
-openai = [
-    { name = "openai" },
 ]
 rerank = [
     { name = "sentence-transformers" },
@@ -592,7 +590,7 @@ requires-dist = [
     { name = "model2vec", marker = "extra == 'fast-tier'", specifier = ">=0.5" },
     { name = "numpy", marker = "extra == 'eval'", specifier = ">=1.26" },
     { name = "numpy", marker = "extra == 'retrieval'", specifier = ">=1.26" },
-    { name = "openai", marker = "extra == 'openai'", specifier = ">=1.30" },
+    { name = "openai", specifier = ">=1.30" },
     { name = "pandas", marker = "extra == 'multi-format'", specifier = ">=2.2" },
     { name = "pdf2image", marker = "extra == 'ocr'", specifier = ">=1.17" },
     { name = "pgvector", specifier = ">=0.3" },

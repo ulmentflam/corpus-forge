@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from corpus_forge.embedders.openai import OPENAI_AVAILABLE, OpenAIEmbedder
+from corpus_forge.embedders.openai import OpenAIEmbedder
 from corpus_forge.embedders.sentence_transformers import (
     SentenceTransformersEmbedder,
 )
@@ -126,8 +126,6 @@ class TestOpenAIEmbedder:
 
         if "OPENAI_API_KEY" in os.environ:
             del os.environ["OPENAI_API_KEY"]
-        if not OPENAI_AVAILABLE:
-            pytest.skip("openai package not available")
         embedder = OpenAIEmbedder(
             name="test",
             model_id="text-embedding-3-small",
@@ -144,8 +142,6 @@ class TestOpenAIEmbedder:
         # Ensure no API key is set
         orig_key = os.environ.pop("OPENAI_API_KEY", None)
         try:
-            if not OPENAI_AVAILABLE:
-                pytest.skip("openai package not available")
             embedder = OpenAIEmbedder(
                 name="test",
                 model_id="text-embedding-3-small",

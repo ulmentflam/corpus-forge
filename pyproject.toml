@@ -65,10 +65,25 @@ dependencies = [
   # order survive the `bug-report` config snapshot. tomlkit is also the
   # forward foundation for the Wave 7 `config edit` round-trip CRUD.
   "tomlkit>=0.13",
+  # The ``openai`` SDK is the HTTP client behind ``provider = "openai"``
+  # in ``[[embedders]]`` (and the same shape for any other config field
+  # that names an OpenAI-compatible endpoint). The name refers to the
+  # REST *protocol*, not the SaaS — local servers like Ollama
+  # (``:11434/v1``), vLLM, llama.cpp's server, and LM Studio all expose
+  # the same wire shape. Promoted from a ``[openai]`` extra to a base
+  # dep because the failure mode (``"openai package is required"``
+  # mid-ingest, after a long scan) is a nasty surprise for users who
+  # never plan to hit ``api.openai.com``.
+  "openai>=1.30",
 ]
 
 [project.optional-dependencies]
-openai     = ["openai>=1.30"]
+# Back-compat alias — earlier docs and one-liners installed
+# ``corpus-forge[openai]``. The SDK is now a base dep; the extra is
+# preserved as an empty list so ``pip install corpus-forge[openai]``
+# (and any downstream user of that incantation) keeps resolving
+# without an "unknown extra" warning.
+openai     = []
 hf         = ["datasets>=2.20"]
 tokens     = ["tiktoken>=0.7"]
 sqlite     = ["sqlite-vec>=0.1"]

@@ -226,6 +226,8 @@ Apply with `corpus-forge migrate` (idempotent). Each revision file lives at
 | `0011_image_embeddings` | Adds `embedders.image BOOLEAN` column + reserves the dynamic `image_embeddings_<name>` family namespace (Phase G P1). |
 | `0012_analyze_signals` | Adds `chunk_quality_signals` (per-chunk learned-quality readouts) + `near_duplicate_clusters` (MinHash LSH groupings) for Phase O EDA / cleaning. Both tables FK to `chunks(id)` with `ON DELETE CASCADE`. |
 | `0013_search_sessions` | Adds `search_sessions` (one row per search call, FK to `datasets(id)` ON DELETE CASCADE) + `search_result_events` (per-result telemetry, FK to `search_sessions(id)` and `chunks(id)` ON DELETE CASCADE) for Phase P search-session tracking. |
+| `0014_sdft_demonstrations` | Adds `sdft_demonstrations` (one row per captured teacher→student demonstration) for Phase Q Wave 1 SDFT (Supervised Demo Fine-Tuning). Stores query context, prior model output, curated correction prompt, corrected target, source signal, optional trace_id, and content_hash for dedup. |
+| `0015_halfvec_hnsw_index` | Adapts every `embeddings_<name>` table's HNSW index to match its embedder's dimension. `dim <= 2000` keeps `USING hnsw (embedding vector_cosine_ops)`; `dim > 2000` rebuilds as `USING hnsw ((embedding::halfvec(min(dim,4000))) halfvec_cosine_ops)` because pgvector's standard `vector` HNSW caps at 2000 and `halfvec` HNSW caps at 4000. Idempotent — re-running is a no-op when indexes already match. Postgres-only; SQLite (sqlite-vec) is a no-op. (Originally landed as a 37-char id "0015_halfvec_index_for_wide_embedders" but that exceeded alembic's `VARCHAR(32)` `version_num` column; renamed in a follow-up.) |
 
 ## Design rationale
 

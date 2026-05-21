@@ -10,19 +10,15 @@ zero-auth proxies keep working without polluting ``secrets.env``.
 """
 
 import contextlib
+import logging
 from collections.abc import Sequence
 
 import numpy as np
-
-try:
-    # pyrefly: ignore[missing-import]  # optional dep, install via [openai] extra
-    from openai import OpenAI
-
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
+from openai import OpenAI
 
 from .base import BaseEmbedder
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIEmbedder(BaseEmbedder):
@@ -61,7 +57,7 @@ class OpenAIEmbedder(BaseEmbedder):
         fall back to ``"local-no-auth"``. With the default base URL,
         a missing env var is a hard configuration failure.
         """
-        if self._client is None and OPENAI_AVAILABLE:
+        if self._client is None:
             import os  # noqa: PLC0415
 
             api_key = os.getenv(self.api_key_env)
@@ -85,10 +81,19 @@ class OpenAIEmbedder(BaseEmbedder):
             self._get_client()
 
     def encode(self, texts: Sequence[str], *, batch_size: int = 32) -> np.ndarray:
-        """Encode texts into embeddings using OpenAI API."""
-        if not OPENAI_AVAILABLE:
-            raise ImportError("openai package is required")
+        """Encode texts into embeddings using OpenAI API.
 
+        Dimension handling: ``self.dimension`` is forwarded as the
+        ``dimensions`` request field, which OpenAI's
+        ``text-embedding-3-*`` models honour server-side via Matryoshka
+        truncation. Local OpenAI-compatible servers vary — Ollama's
+        ``/v1/embeddings`` shim currently ignores the field and always
+        returns the full native width of the model (e.g. 4096 for
+        ``qwen3-embedding:8b``). Because Matryoshka-trained models are
+        prefix-coherent (the first N dims ARE the N-dim embedding),
+        truncating client-side produces the same vector the server
+        would have returned. We slice + renormalise instead of raising.
+        """
         client = self._get_client()
         if client is None:
             raise RuntimeError("Failed to initialize OpenAI client")
@@ -104,9 +109,16 @@ class OpenAIEmbedder(BaseEmbedder):
         for i in range(0, len(texts_list), actual_batch_size):
             batch = texts_list[i : i + actual_batch_size]
 
-            # Call OpenAI API
+            # Call OpenAI API. ``dimensions=`` is the official
+            # server-side Matryoshka knob; servers that don't know
+            # the field just ignore it (Ollama) — that's fine because
+            # the client-side truncation below produces the same
+            # result for Matryoshka-trained models.
             response = client.embeddings.create(
-                model=self.model_id, input=batch, encoding_format="float"
+                model=self.model_id,
+                input=batch,
+                encoding_format="float",
+                dimensions=self.dimension,
             )
 
             # Extract embeddings
@@ -116,14 +128,30 @@ class OpenAIEmbedder(BaseEmbedder):
         # Convert to numpy array
         embeddings = np.array(all_embeddings, dtype=np.float32)
 
-        # Ensure correct dimension
-        if embeddings.shape[1] != self.dimension:
+        # Dimension check — accept exact match (server honoured
+        # ``dimensions=``) OR a longer native vector that we can
+        # truncate (Matryoshka prefix). A SHORTER vector is a real
+        # config mismatch and stays a hard error.
+        actual_dim = embeddings.shape[1]
+        if actual_dim < self.dimension:
             raise ValueError(
                 f"Model {self.model_id} produced embeddings of dimension "
-                f"{embeddings.shape[1]}, expected {self.dimension}"
+                f"{actual_dim}, expected {self.dimension}"
             )
+        if actual_dim > self.dimension:
+            logger.debug(
+                "Server returned %d-dim embeddings; truncating to configured "
+                "%d (Matryoshka prefix). To silence this, configure the "
+                "embedder with the model's native width or upgrade the "
+                "server so ``dimensions=`` is honoured.",
+                actual_dim,
+                self.dimension,
+            )
+            embeddings = embeddings[:, : self.dimension]
 
-        # Normalize if requested (though OpenAI embeddings are typically already normalized)
+        # Normalize if requested (renorm is REQUIRED after truncation
+        # — a Matryoshka prefix is not unit-length even if the full
+        # vector was).
         if self.normalized:
             norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
             # Avoid division by zero
