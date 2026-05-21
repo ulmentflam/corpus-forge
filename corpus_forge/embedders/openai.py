@@ -13,14 +13,7 @@ import contextlib
 from collections.abc import Sequence
 
 import numpy as np
-
-try:
-    # pyrefly: ignore[missing-import]  # optional dep, install via [openai] extra
-    from openai import OpenAI
-
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
+from openai import OpenAI
 
 from .base import BaseEmbedder
 
@@ -61,7 +54,7 @@ class OpenAIEmbedder(BaseEmbedder):
         fall back to ``"local-no-auth"``. With the default base URL,
         a missing env var is a hard configuration failure.
         """
-        if self._client is None and OPENAI_AVAILABLE:
+        if self._client is None:
             import os  # noqa: PLC0415
 
             api_key = os.getenv(self.api_key_env)
@@ -86,9 +79,6 @@ class OpenAIEmbedder(BaseEmbedder):
 
     def encode(self, texts: Sequence[str], *, batch_size: int = 32) -> np.ndarray:
         """Encode texts into embeddings using OpenAI API."""
-        if not OPENAI_AVAILABLE:
-            raise ImportError("openai package is required")
-
         client = self._get_client()
         if client is None:
             raise RuntimeError("Failed to initialize OpenAI client")

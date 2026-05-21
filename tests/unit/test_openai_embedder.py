@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from corpus_forge.embedders.openai import OPENAI_AVAILABLE, OpenAIEmbedder
+from corpus_forge.embedders.openai import OpenAIEmbedder
 
 
 class TestOpenAIEmbedderInit:
@@ -42,8 +42,6 @@ class TestOpenAIClient:
 
         orig = os.environ.pop("OPENAI_API_KEY", None)
         try:
-            if not OPENAI_AVAILABLE:
-                pytest.skip("openai not installed")
             embedder = OpenAIEmbedder(
                 name="test",
                 model_id="text-embedding-3-small",
@@ -55,17 +53,6 @@ class TestOpenAIClient:
             if orig is not None:
                 os.environ["OPENAI_API_KEY"] = orig
 
-    def test_get_client_returns_none_without_package(self):
-        embedder = OpenAIEmbedder(
-            name="test",
-            model_id="text-embedding-3-small",
-            dimension=1536,
-        )
-        # Without openai installed, _get_client returns None
-        with patch("corpus_forge.embedders.openai.OPENAI_AVAILABLE", False):
-            result = embedder._get_client()
-            assert result is None
-
     def test_local_base_url_tolerates_missing_env_var(self):
         """Local-substitution mode: when ``base_url`` is set we fall
         back to a placeholder key instead of raising. Lets users point
@@ -73,8 +60,6 @@ class TestOpenAIClient:
         without inventing a fake key in secrets.env."""
         import os
 
-        if not OPENAI_AVAILABLE:
-            pytest.skip("openai not installed")
         orig = os.environ.pop("OPENAI_API_KEY", None)
         try:
             embedder = OpenAIEmbedder(
@@ -97,8 +82,6 @@ class TestOpenAIClient:
         hosted authenticated proxy (LiteLLM, Azure) Just Works."""
         import os
 
-        if not OPENAI_AVAILABLE:
-            pytest.skip("openai not installed")
         os.environ["MY_KEY"] = "sk-real"
         try:
             embedder = OpenAIEmbedder(
@@ -121,8 +104,6 @@ class TestOpenAIEncode:
     @pytest.fixture
     def embedder_with_mocked_client(self):
         """Create an embedder with a mocked OpenAI client."""
-        if not OPENAI_AVAILABLE:
-            pytest.skip("openai not installed")
         import os
 
         os.environ["OPENAI_API_KEY"] = "fake-key"
@@ -194,8 +175,6 @@ class TestOpenAIEncode:
 
     def test_encode_dimension_mismatch_raises(self):
         """Test that wrong dimension raises ValueError."""
-        if not OPENAI_AVAILABLE:
-            pytest.skip("openai not installed")
         import os
 
         os.environ["OPENAI_API_KEY"] = "fake-key"
@@ -221,37 +200,20 @@ class TestOpenAIEncode:
             model_id="text-embedding-3-small",
             dimension=1536,
         )
-        # Ensure openai is available so _get_client won't short-circuit
-        with patch("corpus_forge.embedders.openai.OPENAI_AVAILABLE", True):
-            # Set a fake API key so _get_client doesn't raise ValueError
-            import os
+        # Set a fake API key so _get_client wouldn't raise ValueError
+        # on its own. We then patch ``_get_client`` to return None so
+        # the RuntimeError branch in ``encode`` is exercised.
+        import os
 
-            orig = os.environ.pop("OPENAI_API_KEY", None)
-            try:
-                os.environ["OPENAI_API_KEY"] = "fake"
-                embedder._client = None
-                # _get_client will create a real client with fake key
-                # which will fail on encode, but we need to test the
-                # RuntimeError path specifically
-                with (
-                    patch.object(embedder, "_get_client", return_value=None),
-                    pytest.raises(RuntimeError, match="Failed to initialize OpenAI client"),
-                ):
-                    embedder.encode(["hello"])
-            finally:
-                if orig is not None:
-                    os.environ["OPENAI_API_KEY"] = orig
-
-    def test_encode_raises_when_openai_not_installed(self):
-        """Test encode raises ImportError when openai package missing."""
-        embedder = OpenAIEmbedder(
-            name="test",
-            model_id="text-embedding-3-small",
-            dimension=1536,
-        )
-        # Mock OPENAI_AVAILABLE as False
-        with (
-            patch("corpus_forge.embedders.openai.OPENAI_AVAILABLE", False),
-            pytest.raises(ImportError, match="openai package is required"),
-        ):
-            embedder.encode(["hello"])
+        orig = os.environ.pop("OPENAI_API_KEY", None)
+        try:
+            os.environ["OPENAI_API_KEY"] = "fake"
+            embedder._client = None
+            with (
+                patch.object(embedder, "_get_client", return_value=None),
+                pytest.raises(RuntimeError, match="Failed to initialize OpenAI client"),
+            ):
+                embedder.encode(["hello"])
+        finally:
+            if orig is not None:
+                os.environ["OPENAI_API_KEY"] = orig
