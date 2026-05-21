@@ -213,38 +213,21 @@ def get_active_embedders(config: Config) -> list[Embedder]:
     Each branch adds only the kwargs the corresponding embedder class
     actually accepts.
     """
+    # The provider-specific kwarg gating lives in
+    # ``embedders.registry.register_from_config`` so every call site
+    # (ingest here, search via cli._build_retriever_for_eval, admin
+    # smoke-test via admin.embedder.run_embedder_smoke) shares one
+    # source of truth. Drift between the three was responsible for
+    # both the original "openai device kwarg" TypeError and the
+    # later "API key not found in environment variable OPENAI_API_KEY"
+    # crash on dense search against a local Ollama endpoint.
+    from .embedders.registry import register_from_config  # noqa: PLC0415
+
     embedders = []
     for embedder_config in config.embedders:
         if not embedder_config.active:
             continue
-        # ``extra_kwargs`` holds only the per-provider optional fields.
-        # The four required typed args (name/provider/model_id/dimension)
-        # are passed explicitly so pyrefly can narrow them — unpacking a
-        # ``dict[str, object]`` into typed parameters trips
-        # ``bad-argument-type``.
-        extra_kwargs: dict[str, object] = {
-            "normalized": embedder_config.normalize,
-            "distance": embedder_config.distance,
-            "batch_size": getattr(embedder_config, "batch_size", 32),
-        }
-        if embedder_config.provider == "sentence_transformers":
-            extra_kwargs["device"] = getattr(embedder_config, "device", "auto")
-        elif embedder_config.provider == "openai":
-            extra_kwargs["api_key_env"] = getattr(embedder_config, "api_key_env", "OPENAI_API_KEY")
-            base_url = getattr(embedder_config, "base_url", None)
-            if base_url is not None:
-                # ``base_url`` may be an AnyHttpUrl from pydantic — cast
-                # to str so the OpenAI SDK accepts it unchanged.
-                extra_kwargs["base_url"] = str(base_url).rstrip("/")
-        # ``model2vec`` and any future CPU-only / static providers fall
-        # through with just the common kwargs.
-        embedder = registry.register(
-            name=embedder_config.name,
-            provider=embedder_config.provider,
-            model_id=embedder_config.model_id,
-            dimension=embedder_config.dimension,
-            **extra_kwargs,
-        )
+        embedder = register_from_config(registry, embedder_config)
         embedders.append(embedder)
     return embedders
 

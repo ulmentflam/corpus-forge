@@ -99,19 +99,17 @@ def run_embedder_smoke(name: str) -> EmbedderSmokeOutcome:
     if cfg is None:
         raise ValueError(f"embedder {name!r} not found in config")
 
-    from corpus_forge.embedders.registry import registry
+    # Route through ``register_from_config`` so the provider-specific
+    # kwarg policy (device for sentence_transformers; api_key_env +
+    # base_url for openai; nothing extra for model2vec) matches the
+    # ingest and search call sites — pre-refactor we passed
+    # ``device=auto`` and ``api_key_env`` unconditionally, which
+    # crashed OpenAI embedders with ``TypeError: unexpected keyword
+    # argument 'device'`` AND dropped ``base_url`` so the OpenAI
+    # client fell back to api.openai.com.
+    from corpus_forge.embedders.registry import register_from_config, registry
 
-    embedder = registry.register(
-        name=cfg.name,
-        provider=cfg.provider,
-        model_id=cfg.model_id,
-        dimension=cfg.dimension,
-        normalized=cfg.normalize,
-        distance=cfg.distance,
-        batch_size=getattr(cfg, "batch_size", 32),
-        device=getattr(cfg, "device", "auto"),
-        api_key_env=getattr(cfg, "api_key_env", "OPENAI_API_KEY"),
-    )
+    embedder = register_from_config(registry, cfg)
 
     t0 = time.perf_counter()
     vector = embedder.encode(["hello world"])
