@@ -382,8 +382,20 @@ if command -v corpus-forge >/dev/null 2>&1; then
     # discarding every answer the user just typed.  See PR fixing
     # "install.sh post-install wizard ignores collected answers".
     corpus-forge setup --non-interactive
+
+    # Setup only writes ``~/.config/corpus-forge/config.toml`` — it does
+    # not touch the database. Running ``migrate`` here closes the gap
+    # so first-run ``corpus-forge ingest --once`` doesn't surface an
+    # opaque psycopg "relation does not exist" against the freshly
+    # written postgres DSN. Non-fatal on failure — the backend may not
+    # be reachable yet (LXC still booting, SSH tunnel not up, etc.) and
+    # the user can always re-run ``corpus-forge migrate`` later.
+    info "Running database migration"
+    if ! corpus-forge migrate; then
+        warn "migrate failed; re-run \`corpus-forge migrate\` once the backend is reachable."
+    fi
 else
-    warn "corpus-forge not on PATH yet. Open a new shell and run \`corpus-forge setup\`."
+    warn "corpus-forge not on PATH yet. Open a new shell and run \`corpus-forge setup\` then \`corpus-forge migrate\`."
 fi
 
 echo

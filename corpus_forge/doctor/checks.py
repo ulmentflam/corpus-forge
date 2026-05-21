@@ -531,6 +531,90 @@ def _try_load_config(config_path: Path) -> Config | None:
         return None
 
 
+def _check_embedder_indexes(cfg: Config) -> CheckResult:
+    """Detect per-embedder HNSW index drift against the configured dim.
+
+    Status logic:
+
+    - ``SKIP`` for SQLite backends (sqlite-vec doesn't use HNSW).
+    - ``SKIP`` when the backend isn't reachable — we don't want
+      ``doctor`` to wedge on a temporarily-down Postgres.
+    - ``SKIP`` when no per-embedder tables exist yet (fresh install,
+      pre-ingest state).
+    - ``WARN`` when any embedder's index strategy doesn't match its
+      configured dimension. The user-actionable fix is
+      ``corpus-forge embedder repair-indexes --apply`` or rerunning
+      ``corpus-forge migrate`` (revision 0015 does the same rebuild).
+    - ``OK`` when every per-embedder table's HNSW index matches the
+      strategy ``_dense_index_strategy`` would produce for its
+      embedder's dim.
+    """
+    if cfg.backend.kind == "sqlite":
+        return CheckResult(
+            "embedder_indexes",
+            CheckStatus.SKIP,
+            "sqlite backend (no HNSW indexes)",
+        )
+
+    # Lazy imports keep doctor's import-time cheap when the postgres
+    # extras aren't installed.
+    try:
+        from corpus_forge.admin.embedder import audit_embedder_indexes  # noqa: PLC0415
+        from corpus_forge.backends.postgres import PostgresBackend  # noqa: PLC0415
+    except ImportError as exc:
+        return CheckResult(
+            "embedder_indexes",
+            CheckStatus.SKIP,
+            f"postgres backend unavailable: {exc}",
+        )
+
+    backend = None
+    try:
+        backend = PostgresBackend(dsn=cfg.backend.dsn, schema=cfg.backend.schema)
+    except Exception as exc:
+        return CheckResult(
+            "embedder_indexes",
+            CheckStatus.SKIP,
+            f"backend unreachable: {exc}",
+        )
+
+    try:
+        rows = audit_embedder_indexes(backend)
+    except Exception as exc:
+        return CheckResult(
+            "embedder_indexes",
+            CheckStatus.SKIP,
+            f"audit failed (likely pre-migrate state): {exc}",
+        )
+
+    if not rows:
+        return CheckResult(
+            "embedder_indexes",
+            CheckStatus.SKIP,
+            "no embedders registered yet",
+        )
+
+    drifted = [r for r in rows if r.status in ("DRIFT", "MISSING")]
+    if not drifted:
+        names = ", ".join(f"{r.name}({r.dimension}d)" for r in rows)
+        return CheckResult(
+            "embedder_indexes",
+            CheckStatus.OK,
+            f"all HNSW indexes match configured dim: {names}",
+        )
+
+    detail = "; ".join(f"{r.name}({r.dimension}d) = {r.status}" for r in drifted)
+    return CheckResult(
+        "embedder_indexes",
+        CheckStatus.WARN,
+        (
+            f"{len(drifted)} embedder(s) need an index rebuild — "
+            f"run `corpus-forge migrate` (or `corpus-forge embedder "
+            f"repair-indexes --apply` for a targeted fix). Drifted: {detail}"
+        ),
+    )
+
+
 def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
     """Run every registered check and return the aggregated report."""
     cfg = config_path if config_path is not None else DEFAULT_CONFIG_PATH
@@ -548,7 +632,15 @@ def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
                 "skipped (config not loaded)",
             )
         )
+        results.append(
+            CheckResult(
+                "embedder_indexes",
+                CheckStatus.SKIP,
+                "skipped (config not loaded)",
+            )
+        )
     else:
         results.append(_check_corpusignore(loaded_cfg))
         results.append(_check_zotero(loaded_cfg))
+        results.append(_check_embedder_indexes(loaded_cfg))
     return DoctorReport(results=results)
