@@ -8,6 +8,26 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Fixed
+
+- Every "No configuration found" error in `corpus_forge/cli.py` now
+  points users at `corpus-forge setup` (the verb that *creates* a
+  config), not `corpus-forge migrate` (which needs a config to load
+  and itself fails when one is missing). 11 message sites updated,
+  spanning `embedder list`, `embedder get`, `dataset list`, `ingest`,
+  `embed`, `analyze`, and several admin verbs. Property-#2 of the
+  human-friendly CLI spec (`.planning/tdd/e2e_ux_flows.md`): error
+  messages name the broken thing AND the fix.
+
+### Added
+
+- `tests/unit/test_cli_human_friendly.py` — first two tests against
+  the human-friendly CLI testable properties: (1) doctor's
+  `_check_config_present` pins the `corpus-forge setup` recovery
+  command in its WARN detail; (2) a static scan of `cli.py` asserts
+  every "No configuration found" message names `setup` and never
+  `migrate`.
+
 ## [0.1.0b7] - 2026-05-20
 
 ### Added
