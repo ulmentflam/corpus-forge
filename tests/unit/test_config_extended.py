@@ -100,6 +100,52 @@ class TestBackendConfig:
         finally:
             del os.environ["PG_HOST"]
 
+    def test_backend_config_schema_shadow_warning_is_suppressed(self):
+        """The ``schema`` field shadows ``BaseModel.schema()`` on purpose.
+
+        Pydantic emits a ``UserWarning`` when a model field name shadows
+        an attribute on the parent. ``BackendConfig.schema`` is read at
+        ~15 call sites and is part of the public TOML surface
+        (``[backend] schema = "corpus"``), so renaming is not an
+        option. ``corpus_forge.config`` filters the specific message at
+        module load — this regression guard asserts no such warning
+        leaks on a *fresh* import of the module.
+
+        Subprocess (rather than ``importlib.reload`` in-process) so the
+        check doesn't rebind the ``Config`` class object on every other
+        in-flight test — under xdist + pytest-randomly that's enough
+        to invalidate every ``patch("corpus_forge.config.Config.load",
+        ...)`` set up by sibling tests.
+        """
+        import subprocess
+        import sys
+
+        # ``-W error::UserWarning`` makes the subprocess fail if any
+        # UserWarning is raised during the import. The filter block in
+        # ``corpus_forge/config.py`` must beat ``-W error`` for the
+        # known-shadow message specifically; everything else continues
+        # to be promoted, so the assertion stays narrow.
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-W",
+                "error::UserWarning",
+                "-c",
+                "import corpus_forge.config",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        assert result.returncode == 0, (
+            "fresh `import corpus_forge.config` raised a UserWarning — "
+            "the schema-shadow filter in config.py is no longer "
+            f"matching the pydantic message. stderr:\n{result.stderr}"
+        )
+        assert 'Field name "schema" in "BackendConfig"' not in result.stderr
+
 
 class TestDaemonConfig:
     def test_daemon_config_defaults(self):

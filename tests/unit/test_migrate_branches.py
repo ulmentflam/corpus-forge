@@ -23,6 +23,9 @@ class TestBuildAlembicConfigPostgresBranch:
 
         fake_backend = MagicMock()
         fake_backend.dsn = dsn
+        # Pin ``.schema`` so the recorded ``version_table_schema`` is a
+        # real string, not a child MagicMock attribute access.
+        fake_backend.schema = "corpus"
         return _build_alembic_config(backend=fake_backend, dialect="postgres")
 
     def test_postgres_dsn_plain_gets_psycopg_driver_injected(self) -> None:
@@ -103,50 +106,209 @@ class TestApplyMigrations:
 
 
 class TestMainEntryPoint:
-    """main() constructs a PostgresBackend from DATABASE_URL and calls apply_migrations."""
+    """main() loads ``Config`` and dispatches to the right backend.
 
-    def test_main_uses_database_url_env_var(self, monkeypatch) -> None:
+    Earlier revisions read ``DATABASE_URL`` env var with a hardcoded
+    fallback to ``postgresql://memory@localhost/memory`` (a dev-machine
+    leftover). The new flow consults ``Config.load()`` so the user's
+    configured backend + DSN is what migrate runs against.
+    """
+
+    def _stub_config(self, kind: str = "postgres", dsn: str | None = None) -> MagicMock:
+        cfg = MagicMock()
+        cfg.backend.kind = kind
+        cfg.backend.dsn = dsn or (
+            "postgresql://corpus_forge:secret@10.0.0.5:5432/corpus_forge"
+            if kind == "postgres"
+            else "/tmp/corpus.db"
+        )
+        cfg.backend.schema = "corpus"
+        return cfg
+
+    def test_main_loads_config_and_uses_its_postgres_dsn(self, monkeypatch) -> None:
+        """The user's configured DSN reaches the constructed PostgresBackend."""
         from corpus_forge.schema import migrate as migrate_mod
 
-        monkeypatch.setenv("DATABASE_URL", "postgresql://test:test@localhost/testdb")
+        fake_cfg = self._stub_config(kind="postgres", dsn="postgresql://u:p@h/db")
 
         with (
-            patch.object(migrate_mod, "PostgresBackend") as mock_pg_cls,
-            patch.object(migrate_mod, "apply_migrations"),
-        ):
-            mock_backend = MagicMock()
-            mock_pg_cls.return_value = mock_backend
-            migrate_mod.main()
-
-        mock_pg_cls.assert_called_once()
-        call_kwargs = mock_pg_cls.call_args
-        dsn_used = call_kwargs.kwargs.get("dsn") or call_kwargs.args[0]
-        assert "testdb" in dsn_used
-
-    def test_main_falls_back_to_default_dsn_when_no_env(self, monkeypatch) -> None:
-        from corpus_forge.schema import migrate as migrate_mod
-
-        monkeypatch.delenv("DATABASE_URL", raising=False)
-
-        with (
+            patch("corpus_forge.config.Config.load", return_value=fake_cfg),
             patch.object(migrate_mod, "PostgresBackend") as mock_pg_cls,
             patch.object(migrate_mod, "apply_migrations"),
         ):
             mock_pg_cls.return_value = MagicMock()
             migrate_mod.main()
 
-        # Must have been called — default DSN used
         mock_pg_cls.assert_called_once()
+        call = mock_pg_cls.call_args
+        dsn_used = call.kwargs.get("dsn") or call.args[0]
+        assert dsn_used == "postgresql://u:p@h/db", (
+            f"main() must pass Config.backend.dsn to PostgresBackend; got {dsn_used!r}"
+        )
 
-    def test_main_calls_apply_migrations(self, monkeypatch) -> None:
+    def test_main_dispatches_to_sqlite_when_config_kind_is_sqlite(self, monkeypatch) -> None:
         from corpus_forge.schema import migrate as migrate_mod
 
-        monkeypatch.delenv("DATABASE_URL", raising=False)
+        fake_cfg = self._stub_config(kind="sqlite", dsn="/tmp/corpus.db")
+
+        from corpus_forge.backends import sqlite as sqlite_mod
 
         with (
-            patch.object(migrate_mod, "PostgresBackend", return_value=MagicMock()),
+            patch("corpus_forge.config.Config.load", return_value=fake_cfg),
+            patch.object(sqlite_mod, "SQLiteBackend") as mock_sqlite_cls,
+            patch.object(migrate_mod, "PostgresBackend") as mock_pg_cls,
             patch.object(migrate_mod, "apply_migrations") as mock_apply,
         ):
+            mock_sqlite_cls.return_value = MagicMock()
             migrate_mod.main()
 
-        mock_apply.assert_called_once()
+        mock_pg_cls.assert_not_called(), "sqlite config must NOT construct a PostgresBackend"
+        mock_sqlite_cls.assert_called_once()
+        assert mock_apply.call_args.kwargs.get("dialect") == "sqlite"
+
+    def test_main_does_not_consult_database_url_env_var(self, monkeypatch) -> None:
+        """The DATABASE_URL fallback path is gone. Even when the env var
+        is set, the user's Config wins.
+        """
+        from corpus_forge.schema import migrate as migrate_mod
+
+        monkeypatch.setenv("DATABASE_URL", "postgresql://NOT-FROM-CONFIG@h/db")
+        fake_cfg = self._stub_config(
+            kind="postgres", dsn="postgresql://corpus_forge:real@h/corpus_forge"
+        )
+
+        with (
+            patch("corpus_forge.config.Config.load", return_value=fake_cfg),
+            patch.object(migrate_mod, "PostgresBackend") as mock_pg_cls,
+            patch.object(migrate_mod, "apply_migrations"),
+        ):
+            mock_pg_cls.return_value = MagicMock()
+            migrate_mod.main()
+
+        dsn_used = mock_pg_cls.call_args.kwargs.get("dsn") or mock_pg_cls.call_args.args[0]
+        assert "NOT-FROM-CONFIG" not in dsn_used, (
+            "DATABASE_URL must NOT override Config.backend.dsn in the migrate flow"
+        )
+        assert "corpus_forge" in dsn_used
+
+
+class TestApplyAlembicPostgresPreCreatesSchema:
+    """Bug fix: Alembic creates ``alembic_version`` in the configured
+    schema (``corpus`` by default) on first run, BEFORE migration 0001
+    has a chance to ``CREATE SCHEMA IF NOT EXISTS corpus``. The result
+    is ``psycopg.errors.InvalidSchemaName: schema "corpus" does not
+    exist`` on every fresh Postgres install.
+
+    Fix: ``_apply_alembic`` for the postgres dialect runs
+    ``CREATE SCHEMA IF NOT EXISTS <schema>`` via a direct psycopg
+    connection BEFORE invoking Alembic.
+    """
+
+    def test_apply_alembic_postgres_creates_schema_before_upgrade(self) -> None:
+        from corpus_forge.schema import migrate as migrate_mod
+
+        fake_backend = MagicMock()
+        fake_backend.dsn = "postgresql://u:p@h:5432/corpus_forge"
+        fake_backend.schema = "corpus"
+
+        # Track call order so we can assert pre-create happens before upgrade.
+        events: list[str] = []
+
+        class _FakeCursor:
+            def execute(self, sql: str, *args, **kwargs) -> None:
+                events.append(f"execute:{sql}")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        class _FakeConn:
+            def __enter__(self):
+                events.append("connect")
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def execute(self, sql: str, *args, **kwargs) -> None:
+                events.append(f"execute:{sql}")
+
+            def cursor(self):
+                return _FakeCursor()
+
+        def _fake_connect(dsn: str, **kwargs) -> _FakeConn:
+            events.append(f"connect_called:{dsn}")
+            return _FakeConn()
+
+        def _fake_upgrade(config, target: str) -> None:
+            events.append("alembic_upgrade")
+
+        with (
+            patch("psycopg.connect", side_effect=_fake_connect),
+            patch.object(migrate_mod, "alembic_command") as mock_alembic,
+        ):
+            mock_alembic.upgrade.side_effect = _fake_upgrade
+            migrate_mod._apply_alembic(fake_backend, dialect="postgres")
+
+        # CREATE SCHEMA must appear before the alembic_upgrade event.
+        schema_creates = [i for i, e in enumerate(events) if "CREATE SCHEMA" in e and "corpus" in e]
+        upgrade_idxs = [i for i, e in enumerate(events) if e == "alembic_upgrade"]
+        assert schema_creates, f"no CREATE SCHEMA event found in: {events}"
+        assert upgrade_idxs, f"alembic_upgrade not invoked: {events}"
+        assert schema_creates[0] < upgrade_idxs[0], (
+            f"CREATE SCHEMA must fire BEFORE alembic_command.upgrade; got events={events}"
+        )
+
+    def test_apply_alembic_postgres_uses_libpq_dsn_not_sqlalchemy_prefixed(self) -> None:
+        """psycopg.connect() takes a libpq DSN; the ``+psycopg`` driver
+        prefix used by SQLAlchemy must be stripped before we pass to
+        ``psycopg.connect``."""
+        from corpus_forge.schema import migrate as migrate_mod
+
+        fake_backend = MagicMock()
+        fake_backend.dsn = "postgresql+psycopg://u:p@h:5432/corpus_forge"
+        fake_backend.schema = "corpus"
+
+        seen_dsn: list[str] = []
+
+        class _FakeConn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def execute(self, *a, **kw):
+                pass
+
+        def _fake_connect(dsn: str, **kwargs) -> _FakeConn:
+            seen_dsn.append(dsn)
+            return _FakeConn()
+
+        with (
+            patch("psycopg.connect", side_effect=_fake_connect),
+            patch.object(migrate_mod, "alembic_command"),
+        ):
+            migrate_mod._apply_alembic(fake_backend, dialect="postgres")
+
+        assert seen_dsn, "psycopg.connect was never called"
+        assert "+psycopg" not in seen_dsn[0], (
+            f"libpq DSN must NOT carry the SQLAlchemy +psycopg driver prefix; got {seen_dsn[0]!r}"
+        )
+
+    def test_apply_alembic_sqlite_does_not_call_psycopg(self) -> None:
+        """SQLite path must not import or call psycopg."""
+        from corpus_forge.schema import migrate as migrate_mod
+
+        fake_backend = MagicMock()
+        fake_backend.path = "/tmp/corpus.db"
+
+        with (
+            patch("psycopg.connect") as mock_connect,
+            patch.object(migrate_mod, "alembic_command"),
+        ):
+            migrate_mod._apply_alembic(fake_backend, dialect="sqlite")
+
+        mock_connect.assert_not_called()

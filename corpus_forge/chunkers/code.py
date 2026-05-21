@@ -143,7 +143,12 @@ class CodeChunker(Chunker):
         # `pack.process` types its `config` argument as the native bindings'
         # version — they're the same shape at runtime.
         result = pack.process(text, cfg)  # pyrefly: ignore[bad-argument-type]
-        structure = list(result.structure)
+        # The TypedDict stub for ``ProcessResult`` does not expose
+        # ``structure`` as an attribute even though the native
+        # PyO3-wrapped Rust object returned at runtime does. Pinning the
+        # ignore to ``missing-attribute`` mirrors the bad-argument-type
+        # pin above (same stub/runtime mismatch in the package).
+        structure = list(result.structure)  # pyrefly: ignore[missing-attribute]
 
         # Flatten one level deep — top-level constructs first, then any
         # methods inside a class as separate constructs (so per-method

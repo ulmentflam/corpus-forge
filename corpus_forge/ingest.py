@@ -196,29 +196,56 @@ def get_chunker_for_source(source: Source, config: Config) -> Chunker:
 
 
 def get_active_embedders(config: Config) -> list[Embedder]:
-    """Get list of active embedders from config."""
+    """Get list of active embedders from config.
+
+    Per-provider kwarg pass-through:
+
+    - ``sentence_transformers`` accepts ``device`` (auto-resolves
+      ``"auto"`` to mps / cuda / cpu via ``resolve_device``).
+    - ``openai`` does NOT accept ``device`` — its underlying HTTP
+      transport has no local-accelerator concept. Passing it raised
+      ``TypeError: OpenAIEmbedder.__init__() got an unexpected keyword
+      argument 'device'`` on every first-run ingest against an
+      Ollama-backed OpenAI-compatible endpoint.
+    - ``model2vec`` is CPU-only (static embeddings, no inference loop);
+      same story.
+
+    Each branch adds only the kwargs the corresponding embedder class
+    actually accepts.
+    """
     embedders = []
     for embedder_config in config.embedders:
-        if embedder_config.active:
-            kwargs = {
-                "name": embedder_config.name,
-                "provider": embedder_config.provider,
-                "model_id": embedder_config.model_id,
-                "dimension": embedder_config.dimension,
-                "normalized": embedder_config.normalize,
-                "distance": embedder_config.distance,
-                "batch_size": getattr(embedder_config, "batch_size", 32),
-                "device": getattr(embedder_config, "device", "auto"),
-            }
-            if embedder_config.provider == "openai":
-                kwargs["api_key_env"] = getattr(embedder_config, "api_key_env", "OPENAI_API_KEY")
-                base_url = getattr(embedder_config, "base_url", None)
-                if base_url is not None:
-                    # ``base_url`` may be an AnyHttpUrl from pydantic — cast
-                    # to str so the OpenAI SDK accepts it unchanged.
-                    kwargs["base_url"] = str(base_url).rstrip("/")
-            embedder = registry.register(**kwargs)
-            embedders.append(embedder)
+        if not embedder_config.active:
+            continue
+        # ``extra_kwargs`` holds only the per-provider optional fields.
+        # The four required typed args (name/provider/model_id/dimension)
+        # are passed explicitly so pyrefly can narrow them — unpacking a
+        # ``dict[str, object]`` into typed parameters trips
+        # ``bad-argument-type``.
+        extra_kwargs: dict[str, object] = {
+            "normalized": embedder_config.normalize,
+            "distance": embedder_config.distance,
+            "batch_size": getattr(embedder_config, "batch_size", 32),
+        }
+        if embedder_config.provider == "sentence_transformers":
+            extra_kwargs["device"] = getattr(embedder_config, "device", "auto")
+        elif embedder_config.provider == "openai":
+            extra_kwargs["api_key_env"] = getattr(embedder_config, "api_key_env", "OPENAI_API_KEY")
+            base_url = getattr(embedder_config, "base_url", None)
+            if base_url is not None:
+                # ``base_url`` may be an AnyHttpUrl from pydantic — cast
+                # to str so the OpenAI SDK accepts it unchanged.
+                extra_kwargs["base_url"] = str(base_url).rstrip("/")
+        # ``model2vec`` and any future CPU-only / static providers fall
+        # through with just the common kwargs.
+        embedder = registry.register(
+            name=embedder_config.name,
+            provider=embedder_config.provider,
+            model_id=embedder_config.model_id,
+            dimension=embedder_config.dimension,
+            **extra_kwargs,
+        )
+        embedders.append(embedder)
     return embedders
 
 

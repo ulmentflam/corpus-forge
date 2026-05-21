@@ -188,3 +188,35 @@ class TestSurfaceCoverage:
         ids = {q["id"] for q in questions}
         missing = required_ids - ids
         assert not missing, f"Question tree missing required surfaces: {sorted(missing)}"
+
+
+class TestModelTagSanity:
+    """Pin that ``warn`` text on Ollama-suggesting questions doesn't
+    name model tags that don't exist in the public Ollama registry.
+
+    Earlier revisions named ``qwen3.6:35b-a3b-instruct`` — a tag that
+    doesn't exist; ``ollama pull`` fails on it. Users who took the
+    suggestion at face value couldn't bring the classifier or
+    code-enricher up. We don't actively check the Ollama registry here
+    (no network calls in unit tests), but we DO refuse to ship known-
+    fake tags by name.
+    """
+
+    KNOWN_BOGUS_TAGS = (
+        # Add an entry here every time we ship a question that names a
+        # model tag that doesn't exist in the public Ollama registry.
+        # The bogus tag, plus a one-line reason for the reviewer.
+        "qwen3.6:",  # Qwen 3.6 isn't a published model line; was a placeholder
+    )
+
+    def test_no_warn_text_names_a_known_bogus_ollama_tag(self, questions: list[dict]) -> None:
+        for q in questions:
+            warn = q.get("warn", "")
+            if not warn:
+                continue
+            for bogus in self.KNOWN_BOGUS_TAGS:
+                assert bogus not in warn, (
+                    f"Question {q['id']!r} warn-text names a known-bogus Ollama tag "
+                    f"{bogus!r}. Pick a tag that actually exists in the Ollama registry "
+                    "(qwen2.5:7b-instruct / gpt-oss:20b / llama3.3:70b are safe bets)."
+                )
