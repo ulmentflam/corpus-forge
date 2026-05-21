@@ -8,6 +8,16 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Fixed
+
+- Phase M Wave 4 source-nesting bug: doctor's Zotero check no longer
+  silently SKIPs sources declared as `plugin = "zotero"` without an
+  explicit `[datasets.sources.zotero]` block. `DatasetSourceConfig`
+  now default-instantiates `ZoteroSourceConfig()` (local mode, platform-
+  default library path) when `plugin == "zotero"` and the nested block
+  is absent. Three regression tests in
+  `TestZoteroSourceDefault` lock the contract.
+
 ## [0.1.0b7] - 2026-05-20
 
 ### Added

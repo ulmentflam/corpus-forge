@@ -12,6 +12,7 @@ from corpus_forge.config import (
     DatasetConfig,
     DatasetSourceConfig,
     EmbedderConfig,
+    ZoteroSourceConfig,
     expand_user,
     get_config,
     interpolate_env_vars,
@@ -145,6 +146,42 @@ class TestBackendConfig:
             f"matching the pydantic message. stderr:\n{result.stderr}"
         )
         assert 'Field name "schema" in "BackendConfig"' not in result.stderr
+
+
+class TestZoteroSourceDefault:
+    """Phase M Wave 4 source-nesting bug regression: ``plugin = "zotero"``
+    without a ``[datasets.sources.zotero]`` block must default-instantiate
+    ``ZoteroSourceConfig`` so doctor's check can see the source instead of
+    skipping it with ``"no Zotero source configured"``.
+    """
+
+    def test_plugin_zotero_default_instantiates_zotero_block(self):
+        """``DatasetSourceConfig(plugin="zotero", chunker=...)`` (no
+        ``zotero=...``) must populate ``.zotero`` with a default
+        ``ZoteroSourceConfig`` instance."""
+        src = DatasetSourceConfig(plugin="zotero", chunker="markdown")
+        assert src.zotero is not None, (
+            "plugin=zotero without an explicit nested block must default "
+            "to ZoteroSourceConfig() so doctor sees the source"
+        )
+        assert isinstance(src.zotero, ZoteroSourceConfig)
+        # Defaults are local-mode.
+        assert src.zotero.mode == "local"
+        assert src.zotero.library_path is None
+        assert src.zotero.api_key_env == "ZOTERO_API_KEY"
+
+    def test_plugin_zotero_with_explicit_block_is_unchanged(self):
+        """Explicit ``zotero=...`` is not clobbered by the default."""
+        explicit = ZoteroSourceConfig(mode="web", user_id="12345")
+        src = DatasetSourceConfig(plugin="zotero", chunker="markdown", zotero=explicit)
+        assert src.zotero is explicit
+        assert src.zotero.mode == "web"
+        assert src.zotero.user_id == "12345"
+
+    def test_plugin_non_zotero_does_not_get_zotero_block(self):
+        """Sources with a non-zotero plugin keep ``.zotero == None``."""
+        src = DatasetSourceConfig(plugin="markdown_vault", vault_root="/tmp", chunker="markdown")
+        assert src.zotero is None
 
 
 class TestDaemonConfig:

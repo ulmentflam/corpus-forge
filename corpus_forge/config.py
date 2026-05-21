@@ -209,6 +209,23 @@ class DatasetSourceConfig(BaseModel):
     # ``DatasetSourceConfig`` namespace.
     zotero: ZoteroSourceConfig | None = None
 
+    @model_validator(mode="after")
+    def _default_zotero_block_when_plugin_is_zotero(self) -> "DatasetSourceConfig":
+        """When ``plugin == "zotero"`` but no ``[datasets.sources.zotero]``
+        block is present, instantiate a default ``ZoteroSourceConfig``.
+
+        Without this default, doctor's Zotero check silently SKIPs a
+        source declared as ``plugin = "zotero"`` because its ``zotero``
+        attribute is ``None`` — the Phase M Wave 4 source-nesting bug
+        the user kept hitting. ``ZoteroSourceConfig`` has sensible
+        defaults for local mode (``library_path`` resolves a platform
+        default at source-construction time), so an empty block is a
+        valid declaration.
+        """
+        if self.plugin == "zotero" and self.zotero is None:
+            self.zotero = ZoteroSourceConfig()
+        return self
+
 
 class DatasetConfig(BaseModel):
     """Configuration for a dataset."""
