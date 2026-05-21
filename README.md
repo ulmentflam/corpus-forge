@@ -83,7 +83,6 @@ The `--version` ping is strictly anonymous (User-Agent
 # 1. Install the package + the extras you need.
 pip install 'corpus-forge[sqlite,hf]'
 #   common adds:
-#     [openai]       OpenAI embedders / OpenAI-compatible endpoints (Ollama, vLLM)
 #     [code]         tree-sitter code chunker + 45+ language extractor
 #     [multi-format] PDF / HTML / EPUB / Office / Notebook / CSV + FastCDC chunker
 #     [ocr]          VLM OCR for sparse-text PDFs + image extractor
@@ -247,13 +246,18 @@ Set `device = "auto"` to let sentence-transformers pick.
 ## Optional extras
 
 ```bash
-pip install 'corpus-forge[sqlite,openai,hf,tokens,retrieval,rerank,mcp,eval,code,multi-format,ocr,whisper]'
+pip install 'corpus-forge[sqlite,hf,tokens,retrieval,rerank,mcp,eval,code,multi-format,ocr,whisper]'
 ```
+
+The `openai` SDK is a **base dependency** (not an extra) — corpus-forge
+uses it for every OpenAI-compatible endpoint, including local Ollama at
+`:11434/v1`, vLLM, llama.cpp's server, and LM Studio. The
+`[openai]` extra is kept as a no-op back-compat alias so existing
+install scripts don't break, but you do not need to add it.
 
 | Extra | What it enables |
 |---|---|
 | `[sqlite]` | `sqlite-vec` virtual table for ANN search on SQLite. |
-| `[openai]` | OpenAI embedders (also any OpenAI-compatible endpoint — Ollama, vLLM). |
 | `[hf]` | `datasets` library for HF export. |
 | `[tokens]` | `tiktoken` for token-aware chunking. |
 | `[retrieval]` | NumPy-backed retrieval-evaluation primitives. |
