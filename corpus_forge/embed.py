@@ -104,18 +104,17 @@ def backfill_embedder(
     # Apply migrations (after validating embedder config exists, before any DB writes)
     backend.migrate()
 
-    # Register/create the embedder
-    embedder = registry.register(
-        name=embedder_config.name,
-        provider=embedder_config.provider,
-        model_id=embedder_config.model_id,
-        dimension=embedder_config.dimension,
-        normalized=embedder_config.normalize,
-        distance=embedder_config.distance,
-        batch_size=getattr(embedder_config, "batch_size", 32),
-        device=getattr(embedder_config, "device", "auto"),
-        api_key_env=getattr(embedder_config, "api_key_env", "OPENAI_API_KEY"),
-    )
+    # Register/create the embedder via the shared per-provider gating
+    # so ``corpus-forge embed`` doesn't drift from ingest / search /
+    # admin. The previous inline ``registry.register(...)`` call
+    # passed ``device`` unconditionally, which crashed every
+    # ``corpus-forge embed -e <openai-provider>`` with
+    # ``TypeError: OpenAIEmbedder.__init__() got an unexpected
+    # keyword argument 'device'`` — a fourth instance of the bug
+    # ``register_from_config`` was created to eliminate.
+    from corpus_forge.embedders.registry import register_from_config  # noqa: PLC0415
+
+    embedder = register_from_config(registry, embedder_config)
 
     # Warm up the embedder
     logger.info(f"Warming up embedder: {embedder_name}")

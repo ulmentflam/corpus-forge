@@ -114,7 +114,12 @@ For clients without a native slash-command system, copy the prose of `SKILL.md` 
 Ask the user to run these in order. The `estimate` step is cheap (no network, no model calls) — use it to size up before sync.
 
 ```bash
-corpus-forge doctor                              # checks Python, backend, embedders, model endpoints
+corpus-forge migrate                             # apply alembic revisions (creates corpus.* + adapts per-
+                                                 #   embedder HNSW indexes; revision 0015 picks vector
+                                                 #   vs. halfvec ops based on each embedder's dim).
+corpus-forge doctor                              # checks Python, backend, embedders, model endpoints,
+                                                 # AND HNSW index drift per embedder (WARN with a
+                                                 # repair recommendation when drift is detected).
 corpus-forge estimate ~/Notes                    # Postgres footprint, no sync
                                                  # Honors <root>/.corpusignore AND ~/.config/corpus-forge/ignore
                                                  # (gitignore syntax; NEW in 0.1.0b3)
@@ -122,6 +127,8 @@ corpus-forge ingest --once                       # one-shot sync of the configur
 corpus-forge embed -e qwen3_8b                   # backfill embeddings
 corpus-forge search "what does the daemon log on startup" --k 5
 ```
+
+If `doctor` reports `embedder_indexes: WARN`, rerun `corpus-forge migrate` (rebuilds every drifted index) or `corpus-forge embedder repair-indexes --apply` (targeted rebuild). Both are idempotent.
 
 ## 6. Curation loop (vendor-neutral playbook)
 
