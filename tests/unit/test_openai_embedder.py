@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from corpus_forge.embedders.openai import OPENAI_AVAILABLE, OpenAIEmbedder
+from corpus_forge.embedders.openai import OpenAIEmbedder
 
 
 class TestOpenAIEmbedderInit:
@@ -42,8 +42,6 @@ class TestOpenAIClient:
 
         orig = os.environ.pop("OPENAI_API_KEY", None)
         try:
-            if not OPENAI_AVAILABLE:
-                pytest.skip("openai not installed")
             embedder = OpenAIEmbedder(
                 name="test",
                 model_id="text-embedding-3-small",
@@ -55,17 +53,6 @@ class TestOpenAIClient:
             if orig is not None:
                 os.environ["OPENAI_API_KEY"] = orig
 
-    def test_get_client_returns_none_without_package(self):
-        embedder = OpenAIEmbedder(
-            name="test",
-            model_id="text-embedding-3-small",
-            dimension=1536,
-        )
-        # Without openai installed, _get_client returns None
-        with patch("corpus_forge.embedders.openai.OPENAI_AVAILABLE", False):
-            result = embedder._get_client()
-            assert result is None
-
     def test_local_base_url_tolerates_missing_env_var(self):
         """Local-substitution mode: when ``base_url`` is set we fall
         back to a placeholder key instead of raising. Lets users point
@@ -73,8 +60,6 @@ class TestOpenAIClient:
         without inventing a fake key in secrets.env."""
         import os
 
-        if not OPENAI_AVAILABLE:
-            pytest.skip("openai not installed")
         orig = os.environ.pop("OPENAI_API_KEY", None)
         try:
             embedder = OpenAIEmbedder(
@@ -97,8 +82,6 @@ class TestOpenAIClient:
         hosted authenticated proxy (LiteLLM, Azure) Just Works."""
         import os
 
-        if not OPENAI_AVAILABLE:
-            pytest.skip("openai not installed")
         os.environ["MY_KEY"] = "sk-real"
         try:
             embedder = OpenAIEmbedder(
@@ -119,13 +102,14 @@ class TestOpenAIClient:
 
 class TestOpenAIEncode:
     @pytest.fixture
-    def embedder_with_mocked_client(self):
-        """Create an embedder with a mocked OpenAI client."""
-        if not OPENAI_AVAILABLE:
-            pytest.skip("openai not installed")
-        import os
+    def embedder_with_mocked_client(self, monkeypatch):
+        """Create an embedder with a mocked OpenAI client.
 
-        os.environ["OPENAI_API_KEY"] = "fake-key"
+        ``monkeypatch.setenv`` instead of a raw ``os.environ[...] = …``
+        so ``OPENAI_API_KEY="fake-key"`` doesn't leak into the
+        process env for tests that run after this fixture.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
         embedder = OpenAIEmbedder(
             name="test",
             model_id="text-embedding-3-small",
@@ -192,20 +176,72 @@ class TestOpenAIEncode:
         assert len(result) == 5
         assert embedder_with_mocked_client._client.embeddings.create.call_count == 3
 
-    def test_encode_dimension_mismatch_raises(self):
-        """Test that wrong dimension raises ValueError."""
-        if not OPENAI_AVAILABLE:
-            pytest.skip("openai not installed")
-        import os
+    def test_encode_truncates_longer_native_vector_matryoshka(self, monkeypatch):
+        """Servers that ignore ``dimensions=`` (e.g. Ollama's
+        ``/v1/embeddings`` for ``qwen3-embedding:8b``) return the
+        model's full native width. Matryoshka-trained models are
+        prefix-coherent, so we slice + renormalise client-side instead
+        of raising ``ValueError``. Failing this test would mean the
+        whole local-Ollama happy path is broken again.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
+        embedder = OpenAIEmbedder(
+            name="test",
+            model_id="qwen3-embedding:8b",
+            dimension=2000,  # requested via dimensions=…
+        )
+        mock_item = MagicMock()
+        mock_item.embedding = [0.1] * 4096  # server returned native 4096
+        mock_response = MagicMock()
+        mock_response.data = [mock_item]
+        embedder._client = MagicMock()
+        embedder._client.embeddings.create.return_value = mock_response
 
-        os.environ["OPENAI_API_KEY"] = "fake-key"
+        result = embedder.encode(["hello"])
+        assert result.shape == (1, 2000)
+        # Renormalisation is required after truncation; the result
+        # should be unit-length when ``normalized=True`` (default).
+        norm = np.linalg.norm(result[0])
+        assert norm == pytest.approx(1.0)
+
+    def test_encode_forwards_dimensions_to_api(self, monkeypatch):
+        """Server-side Matryoshka: ``dimensions=`` is forwarded so any
+        OpenAI-shape server that supports the field (real OpenAI,
+        TEI) truncates *before* the wire. Local servers that don't
+        know the field just ignore it and the client-side slice in
+        ``test_encode_truncates_longer_native_vector_matryoshka``
+        kicks in.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
         embedder = OpenAIEmbedder(
             name="test",
             model_id="text-embedding-3-small",
-            dimension=512,  # wrong dimension
+            dimension=512,
         )
         mock_item = MagicMock()
-        mock_item.embedding = [0.1] * 1536  # actual dim != expected
+        mock_item.embedding = [0.1] * 512  # server honoured dimensions=
+        mock_response = MagicMock()
+        mock_response.data = [mock_item]
+        embedder._client = MagicMock()
+        embedder._client.embeddings.create.return_value = mock_response
+
+        embedder.encode(["hello"])
+        call = embedder._client.embeddings.create.call_args
+        assert call.kwargs["dimensions"] == 512
+
+    def test_encode_raises_when_server_returns_shorter_vector(self, monkeypatch):
+        """If the server returns FEWER dims than configured, that's a
+        real config / model mismatch (no amount of slicing can recover
+        the missing dims). Stays a hard error.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
+        embedder = OpenAIEmbedder(
+            name="test",
+            model_id="some-tiny-model",
+            dimension=2000,
+        )
+        mock_item = MagicMock()
+        mock_item.embedding = [0.1] * 384  # too small
         mock_response = MagicMock()
         mock_response.data = [mock_item]
         embedder._client = MagicMock()
@@ -214,44 +250,22 @@ class TestOpenAIEncode:
         with pytest.raises(ValueError, match="produced embeddings of dimension"):
             embedder.encode(["hello"])
 
-    def test_encode_raises_when_no_client(self):
+    def test_encode_raises_when_no_client(self, monkeypatch):
         """Test encode raises RuntimeError when client is None."""
         embedder = OpenAIEmbedder(
             name="test",
             model_id="text-embedding-3-small",
             dimension=1536,
         )
-        # Ensure openai is available so _get_client won't short-circuit
-        with patch("corpus_forge.embedders.openai.OPENAI_AVAILABLE", True):
-            # Set a fake API key so _get_client doesn't raise ValueError
-            import os
-
-            orig = os.environ.pop("OPENAI_API_KEY", None)
-            try:
-                os.environ["OPENAI_API_KEY"] = "fake"
-                embedder._client = None
-                # _get_client will create a real client with fake key
-                # which will fail on encode, but we need to test the
-                # RuntimeError path specifically
-                with (
-                    patch.object(embedder, "_get_client", return_value=None),
-                    pytest.raises(RuntimeError, match="Failed to initialize OpenAI client"),
-                ):
-                    embedder.encode(["hello"])
-            finally:
-                if orig is not None:
-                    os.environ["OPENAI_API_KEY"] = orig
-
-    def test_encode_raises_when_openai_not_installed(self):
-        """Test encode raises ImportError when openai package missing."""
-        embedder = OpenAIEmbedder(
-            name="test",
-            model_id="text-embedding-3-small",
-            dimension=1536,
-        )
-        # Mock OPENAI_AVAILABLE as False
+        # Set a fake API key so ``_get_client`` wouldn't raise
+        # ``ValueError`` on its own. We then patch ``_get_client`` to
+        # return None so the RuntimeError branch in ``encode`` is
+        # exercised. ``monkeypatch.setenv`` cleans up after the test
+        # so subsequent tests can't see ``OPENAI_API_KEY=fake``.
+        monkeypatch.setenv("OPENAI_API_KEY", "fake")
+        embedder._client = None
         with (
-            patch("corpus_forge.embedders.openai.OPENAI_AVAILABLE", False),
-            pytest.raises(ImportError, match="openai package is required"),
+            patch.object(embedder, "_get_client", return_value=None),
+            pytest.raises(RuntimeError, match="Failed to initialize OpenAI client"),
         ):
             embedder.encode(["hello"])

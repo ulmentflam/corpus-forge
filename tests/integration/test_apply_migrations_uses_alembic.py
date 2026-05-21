@@ -26,6 +26,22 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
+
+def _expected_head_revision() -> str:
+    """Resolve the current Alembic head revision from the script directory.
+
+    Hardcoding the head in test assertions (e.g. ``"0014_sdft_demonstrations"``)
+    means every new revision breaks these tests. Reading the head off the
+    same ScriptDirectory ``apply_migrations`` uses is the canonical
+    answer — they'll always agree, by construction.
+    """
+    from alembic.script import ScriptDirectory
+
+    from corpus_forge.schema.migrate import _build_alembic_config
+
+    return ScriptDirectory.from_config(_build_alembic_config()).get_current_head() or ""
+
+
 # ---------------------------------------------------------------------------
 # Availability guards
 # ---------------------------------------------------------------------------
@@ -124,9 +140,11 @@ def test_apply_migrations_creates_alembic_version_table_pg(
 
     assert len(rows) == 1, f"Expected exactly 1 row in corpus.alembic_version, got {len(rows)}. "
     version_num = rows[0][0]
-    assert version_num == "0014_sdft_demonstrations", (
-        f"Expected version_num='0014_sdft_demonstrations', got {version_num!r}. "
-        "The rewired apply_migrations must call command.upgrade('head')."
+    expected_head = _expected_head_revision()
+    assert version_num == expected_head, (
+        f"Expected version_num={expected_head!r} (current alembic head), "
+        f"got {version_num!r}. The rewired apply_migrations must call "
+        "command.upgrade('head')."
     )
 
 
@@ -174,9 +192,11 @@ def test_apply_migrations_creates_alembic_version_table_sqlite(
 
     assert len(rows) == 1, f"Expected exactly 1 row in alembic_version, got {len(rows)}."
     version_num = rows[0][0]
-    assert version_num == "0014_sdft_demonstrations", (
-        f"Expected version_num='0014_sdft_demonstrations', got {version_num!r}. "
-        "The rewired apply_migrations must call command.upgrade('head')."
+    expected_head = _expected_head_revision()
+    assert version_num == expected_head, (
+        f"Expected version_num={expected_head!r} (current alembic head), "
+        f"got {version_num!r}. The rewired apply_migrations must call "
+        "command.upgrade('head')."
     )
 
 
