@@ -456,8 +456,228 @@ def cmd_test(
     )
 
 
+# ── repair-indexes ─────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class IndexAuditRow:
+    """Per-embedder summary returned by :func:`audit_embedder_indexes`."""
+
+    name: str
+    dimension: int
+    table_name: str
+    current_indexdef: str | None
+    target_indexdef: str
+    status: str  # "OK" | "DRIFT" | "MISSING" | "TABLE_MISSING"
+
+
+def _target_indexdef(table_name: str, dimension: int) -> str:
+    """Canonical ``CREATE INDEX`` SQL for a given embedder dim.
+
+    Mirrors :func:`corpus_forge.backends.postgres._dense_index_strategy`.
+    The output is compared (substring-wise) against
+    ``pg_get_indexdef`` so it doesn't have to match formatting exactly.
+    """
+    from corpus_forge.backends.postgres import _dense_index_strategy
+
+    index_expr, _search_expr, ops = _dense_index_strategy(dimension)
+    return f"CREATE INDEX {table_name}_hnsw ON corpus.{table_name} USING hnsw ({index_expr} {ops})"
+
+
+def audit_embedder_indexes(backend) -> list[IndexAuditRow]:
+    """Inspect every per-embedder table on a PostgresBackend.
+
+    Returns one ``IndexAuditRow`` per row in ``corpus.embedders``,
+    flagging drift between the dim recorded for that embedder and
+    the actual HNSW index strategy on its data table. SQLite
+    backends short-circuit to an empty list because their vector
+    index lives in a ``sqlite-vec`` virtual table that has no
+    pgvector concept of "index strategy."
+    """
+
+    rows: list[IndexAuditRow] = []
+    if backend.__class__.__name__ == "SQLiteBackend":
+        return rows
+
+    embedders = backend._execute(
+        "SELECT name, dimension, table_name FROM corpus.embedders ORDER BY id"
+    )
+
+    for r in embedders:
+        name = r["name"]
+        dim = int(r["dimension"])
+        table_name = r["table_name"]
+
+        if not table_name:
+            rows.append(
+                IndexAuditRow(
+                    name=name,
+                    dimension=dim,
+                    table_name=table_name or "",
+                    current_indexdef=None,
+                    target_indexdef="",
+                    status="TABLE_MISSING",
+                )
+            )
+            continue
+
+        exists = backend._execute(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'corpus' AND table_name = %s",
+            (table_name,),
+        )
+        if not exists:
+            rows.append(
+                IndexAuditRow(
+                    name=name,
+                    dimension=dim,
+                    table_name=table_name,
+                    current_indexdef=None,
+                    target_indexdef=_target_indexdef(table_name, dim),
+                    status="TABLE_MISSING",
+                )
+            )
+            continue
+
+        idx_rows = backend._execute(
+            "SELECT pg_get_indexdef(c.oid) AS def "
+            "FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = 'corpus' AND c.relname = %s AND c.relkind = 'i'",
+            (f"{table_name}_hnsw",),
+        )
+        current = idx_rows[0]["def"] if idx_rows else None
+
+        from corpus_forge.backends.postgres import _dense_index_strategy
+
+        index_expr, _search_expr, ops = _dense_index_strategy(dim)
+        target_fragment = f"hnsw ({index_expr} {ops}"
+
+        target = _target_indexdef(table_name, dim)
+        if current is None:
+            status = "MISSING"
+        elif target_fragment in current:
+            status = "OK"
+        else:
+            status = "DRIFT"
+        rows.append(
+            IndexAuditRow(
+                name=name,
+                dimension=dim,
+                table_name=table_name,
+                current_indexdef=current,
+                target_indexdef=target,
+                status=status,
+            )
+        )
+
+    return rows
+
+
+def repair_embedder_index(backend, row: IndexAuditRow) -> None:
+    """Drop + recreate the HNSW index to match the target strategy.
+
+    The two statements run in a single backend transaction so a
+    failure leaves the table without an index rather than wedged
+    between two competing definitions. Callers are expected to
+    short-circuit on ``row.status == "OK"``.
+    """
+
+    from corpus_forge.backends.postgres import _dense_index_strategy
+
+    index_expr, _search_expr, ops = _dense_index_strategy(row.dimension)
+    index_name = f"{row.table_name}_hnsw"
+
+    backend._execute(f"DROP INDEX IF EXISTS corpus.{index_name}")
+    backend._execute(
+        f"CREATE INDEX IF NOT EXISTS {index_name} "
+        f"ON corpus.{row.table_name} "
+        f"USING hnsw ({index_expr} {ops})"
+    )
+
+
+@embedder_app.command("repair-indexes")
+def cmd_repair_indexes(
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply",
+            help=(
+                "Actually drop + recreate drifted indexes. Without "
+                "this flag the command prints a per-embedder diff "
+                "and exits without touching the database."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Audit per-embedder HNSW indexes against the configured dim.
+
+    Detects the case where the recorded ``dimension`` outgrew the
+    pgvector ``vector`` index ceiling (2000 dims) — common after a
+    user re-registers an embedder at the model's native Matryoshka
+    width. Reports drift; ``--apply`` rebuilds drifted indexes
+    using the matching ``halfvec`` projection strategy.
+    """
+
+    config = _load_config()
+    backend = _get_backend(config)
+
+    rows = audit_embedder_indexes(backend)
+    if not rows:
+        ui_info("No embedders found (or running on SQLite — no HNSW indexes).")
+        return
+
+    table = Table(title="Per-embedder HNSW index audit", show_lines=False)
+    table.add_column("Name")
+    table.add_column("Dim", justify="right")
+    table.add_column("Status")
+    table.add_column("Current → Target")
+
+    drifted: list[IndexAuditRow] = []
+    for r in rows:
+        if r.status in ("DRIFT", "MISSING"):
+            drifted.append(r)
+        delta = ""
+        if r.status == "OK":
+            delta = "(matches)"
+        elif r.status == "TABLE_MISSING":
+            delta = "(table not yet created)"
+        else:
+            short_current = r.current_indexdef.split("USING ")[-1] if r.current_indexdef else "—"
+            short_target = r.target_indexdef.split("USING ")[-1]
+            delta = f"{short_current}  →  {short_target}"
+        table.add_row(r.name, str(r.dimension), r.status, delta)
+
+    ui_console.print(table)
+
+    if not drifted:
+        ui_ok("All per-embedder indexes match their configured dimension.")
+        return
+
+    if not apply:
+        ui_warn(
+            f"{len(drifted)} embedder(s) need a rebuild. "
+            "Re-run with --apply to drop + recreate the drifted indexes."
+        )
+        raise typer.Exit(code=1)
+
+    for r in drifted:
+        ui_info(f"Rebuilding {r.name} ({r.dimension}d)…")
+        try:
+            repair_embedder_index(backend, r)
+        except Exception as exc:
+            ui_error(f"  failed: {exc}")
+            raise typer.Exit(code=1) from exc
+        ui_ok(f"  done: {r.name}")
+
+    ui_ok(f"Rebuilt {len(drifted)} index(es).")
+
+
 __all__ = [
     "EmbedderSmokeOutcome",
+    "IndexAuditRow",
+    "audit_embedder_indexes",
     "embedder_app",
+    "repair_embedder_index",
     "run_embedder_smoke",
 ]
