@@ -25,7 +25,7 @@ REVISION_PATH = (
     / "corpus_forge"
     / "alembic"
     / "versions"
-    / "0015_halfvec_index_for_wide_embedders.py"
+    / "0015_halfvec_hnsw_index.py"
 )
 
 
@@ -39,8 +39,22 @@ def _load_revision_module():
 
 def test_revision_imports_and_chains_onto_0014() -> None:
     mod = _load_revision_module()
-    assert mod.revision == "0015_halfvec_index_for_wide_embedders"
+    assert mod.revision == "0015_halfvec_hnsw_index"
     assert mod.down_revision == "0014_sdft_demonstrations"
+
+    # alembic's default ``alembic_version.version_num`` is VARCHAR(32).
+    # Anything longer raises ``StringDataRightTruncation`` at the very
+    # end of every ``alembic upgrade`` (after the migration's own
+    # ``upgrade()`` succeeds — the failure shows up only on the
+    # post-migration ``UPDATE alembic_version`` and rolls the whole
+    # thing back). The original id for this revision was 37 chars
+    # and broke ``corpus-forge migrate`` against live Postgres.
+    assert len(mod.revision) <= 32, (
+        f"revision id {mod.revision!r} is {len(mod.revision)} chars; "
+        "alembic's version_num column is VARCHAR(32). The original "
+        "0015 id was 37 chars and exploded mid-upgrade — see the "
+        "module docstring."
+    )
 
 
 @pytest.mark.parametrize(

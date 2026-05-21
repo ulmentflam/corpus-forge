@@ -1,8 +1,18 @@
 """Adapt HNSW indexes on per-embedder tables to the embedder's dimension.
 
-Revision ID: 0015_halfvec_index_for_wide_embedders
+Revision ID: 0015_halfvec_hnsw_index
 Revises: 0014_sdft_demonstrations
 Create Date: 2026-05-20 21:00:00.000000
+
+NOTE on the revision id length: alembic's default
+``alembic_version.version_num`` column is ``VARCHAR(32)``. The original
+id for this revision (``0015_halfvec_index_for_wide_embedders``, 37
+chars) tripped ``psycopg.errors.StringDataRightTruncation`` on the
+``UPDATE corpus.alembic_version`` that alembic runs at the end of
+``upgrade()``. The whole migration rolled back transactionally, so
+no data was corrupted — but the id has been shortened to
+``0015_halfvec_hnsw_index`` (23 chars) and a regression test pins the
+``len(rev_id) <= 32`` constraint going forward.
 
 pgvector's standard ``vector`` HNSW index supports at most 2000 dims;
 ``halfvec`` HNSW supports up to 4000. Earlier corpus-forge revisions
@@ -57,7 +67,7 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0015_halfvec_index_for_wide_embedders"
+revision: str = "0015_halfvec_hnsw_index"
 down_revision: str | None = "0014_sdft_demonstrations"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
