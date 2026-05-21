@@ -389,6 +389,12 @@ def test_audit_flags_missing_index_when_pg_get_indexdef_empty() -> None:
 
 
 def test_audit_ok_for_4096_when_halfvec_projection_present() -> None:
+    """An already-correct index must report OK so the migration +
+    repair tooling don't thrash on idempotent re-runs. The matching
+    indexdef uses the ``subvector(...)::halfvec(N)`` truncate-then-cast
+    shape required by pgvector when storage is ``vector(dim)`` and
+    ``dim > N``.
+    """
     backend = _AuditBackend(
         [
             [{"name": "qwen3_4096", "dimension": 4096, "table_name": "embeddings_qwen3_4096"}],
@@ -398,7 +404,9 @@ def test_audit_ok_for_4096_when_halfvec_projection_present() -> None:
                     "def": (
                         "CREATE INDEX embeddings_qwen3_4096_hnsw "
                         "ON corpus.embeddings_qwen3_4096 "
-                        "USING hnsw ((embedding::halfvec(4000)) halfvec_cosine_ops)"
+                        "USING hnsw ("
+                        "(subvector(embedding, 1, 4000)::halfvec(4000)) "
+                        "halfvec_cosine_ops)"
                     )
                 }
             ],

@@ -62,14 +62,40 @@ def test_revision_imports_and_chains_onto_0014() -> None:
     [
         (1024, "embedding", "vector_cosine_ops"),
         (2000, "embedding", "vector_cosine_ops"),
-        (2001, "(embedding::halfvec(2001))", "halfvec_cosine_ops"),
-        (3000, "(embedding::halfvec(3000))", "halfvec_cosine_ops"),
-        (4000, "(embedding::halfvec(4000))", "halfvec_cosine_ops"),
+        # ``subvector(embedding, 1, N)::halfvec(N)`` is the only shape
+        # pgvector will index when storage is ``vector(dim)`` and
+        # ``dim >= N``; a plain ``embedding::halfvec(N)`` cast errors
+        # with ``expected N dimensions, not <dim>`` at index-build OR
+        # at INSERT (caught in the dim=4096 E2E run against the live
+        # Postgres LXC — DataException blocked every embedding write).
+        (
+            2001,
+            "(subvector(embedding, 1, 2001)::halfvec(2001))",
+            "halfvec_cosine_ops",
+        ),
+        (
+            3000,
+            "(subvector(embedding, 1, 3000)::halfvec(3000))",
+            "halfvec_cosine_ops",
+        ),
+        (
+            4000,
+            "(subvector(embedding, 1, 4000)::halfvec(4000))",
+            "halfvec_cosine_ops",
+        ),
         # Native Qwen3-Embedding-8B width — must clamp the index
         # projection at 4000 because pgvector's halfvec HNSW caps there.
-        (4096, "(embedding::halfvec(4000))", "halfvec_cosine_ops"),
+        (
+            4096,
+            "(subvector(embedding, 1, 4000)::halfvec(4000))",
+            "halfvec_cosine_ops",
+        ),
         # Very wide hypothetical model — same clamp applies.
-        (8192, "(embedding::halfvec(4000))", "halfvec_cosine_ops"),
+        (
+            8192,
+            "(subvector(embedding, 1, 4000)::halfvec(4000))",
+            "halfvec_cosine_ops",
+        ),
     ],
 )
 def test_target_index_spec_matches_canonical_strategy(

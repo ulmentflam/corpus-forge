@@ -364,10 +364,17 @@ class TestSearchHelpers:
         """Native Qwen3-Embedding-8B width (4096) → halfvec projection.
 
         The projection is capped at 4000 dims (pgvector's halfvec HNSW
-        ceiling). The ``e.embedding::halfvec(4000)`` expression in the
-        query MUST match ``(embedding::halfvec(4000))`` in the index
-        definition byte-for-byte (modulo alias) or the planner falls
+        ceiling). The
+        ``(subvector(e.embedding, 1, 4000)::halfvec(4000))`` expression
+        in the query MUST match the index expression
+        ``(subvector(embedding, 1, 4000)::halfvec(4000))``
+        byte-for-byte (modulo the ``e.`` alias) or the planner falls
         back to a sequential scan.
+
+        ``subvector`` is required because pgvector's
+        ``::halfvec(N)`` cast does NOT truncate — caught when the live
+        Postgres run raised ``DataException: expected 4000 dimensions,
+        not 4096`` on every embedding INSERT.
         """
         import numpy as np
 
@@ -380,12 +387,51 @@ class TestSearchHelpers:
         )
         backend.search_dense(1, np.array([0.1] * 4096), k=5)
         search_sql = backend._execute.call_args_list[1].args[0]
-        assert "(e.embedding::halfvec(4000)) <=> %s::halfvec(4000)" in search_sql
+        assert (
+            "(subvector(e.embedding, 1, 4000)::halfvec(4000)) "
+            "<=> %s::halfvec(4000)"
+        ) in search_sql
         # And the plain vector cast must NOT also appear — that would
         # produce a duplicate, full-precision ORDER BY arm and bust
         # the index match.
         assert "%s::vector " not in search_sql
         assert "%s::vector\n" not in search_sql
+
+    def test_search_dense_truncates_query_vector_for_halfvec_projection(self):
+        """The query literal sent to psycopg MUST be exactly N dims
+        wide (where N is the indexed halfvec dim). The Matryoshka
+        prefix is search-quality-coherent, so we slice the leading
+        4000 dims off a 4096-d query. If we sent the full 4096-d
+        vector with ``%s::halfvec(4000)`` pgvector would error with
+        ``expected 4000 dimensions, not 4096`` — exactly the failure
+        that wedged ingest before this fix.
+        """
+        import numpy as np
+
+        backend = _make_backend()
+        backend._execute = MagicMock(
+            side_effect=[
+                [{"table_name": "embeddings_qwen3_4096", "dimension": 4096}],
+                [],
+            ]
+        )
+        # Distinguishable per-dim values so we can tell where the
+        # truncation happened in the serialised literal.
+        backend.search_dense(1, np.arange(4096, dtype=float), k=5)
+        # First positional arg of the second _execute call is the SQL;
+        # the params follow.
+        _sql, *params = backend._execute.call_args_list[1].args
+        vec_literal = params[0][0]  # params is ``(vec_str, …, vec_str, k)``
+        # The serialised literal must be exactly 4000 floats — the
+        # leading slice, ending in "3999.0]" (zero-indexed).
+        assert vec_literal.endswith("3999.0]"), (
+            "query vector was not truncated to the index dim; "
+            f"trailing slice: {vec_literal[-30:]!r}"
+        )
+        assert "4096.0" not in vec_literal, (
+            "the 4096th-dim float made it into the literal — pgvector "
+            "would reject the ``%s::halfvec(4000)`` cast"
+        )
 
     def test_search_lexical_returns_hits(self):
         backend = _make_backend()
@@ -1257,12 +1303,15 @@ class TestDenseIndexStrategy:
     def test_dim_over_pgvector_limit_uses_halfvec_projection(self):
         from corpus_forge.backends.postgres import _dense_index_strategy
 
-        # 2001 → halfvec projection. The first 2001 dims of the
-        # native float32 storage are projected to half-precision so
-        # the HNSW index can build (vector ops would refuse).
+        # 2001 → halfvec projection. ``subvector(embedding, 1, 2001)``
+        # truncates the storage-side ``vector(2001+)`` down to the
+        # indexable width before the ``::halfvec(2001)`` cast — pgvector
+        # does not auto-truncate, so a plain ``embedding::halfvec(N)``
+        # would raise ``expected N dimensions, not <dim>`` on every
+        # INSERT (caught by the live E2E run).
         index_expr, search_expr, ops = _dense_index_strategy(2001)
-        assert index_expr == "(embedding::halfvec(2001))"
-        assert search_expr == "(e.embedding::halfvec(2001))"
+        assert index_expr == "(subvector(embedding, 1, 2001)::halfvec(2001))"
+        assert search_expr == "(subvector(e.embedding, 1, 2001)::halfvec(2001))"
         assert ops == "halfvec_cosine_ops"
 
     def test_dim_at_native_qwen3_width_4096_caps_at_halfvec_4000(self):
@@ -1276,8 +1325,8 @@ class TestDenseIndexStrategy:
         from corpus_forge.backends.postgres import _dense_index_strategy
 
         index_expr, search_expr, ops = _dense_index_strategy(4096)
-        assert index_expr == "(embedding::halfvec(4000))"
-        assert search_expr == "(e.embedding::halfvec(4000))"
+        assert index_expr == "(subvector(embedding, 1, 4000)::halfvec(4000))"
+        assert search_expr == "(subvector(e.embedding, 1, 4000)::halfvec(4000))"
         assert ops == "halfvec_cosine_ops"
 
     def test_index_and_search_expressions_agree_modulo_alias(self):

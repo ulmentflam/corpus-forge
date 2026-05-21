@@ -28,8 +28,12 @@ index using the right strategy for the row's dimension:
 - ``dim <= 2000``: ``USING hnsw (embedding vector_cosine_ops)``
   (no change — left in place for back-compat with deployments that
   already have the index)
-- ``dim >  2000``: ``USING hnsw ((embedding::halfvec(min(dim,4000)))
-  halfvec_cosine_ops)``
+- ``dim >  2000``: ``USING hnsw ((subvector(embedding, 1, min(dim,4000))
+  ::halfvec(min(dim,4000))) halfvec_cosine_ops)`` — the ``subvector``
+  truncates the wider underlying ``vector(dim)`` down to the indexable
+  width because pgvector's ``::halfvec(N)`` cast does NOT truncate;
+  it raises ``DataException: expected N dimensions, not <dim>`` when
+  the source is wider.
 
 Idempotent. The migration:
 
@@ -86,11 +90,19 @@ def _target_index_spec(dimension: int) -> tuple[str, str]:
     """Return ``(index_expression, ops_class)`` for ``CREATE INDEX``.
 
     Mirrors ``corpus_forge.backends.postgres._dense_index_strategy``.
+    The ``subvector(embedding, 1, N)::halfvec(N)`` form is the only
+    expression pgvector will accept here when the storage column is
+    ``vector(dim)`` and ``dim > N``: a plain ``embedding::halfvec(N)``
+    cast raises ``expected N dimensions, not <dim>`` at index-build
+    time.
     """
     if dimension <= _PGVECTOR_INDEX_LIMIT:
         return ("embedding", "vector_cosine_ops")
     index_dim = min(dimension, _HALFVEC_INDEX_LIMIT)
-    return (f"(embedding::halfvec({index_dim}))", "halfvec_cosine_ops")
+    return (
+        f"(subvector(embedding, 1, {index_dim})::halfvec({index_dim}))",
+        "halfvec_cosine_ops",
+    )
 
 
 def upgrade() -> None:

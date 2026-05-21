@@ -66,19 +66,29 @@ def _dense_index_strategy(dimension: int) -> tuple[str, str, str]:
     - ``dim <= 2000``: full ``vector_cosine_ops`` index — back-compat
       with every pre-existing ``embeddings_*`` table in the wild. No
       schema migration required for older deployments.
-    - ``dim >  2000``: ``(embedding::halfvec(min(dim, 4000)))`` indexed
-      with ``halfvec_cosine_ops``. Storage stays full ``vector(dim)``
-      so the float32 vectors are preserved; the half-precision
-      projection is search-side only. For dim > 4000 we silently
-      truncate the index expression to 4000 because that's pgvector's
-      hard ceiling — Matryoshka-coherent storage isn't affected.
+    - ``dim >  2000``: ``(subvector(embedding, 1, N)::halfvec(N))``
+      indexed with ``halfvec_cosine_ops``, where ``N = min(dim,
+      4000)``. Storage stays full ``vector(dim)`` so the float32
+      vectors are preserved; the half-precision projection is
+      search-side only.
+
+      The ``subvector(v, 1, N)`` call is required even when ``dim ==
+      N`` because pgvector's ``::halfvec(N)`` cast does NOT truncate
+      — it asserts the source vector is already ``N``-dimensional and
+      raises ``DataException: expected N dimensions, not <actual>``
+      when the source is wider. ``subvector`` does the truncation
+      (returning a ``vector(N)``), then the cast becomes a same-dim
+      narrowing. For Matryoshka-trained models the leading-N prefix
+      is the N-dim embedding, so the truncation is search-quality-
+      coherent. For dim > 4000 the index expression always truncates
+      to 4000 (pgvector's halfvec HNSW ceiling).
     """
     if dimension <= _PGVECTOR_INDEX_LIMIT:
         return ("embedding", "e.embedding", "vector_cosine_ops")
     index_dim = min(dimension, _HALFVEC_INDEX_LIMIT)
     return (
-        f"(embedding::halfvec({index_dim}))",
-        f"(e.embedding::halfvec({index_dim}))",
+        f"(subvector(embedding, 1, {index_dim})::halfvec({index_dim}))",
+        f"(subvector(e.embedding, 1, {index_dim})::halfvec({index_dim}))",
         "halfvec_cosine_ops",
     )
 
@@ -1505,7 +1515,21 @@ class PostgresBackend(StorageBackend):
 
         # pgvector expects the literal vector(...) cast for psycopg's
         # parameter binding.  Serialise to "[v1,v2,...]" form.
-        vec_str = "[" + ",".join(repr(float(x)) for x in np.asarray(query_vector).ravel()) + "]"
+        #
+        # For the halfvec-projection strategy (dim > 2000), the indexed
+        # column is ``subvector(embedding, 1, N)::halfvec(N)`` — so the
+        # query vector must ALSO be exactly N dims wide before casting
+        # to ``halfvec(N)``. The Matryoshka prefix is a quality-
+        # preserving truncation. We slice Python-side instead of
+        # wrapping in another ``subvector`` SQL call so the literal
+        # passed to psycopg already has the right shape and pgvector
+        # doesn't reject the cast with ``DataException: expected N
+        # dimensions, not <dim>``.
+        flat = np.asarray(query_vector).ravel()
+        if dim > _PGVECTOR_INDEX_LIMIT:
+            index_dim = min(dim, _HALFVEC_INDEX_LIMIT)
+            flat = flat[:index_dim]
+        vec_str = "[" + ",".join(repr(float(x)) for x in flat) + "]"
 
         params: list = [vec_str]
         ds_filter = ""
@@ -1527,6 +1551,9 @@ class PostgresBackend(StorageBackend):
             query_cast = "%s::vector"
         else:
             index_dim = min(dim, _HALFVEC_INDEX_LIMIT)
+            # Query vector is already truncated to index_dim above, so
+            # the cast is a same-dim narrowing and matches the index
+            # expression's ``halfvec(index_dim)`` exactly.
             query_cast = f"%s::halfvec({index_dim})"
 
         # NB: f-string interpolation of table_name is safe — register_embedder
