@@ -99,19 +99,17 @@ def run_embedder_smoke(name: str) -> EmbedderSmokeOutcome:
     if cfg is None:
         raise ValueError(f"embedder {name!r} not found in config")
 
-    from corpus_forge.embedders.registry import registry
+    # Route through ``register_from_config`` so the provider-specific
+    # kwarg policy (device for sentence_transformers; api_key_env +
+    # base_url for openai; nothing extra for model2vec) matches the
+    # ingest and search call sites — pre-refactor we passed
+    # ``device=auto`` and ``api_key_env`` unconditionally, which
+    # crashed OpenAI embedders with ``TypeError: unexpected keyword
+    # argument 'device'`` AND dropped ``base_url`` so the OpenAI
+    # client fell back to api.openai.com.
+    from corpus_forge.embedders.registry import register_from_config, registry
 
-    embedder = registry.register(
-        name=cfg.name,
-        provider=cfg.provider,
-        model_id=cfg.model_id,
-        dimension=cfg.dimension,
-        normalized=cfg.normalize,
-        distance=cfg.distance,
-        batch_size=getattr(cfg, "batch_size", 32),
-        device=getattr(cfg, "device", "auto"),
-        api_key_env=getattr(cfg, "api_key_env", "OPENAI_API_KEY"),
-    )
+    embedder = register_from_config(registry, cfg)
 
     t0 = time.perf_counter()
     vector = embedder.encode(["hello world"])
@@ -456,8 +454,292 @@ def cmd_test(
     )
 
 
+# ── repair-indexes ─────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class IndexAuditRow:
+    """Per-embedder summary returned by :func:`audit_embedder_indexes`."""
+
+    name: str
+    dimension: int
+    table_name: str
+    current_indexdef: str | None
+    target_indexdef: str
+    status: str  # "OK" | "DRIFT" | "MISSING" | "TABLE_MISSING"
+
+
+def _target_indexdef(table_name: str, dimension: int) -> str:
+    """Canonical ``CREATE INDEX`` SQL for a given embedder dim.
+
+    Mirrors :func:`corpus_forge.backends.postgres._dense_index_strategy`.
+    The output is compared (substring-wise) against
+    ``pg_get_indexdef`` so it doesn't have to match formatting exactly.
+    """
+    from corpus_forge.backends.postgres import _dense_index_strategy
+
+    index_expr, _search_expr, ops = _dense_index_strategy(dimension)
+    return f"CREATE INDEX {table_name}_hnsw ON corpus.{table_name} USING hnsw ({index_expr} {ops})"
+
+
+def audit_embedder_indexes(backend) -> list[IndexAuditRow]:
+    """Inspect every per-embedder table on a PostgresBackend.
+
+    Returns one ``IndexAuditRow`` per row in ``corpus.embedders``,
+    flagging drift between the dim recorded for that embedder and
+    the actual HNSW index strategy on its data table. SQLite
+    backends short-circuit to an empty list because their vector
+    index lives in a ``sqlite-vec`` virtual table that has no
+    pgvector concept of "index strategy."
+    """
+
+    rows: list[IndexAuditRow] = []
+    if backend.__class__.__name__ == "SQLiteBackend":
+        return rows
+
+    embedders = backend._execute(
+        "SELECT name, dimension, table_name FROM corpus.embedders ORDER BY id"
+    )
+
+    for r in embedders:
+        name = r["name"]
+        dim = int(r["dimension"])
+        table_name = r["table_name"]
+
+        if not table_name:
+            rows.append(
+                IndexAuditRow(
+                    name=name,
+                    dimension=dim,
+                    table_name=table_name or "",
+                    current_indexdef=None,
+                    target_indexdef="",
+                    status="TABLE_MISSING",
+                )
+            )
+            continue
+
+        exists = backend._execute(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'corpus' AND table_name = %s",
+            (table_name,),
+        )
+        if not exists:
+            rows.append(
+                IndexAuditRow(
+                    name=name,
+                    dimension=dim,
+                    table_name=table_name,
+                    current_indexdef=None,
+                    target_indexdef=_target_indexdef(table_name, dim),
+                    status="TABLE_MISSING",
+                )
+            )
+            continue
+
+        idx_rows = backend._execute(
+            "SELECT pg_get_indexdef(c.oid) AS def "
+            "FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = 'corpus' AND c.relname = %s AND c.relkind = 'i'",
+            (f"{table_name}_hnsw",),
+        )
+        current = idx_rows[0]["def"] if idx_rows else None
+
+        from corpus_forge.backends.postgres import (
+            _HALFVEC_INDEX_LIMIT,
+            _PGVECTOR_INDEX_LIMIT,
+        )
+
+        target = _target_indexdef(table_name, dim)
+
+        # ``pg_get_indexdef`` re-renders index expressions with its own
+        # parenthesisation/whitespace conventions (e.g. an extra outer
+        # paren around the ``::`` cast: ``((subvector(...))::halfvec(N))``
+        # vs our canonical ``(subvector(...)::halfvec(N))``). A naive
+        # ``target_fragment in current`` substring match flags these
+        # semantically-identical indexes as DRIFT. Compare on the
+        # key tokens that actually distinguish the strategies instead:
+        #
+        # - ``ops`` class (vector_cosine_ops vs halfvec_cosine_ops) —
+        #   the only thing the planner cares about for operator-class
+        #   match.
+        # - For halfvec, the projection width ``halfvec(N)`` AND the
+        #   ``subvector(`` marker (so an old broken
+        #   ``embedding::halfvec(N)`` index — without ``subvector`` —
+        #   is still flagged as DRIFT and gets rebuilt).
+        def _norm(s: str) -> str:
+            return s.replace(" ", "").lower()
+
+        if current is None:
+            status = "MISSING"
+        elif dim <= _PGVECTOR_INDEX_LIMIT:
+            # dim <= 2000: just check the ops class.
+            status = "OK" if "vector_cosine_ops" in current else "DRIFT"
+        else:
+            index_dim = min(dim, _HALFVEC_INDEX_LIMIT)
+            current_n = _norm(current)
+            has_ops = "halfvec_cosine_ops" in current_n
+            has_dim = f"halfvec({index_dim})" in current_n
+            has_subvector = "subvector(" in current_n
+            status = "OK" if (has_ops and has_dim and has_subvector) else "DRIFT"
+        rows.append(
+            IndexAuditRow(
+                name=name,
+                dimension=dim,
+                table_name=table_name,
+                current_indexdef=current,
+                target_indexdef=target,
+                status=status,
+            )
+        )
+
+    return rows
+
+
+def repair_embedder_index(backend, row: IndexAuditRow) -> None:
+    """Drop + recreate the HNSW index to match the target strategy.
+
+    The two statements run inside a SINGLE psycopg connection +
+    transaction so the index never has a stale-and-correct window in
+    between — if ``CREATE INDEX`` fails (disk full, lock contention,
+    invalid dim), the ``DROP INDEX`` is rolled back too and the
+    operator can re-run the repair against the original index. Going
+    through ``backend._execute`` would have committed after each call,
+    breaking that atomicity.
+
+    Identifier handling: ``row.table_name`` is read out of
+    ``corpus.embedders.table_name`` which ``register_embedder``
+    derives from the user's configured embedder name (single-tenant
+    tool, so trust boundary is shallow). Even so, route the
+    identifiers through ``psycopg.sql.Identifier`` so a name with a
+    quote / space / dash escapes correctly instead of breaking the
+    DDL. ``index_expr`` and ``ops_class`` are SQL fragments we
+    generate in ``_dense_index_strategy`` from a finite set of
+    literals — those stay as raw text.
+
+    Callers are expected to short-circuit on ``row.status == "OK"``.
+    """
+
+    from psycopg import sql as pgsql
+
+    from corpus_forge.backends.postgres import _dense_index_strategy
+
+    index_expr, _search_expr, ops = _dense_index_strategy(row.dimension)
+    index_name = f"{row.table_name}_hnsw"
+
+    drop_sql = pgsql.SQL("DROP INDEX IF EXISTS corpus.{idx}").format(
+        idx=pgsql.Identifier(index_name),
+    )
+    # ``USING hnsw (…)`` body stays as raw text — see docstring. Wrapped
+    # in ``pgsql.SQL`` so it composes with the format-substituted
+    # identifiers; the ``ignore[bad-argument-type]`` is because pyrefly
+    # demands a ``LiteralString`` for ``pgsql.SQL`` and ``index_expr``
+    # / ``ops`` are runtime strings (their values come from the finite
+    # literal set in ``_dense_index_strategy`` — see that helper).
+    body = pgsql.SQL(f"{index_expr} {ops}")  # pyrefly: ignore[bad-argument-type]
+    create_sql = pgsql.SQL(
+        "CREATE INDEX IF NOT EXISTS {idx} ON corpus.{tbl} USING hnsw ({body})"
+    ).format(
+        idx=pgsql.Identifier(index_name),
+        tbl=pgsql.Identifier(row.table_name),
+        body=body,
+    )
+
+    # Run DROP + CREATE in one transaction. ``_get_connection`` is a
+    # context manager that yields a configured psycopg connection;
+    # explicit ``commit()`` at the end finalises both statements
+    # atomically. ``__exit__`` closes the connection. If either
+    # ``cur.execute`` raises, the ``with`` block exits without
+    # ``commit()`` and Postgres rolls the whole thing back.
+    with backend._get_connection() as conn, conn.cursor() as cur:
+        cur.execute(drop_sql)
+        cur.execute(create_sql)
+        conn.commit()
+
+
+@embedder_app.command("repair-indexes")
+def cmd_repair_indexes(
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply",
+            help=(
+                "Actually drop + recreate drifted indexes. Without "
+                "this flag the command prints a per-embedder diff "
+                "and exits without touching the database."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Audit per-embedder HNSW indexes against the configured dim.
+
+    Detects the case where the recorded ``dimension`` outgrew the
+    pgvector ``vector`` index ceiling (2000 dims) — common after a
+    user re-registers an embedder at the model's native Matryoshka
+    width. Reports drift; ``--apply`` rebuilds drifted indexes
+    using the matching ``halfvec`` projection strategy.
+    """
+
+    config = _load_config()
+    backend = _get_backend(config)
+
+    rows = audit_embedder_indexes(backend)
+    if not rows:
+        ui_info("No embedders found (or running on SQLite — no HNSW indexes).")
+        return
+
+    table = Table(title="Per-embedder HNSW index audit", show_lines=False)
+    table.add_column("Name")
+    table.add_column("Dim", justify="right")
+    table.add_column("Status")
+    table.add_column("Current → Target")
+
+    drifted: list[IndexAuditRow] = []
+    for r in rows:
+        if r.status in ("DRIFT", "MISSING"):
+            drifted.append(r)
+        delta = ""
+        if r.status == "OK":
+            delta = "(matches)"
+        elif r.status == "TABLE_MISSING":
+            delta = "(table not yet created)"
+        else:
+            short_current = r.current_indexdef.split("USING ")[-1] if r.current_indexdef else "—"
+            short_target = r.target_indexdef.split("USING ")[-1]
+            delta = f"{short_current}  →  {short_target}"
+        table.add_row(r.name, str(r.dimension), r.status, delta)
+
+    ui_console.print(table)
+
+    if not drifted:
+        ui_ok("All per-embedder indexes match their configured dimension.")
+        return
+
+    if not apply:
+        ui_warn(
+            f"{len(drifted)} embedder(s) need a rebuild. "
+            "Re-run with --apply to drop + recreate the drifted indexes."
+        )
+        raise typer.Exit(code=1)
+
+    for r in drifted:
+        ui_info(f"Rebuilding {r.name} ({r.dimension}d)…")
+        try:
+            repair_embedder_index(backend, r)
+        except Exception as exc:
+            ui_error(f"  failed: {exc}")
+            raise typer.Exit(code=1) from exc
+        ui_ok(f"  done: {r.name}")
+
+    ui_ok(f"Rebuilt {len(drifted)} index(es).")
+
+
 __all__ = [
     "EmbedderSmokeOutcome",
+    "IndexAuditRow",
+    "audit_embedder_indexes",
     "embedder_app",
+    "repair_embedder_index",
     "run_embedder_smoke",
 ]

@@ -118,17 +118,43 @@ There's also a research-librarian subagent at `.claude/agents/corpus-forge-resea
 
 ## 6. First-run sanity
 
+Run in this exact order — each step relies on the previous one:
+
 ```bash
+corpus-forge migrate                             # apply alembic revisions (creates the corpus.* schema +
+                                                 #   the per-embedder HNSW indexes at the right strategy
+                                                 #   for each embedder's dim — see revision 0015).
+                                                 # Idempotent: re-runnable on every upgrade.
 corpus-forge doctor                              # checks Python, backend, embedders, model endpoints
+                                                 # AND HNSW index drift per embedder (will WARN if the
+                                                 # index strategy doesn't match the configured dim and
+                                                 # suggest `embedder repair-indexes` as the fix).
 corpus-forge estimate ~/Notes                    # Postgres footprint estimate, no sync
                                                  # Honors <root>/.corpusignore AND ~/.config/corpus-forge/ignore
                                                  # (gitignore syntax; NEW in 0.1.0b3)
-corpus-forge ingest --once                       # one-shot sync of the configured roots
+corpus-forge ingest --once                       # one-shot sync of the configured roots; on first hit
+                                                 # creates each `embeddings_<name>` table with the right
+                                                 # HNSW strategy (vector_cosine_ops for dim<=2000,
+                                                 # halfvec projection for dim>2000)
 corpus-forge embed -e qwen3_8b                   # backfill embeddings
 corpus-forge search "what does the daemon log on startup" --k 5
 ```
 
+`install.sh` runs `setup` + `migrate` automatically; the manual sequence above is for incremental setups (e.g., adding a Postgres backend after originally running on SQLite) and for **upgrades** (revision 0015 needs `migrate` to fire so existing `vector_cosine_ops` indexes get rebuilt to `halfvec` for any embedder with `dim > 2000`).
+
 Ask the user to run all of these on a small directory before pointing corpus-forge at their full vault. The `estimate` step is cheap (no network, no model calls) and will tell them roughly how many GB Postgres needs.
+
+### Recovering from HNSW index drift
+
+If `doctor` reports `embedder_indexes: WARN`, the per-embedder HNSW index strategy doesn't match the configured `dimension`. Two fixes — both safe to run repeatedly:
+
+```bash
+corpus-forge migrate                             # rebuilds every drifted index (revision 0015)
+corpus-forge embedder repair-indexes             # audit + per-table diff; --apply rebuilds drifted ones
+corpus-forge embedder repair-indexes --apply     # actually drop + recreate the drifted indexes
+```
+
+`migrate` does the same work as `repair-indexes --apply` but applied to every embedder atomically; `repair-indexes` is the targeted diagnostic.
 
 ## 7. Curation loop quickstart (for the assistant)
 

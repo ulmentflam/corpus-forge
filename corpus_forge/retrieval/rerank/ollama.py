@@ -109,21 +109,10 @@ class OllamaReranker:
     # ── lazy client ────────────────────────────────────────────────────────
 
     def _get_client(self) -> Any:
-        """Construct (and cache) the OpenAI-compat client pointed at Ollama.
-
-        Raises:
-            ImportError: when the ``openai`` package isn't installed.
-        """
+        """Construct (and cache) the OpenAI-compat client pointed at Ollama."""
         if self._client is not None:
             return self._client
-        try:
-            from openai import OpenAI  # noqa: PLC0415
-        except ImportError as exc:  # pragma: no cover - openai is an optional extra
-            raise ImportError(
-                "OllamaReranker requires the `openai` package. "
-                "Install with: pip install 'corpus-forge[openai]' "
-                "(or pip install openai>=1.30)."
-            ) from exc
+        from openai import OpenAI  # noqa: PLC0415
 
         self._client = OpenAI(base_url=self.base_url, api_key=self.api_key)
         return self._client
