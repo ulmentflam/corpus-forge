@@ -388,8 +388,7 @@ class TestSearchHelpers:
         backend.search_dense(1, np.array([0.1] * 4096), k=5)
         search_sql = backend._execute.call_args_list[1].args[0]
         assert (
-            "(subvector(e.embedding, 1, 4000)::halfvec(4000)) "
-            "<=> %s::halfvec(4000)"
+            "(subvector(e.embedding, 1, 4000)::halfvec(4000)) <=> %s::halfvec(4000)"
         ) in search_sql
         # And the plain vector cast must NOT also appear — that would
         # produce a duplicate, full-precision ORDER BY arm and bust

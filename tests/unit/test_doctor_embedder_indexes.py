@@ -153,7 +153,8 @@ def test_warn_when_index_is_missing_entirely() -> None:
             table_name="embeddings_halfvec_unindexed",
             current_indexdef=None,
             target_indexdef=(
-                "CREATE INDEX ... USING hnsw ((embedding::halfvec(4000)) halfvec_cosine_ops)"
+                "CREATE INDEX ... USING hnsw "
+                "((subvector(embedding, 1, 4000)::halfvec(4000)) halfvec_cosine_ops)"
             ),
             status="MISSING",
         ),
@@ -168,6 +169,45 @@ def test_warn_when_index_is_missing_entirely() -> None:
         result = _check_embedder_indexes(_cfg())
     assert result.status == CheckStatus.WARN
     assert "MISSING" in result.detail
+
+
+def test_warn_when_per_embedder_table_does_not_exist() -> None:
+    """TABLE_MISSING — the embedder row exists in ``corpus.embedders``
+    but the per-embedder chunks table was never created (or was
+    dropped). Dense search against this embedder will fail with
+    ``relation does not exist``, so doctor must surface this same
+    way it surfaces index drift — not silently report OK.
+
+    Regression for a bug where ``_check_embedder_indexes`` only
+    treated DRIFT and MISSING as unhealthy; TABLE_MISSING slipped
+    through and the check returned OK even though one embedder was
+    unusable.
+    """
+    from corpus_forge.admin.embedder import IndexAuditRow
+
+    rows = [
+        IndexAuditRow(
+            name="orphan",
+            dimension=2000,
+            table_name="embeddings_orphan",
+            current_indexdef=None,
+            target_indexdef="",
+            status="TABLE_MISSING",
+        ),
+    ]
+    with (
+        patch(
+            "corpus_forge.backends.postgres.PostgresBackend",
+            return_value=MagicMock(),
+        ),
+        patch("corpus_forge.admin.embedder.audit_embedder_indexes", return_value=rows),
+    ):
+        result = _check_embedder_indexes(_cfg())
+    assert result.status == CheckStatus.WARN
+    assert "TABLE_MISSING" in result.detail
+    # And the fix hint must still appear so the operator knows what
+    # to run.
+    assert "corpus-forge migrate" in result.detail
 
 
 def test_audit_helper_failure_yields_skip_not_fail() -> None:

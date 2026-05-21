@@ -594,7 +594,13 @@ def _check_embedder_indexes(cfg: Config) -> CheckResult:
             "no embedders registered yet",
         )
 
-    drifted = [r for r in rows if r.status in ("DRIFT", "MISSING")]
+    # ``TABLE_MISSING`` is also a non-healthy state — the embedder row
+    # exists but the per-embedder chunks table doesn't, so dense
+    # search against that embedder will fail. The doctor check has to
+    # surface that just like DRIFT / MISSING so the operator runs
+    # ``ingest`` (or ``embed``) to re-create it. Anything that isn't
+    # OK gets reported.
+    drifted = [r for r in rows if r.status != "OK"]
     if not drifted:
         names = ", ".join(f"{r.name}({r.dimension}d)" for r in rows)
         return CheckResult(
