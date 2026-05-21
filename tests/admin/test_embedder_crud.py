@@ -419,29 +419,56 @@ def test_audit_ok_for_4096_when_halfvec_projection_present() -> None:
 def test_repair_emits_drop_then_create() -> None:
     """The repair helper must drop the stale index BEFORE creating the
     new one — running them in the other order would crash on the
-    name collision.
+    name collision — AND it must run both inside a single
+    connection/transaction so a CREATE failure rolls back the DROP.
     """
-    backend = _AuditBackend([None, None])  # DROP + CREATE return values
+    from contextlib import contextmanager
+    from unittest.mock import MagicMock
+
+    # Capture SQL through a single mock cursor so the order assertion
+    # also verifies the two statements share a connection.
+    cur = MagicMock()
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__ = MagicMock(return_value=cur)
+    conn.cursor.return_value.__exit__ = MagicMock(return_value=None)
+
+    @contextmanager
+    def _get_connection_stub():
+        yield conn
+
+    backend = MagicMock()
+    backend.__class__.__name__ = "PostgresBackend"
+    backend._get_connection = _get_connection_stub
+
     row = embedder_admin.IndexAuditRow(
         name="qwen3_4096",
         dimension=4096,
         table_name="embeddings_qwen3_4096",
         current_indexdef="CREATE INDEX ... USING hnsw (embedding vector_cosine_ops)",
         target_indexdef=(
-            "CREATE INDEX ... USING hnsw ((embedding::halfvec(4000)) halfvec_cosine_ops)"
+            "CREATE INDEX ... USING hnsw "
+            "((subvector(embedding, 1, 4000)::halfvec(4000)) halfvec_cosine_ops)"
         ),
         status="DRIFT",
     )
     embedder_admin.repair_embedder_index(backend, row)
 
-    assert len(backend.executed) == 2
-    drop_sql = backend.executed[0][0]
-    create_sql = backend.executed[1][0]
+    # Both statements executed on the same cursor in order.
+    assert cur.execute.call_count == 2
+    drop_call, create_call = cur.execute.call_args_list
+    drop_sql = drop_call.args[0].as_string()
+    create_sql = create_call.args[0].as_string()
     assert "DROP INDEX" in drop_sql
     assert "embeddings_qwen3_4096_hnsw" in drop_sql
     assert "CREATE INDEX" in create_sql
     assert "halfvec(4000)" in create_sql
     assert "halfvec_cosine_ops" in create_sql
+    assert "subvector(embedding, 1, 4000)" in create_sql
+
+    # And ``commit`` must fire ONCE at the end so the DROP+CREATE
+    # is atomic — calling ``conn.commit()`` between them would
+    # break the rollback-on-CREATE-failure contract.
+    conn.commit.assert_called_once()
 
 
 def test_cli_repair_dry_run_does_not_apply(monkeypatch) -> None:

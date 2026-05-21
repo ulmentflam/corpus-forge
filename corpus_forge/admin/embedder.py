@@ -600,10 +600,13 @@ def audit_embedder_indexes(backend) -> list[IndexAuditRow]:
 def repair_embedder_index(backend, row: IndexAuditRow) -> None:
     """Drop + recreate the HNSW index to match the target strategy.
 
-    The two statements run in a single backend transaction so a
-    failure leaves the table without an index rather than wedged
-    between two competing definitions. Callers are expected to
-    short-circuit on ``row.status == "OK"``.
+    The two statements run inside a SINGLE psycopg connection +
+    transaction so the index never has a stale-and-correct window in
+    between — if ``CREATE INDEX`` fails (disk full, lock contention,
+    invalid dim), the ``DROP INDEX`` is rolled back too and the
+    operator can re-run the repair against the original index. Going
+    through ``backend._execute`` would have committed after each call,
+    breaking that atomicity.
 
     Identifier handling: ``row.table_name`` is read out of
     ``corpus.embedders.table_name`` which ``register_embedder``
@@ -614,6 +617,8 @@ def repair_embedder_index(backend, row: IndexAuditRow) -> None:
     DDL. ``index_expr`` and ``ops_class`` are SQL fragments we
     generate in ``_dense_index_strategy`` from a finite set of
     literals — those stay as raw text.
+
+    Callers are expected to short-circuit on ``row.status == "OK"``.
     """
 
     from psycopg import sql as pgsql
@@ -641,8 +646,16 @@ def repair_embedder_index(backend, row: IndexAuditRow) -> None:
         body=body,
     )
 
-    backend._execute(drop_sql.as_string())
-    backend._execute(create_sql.as_string())
+    # Run DROP + CREATE in one transaction. ``_get_connection`` is a
+    # context manager that yields a configured psycopg connection;
+    # explicit ``commit()`` at the end finalises both statements
+    # atomically. ``__exit__`` closes the connection. If either
+    # ``cur.execute`` raises, the ``with`` block exits without
+    # ``commit()`` and Postgres rolls the whole thing back.
+    with backend._get_connection() as conn, conn.cursor() as cur:
+        cur.execute(drop_sql)
+        cur.execute(create_sql)
+        conn.commit()
 
 
 @embedder_app.command("repair-indexes")
