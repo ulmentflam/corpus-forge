@@ -63,3 +63,30 @@ def test_install_sh_does_not_call_plain_setup_unconditionally() -> None:
         "that discards every CF_* env var the script just set. Replace it "
         "with `corpus-forge setup --non-interactive`."
     )
+
+
+def test_install_sh_runs_migrate_after_setup() -> None:
+    """``install.sh`` must run ``corpus-forge migrate`` after the
+    setup wizard so first-run ``ingest`` doesn't crash on a missing
+    ``corpus.*`` schema. Crucial after revision 0015 because the
+    halfvec index rebuild only happens when migrate fires — a
+    fresh user who skipped it would also skip getting the right
+    HNSW strategy on their first per-embedder table create.
+
+    Pin both the call AND its position (after ``corpus-forge setup
+    --non-interactive``), so a refactor can't accidentally move the
+    migrate call BEFORE the setup wizard writes the config file
+    (which would crash with "config not found").
+    """
+    script_text = INSTALL_SH.read_text(encoding="utf-8")
+    assert "corpus-forge migrate" in script_text, (
+        "install.sh must call `corpus-forge migrate` so the database "
+        "schema is up-to-date before the user's first `ingest --once`."
+    )
+    setup_idx = script_text.index("corpus-forge setup --non-interactive")
+    migrate_idx = script_text.index("corpus-forge migrate")
+    assert setup_idx < migrate_idx, (
+        "install.sh must run `corpus-forge migrate` AFTER "
+        "`corpus-forge setup --non-interactive` — migrate needs the "
+        "config.toml setup writes."
+    )
