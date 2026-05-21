@@ -304,9 +304,28 @@ class FilesystemSource(WatchedSource):
         except OSError:
             modified_at = 0.0
 
+        # ``file_content_hash`` reopens the file to read the bytes. On
+        # iCloud / network mounts the file can be evicted between
+        # extraction and hashing (Apple's iCloud daemon turns
+        # rarely-accessed files into placeholders mid-scan); the
+        # extractor already handles this gracefully so we mirror that
+        # behaviour here instead of letting a vanished file crash the
+        # whole ingest pass. Logged as WARNING so the operator sees
+        # the same shape of message the extractor emits.
+        try:
+            content_hash_value = self.file_content_hash(path)
+        except (FileNotFoundError, OSError) as exc:
+            logger.warning(
+                "Could not hash %s after extraction (likely iCloud / network "
+                "eviction between read and hash): %s — skipping",
+                path,
+                exc,
+            )
+            return None
+
         return RawDocument(
             source_uri=f"filesystem://{self.root.name}/{path.relative_to(self.root)}",
-            content_hash=self.file_content_hash(path),
+            content_hash=content_hash_value,
             text=extracted.text,
             title=title,
             modified_at=modified_at,
