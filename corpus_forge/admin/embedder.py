@@ -604,19 +604,45 @@ def repair_embedder_index(backend, row: IndexAuditRow) -> None:
     failure leaves the table without an index rather than wedged
     between two competing definitions. Callers are expected to
     short-circuit on ``row.status == "OK"``.
+
+    Identifier handling: ``row.table_name`` is read out of
+    ``corpus.embedders.table_name`` which ``register_embedder``
+    derives from the user's configured embedder name (single-tenant
+    tool, so trust boundary is shallow). Even so, route the
+    identifiers through ``psycopg.sql.Identifier`` so a name with a
+    quote / space / dash escapes correctly instead of breaking the
+    DDL. ``index_expr`` and ``ops_class`` are SQL fragments we
+    generate in ``_dense_index_strategy`` from a finite set of
+    literals — those stay as raw text.
     """
+
+    from psycopg import sql as pgsql
 
     from corpus_forge.backends.postgres import _dense_index_strategy
 
     index_expr, _search_expr, ops = _dense_index_strategy(row.dimension)
     index_name = f"{row.table_name}_hnsw"
 
-    backend._execute(f"DROP INDEX IF EXISTS corpus.{index_name}")
-    backend._execute(
-        f"CREATE INDEX IF NOT EXISTS {index_name} "
-        f"ON corpus.{row.table_name} "
-        f"USING hnsw ({index_expr} {ops})"
+    drop_sql = pgsql.SQL("DROP INDEX IF EXISTS corpus.{idx}").format(
+        idx=pgsql.Identifier(index_name),
     )
+    # ``USING hnsw (…)`` body stays as raw text — see docstring. Wrapped
+    # in ``pgsql.SQL`` so it composes with the format-substituted
+    # identifiers; the ``ignore[bad-argument-type]`` is because pyrefly
+    # demands a ``LiteralString`` for ``pgsql.SQL`` and ``index_expr``
+    # / ``ops`` are runtime strings (their values come from the finite
+    # literal set in ``_dense_index_strategy`` — see that helper).
+    body = pgsql.SQL(f"{index_expr} {ops}")  # pyrefly: ignore[bad-argument-type]
+    create_sql = pgsql.SQL(
+        "CREATE INDEX IF NOT EXISTS {idx} ON corpus.{tbl} USING hnsw ({body})"
+    ).format(
+        idx=pgsql.Identifier(index_name),
+        tbl=pgsql.Identifier(row.table_name),
+        body=body,
+    )
+
+    backend._execute(drop_sql.as_string())
+    backend._execute(create_sql.as_string())
 
 
 @embedder_app.command("repair-indexes")

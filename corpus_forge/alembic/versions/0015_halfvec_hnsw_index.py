@@ -123,6 +123,18 @@ def upgrade() -> None:
         sa.text("SELECT name, dimension, table_name FROM corpus.embedders ORDER BY id")
     ).fetchall()
 
+    # SQLAlchemy's dialect-aware identifier quoter — used below so
+    # ``table_name`` / ``index_name`` get properly escaped before they
+    # land in the DDL. ``op.create_index`` doesn't compose cleanly with
+    # an expression-based HNSW index + custom ops class (the high-level
+    # API expects column references, not SQL expressions with cast
+    # operators), so we still build the DDL as a string. Quoting the
+    # identifiers via ``preparer.quote`` closes the only injection
+    # surface — ``index_expr`` and ``ops_class`` are constants we
+    # generate ourselves (``"halfvec_cosine_ops"`` etc.), never from
+    # the database.
+    quote = bind.dialect.identifier_preparer.quote
+
     for embedder_name, dimension, table_name in embedders:
         # Defensive: some rows may have been seeded without a
         # table_name (older revisions). Skip silently — the operator
@@ -177,6 +189,9 @@ def upgrade() -> None:
             )
             continue
 
+        q_table = quote(table_name)
+        q_index = quote(index_name)
+
         if current_def:
             logger.info(
                 "0015: rebuilding corpus.%s.%s (dim=%s) — old=%s, new=USING hnsw (%s %s)",
@@ -187,7 +202,7 @@ def upgrade() -> None:
                 index_expr,
                 ops_class,
             )
-            op.execute(sa.text(f"DROP INDEX IF EXISTS corpus.{index_name}"))
+            op.execute(sa.text(f"DROP INDEX IF EXISTS corpus.{q_index}"))
         else:
             logger.info(
                 "0015: creating missing index corpus.%s.%s (dim=%s)",
@@ -198,8 +213,8 @@ def upgrade() -> None:
 
         op.execute(
             sa.text(
-                f"CREATE INDEX IF NOT EXISTS {index_name} "
-                f"ON corpus.{table_name} "
+                f"CREATE INDEX IF NOT EXISTS {q_index} "
+                f"ON corpus.{q_table} "
                 f"USING hnsw ({index_expr} {ops_class})"
             )
         )
