@@ -12,9 +12,9 @@ install: ## Install runtime dependencies (uv sync)
 	uv sync
 	@$(MAKE) --no-print-directory _unhide-pth
 
-dev: ## Install dev dependencies + pre-commit hook
+dev: ## Install dev dependencies + pre-commit hooks (commit + push stages)
 	uv sync --all-extras --group dev
-	uv run pre-commit install
+	uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 	@$(MAKE) --no-print-directory _unhide-pth
 
 # Darwin-only workaround: when the repo lives in iCloud Drive (~/Library/Mobile
@@ -39,8 +39,8 @@ format: ## ruff format (writes)
 format-check: ## ruff format --check (CI)
 	uv run ruff format --check corpus_forge tests
 
-typecheck: ## pyrefly strict
-	uv run pyrefly check corpus_forge
+typecheck: ## pyrefly strict (fails on any non-`missing-import` error)
+	@./scripts/check-pyrefly.sh corpus_forge
 
 test: test-unit test-integration test-fuzz test-smoke ## All four test categories
 

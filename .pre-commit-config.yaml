@@ -1,25 +1,73 @@
+# Pre-commit hooks enforced before every `git commit` (and `git push`
+# for the heavier checks). Install with `pre-commit install
+# --hook-type pre-commit --hook-type pre-push` or simply `make dev`.
+#
+# Pyrefly always exits 0 even when it reports errors, so the
+# `pyrefly` hook routes through `scripts/check-pyrefly.sh` which
+# greps the output and exits 1 on any reported error. Optional-extra
+# import noise is filtered via `--ignore missing-import` inside the
+# wrapper.
 repos:
   - repo: local
     hooks:
+      # ── pre-commit (fast; blocks the commit) ─────────────────────
       - id: ruff-format
-        name: ruff format
+        name: ruff format (auto-fix)
         entry: uv run ruff format
         language: system
         types: [python]
       - id: ruff-check
-        name: ruff check
+        name: ruff check (auto-fix)
         entry: uv run ruff check --fix
         language: system
         types: [python]
       - id: pyrefly
-        name: pyrefly
-        entry: uv run pyrefly check
+        name: pyrefly typecheck (changed files)
+        # Per-file mode keeps commits unblocked when unrelated modules
+        # carry baseline issues; the project-wide gate lives in the
+        # `pyrefly-project` pre-push hook below and in CI's `make
+        # typecheck` step.
+        #
+        # ``files: ^corpus_forge/`` mirrors ``[tool.pyrefly].project_includes``
+        # in pyproject.toml — pyrefly's project mode only covers
+        # ``corpus_forge/``, so checking files outside that tree per-file
+        # would surface noise the project gate intentionally ignores
+        # (vendored fixture corpora, tests/, scripts/). Test + script
+        # baselines can be tackled in a follow-up that expands
+        # ``project_includes`` to match.
+        entry: ./scripts/check-pyrefly.sh
         language: system
         types: [python]
-        pass_filenames: false
-      - id: unit-tests
-        name: unit tests (fast)
-        entry: uv run pytest tests/unit -q --no-header
+        files: ^corpus_forge/
+        # ``pass_filenames: true`` (the default) forwards the changed
+        # files; the wrapper exits non-zero if any of them carries a
+        # type error.
+
+      # ── pre-push (heavier; blocks the push) ──────────────────────
+      #
+      # Strict mirror of the CI ``quality`` job: format-check (no
+      # auto-fix on push), lint without auto-fix, project-wide pyrefly.
+      # Local test runs are deliberately NOT enforced here — they
+      # require every optional extra (pymupdf, hdbscan, …) to be
+      # installed, and the CI matrix already exercises tests on every
+      # PR. The push gate's job is to prevent style/type regressions
+      # from leaking onto the remote; the CI gate catches the rest.
+      - id: ruff-format-strict
+        name: ruff format --check (no auto-fix on push)
+        entry: uv run ruff format --check
+        language: system
+        types: [python]
+        stages: [pre-push]
+      - id: ruff-check-strict
+        name: ruff check (no auto-fix on push)
+        entry: uv run ruff check
+        language: system
+        types: [python]
+        stages: [pre-push]
+      - id: pyrefly-project
+        name: pyrefly typecheck (whole project)
+        entry: ./scripts/check-pyrefly.sh
+        args: [corpus_forge]
         language: system
         pass_filenames: false
         stages: [pre-push]

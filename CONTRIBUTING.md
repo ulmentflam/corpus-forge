@@ -23,9 +23,29 @@ make dev
 ```
 
 `make dev` runs `uv sync --all-extras --group dev` plus
-`uv run pre-commit install`. The `make _unhide-pth` Darwin workaround
-is invoked automatically — see the comment in the `Makefile` for the
-iCloud-Drive UF_HIDDEN flag this works around.
+`uv run pre-commit install --hook-type pre-commit --hook-type pre-push`,
+which wires up the following enforcement gates:
+
+- **pre-commit (fast, auto-fixing):** `ruff format`, `ruff check --fix`,
+  and per-file `pyrefly` typecheck on the staged files.
+- **pre-push (strict, no auto-fix):** `ruff format --check`,
+  `ruff check`, and project-wide `pyrefly` typecheck. Mirrors the CI
+  `quality` job so what passes locally also passes on the remote.
+
+Tests are intentionally not in the push gate — they depend on every
+optional extra being installed and would block legitimate pushes from
+contributors with partial dev environments. The CI matrix exercises
+the full test suite on every PR.
+
+Both stages route `pyrefly` through `scripts/check-pyrefly.sh`, which
+greps the output and exits non-zero on any reported error (pyrefly
+itself always exits 0). The same script powers `make typecheck` and
+the CI `quality` job, so local hooks and CI agree on the failure
+surface.
+
+The `make _unhide-pth` Darwin workaround is invoked automatically — see
+the comment in the `Makefile` for the iCloud-Drive UF_HIDDEN flag this
+works around.
 
 ## Branching
 
