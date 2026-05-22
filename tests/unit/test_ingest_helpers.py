@@ -187,3 +187,56 @@ class TestClassifyIngestError:
             _classify_and_log_ingest_error(_Raw(), ValueError("PDF parse error"))
         records = [r for r in caplog.records if "Extractor failed" in r.getMessage()]
         assert records, "expected an extractor-failure line on a generic exception"
+
+
+class TestProgressAdvanceOnFailure:
+    """Regression test: the per-source and global progress bars must
+    advance on EVERY iteration of the ingest loop, not just successes.
+
+    The planner's ``_plan_ingest`` totals come from ``estimate_sync``
+    which counts every file regardless of whether ingest will succeed.
+    If we only advanced on success, a single Ollama-NaN 5xx (or any
+    other recoverable per-file failure) would strand the global bar
+    permanently below 100% — exactly the misleading state the global
+    bar was added to eliminate.
+    """
+
+    def test_loop_body_uses_finally_for_progress_update(self):
+        """``ingest_once`` must call ``progress.update`` inside a
+        ``finally`` block so failed items still count toward the bars.
+
+        Implemented as a source-text inspection rather than a full
+        end-to-end run because exercising the real ``Progress`` instance
+        under failure conditions requires significant fake-backend +
+        fake-source plumbing. The source-text check is precise enough
+        to lock the contract: the progress-update lines must follow the
+        ``finally:`` keyword, not the closing of the ``except`` block.
+        """
+        import inspect
+        import textwrap
+
+        from corpus_forge import ingest
+
+        src = inspect.getsource(ingest.ingest_once)
+        # The two advance calls must live inside the ``finally`` block.
+        # Walk every ``finally:`` block and check that both updates
+        # appear before the next dedent.
+        dedented = textwrap.dedent(src)
+        # Quick structural check: both ``progress.update(<task>,
+        # advance=1)`` calls appear AFTER a ``finally:`` keyword and
+        # BEFORE the next non-indented sibling statement.
+        assert "finally:" in dedented, "ingest_once must use try/finally for progress updates"
+        finally_idx = dedented.index("finally:")
+        tail = dedented[finally_idx:]
+        # Both updates must appear inside this finally block (before
+        # the next ``for`` / function-level boundary).
+        next_for = tail.find("\n            for ")
+        next_func = tail.find("\ndef ")
+        end = min(idx for idx in (next_for, next_func, len(tail)) if idx > 0)
+        finally_block = tail[:end]
+        assert "progress.update(source_task, advance=1)" in finally_block, (
+            "source-task advance must live inside the ingest finally block"
+        )
+        assert "progress.update(global_task, advance=1)" in finally_block, (
+            "global-task advance must live inside the ingest finally block"
+        )

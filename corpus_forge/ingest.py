@@ -782,9 +782,17 @@ def ingest_once(config: Config) -> None:
                         # the model-selection vs. file-content
                         # question harder to answer.
                         _classify_and_log_ingest_error(raw, e)
-                        continue
-                    progress.update(source_task, advance=1)
-                    progress.update(global_task, advance=1)
+                    finally:
+                        # Advance both bars on EVERY iteration, success
+                        # or failure. Planner totals come from
+                        # ``estimate_sync`` which counts every file
+                        # regardless of whether ingest will succeed —
+                        # skipping the advance on failures would leave
+                        # both bars permanently below 100% whenever any
+                        # file fails (e.g. one Ollama-NaN 5xx is enough
+                        # to strand the global bar forever).
+                        progress.update(source_task, advance=1)
+                        progress.update(global_task, advance=1)
 
                 elapsed = time.perf_counter() - source_started
                 rate = (docs_chunked / elapsed) if elapsed > 0 else 0.0
