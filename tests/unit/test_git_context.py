@@ -93,10 +93,23 @@ class TestGitContextHappyPath:
         assert branch == "main"
 
     def test_user_path_expanded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A leading ``~`` is expanded against $HOME before resolving."""
+        """A leading ``~`` is expanded against the platform's home env var.
+
+        ``Path.expanduser()`` reads ``$HOME`` on POSIX and ``%USERPROFILE%``
+        on Windows; we set both so the test runs identically across all
+        three CI lanes (Linux + macOS + Windows). Also strip a few of the
+        sibling env vars Windows consults so a leftover real
+        ``%USERPROFILE%`` doesn't shadow the override.
+        """
         repo = tmp_path / "repo-home"
         expected_sha = _init_repo(repo)
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        # Windows' expanduser also consults HOMEDRIVE+HOMEPATH as a
+        # fallback. Drop those if set so they can't compete with the
+        # USERPROFILE override above.
+        monkeypatch.delenv("HOMEDRIVE", raising=False)
+        monkeypatch.delenv("HOMEPATH", raising=False)
 
         commit, branch = git_context("~/repo-home")
         assert commit == expected_sha
