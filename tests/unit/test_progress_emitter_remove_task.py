@@ -31,7 +31,7 @@ class TestRemoveTaskNoOp:
         emitter = ProgressEmitter("test", total=100)
         assert hasattr(emitter, "remove_task"), (
             "ProgressEmitter must expose `remove_task` for Rich-API parity. "
-            "ingest_once.remove_task(source_task) is called in PR #46\'s "
+            "ingest_once.remove_task(source_task) is called in PR #46's "
             "per-source progress bar teardown path."
         )
 
