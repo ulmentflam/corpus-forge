@@ -518,8 +518,6 @@ def _source_root(source_config: Any) -> Path | None:
     cannot be modelled with the disk-bound estimator. Best-effort —
     blank-but-set fields are treated as missing.
     """
-    from pathlib import Path as _Path  # noqa: PLC0415
-
     for field_name in _SOURCE_ROOT_FIELDS:
         value = getattr(source_config, field_name, None)
         if value is None:
@@ -527,7 +525,7 @@ def _source_root(source_config: Any) -> Path | None:
         text = str(value).strip()
         if not text:
             continue
-        candidate = _Path(text).expanduser()
+        candidate = Path(text).expanduser()
         if candidate.exists() and candidate.is_dir():
             return candidate
     return None

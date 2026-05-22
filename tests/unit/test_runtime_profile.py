@@ -52,6 +52,24 @@ def test_record_rejects_nonsensical_input(profile_path: Path) -> None:
     assert rp.load().is_empty()
 
 
+def test_record_rejects_non_finite_samples(profile_path: Path) -> None:
+    """``inf`` / ``nan`` seconds can't be folded into the EWMA — they'd
+    propagate forever once persisted."""
+    assert rp.record("scan", units=10, seconds=float("inf")) is False
+    assert rp.record("scan", units=10, seconds=float("nan")) is False
+    assert rp.load().is_empty()
+
+
+def test_record_rejects_alpha_outside_zero_to_one(profile_path: Path) -> None:
+    """EWMA is undefined for alpha outside (0, 1]."""
+    assert rp.record("scan", units=10, seconds=0.1, alpha=0.0) is False
+    assert rp.record("scan", units=10, seconds=0.1, alpha=1.5) is False
+    assert rp.record("scan", units=10, seconds=0.1, alpha=-0.1) is False
+    assert rp.load().is_empty()
+    # alpha=1.0 is the inclusive upper bound — must succeed.
+    assert rp.record("scan", units=10, seconds=0.1, alpha=1.0) is True
+
+
 def test_ewma_converges_over_multiple_samples(profile_path: Path) -> None:
     """An anomalous first sample is diluted by subsequent ones."""
     # Outlier first sample, then 10 normal ones.

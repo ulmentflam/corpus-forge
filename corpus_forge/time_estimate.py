@@ -282,7 +282,10 @@ def estimate_time(
         name="embed",
         seconds=embed_seconds,
         source=_collapse_sources(embed_sources) if embed_sources else "heuristic",
-        units=total_chunks * max(len(sync.embedders_active), 1),
+        # Honest accounting: zero embedders → zero units. The earlier
+        # ``max(..., 1)`` papered over that case but inflated units when
+        # ``embedders_active`` was empty.
+        units=total_chunks * len(sync.embedders_active),
         notes=f"{len(sync.embedders_active)} embedder(s) x {total_chunks} chunks",
     )
 
@@ -343,7 +346,7 @@ def format_duration(seconds: float) -> str:
     Always rounds to whole seconds — sub-second resolution is noise at
     estimator-level accuracy.
     """
-    if seconds < 0 or math.isnan(seconds):
+    if not math.isfinite(seconds) or seconds < 0:
         return "—"
     total = round(seconds)
     if total < _SECONDS_PER_MINUTE:

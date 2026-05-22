@@ -311,11 +311,20 @@ def record(
     """
     if units <= 0 or seconds <= 0:
         return False
+    # EWMA semantics break outside (0, 1]: alpha=0 freezes the rate, > 1
+    # over-shoots, < 0 flips the sign. Reject up front so a buggy caller
+    # can't corrupt the on-disk profile.
+    if not (0.0 < alpha <= 1.0):
+        logger.debug("runtime_profile: alpha %r out of (0, 1] — skipping", alpha)
+        return False
     if phase in _KEYED_PHASES and not key:
         logger.debug("runtime_profile: phase %r requires a key — skipping", phase)
         return False
     sample = seconds / units
-    if not (sample > 0) or math.isnan(sample):
+    # Reject inf/-inf/NaN as well as non-positive samples. ``isfinite``
+    # covers all three non-finite cases that would otherwise poison the
+    # EWMA on the next read.
+    if not math.isfinite(sample) or sample <= 0:
         return False
     with _LOCK:
         profile = load(path=path)

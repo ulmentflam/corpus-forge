@@ -34,7 +34,8 @@ def _build_sync_estimate() -> SyncEstimate:
         scanned_path="/tmp/canned",
         file_count=300,
         dir_count=10,
-        total_raw_bytes=10 * 1024 * 1024,
+        # Must equal the sum of by_extractor[*].raw_bytes (4+6+2 MiB).
+        total_raw_bytes=12 * 1024 * 1024,
         by_extractor=[
             ExtractorClassSummary(
                 extractor_class="markdown",
@@ -169,9 +170,28 @@ def test_format_duration_spans_seconds_to_days() -> None:
     assert format_duration(125) == "2m 5s"
     assert format_duration(3700) == "1h 1m"
     assert format_duration(90_061) == "1d 1h"
-    # NaN / negative inputs degrade to em-dash rather than raising.
+    # Non-finite / negative inputs degrade to em-dash rather than raising.
+    # ``round(math.inf)`` would otherwise blow up with OverflowError, so
+    # the ``isfinite`` guard is load-bearing for CLI/MCP output paths.
     assert format_duration(float("nan")) == "—"
+    assert format_duration(float("inf")) == "—"
+    assert format_duration(float("-inf")) == "—"
     assert format_duration(-1) == "—"
+
+
+def test_estimate_time_zero_embedders_yields_zero_embed_units() -> None:
+    """When no embedders are active the embed phase reports zero units —
+    the previous ``max(..., 1)`` formulation hid that with ``total_chunks``."""
+    sync = _build_sync_estimate()
+    # Reach into the frozen dataclass via dataclasses.replace.
+    from dataclasses import replace
+
+    sync = replace(sync, embedders_active=[], embeddings=[])
+    cfg = _StubConfig([])
+    te = estimate_time(sync, cfg)  # type: ignore[arg-type]
+    embed_phase = next(p for p in te.phases if p.name == "embed")
+    assert embed_phase.units == 0
+    assert embed_phase.seconds == 0
 
 
 def test_time_estimate_is_dataclass_serialisable(profile_path: Path) -> None:

@@ -146,6 +146,13 @@ def backfill_embedder(
     processed = 0
 
     progress_total = total_missing if total_missing > 0 else None
+    # Hoisted once per backfill (rather than per batch) — Python caches
+    # the import after first use, but the in-loop form needlessly hits
+    # ``sys.modules`` on every iteration.
+    import time as _time  # noqa: PLC0415
+
+    from corpus_forge.runtime_profile import record as _record  # noqa: PLC0415
+
     with make_progress(
         f"Embedding chunks ({embedder_name})",
         total=progress_total,
@@ -189,8 +196,6 @@ def backfill_embedder(
             # Generate embeddings (per-batch chatter demoted to DEBUG —
             # the progress bar + milestone INFO replace it on stdout/log).
             logger.debug(f"Generating embeddings for {len(texts)} chunks")
-            import time as _time  # noqa: PLC0415
-
             _t0 = _time.perf_counter()
             embeddings = embedder.encode(texts)
             _encode_elapsed = _time.perf_counter() - _t0
@@ -208,8 +213,6 @@ def backfill_embedder(
             # converges on real hardware. Best-effort; ``record`` swallows
             # any IO failure on the profile file.
             try:
-                from corpus_forge.runtime_profile import record as _record  # noqa: PLC0415
-
                 if pairs:
                     _record(
                         "embed",
