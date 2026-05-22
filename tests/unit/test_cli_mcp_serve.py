@@ -136,7 +136,6 @@ def test_missing_mcp_extra_shows_install_hint(monkeypatch) -> None:
                 # from "import of `mcp`'s own deps failed."
                 raise ModuleNotFoundError(f"No module named {name!r}", name=name)
             # Defer to other finders for everything else.
-            return None
 
     finder = _MissingFinder()
     sys.meta_path.insert(0, finder)
