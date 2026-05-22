@@ -1769,6 +1769,25 @@ def mcp_serve(
     if chosen is Transport.STDIO:
         _os.environ.setdefault("CF_MCP_TRANSPORT", "stdio")
 
+    # Pre-flight: the `mcp` Python package is an optional extra
+    # (``corpus-forge[mcp]``). Catch the missing-import case explicitly
+    # and emit a one-line install hint instead of the Rich-formatted
+    # traceback that surfaces when the lazy `from mcp.server.stdio ...`
+    # inside `_serve_stdio_async` fires its ModuleNotFoundError.
+    try:
+        import mcp as _mcp  # noqa: F401  — pre-flight only; serve_stdio re-imports
+    except ImportError:
+        # Escape the brackets in `[mcp]` so Rich markup doesn't eat the
+        # extras specifier — without the escape Rich treats `[mcp]` as an
+        # unknown style tag and silently drops it, leaving the user with
+        # a recovery command that's missing the critical part.
+        ui_error(
+            "MCP server requires the `mcp` extra. Install it with: "
+            r"`uv tool install 'corpus-forge\[mcp]'` (or "
+            r"`pip install 'corpus-forge\[mcp]'` if not using uv)."
+        )
+        raise typer.Exit(code=1) from None
+
     # Wave 2/3 wires the server through; Wave 1 only pins help + flag
     # validation.  When the server module lands the body below will
     # dispatch to corpus_forge.mcp.server.serve_stdio(...).
