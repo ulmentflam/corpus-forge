@@ -564,6 +564,9 @@ def _instantiate_source(source_config, *, config: Config | None = None):
         return ClaudeCodeSource(
             projects_root=source_config.projects_root,
             include_subagents=source_config.include_subagents,
+            # ``getattr`` keeps this branch tolerant of legacy MockSourceConfig
+            # shapes in the unit suite that pre-date the ``history_path`` field.
+            history_path=getattr(source_config, "history_path", None),
             debounce=2.0,
         )
     elif source_config.plugin == "opencode":
@@ -571,6 +574,53 @@ def _instantiate_source(source_config, *, config: Config | None = None):
         from .sources.opencode import OpenCodeSource  # noqa: PLC0415
 
         return OpenCodeSource(storage_root=source_config.storage_root, debounce=2.0)
+    elif source_config.plugin == "gemini_cli":
+        from pathlib import Path as _Path  # noqa: PLC0415
+
+        from .sources.gemini_cli import GeminiCLISource  # noqa: PLC0415
+
+        # ``ExpandedPath`` is a typed str, so an unset field is None but a
+        # field set to "" / "   " in TOML slips past type validation and
+        # would resolve to CWD via ``Path("")``. Treat blank as missing.
+        if not (source_config.chats_root and str(source_config.chats_root).strip()):
+            raise ValueError(
+                "DatasetSourceConfig.plugin = 'gemini_cli' requires `chats_root` "
+                "(typically `~/.gemini/tmp`)."
+            )
+        return GeminiCLISource(projects_root=_Path(source_config.chats_root), debounce=2.0)
+    elif source_config.plugin == "codex_cli":
+        from pathlib import Path as _Path  # noqa: PLC0415
+
+        from .sources.codex_cli import CodexCLISource  # noqa: PLC0415
+
+        if not (source_config.sessions_root and str(source_config.sessions_root).strip()):
+            raise ValueError(
+                "DatasetSourceConfig.plugin = 'codex_cli' requires `sessions_root` "
+                "(typically `~/.codex/sessions`)."
+            )
+        return CodexCLISource(sessions_root=_Path(source_config.sessions_root), debounce=2.0)
+    elif source_config.plugin == "chatgpt_export":
+        from pathlib import Path as _Path  # noqa: PLC0415
+
+        from .sources.chatgpt_export import ChatGPTExportSource  # noqa: PLC0415
+
+        if not (source_config.export_root and str(source_config.export_root).strip()):
+            raise ValueError(
+                "DatasetSourceConfig.plugin = 'chatgpt_export' requires `export_root` "
+                "(directory containing `conversations.json`)."
+            )
+        return ChatGPTExportSource(export_root=_Path(source_config.export_root), debounce=2.0)
+    elif source_config.plugin == "jsonl_chat":
+        from pathlib import Path as _Path  # noqa: PLC0415
+
+        from .sources.jsonl_chat import JSONLChatSource  # noqa: PLC0415
+
+        if not (source_config.path and str(source_config.path).strip()):
+            raise ValueError(
+                "DatasetSourceConfig.plugin = 'jsonl_chat' requires `path` "
+                "(a directory of *.jsonl files or a single file)."
+            )
+        return JSONLChatSource(path=_Path(source_config.path), debounce=2.0)
     elif source_config.plugin == "filesystem":
         # Phase D / Wave 2 (D-15) — generic walker over heterogeneous
         # directory trees, dispatched per-file through the extractor
@@ -692,8 +742,12 @@ def _instantiate_source(source_config, *, config: Config | None = None):
 # Maps source_uri scheme prefixes to feedback_sessions client names.
 _SOURCE_URI_TO_CLIENT: dict[str, str] = {
     "claude-code://": "claude-code",
+    "claude-code-history://": "claude-code",
     "opencode://": "opencode",
     "gemini-cli://": "gemini-cli",
+    "codex-cli://": "codex-cli",
+    "chatgpt-export://": "chatgpt-export",
+    "jsonl-chat://": "jsonl-chat",
 }
 
 
