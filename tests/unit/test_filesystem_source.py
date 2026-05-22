@@ -496,6 +496,44 @@ def test_parse_undersize_file_passes(tmp_path: Path, monkeypatch):
     assert doc is not None
 
 
+def test_parse_returns_none_when_file_evicted_between_extract_and_hash(
+    tmp_path: Path, monkeypatch, caplog
+):
+    """iCloud / network mounts can evict a file between extraction and
+    hashing. ``parse`` must return None with a WARNING rather than
+    propagating ``FileNotFoundError`` and crashing the whole ingest
+    pass — extraction is already wrapped, so hashing has to mirror
+    that contract.
+    """
+    p = tmp_path / "ghosted.txt"
+    p.write_text("present at extraction time")
+    src = _make_source(tmp_path)
+    monkeypatch.setattr(
+        src,
+        "_registry",
+        _StubRegistry({".txt": _StubExtractor(chunker_hint="passthrough")}),
+    )
+
+    # Simulate the post-extraction iCloud eviction: ``file_content_hash``
+    # raises ``FileNotFoundError`` even though the extractor returned
+    # text from the still-cached page.
+    def _evicted(self, _path):
+        raise FileNotFoundError(f"[Errno 2] No such file or directory: {_path!s}")
+
+    monkeypatch.setattr(
+        "corpus_forge.sources.filesystem.FilesystemSource.file_content_hash",
+        _evicted,
+    )
+
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="corpus_forge.sources.filesystem"):
+        doc = src.parse(p)
+
+    assert doc is None
+    assert any("Could not hash" in rec.message for rec in caplog.records)
+
+
 # ── identity / scan integration ────────────────────────────────────────
 
 
