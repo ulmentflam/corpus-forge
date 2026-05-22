@@ -961,8 +961,8 @@ def status(
     try:
         config = Config.load()
     except FileNotFoundError:
-        ui_warn("No configuration found; run 'corpus-forge migrate' to initialise.")
-        raise typer.Exit() from None
+        ui_warn("No configuration found; run `corpus-forge setup` to create one.")
+        raise typer.Exit(code=2) from None
     backend = None
     with suppress(Exception):
         backend = _get_backend(config)
@@ -1031,8 +1031,8 @@ def pull(
     try:
         config = Config.load()
     except FileNotFoundError:
-        ui_warn("No configuration found.")
-        raise typer.Exit() from None
+        ui_warn("No configuration found; run `corpus-forge setup` to create one.")
+        raise typer.Exit(code=2) from None
     try:
         backend = _get_backend(config)
         from corpus_forge.ingest import _instantiate_source
@@ -1074,8 +1074,8 @@ def push(
     try:
         config = Config.load()
     except FileNotFoundError:
-        ui_warn("No configuration found.")
-        raise typer.Exit() from None
+        ui_warn("No configuration found; run `corpus-forge setup` to create one.")
+        raise typer.Exit(code=2) from None
     try:
         backend = _get_backend(config)
         from corpus_forge.ingest import _instantiate_source
@@ -1147,8 +1147,8 @@ def history(
     try:
         config = Config.load()
     except FileNotFoundError:
-        ui_warn("No configuration found.")
-        raise typer.Exit() from None
+        ui_warn("No configuration found; run `corpus-forge setup` to create one.")
+        raise typer.Exit(code=2) from None
     try:
         backend = _get_backend(config)
         rows = backend._execute(
@@ -1396,7 +1396,7 @@ def _do_eval(
         try:
             reranker, rerank_top_n = _build_reranker_for_eval(fusion=fusion, alpha=alpha)
         except FileNotFoundError:
-            ui_error("No configuration found; run 'corpus-forge migrate' to initialise.")
+            ui_error("No configuration found; run `corpus-forge setup` to create one.")
             raise typer.Exit(code=2) from None
 
     # Build the retriever; Config.load is inside this builder so tests
@@ -1426,7 +1426,7 @@ def _load_eval_config(fusion: str | None = None, alpha: float | None = None):
     try:
         config = Config.load()
     except FileNotFoundError:
-        ui_error("No configuration found; run 'corpus-forge migrate' to initialise.")
+        ui_error("No configuration found; run `corpus-forge setup` to create one.")
         raise typer.Exit(code=2) from None
     if fusion is not None:
         config.retrieval.fusion = fusion  # type: ignore[assignment]
@@ -1769,6 +1769,31 @@ def mcp_serve(
     if chosen is Transport.STDIO:
         _os.environ.setdefault("CF_MCP_TRANSPORT", "stdio")
 
+    # Pre-flight: the `mcp` Python package is an optional extra
+    # (``corpus-forge[mcp]``). Catch the missing-import case explicitly
+    # and emit a one-line install hint instead of the Rich-formatted
+    # traceback that surfaces when the lazy `from mcp.server.stdio ...`
+    # inside `_serve_stdio_async` fires its ModuleNotFoundError.
+    try:
+        import mcp as _mcp  # noqa: F401  — pre-flight only; serve_stdio re-imports
+    except ModuleNotFoundError as exc:
+        # Only swallow the case where `mcp` itself is missing. A real import
+        # failure inside `mcp` or one of its transitive deps (e.g. a broken
+        # `mcp.shared.*` module) must propagate so the user sees the actual
+        # traceback instead of a misleading "install the extra" hint.
+        if exc.name != "mcp":
+            raise
+        # Escape the brackets in `[mcp]` so Rich markup doesn't eat the
+        # extras specifier — without the escape Rich treats `[mcp]` as an
+        # unknown style tag and silently drops it, leaving the user with
+        # a recovery command that's missing the critical part.
+        ui_error(
+            "MCP server requires the `mcp` extra. Install it with: "
+            r"`uv tool install 'corpus-forge\[mcp]'` (or "
+            r"`pip install 'corpus-forge\[mcp]'` if not using uv)."
+        )
+        raise typer.Exit(code=1) from None
+
     # Wave 2/3 wires the server through; Wave 1 only pins help + flag
     # validation.  When the server module lands the body below will
     # dispatch to corpus_forge.mcp.server.serve_stdio(...).
@@ -1836,7 +1861,7 @@ def search(
         try:
             reranker, rerank_top_n = _build_reranker_for_eval(fusion=fusion, alpha=alpha)
         except FileNotFoundError:
-            ui_error("No configuration found; run 'corpus-forge migrate' to initialise.")
+            ui_error("No configuration found; run `corpus-forge setup` to create one.")
             raise typer.Exit(code=2) from None
 
     retriever = _build_retriever_for_eval(fusion=fusion, alpha=alpha, reranker=reranker)
@@ -2001,7 +2026,7 @@ def classify(
     try:
         config = Config.load()
     except FileNotFoundError:
-        ui_error("No configuration found; run 'corpus-forge migrate' to initialise.")
+        ui_error("No configuration found; run `corpus-forge setup` to create one.")
         raise typer.Exit(code=2) from None
 
     # Build the chain. ``--classifier`` filters down to a single named
@@ -2229,7 +2254,7 @@ def rechunk(
     try:
         config = Config.load()
     except FileNotFoundError:
-        ui_error("No configuration found; run 'corpus-forge migrate' to initialise.")
+        ui_error("No configuration found; run `corpus-forge setup` to create one.")
         raise typer.Exit(code=2) from None
 
     backend = _build_backend_from_config(config)
@@ -2441,7 +2466,7 @@ def enrich(
     try:
         config = Config.load()
     except FileNotFoundError:
-        ui_error("No configuration found; run 'corpus-forge migrate' to initialise.")
+        ui_error("No configuration found; run `corpus-forge setup` to create one.")
         raise typer.Exit(code=2) from None
 
     # Optional --backend override: build the enricher directly without
@@ -2844,7 +2869,7 @@ def estimate(
     try:
         config = Config.load()
     except FileNotFoundError:
-        ui_error("No configuration found; run 'corpus-forge migrate' to initialise.")
+        ui_error("No configuration found; run `corpus-forge setup` to create one.")
         raise typer.Exit(code=2) from None
 
     # Embedder selection precedence:
