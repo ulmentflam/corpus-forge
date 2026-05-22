@@ -10,6 +10,13 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ### Fixed
 
+- MCP `tools/call` responses no longer return `isError: true` with an
+  empty content block when a dispatcher throws an uncaught exception.
+  The catch-all wrapper in `corpus_forge.mcp.server._call_tool` now
+  packs the exception's class name and message into a `TextContent`
+  block so real MCP clients (Claude Desktop / Code) surface a useful
+  diagnostic instead of a blank error. Regression test
+  `TestDispatcherExceptionSurface::test_retriever_builder_failure_surfaces_in_content`.
 - Phase M Wave 4 source-nesting bug: doctor's Zotero check no longer
   silently SKIPs sources declared as `plugin = "zotero"` without an
   explicit `[datasets.sources.zotero]` block. `DatasetSourceConfig`
