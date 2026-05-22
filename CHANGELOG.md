@@ -68,6 +68,15 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   command in its WARN detail; (2) a static scan of `cli.py` asserts
   every "No configuration found" message names `setup` and never
   `migrate`.
+- `corpus_forge/sources/_git.py::git_context(path)` — best-effort
+  helper that resolves `(commit_sha, branch)` for a given path,
+  returning `(None, None)` and never raising when `git` is absent
+  from PATH, the path is not inside a git work tree, or any
+  subprocess call times out or fails. Detached HEAD surfaces as
+  `(sha, None)` rather than `(sha, "HEAD")`. First sub-task of
+  RFC `rfc-source-provenance-git-and-lines` (P0); the helper will
+  be wired into `FilesystemSource` + `ClaudeCodeSource` and through
+  to per-chunk metadata in subsequent PRs.
 
 ## [0.1.0b7] - 2026-05-20
 
