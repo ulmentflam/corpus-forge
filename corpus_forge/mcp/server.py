@@ -1207,6 +1207,22 @@ def build_server(
 
     @server.call_tool(validate_input=True)
     async def _call_tool(name: str, arguments: dict[str, Any]) -> Any:
+        # Catch-all wrapper so any uncaught exception from a dispatcher
+        # becomes a populated ``_error_result`` instead of bubbling up to
+        # the MCP SDK, which converts it to an empty ``isError: true``
+        # response with no text content. The empty form leaves real MCP
+        # clients (Claude Desktop / Code) showing a blank error and
+        # forces the user to read corpus-forge's stderr — bad UX.
+        #
+        # Individual dispatchers may still ``return _error_result(...)``
+        # directly when they want a friendlier message; the wrapper only
+        # kicks in for exceptions they didn't anticipate.
+        try:
+            return await _call_tool_impl(name, arguments)
+        except Exception as exc:
+            return _error_result(f"{type(exc).__name__}: {exc}")
+
+    async def _call_tool_impl(name: str, arguments: dict[str, Any]) -> Any:
         if name == "search":
             return await _dispatch_search(arguments)
         if name == "get_chunk":
