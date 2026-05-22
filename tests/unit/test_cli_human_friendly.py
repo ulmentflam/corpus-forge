@@ -86,3 +86,33 @@ def test_cli_no_config_messages_name_setup_not_migrate() -> None:
             f"`corpus-forge migrate` (migrate needs the config to exist already); "
             f"got: {msg!r}"
         )
+
+
+def test_no_embedders_configured_message_describes_fix() -> None:
+    """When `corpus-forge eval` / `corpus-forge search` / similar tries to
+    build a retriever but no embedders are configured, the error must
+    describe the fix — either name a verb (e.g. `corpus-forge embedder add`)
+    or tell the user exactly what to put in config.toml.
+
+    A bare "no embedders configured" without a fix violates property #2.
+    """
+    cli_py = Path(__file__).resolve().parents[2] / "corpus_forge" / "cli.py"
+    text = cli_py.read_text(encoding="utf-8")
+
+    pattern = re.compile(r'"(no embedders configured[^"]*)"', re.IGNORECASE)
+    matches = pattern.findall(text)
+    assert matches, "expected at least one 'no embedders configured' message in cli.py"
+
+    for msg in matches:
+        # Either a recovery verb OR a config-edit instruction is acceptable.
+        has_verb = any(
+            v in msg.lower() for v in ("embedder add", "run `corpus-forge", "run 'corpus-forge")
+        )
+        has_config_hint = (
+            "[[embedders]]" in msg or "config.toml" in msg or "add at least one" in msg.lower()
+        )
+        assert has_verb or has_config_hint, (
+            f"'no embedders configured' message must describe the fix — either name "
+            f"a recovery verb like `corpus-forge embedder add` or instruct the user "
+            f"to edit config.toml; got: {msg!r}"
+        )
