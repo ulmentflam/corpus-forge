@@ -178,8 +178,17 @@ def _from_dict(raw: dict[str, object]) -> RuntimeProfile:
     Tolerant of partial / forward-compatible payloads: unknown keys are
     ignored, missing keys default to empty.
     """
+    # ``raw`` is ``dict[str, object]`` so ``.get`` widens to ``object``,
+    # which the typechecker won't pass straight into ``int()``. Coerce
+    # via a try/except so a corrupt schema_version field (e.g. a string)
+    # silently falls back to the current version rather than blowing up.
+    sv_raw = raw.get("schema_version")
+    try:
+        schema_version = int(sv_raw) if isinstance(sv_raw, (int, str, float)) else SCHEMA_VERSION
+    except (TypeError, ValueError):
+        schema_version = SCHEMA_VERSION
     profile = RuntimeProfile(
-        schema_version=int(raw.get("schema_version", SCHEMA_VERSION) or SCHEMA_VERSION),
+        schema_version=schema_version,
         updated_at=str(raw.get("updated_at", "")),
         host_id=str(raw.get("host_id", "")),
     )
@@ -317,7 +326,7 @@ def record(
     if not (0.0 < alpha <= 1.0):
         logger.debug("runtime_profile: alpha %r out of (0, 1] — skipping", alpha)
         return False
-    if phase in _KEYED_PHASES and not key:
+    if phase in _KEYED_PHASES and key is None:
         logger.debug("runtime_profile: phase %r requires a key — skipping", phase)
         return False
     sample = seconds / units
@@ -333,6 +342,11 @@ def record(
         elif phase == "db_write":
             profile.db_write = _apply_ewma(profile.db_write, sample, alpha)
         elif phase in _KEYED_PHASES:
+            # ``key`` is narrowed non-None by the up-front check at the
+            # top of the function, but pyrefly can't track that across
+            # the early-return; re-assert for the typechecker.
+            if key is None:  # pragma: no cover — guarded above
+                return False
             bucket: dict[str, Rate] = getattr(profile, phase)
             bucket[key] = _apply_ewma(bucket.get(key), sample, alpha)
         else:  # pragma: no cover — guarded above
