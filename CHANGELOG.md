@@ -17,6 +17,24 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   default library path) when `plugin == "zotero"` and the nested block
   is absent. Three regression tests in
   `TestZoteroSourceDefault` lock the contract.
+- `install.sh` and `install.ps1` now invoke `corpus-forge migrate`
+  after the setup wizard so a first-run `ingest`/`embed` doesn't fail
+  on an empty DB. The migrate call is failure-tolerant: a non-zero
+  exit (Postgres unreachable at install time, etc.) is logged to a
+  temp file, warned about, and the installer still exits 0 so the
+  user isn't left with a half-installed CLI. The PowerShell path also
+  resets `$LASTEXITCODE` on the warn branch and ends with an explicit
+  `exit 0` so `iwr | iex` callers don't propagate a stale 1.
+- `install.ps1` now always passes `--non-interactive` to
+  `corpus-forge setup` (mirrors the bug-#1 fix in #18 for `install.sh`):
+  the wizard's stdin was already consumed by the PowerShell prompts,
+  so prior re-prompts silently took defaults and discarded user
+  answers.
+- New smoke suite at `tests/scripts/test_install_sh.py` exercises the
+  handoff via a sentinel-extracted `__cf_post_install_handoff` and a
+  stubbed `corpus-forge` on PATH: happy path, migrate-failure path,
+  corpus-forge-missing path, and `CF_CONFIG` propagation. PowerShell
+  mirror test is skipped when `pwsh` isn't on PATH.
 
 ## [0.1.0b7] - 2026-05-20
 
