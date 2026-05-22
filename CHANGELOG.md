@@ -8,6 +8,21 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Fixed
+
+- `corpus-forge ingest --once` no longer crashes with
+  `AttributeError: 'ProgressEmitter' object has no attribute
+  'remove_task'` when running under Claude Code (or any agent-mode
+  invocation that sets the `CLAUDE_CODE` env var). The PR #46
+  per-source progress bar teardown path calls
+  `progress.remove_task(source_task)`; Rich's `Progress` class
+  implements that, but the agent-mode shim in
+  `corpus_forge/ui/agent.py` did not. Added the missing no-op
+  method for Rich-API parity. Regression test
+  `tests/unit/test_progress_emitter_remove_task.py` pins the
+  contract: method exists, returns `None`, and is a no-op (the
+  emitter's completed counter is preserved across calls).
+
 ## [0.1.0b8] - 2026-05-22
 
 ### Fixed

@@ -429,6 +429,18 @@ class ProgressEmitter:
         self._completed += delta
         self._maybe_emit()
 
+    def remove_task(self, task_id: int) -> None:  # noqa: ARG002 — Rich-compat
+        """No-op — ``ProgressEmitter`` doesn't track per-task state.
+
+        Rich's :meth:`Progress.remove_task` is called by ``ingest_once``
+        in PR #46 so each per-source bar disappears beneath the
+        persistent global bar after that source finishes. Agent mode
+        emits discrete JSON progress events instead of a live TTY
+        render, so there is nothing to clear — but the method must
+        exist for Rich-API parity with :class:`rich.progress.Progress`,
+        otherwise the call site crashes with ``AttributeError``.
+        """
+
     # ── milestone math ────────────────────────────────────────────
 
     def _maybe_emit(self) -> None:
