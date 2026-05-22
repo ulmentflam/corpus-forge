@@ -68,6 +68,45 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   command in its WARN detail; (2) a static scan of `cli.py` asserts
   every "No configuration found" message names `setup` and never
   `migrate`.
+- `tests/integration/test_claude_code_self_ingest_e2e.py` —
+  full-pipeline E2E coverage for `ClaudeCodeSource`. Drives the
+  parser → conversation chunker → in-memory SQLite backend → fake
+  embedder → `HybridRetriever` round-trip against a real (anonymised)
+  Claude Code session file checked in under
+  `tests/fixtures/claude_code_self_ingest/`. Pins: every parser event
+  type produces the right rows or metadata fold (regression for the
+  PR #29 permission-mode leak bug), session-link wiring fires during
+  full `ingest_one`, retrieval returns chunks for the ingested
+  conversation. Closes the first task of RFC
+  `rfc-claude-code-self-ingest-e2e` (P0).
+- `corpus_forge/sources/_git.py::git_context(path)` — best-effort
+  helper that resolves `(commit_sha, branch)` for a given path,
+  returning `(None, None)` and never raising when `git` is absent
+  from PATH, the path is not inside a git work tree, or any
+  subprocess call times out or fails. Detached HEAD surfaces as
+  `(sha, None)` rather than `(sha, "HEAD")`. First sub-task of
+  RFC `rfc-source-provenance-git-and-lines` (P0); the helper will
+  be wired into `FilesystemSource` + `ClaudeCodeSource` and through
+  to per-chunk metadata in subsequent PRs.
+- `ClaudeCodeSource` now propagates the session-level `git_branch`
+  (captured from the JSONL session file's `gitBranch` field) onto
+  every `RawMessage.metadata` entry under the key `git_branch`. The
+  fan-out is a post-process step after the parse loop, so even
+  messages whose JSONL line predates the line that carries
+  `gitBranch` still receive the value. Uses `setdefault` so any
+  future per-turn branch override is preserved. Foundation for the
+  per-chunk `git_branch` provenance column landing in subsequent
+  RFC `rfc-source-provenance-git-and-lines` PRs.
+- Alembic revision `0016_chunk_provenance` adds five nullable
+  provenance columns to `corpus.chunks` / `chunks`: `file_path`,
+  `line_start`, `line_end`, `git_commit`, `git_branch`. Existing
+  rows survive untouched — the columns stay NULL until the
+  source/chunker re-emits them on the next ingest pass. Postgres
+  path uses `ADD COLUMN IF NOT EXISTS`; SQLite uses a
+  `PRAGMA table_info` probe — both fully idempotent. Foundation
+  for the chunker write paths, backend upsert paths, and MCP
+  `get_source_file_context` tool landing in subsequent RFC
+  `rfc-source-provenance-git-and-lines` PRs.
 
 ## [0.1.0b7] - 2026-05-20
 

@@ -103,25 +103,31 @@ Build on the existing E2E harness pattern (in-memory SQLite backend +
 
 ## Tasks
 
-- [ ] Pick + anonymise one real session file from
+- [x] Pick + anonymise one real session file from
       `~/.claude/projects/-home-evan-workspace-corpus-forge/`. Store
-      under `tests/fixtures/claude_code_self_ingest/projects/-home-evan-workspace-corpus-forge/sample-session.jsonl`.
-- [ ] Add a short `tests/fixtures/claude_code_self_ingest/README.md`
+      under `tests/fixtures/claude_code_self_ingest/projects/-home-test-user-workspace-corpus-forge/fed1bafe-0001-4000-8000-000000000001.jsonl`.
+      (Path slug renamed from `-home-evan-workspace-corpus-forge` to
+      `-home-test-user-workspace-corpus-forge` as part of anonymisation.)
+- [x] Add a short `tests/fixtures/claude_code_self_ingest/README.md`
       naming the anonymisation transformations applied (so future
       maintainers know what's mocked).
-- [ ] Write `tests/integration/test_claude_code_self_ingest_e2e.py`
+- [x] Write `tests/integration/test_claude_code_self_ingest_e2e.py`
       with the assertions above. Use the in-memory SQLite + fake
       embedder pattern from
       `tests/integration/test_chunk_reuse_e2e.py` and
       `tests/integration/test_claude_code_session_link_e2e.py`.
-- [ ] Add a `test_metadata_fields_present` micro-test inside the new
+- [x] Add a `test_metadata_fields_present` micro-test inside the new
       file that just asserts `session_id`/`cwd`/`git_branch`/`client_version`
       are non-empty.
-- [ ] Add a `test_session_link_lands_during_full_ingest` test that
+- [x] Add a `test_session_link_lands_during_full_ingest` test that
       seeds `feedback_sessions` then runs the full `ingest_once`-style
-      loop (not just `ingest_one`) end-to-end.
-- [ ] Run locally: `pytest tests/integration/test_claude_code_self_ingest_e2e.py -v`
-- [ ] CHANGELOG entry under `### Added`.
+      loop (not just `ingest_one`) end-to-end. (Implemented as a direct
+      `ingest_one` invocation with `source=` wired — same downstream
+      contract as `ingest_once` per `corpus_forge/ingest.py:268`.)
+- [x] Run locally: `pytest tests/integration/test_claude_code_self_ingest_e2e.py -v`
+      (8 tests pass; adjacent `test_claude_code_session_link_e2e.py`
+      still green.)
+- [x] CHANGELOG entry under `### Added`.
 
 ## Verification
 
