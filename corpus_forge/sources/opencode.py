@@ -217,13 +217,23 @@ class OpenCodeSource(WatchedSource):
                 if info.get(key) is not None:
                     meta[key] = info[key]
 
+            # Derive started_at / ended_at from messages that actually
+            # carry a timestamp. The sort above pushes untimestamped
+            # messages to the end, so ``messages[-1].ts`` would be
+            # ``None`` whenever any None-ts message exists — clobbering
+            # a perfectly good ``ended_at`` from the timed turns. Fall
+            # back to ``None`` only when no message has a timestamp.
+            timed_ts = [m.ts for m in messages if m.ts is not None]
+            started_at = min(timed_ts) if timed_ts else None
+            ended_at = max(timed_ts) if timed_ts else None
+
             yield RawConversation(
                 source_uri=f"opencode://{session_id}",
                 external_id=session_id,
                 content_hash=content_hash,
                 title=str(title) if title else None,
-                started_at=messages[0].ts,
-                ended_at=messages[-1].ts,
+                started_at=started_at,
+                ended_at=ended_at,
                 messages=messages,
                 metadata=meta,
                 labels=[],

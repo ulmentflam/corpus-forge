@@ -160,8 +160,56 @@ def test_scan_places_untimestamped_messages_after_timed_turns(tmp_path: Path) ->
     conv = convs[0]
     # Real-ts message must come first; None-ts message goes to the end.
     assert [m.ts for m in conv.messages] == [1700000005, None]
-    # started_at must be the real timestamp, not None.
+    # Both bounds must come from timed messages — ``ended_at`` would be
+    # ``None`` if the untimestamped tail message were allowed to drive it.
     assert conv.started_at == 1700000005
+    assert conv.ended_at == 1700000005
+
+
+def test_scan_started_at_ended_at_use_only_timed_messages(tmp_path: Path) -> None:
+    """With timed messages bracketing an untimed one, both ``started_at``
+    and ``ended_at`` must come from real timestamps. Regression for the
+    ``messages[-1].ts`` clobbering bug.
+    """
+    storage = tmp_path / "storage"
+    sid = "sess-bracket"
+    _write(storage / "session" / "info" / f"{sid}.json", {"id": sid})
+
+    # Earliest message (timed).
+    _write(
+        storage / "session" / "message" / sid / "early.json",
+        {"id": "m1", "role": "user", "timestamp": 1700000000},
+    )
+    _write(
+        storage / "session" / "part" / sid / "m1" / "p.json",
+        {"type": "text", "text": "early"},
+    )
+
+    # Middle message (no timestamp).
+    _write(
+        storage / "session" / "message" / sid / "middle.json",
+        {"id": "m2", "role": "assistant"},
+    )
+    _write(
+        storage / "session" / "part" / sid / "m2" / "p.json",
+        {"type": "text", "text": "no ts"},
+    )
+
+    # Latest message (timed).
+    _write(
+        storage / "session" / "message" / sid / "late.json",
+        {"id": "m3", "role": "user", "timestamp": 1700000010},
+    )
+    _write(
+        storage / "session" / "part" / sid / "m3" / "p.json",
+        {"type": "text", "text": "late"},
+    )
+
+    convs = list(OpenCodeSource(storage_root=storage).scan())
+    assert len(convs) == 1
+    conv = convs[0]
+    assert conv.started_at == 1700000000
+    assert conv.ended_at == 1700000010
 
 
 def test_scan_falls_back_to_legacy_layout_when_no_info(tmp_path: Path) -> None:
