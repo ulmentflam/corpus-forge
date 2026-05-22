@@ -423,6 +423,12 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   `[0, 1]`). Convenience `tolerance_for(name)` helper. Foundation
   task of RFC `rfc-eval-framework-expansion` (P1); subsequent PR
   adds the runner that consumes this block.
+- `DatasetSourceConfig.max_rows` / `DatasetSourceConfig.max_bytes`
+  — per-source growth caps (RFC `rfc-corpus-growth-controls`). Both
+  `int | None`, default `None` (uncapped), validated `> 0` when set.
+  Storage-only — the runtime eviction loop in `ingest_once` lands
+  in a follow-up PR. Existing configs without these fields continue
+  to validate identically.
 
 ## [0.1.0b7] - 2026-05-20
 
