@@ -107,7 +107,12 @@ Wire into the `@server.list_tools()` registration table alongside
 
 ## Tasks
 
-- [ ] Alembic migration adding the five nullable columns.
+- [x] Alembic migration adding the five nullable columns. Revision
+      `0016_chunk_provenance` adds `file_path`, `line_start`,
+      `line_end`, `git_commit`, `git_branch` to `corpus.chunks` /
+      `chunks`. Postgres uses `ADD COLUMN IF NOT EXISTS`; SQLite uses
+      a `PRAGMA table_info` probe — both fully idempotent. Tests in
+      `tests/integration/test_alembic_0016_chunk_provenance.py`.
 - [ ] Update `corpus_forge/schema/per_embedder.sql.tmpl` if chunks
       live there.
 - [ ] Backend write helpers: `corpus_forge/backends/sqlite.py` and
