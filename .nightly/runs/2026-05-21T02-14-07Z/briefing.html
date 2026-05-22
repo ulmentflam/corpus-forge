@@ -1,0 +1,594 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nightly — briefing · 2026-05-21T02-14-07Z</title>
+<style>
+  :root {
+    --ink:        #0B0E14;
+    --ink-2:      #11151D;
+    --ink-3:      #181D27;
+    --line:       #232936;
+    --line-2:     #2E3543;
+    --paper:      #F1ECE2;
+    --paper-dim:  #C9C2B4;
+    --muted:      #8A8676;
+    --copper:     #E8A857;
+    --teal:       #6FD0BD;
+    --rose:       #E07A78;
+    --plum:       #B58BD9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--ink);
+    color: var(--paper);
+    -webkit-font-smoothing: antialiased;
+  }
+  .shell { max-width: 880px; margin: 0 auto; padding: 5rem 32px 6rem; }
+  .eyebrow { display:inline-flex; align-items:center; gap:.6em; font-family:ui-monospace,monospace; font-size:.72rem; color:var(--copper); text-transform:uppercase; letter-spacing:.18em; margin-bottom:1.6rem; }
+  .eyebrow .dot { width:6px; height:6px; border-radius:50%; background:var(--copper); box-shadow:0 0 12px var(--copper); }
+  h1 { font: 300 clamp(2.4rem, 4.5vw, 3.6rem)/1.05 "Fraunces", Georgia, serif; margin:0 0 .4em; color: var(--paper); letter-spacing:-0.01em; }
+  h2 { font: 600 .8rem/1 ui-monospace,monospace; text-transform:uppercase; letter-spacing:.16em; color:var(--copper); margin:3rem 0 1rem; }
+  .meta { font-family:ui-monospace,monospace; font-size:.78rem; color:var(--muted); margin:0 0 2rem; }
+  .meta b { color:var(--paper); font-weight:500; }
+
+  .glance { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:1rem; margin:0 0 1rem; }
+  .glance .card { background:var(--ink-2); border:1px solid var(--line); border-radius:10px; padding:1rem 1.2rem; }
+  .glance .card.copper { border-left:3px solid var(--copper); }
+  .glance .card.teal   { border-left:3px solid var(--teal); }
+  .glance .card.rose   { border-left:3px solid var(--rose); }
+  .glance .card.plum   { border-left:3px solid var(--plum); }
+  .glance .label { font:600 .65rem/1 ui-monospace,monospace; text-transform:uppercase; letter-spacing:.16em; color:var(--copper); }
+  .glance .card.teal .label { color: var(--teal); }
+  .glance .card.rose .label { color: var(--rose); }
+  .glance .card.plum .label { color: var(--plum); }
+  .glance .value { font: 300 1.9rem/1 "Fraunces", Georgia, serif; margin-top:.5rem; color:var(--paper); }
+
+  /* narrative / prose blocks */
+  .narrative {
+    background: var(--ink-2);
+    border-left: 3px solid var(--copper);
+    border-radius: 10px;
+    padding: 1.6rem 2rem;
+    margin: 2rem 0;
+  }
+  .narrative.lessons { border-left-color: var(--plum); }
+  .narrative.placeholder { border-left-color: var(--line-2); color: var(--muted); font-style: italic; }
+  .narrative .label { font: 600 .68rem/1 ui-monospace,monospace; text-transform:uppercase; letter-spacing:.16em; color:var(--copper); margin-bottom: 1rem; }
+  .narrative.lessons .label { color: var(--plum); }
+  .prose { font-size: .95rem; line-height: 1.7; color: var(--paper-dim); max-width: 70ch; }
+  .prose > :first-child { margin-top: 0; }
+  .prose > :last-child  { margin-bottom: 0; }
+  .prose p { margin: 0 0 1em; }
+  .prose h1, .prose h2, .prose h3, .prose h4 {
+    font: 600 .8rem/1.3 ui-monospace, monospace;
+    text-transform: uppercase;
+    letter-spacing: .12em;
+    color: var(--copper);
+    margin: 1.6em 0 .6em;
+  }
+  .prose ul, .prose ol { padding-left: 1.4em; margin: 0 0 1em; }
+  .prose li { margin-bottom: .35em; }
+  .prose code { background: var(--ink-3); padding: 1px 6px; border-radius: 3px; border: 1px solid var(--line); color: var(--teal); font-size: .85em; font-family: ui-monospace, monospace; }
+  .prose pre { background: var(--ink-3); border: 1px solid var(--line); border-radius: 6px; padding: 1rem 1.2rem; overflow-x: auto; margin: 1em 0; }
+  .prose pre code { background: none; border: none; padding: 0; }
+  .prose strong { color: var(--paper); font-weight: 600; }
+  .prose em { color: var(--paper-dim); font-style: italic; }
+  .prose blockquote {
+    margin: 1em 0; padding: .2em 0 .2em 1.2em;
+    border-left: 2px solid var(--copper); color: var(--paper-dim); font-style: italic;
+  }
+  .prose a { color: var(--copper); text-decoration: none; border-bottom: 1px solid rgba(232,168,87,.3); }
+  .prose a:hover { color: var(--paper); border-bottom-color: var(--paper); }
+  .prose hr { border: 0; border-top: 1px dashed var(--line); margin: 2em 0; }
+
+  /* task rows */
+  ul.rows { list-style:none; padding:0; margin:0; border-top:1px solid var(--line); }
+  ul.rows li { border-bottom:1px solid var(--line); padding:.9rem 0; font-family:ui-monospace,monospace; font-size:.84rem; }
+  .task-head { display:flex; align-items:baseline; gap:1rem; flex-wrap:wrap; }
+  .task-head .slug { color:var(--paper); flex:1; min-width:200px; }
+  .pill { display:inline-flex; align-items:center; padding:1px 9px; border-radius:999px; font:600 .68rem/1.4 ui-monospace,monospace; letter-spacing:.05em; }
+  .pill.ok      { background:rgba(111,208,189,.12); color:var(--teal); }
+  .pill.warn    { background:rgba(232,168,87,.14); color:var(--copper); }
+  .pill.missing { background:rgba(224,122,120,.14); color:var(--rose); }
+  .pill.notes   { background:rgba(181,139,217,.14); color:var(--plum); }
+
+  details.task-notes { margin-top:.7rem; }
+  details.task-notes > summary {
+    cursor: pointer;
+    color: var(--plum);
+    font: 600 .68rem/1 ui-monospace, monospace;
+    text-transform: uppercase;
+    letter-spacing: .14em;
+    padding: .3rem 0;
+    list-style: none;
+  }
+  details.task-notes > summary::-webkit-details-marker { display: none; }
+  details.task-notes > summary::before { content: "▸ "; color: var(--plum); }
+  details.task-notes[open] > summary::before { content: "▾ "; }
+  details.task-notes > .prose { margin-top: .6rem; padding-left: 1rem; border-left: 1px dashed var(--line-2); }
+
+  .empty { color:var(--muted); font-style:italic; padding:1rem 0; }
+  footer { margin-top:4rem; padding-top:2rem; border-top:1px dashed var(--line); font:.75rem/1.5 ui-monospace,monospace; color:var(--muted); }
+</style>
+</head>
+<body>
+<main class="shell">
+  <div class="eyebrow">
+    <span class="dot"></span>
+    briefing · in progress
+  </div>
+  <h1>2026-05-21T02-14-07Z</h1>
+  <div class="meta">
+    <b>Tasks</b>&nbsp; 6
+    &nbsp;·&nbsp; <b>Approvals pending</b>&nbsp; 0
+    &nbsp;·&nbsp; <b>Planning proposals</b>&nbsp; 0
+    &nbsp;·&nbsp; <b>Ideated issues</b>&nbsp; 0
+    
+    &nbsp;·&nbsp; <b>Generated</b>&nbsp; 2026-05-21 03:16 UTC
+    
+  </div>
+
+  <div class="glance">
+    <div class="card copper">
+      <div class="label">tasks</div>
+      <div class="value">6</div>
+    </div>
+    <div class="card teal">
+      <div class="label">ready</div>
+      <div class="value">0</div>
+    </div>
+    <div class="card rose">
+      <div class="label">to approve</div>
+      <div class="value">0</div>
+    </div>
+    <div class="card plum">
+      <div class="label">proposed planning</div>
+      <div class="value">0</div>
+    </div>
+    <div class="card copper">
+      <div class="label">ideated issues</div>
+      <div class="value">0</div>
+    </div>
+  </div>
+
+  
+  
+    <section class="narrative">
+      <div class="label">session narrative</div>
+      <div class="prose"><h1>Nightly briefing — run 2026-05-21T02-14-07Z</h1>
+<p>Six PRs landed against <code>fix/nightlies</code> off <code>main</code>, walking the
+user-seeded backlog (six tasks) and then continuing into findings the
+backlog uncovered. PR-#18 merged to main mid-run, so task 0001
+recovered cleanly by rebasing off <code>main</code> instead of <code>phase-r-deployment</code>.</p>
+<h2>What landed</h2>
+<p>| PR | Title | Origin |
+|----|-------|--------|
+| #21 | <code>fix(install): run corpus-forge migrate after setup; tolerate failure</code> | task 0001 (user follow-up <code>fix/install-migrate-bugs</code>) |
+| #22 | <code>fix(config,doctor): default Zotero block when plugin=zotero alone</code> | task 0004 (priority-list item #9) |
+| #23 | <code>plan(e2e): E2E + human-friendly UX flow coverage backlog</code> | task 0006 (user follow-up) |
+| #24 | <code>fix(mcp): pack exception text into isError content, not empty block</code> | autonomous follow-up from task 0005 smoke |
+| #25 | <code>fix(cli): pre-flight mcp extra check before mcp serve</code> | autonomous follow-up from task 0005 smoke |
+| ~~#26~~ → #27 | <code>fix(cli): &quot;no config found&quot; hints point at setup, not migrate</code> | first P1 test from PR #23's plan — discovered a real bug, expanded into a sweep PR. PR #26 closed; #27 supersedes. |
+| #28 | <code>test(cli): pin &quot;no embedders configured&quot; message describes the fix</code> | second P1 test, stacked on PR #27 |</p>
+<p>All six PRs target <code>fix/nightlies</code> rather than <code>main</code> per the
+user-stated branch routing (&quot;fix/nightlys → fix/nightlies after a
+spelling correction&quot;). They're draft; CI hasn't been waited on.</p>
+<h2>What I didn't do (and why)</h2>
+<ul>
+<li><strong>Priority-list items #1 / #4, #11 / #12 / #13</strong> — they reference
+migration 0015, <code>repair-indexes</code> CLI, and &quot;halfvec strategy,&quot; none
+of which exist in main or any branch. Confirmed via <code>git grep</code> and
+<code>git log --all</code>. Item #1 and #4 themselves weren't in the prompt I
+received (the list started at #5). The user picked &quot;Run only what's
+actionable here&quot; when I surfaced the mismatch.</li>
+<li><strong>Items #7 / #8</strong> — fresh Ubuntu LXC + macOS brew install. I don't
+have a fresh VM or a Mac. PR #21 closes most of the <em>script-layer</em>
+gap for #7 with the new <code>tests/scripts/test_install_sh.py</code>, but the
+full container install is still uncovered.</li>
+<li><strong>Tasks 0002 / 0003 / 0005 as PRs</strong> — those were verification
+tasks, not change tasks. Findings filed in each task's <code>notes.md</code>:
+<ul>
+<li>0002: bug-report bundle generates cleanly; JSON shapes sane;
+Pydantic schema-shadow UserWarning leaks on <code>phase-r-deployment</code>
+only (PR-#18's filter is on main, not on phase-r).</li>
+<li>0003: <code>embedder list</code> iterates <code>config.embedders</code>, NOT
+<code>corpus.embedders</code> DB rows. A &quot;DB-only orphan&quot; (config removed,
+vectors still in DB) is silently underreported. Recommend
+<code>--include-orphans</code> flag; out of scope for this run because it
+needs a new backend method (<code>list_all_embedder_rows</code>).</li>
+<li>0005: MCP server protocol works; <code>list_datasets</code> smoke succeeded.
+Two UX bugs surfaced and got their own PRs (#24, #25).</li>
+</ul>
+</li>
+</ul>
+<h2>What needs human attention first</h2>
+<ol>
+<li><strong>PR #21 (install migrate handoff)</strong> — touches <code>install.sh</code>,
+<code>install.ps1</code>, CHANGELOG, CLAUDE.md, and adds a new test file.
+Most user-visible. The PowerShell mirror test skips when <code>pwsh</code>
+isn't on PATH; CI on a Linux runner will skip it too. Either add a
+Windows lane or accept that install.ps1 is tested-by-reading only.</li>
+<li><strong>PR #22 (Zotero default)</strong> — one-line model_validator + three
+regression tests. Should also fix the user's actual config issue.
+Worth confirming against the user's real config that has
+<code>[[datasets.sources]] plugin = &quot;zotero&quot;</code>.</li>
+<li><strong>PR #23 (E2E plan)</strong> — read the testable-property table at the top
+of <code>.planning/tdd/e2e_ux_flows.md</code>. If those five properties match
+what you want &quot;human-friendly&quot; to mean, the rest of the doc is the
+prioritized backlog. PR #26 implements one P1 test against this
+spec.</li>
+<li><strong>PRs #24, #25, #26</strong> — small, focused, three different findings
+from task 0005 plus the first P1 follow-up. All independent of each
+other; merge order doesn't matter.</li>
+</ol>
+<h2>Surprises</h2>
+<ul>
+<li><strong>PR-#18 merged to main mid-run.</strong> I was on phase-r-deployment when
+the run started; PR-#18 landed before I could push. Cherry-picking
+my install-migrate-bugs commit onto main showed CHANGELOG +
+install.sh conflicts (PR-#18 had already touched install.sh's
+setup handoff). Re-applied cleanly on top of main; my changes
+compose with PR-#18 rather than duplicate it.</li>
+<li><strong>Rich silently eats <code>[mcp]</code> markup tags.</strong> When PR #25 first ran
+the install hint, the user-facing message said &quot;install
+corpus-forge''&quot; — Rich dropped <code>[mcp]</code> as an unknown style tag. Had
+to escape with <code>\[mcp]</code>. This bug is latent for any future
+ui_error/ui_warn message that mentions a Python extras specifier.</li>
+<li><strong>The mcp extra isn't pulled in by default.</strong> <code>corpus-forge mcp serve</code> traces back with <code>ModuleNotFoundError</code> on a fresh
+install. <code>install.sh</code> doesn't install the <code>[mcp]</code> extra. Probably
+worth either (a) auto-installing the mcp extra when the user picks
+&quot;yes&quot; to &quot;use MCP server&quot; in the setup wizard, or (b) making the
+install hint more discoverable. PR #25 handles (b).</li>
+</ul>
+<h2>What's queued for next session</h2>
+<ul>
+<li>Remaining 4 P1 tests from the E2E plan (4 cheap; the 5th — the
+no-config one — landed as part of PR #27).</li>
+<li><code>embedder list --include-orphans</code> (P2; needs backend method).</li>
+<li>The chaos / recovery scenarios in P3 (mid-ingest crash, concurrent
+writers).</li>
+<li><strong>Items #11/#12/#13 from the priority list — confirmed actionable
+against PR #19</strong> (<code>feat/halfvec-and-repair-tools</code>). PR #19 ships
+migration <code>0015_halfvec_hnsw_index.py</code>, a <code>repair-indexes</code> CLI, and
+a <code>_doctor_embedder_indexes</code> check. Its <code>test_alembic_0015_halfvec_ hnsw_index.py</code> docstring explicitly punts the integration coverage
+to &quot;the integration matrix&quot; — but that matrix doesn't yet exist for
+0015. Items 11/12/13 are exactly that missing layer:
+<ul>
+<li>11: testcontainers Postgres, pre-existing <code>embeddings_*</code> on the
+wrong index strategy, assert 0015's rebuild fires.</li>
+<li>12: same harness, run <code>repair-indexes --apply</code> end-to-end
+against drifted state.</li>
+<li>13: <code>corpus-forge upgrade --skip-doctor</code> path — assert 0015
+fires inside the upgrade-then-migrate sequence.
+Recommend landing these on PR #19's branch (so they ship with the
+feature) rather than as a follow-up. ~4-6h of testcontainers
+wiring + assertion writing.</li>
+</ul>
+</li>
+<li>Items #1/#4 from the priority list still unknown — they were called
+out as highest-priority but never appeared in the prompt body.</li>
+</ul>
+<h2>Author / branch state</h2>
+<ul>
+<li>Identity: per-command <code>git -c user.email=evan@jwo3.io -c user.name=Evan</code>. No git config touched.</li>
+<li>Six branches pushed to origin: <code>nightly/&lt;slug&gt;-&lt;short-ts&gt;</code> x 6
+(see PR list above).</li>
+<li>Worktrees still exist at <code>../nightly-&lt;slug&gt;-&lt;ts&gt;</code> — clean them up
+with <code>git worktree remove</code> after the PRs land.</li>
+</ul>
+</div>
+    </section>
+  
+
+  <h2>Tasks</h2>
+  
+    <ul class="rows">
+    
+      <li>
+        <div class="task-head">
+          <span class="slug">0001-fix-install-migrate-bugs</span>
+          <span class="pill ok">plan</span>
+          <span class="pill missing">proposal</span>
+          <span class="pill ok">uncertainty</span>
+          
+        </div>
+        
+      </li>
+    
+      <li>
+        <div class="task-head">
+          <span class="slug">0002-0002-bug-report-smoke</span>
+          <span class="pill ok">plan</span>
+          <span class="pill missing">proposal</span>
+          <span class="pill missing">uncertainty</span>
+          <span class="pill notes">notes</span>
+        </div>
+        
+        <details class="task-notes">
+          <summary>show notes</summary>
+          <div class="prose"><h1>Task 0002 — bug-report bundle smoke</h1>
+<h2>What I exercised</h2>
+<pre><code>uv run corpus-forge bug-report --no-zip --out ./bundle
+</code></pre>
+<p>Against a host with no <code>~/.config/corpus-forge/config.toml</code> (the
+&quot;unconfigured but installed&quot; path — the worst-case smoke for the
+post-doctor/admin refactor).</p>
+<h2>Results</h2>
+<p><strong>Bundle generates.</strong> Exit 0. The CLI prints a prefilled GitHub issue
+URL and a result-event JSON line.</p>
+<p><strong>Bundle contents are intact</strong> (matches the doctor/admin refactor's
+expected surface):</p>
+<pre><code>config.redacted.toml
+db_summary.json
+deps.txt
+doctor.json
+env.txt
+logs/
+  cli.log.txt
+  recent_events.txt
+manifest.json
+README.txt
+service_status.txt
+</code></pre>
+<p><strong>JSON shape is sane</strong>:</p>
+<ul>
+<li><code>manifest.json</code> — well-formed; carries <code>corpus_forge_version</code>, <code>os</code>,
+<code>os_version</code>, <code>python_version</code>, <code>arch</code>, <code>ts_utc</code>, <code>hostname_hash</code>,
+<code>tool_path</code>, <code>redaction_log</code> (empty array), and a new
+<code>agent_mode_at_time_of_capture</code> block (correctly identified the
+invocation as <code>claude-code_2-1-145_agent</code>).</li>
+<li><code>doctor.json</code> — well-formed; <code>checks</code> is an array of
+<code>{name, status, detail}</code> objects. Statuses observed: OK / WARN /
+SKIP, matching the post-refactor enum.</li>
+<li><code>db_summary.json</code> — gracefully degraded with
+<code>{&quot;unavailable&quot;: &quot;Configuration file not found: ...&quot;}</code>. No crash,
+no half-written JSON.</li>
+</ul>
+<p><strong><code>agent_mode_at_time_of_capture</code> is new</strong> and correctly identifies the
+Claude Code agent mode — this is a nice addition for triage. The
+hostname is hashed (privacy-safe).</p>
+<h2>Caveats / gaps</h2>
+<ul>
+<li>I did NOT exercise the happy path with a live Postgres DB. The
+<code>db_summary.json</code> schema when a backend is reachable is unverified
+here. Priority-list item #5 also called out that this needs to be
+exercised against the live DB; this smoke covered the unconfigured
+path only.</li>
+<li>One UserWarning leaks through stderr before the bundle is written
+(<code>Field name &quot;schema&quot; in &quot;BackendConfig&quot; shadows an attribute in parent &quot;BaseModel&quot;</code>). NOT a regression — this is expected on
+<code>phase-r-deployment</code> (the branch the venv resolves against), which
+doesn't have PR #18's <code>warnings.filterwarnings</code> suppression yet. On
+<code>main</code> (post-PR-#18) the filter is in <code>corpus_forge/config.py:23</code>.
+Will clear once <code>phase-r-deployment</code> rebases on main or PR #18's
+filter lands there.</li>
+</ul>
+<h2>Verdict</h2>
+<p>Smoke passes for the no-config path. Worth a follow-up smoke against a
+live DB before fully signing off priority item #5.</p>
+</div>
+        </details>
+        
+      </li>
+    
+      <li>
+        <div class="task-head">
+          <span class="slug">0003-0003-embedder-list-get-live</span>
+          <span class="pill ok">plan</span>
+          <span class="pill missing">proposal</span>
+          <span class="pill missing">uncertainty</span>
+          <span class="pill notes">notes</span>
+        </div>
+        
+        <details class="task-notes">
+          <summary>show notes</summary>
+          <div class="prose"><h1>Task 0003 — embedder list/get smoke</h1>
+<h2>Setup</h2>
+<p>No <code>~/.config/corpus-forge/config.toml</code> on this host, so I couldn't
+exercise the verbs against the user's live two-embedder DB (the
+<code>qwen3-2048 orphaned</code> / <code>qwen3-2000 active</code> scenario the priority list
+called out). Both <code>embedder list</code> and <code>embedder get</code> exit 1 with
+<code>Could not load config</code> when there's no config — verified at
+<code>corpus_forge/admin/embedder.py:182-184</code> (and the same pattern in
+<code>cmd_get</code> at L226-228).</p>
+<h2>Code review (in lieu of live exercise)</h2>
+<p>Read <code>corpus_forge/admin/embedder.py:176-215</code> (the <code>list</code> verb):</p>
+<ul>
+<li>Iterates <code>config.embedders</code> (config-driven, NOT a <code>SELECT * FROM corpus.embedders</code>).</li>
+<li>For each config row, calls <code>_count_coverage(backend, cfg.name)</code>, which
+hits <code>backend.find_embedder_row_by_name</code> then
+<code>backend.count_existing_embeddings</code>. Backend unreachable → coverage
+column degrades to <code>&quot;?&quot;</code>.</li>
+<li>Renders a Rich Table with Name / Provider / Model / Dim / Active /
+Fingerprint / Coverage columns. The <code>Active</code> column shows yes/no
+based on <code>cfg.active</code>.</li>
+</ul>
+<h2>Findings</h2>
+<ol>
+<li>
+<p><strong>Two-config-row case will render correctly.</strong> If both <code>qwen3-2048</code>
+and <code>qwen3-2000</code> are entries in <code>[[embedders]]</code> (the active flag
+distinguishes them), the table shows both rows with their respective
+coverage counts. The &quot;orphaned&quot; embedder will show with <code>Active: no</code>
+and whatever coverage count remains for its vectors.</p>
+</li>
+<li>
+<p><strong>DB-only orphan case will NOT render.</strong> If <code>qwen3-2048</code> was
+<em>removed from config</em> but its row + vectors are still in the DB,
+<code>embedder list</code> never enumerates it — the loop is over
+<code>config.embedders</code> only. There is no public
+<code>list_all_embedder_rows()</code> on the backend (grep confirms no such
+verb in <code>corpus_forge/backends/postgres.py</code>).</p>
+<p>This is a UX gap for the priority-list scenario as described:
+&quot;make sure the Rich table renders both with coverage counts.&quot; If
+&quot;orphan&quot; means &quot;config entry removed, vectors still in DB,&quot; the
+table will silently underreport.</p>
+<p>Recommendation: add <code>corpus-forge embedder list --include-orphans</code>
+that JOINs <code>config.embedders</code> with <code>corpus.embedders</code> and renders
+rows marked <code>(orphan)</code> for DB-only entries. Or always show them
+with a separate section heading. Scoped as a follow-up task — out
+of scope for this smoke since it needs a backend method that
+doesn't exist yet.</p>
+</li>
+<li>
+<p><strong><code>embedder get NAME</code> works on config rows.</strong> Looking at
+<code>cmd_get</code> at L218-260, it looks up <code>config.embedders[name]</code> first;
+if <code>name</code> isn't in config it exits 1 with <code>not found in config</code>.
+So <code>embedder get qwen3-2048</code> will succeed when 2048 is still a
+config row (just inactive), and fail when 2048 is a DB-only orphan.</p>
+</li>
+</ol>
+<h2>Verdict</h2>
+<p>The Rich rendering itself is fine — the same code path handles 1 row,
+2 rows, or N rows correctly. The interesting question is whether
+&quot;orphaned&quot; in the priority list means &quot;inactive config row&quot; (works
+today) or &quot;removed from config but still in DB&quot; (silently
+underreported). Recommend opening a follow-up issue for the latter
+case if it's what the user meant.</p>
+<h2>Caveats</h2>
+<ul>
+<li>Did not exercise against live DB. The user (with the actual config
+<ul>
+<li>DB) should run <code>corpus-forge embedder list</code> and confirm both rows
+show. If <code>qwen3-2048</code> is missing from the table output, see
+finding (2) above.</li>
+</ul>
+</li>
+</ul>
+</div>
+        </details>
+        
+      </li>
+    
+      <li>
+        <div class="task-head">
+          <span class="slug">0004-0004-zotero-source-detection</span>
+          <span class="pill ok">plan</span>
+          <span class="pill missing">proposal</span>
+          <span class="pill missing">uncertainty</span>
+          
+        </div>
+        
+      </li>
+    
+      <li>
+        <div class="task-head">
+          <span class="slug">0005-0005-mcp-server-smoke</span>
+          <span class="pill ok">plan</span>
+          <span class="pill missing">proposal</span>
+          <span class="pill missing">uncertainty</span>
+          <span class="pill notes">notes</span>
+        </div>
+        
+        <details class="task-notes">
+          <summary>show notes</summary>
+          <div class="prose"><h1>Task 0005 — MCP server smoke</h1>
+<h2>What I exercised</h2>
+<p>Drove <code>corpus-forge mcp serve --transport stdio</code> end-to-end via JSON-RPC
+from a small Python harness (no real MCP client). Sequence:</p>
+<ol>
+<li><code>initialize</code> (protocolVersion 2024-11-05) → server replies.</li>
+<li><code>notifications/initialized</code>.</li>
+<li><code>tools/list</code> → server returns the tool catalog.</li>
+<li><code>tools/call name=list_datasets</code> → server replies.</li>
+</ol>
+<h2>Results</h2>
+<p><strong>Init negotiation works.</strong> Server identifies as <code>corpus-forge</code> v1.27.1
+(MCP SDK version), advertises <code>tools.listChanged=false</code>, no error.</p>
+<p><strong>Tool surface is correct.</strong> <code>tools/list</code> returned 10 tools, including
+all five CLAUDE.md §1-documented ones:</p>
+<pre><code>search, get_chunk, list_datasets, estimate_sync_size,
+next_curation_target  (+ 5 more)
+</code></pre>
+<p><strong><code>list_datasets</code> works at the protocol level</strong> — well-formed JSON-RPC
+response with <code>content</code> array.</p>
+<h2>Findings worth filing</h2>
+<ol>
+<li>
+<p><strong>MCP server requires the <code>[mcp]</code> extra.</strong> Without it,
+<code>corpus-forge mcp serve</code> exits with
+<code>ModuleNotFoundError: No module named 'mcp'</code> and a full traceback.
+The error is technically accurate but the CLI should ideally:</p>
+<ul>
+<li>check at startup whether <code>mcp</code> is importable, AND</li>
+<li>print a one-line &quot;install with: <code>uv tool install 'corpus-forge[mcp]'</code>&quot; hint instead of the traceback.</li>
+</ul>
+<p><code>setup-corpus-forge.sh</code> / <code>install.sh</code> don't install the mcp extra
+by default (it's optional), so any first-run user following the
+CLAUDE.md quickstart hits this. Worth a follow-up issue.</p>
+</li>
+<li>
+<p><strong><code>list_datasets</code> with no config returns <code>isError: true</code> and an
+empty <code>content</code> text.</strong> A real MCP client (Claude Desktop / Code)
+would see <code>Error: </code> with no message. The server should populate
+the content with the same <code>&quot;Configuration file not found: ...&quot;</code>
+that the bug-report bundle gracefully includes for <code>db_summary.json</code>.</p>
+<p>This is the same root cause (no config) — but the bug-report bundle
+handles it gracefully and the MCP server doesn't. Worth a separate
+issue: &quot;MCP server should surface configuration errors in tool-call
+responses, not return empty <code>isError</code>.&quot;</p>
+</li>
+<li>
+<p><strong>The schema-shadow UserWarning leaks to stderr.</strong> Same as task 0002
+notes — this branch doesn't yet have PR #18's filter in config.py.
+Will clear once main's filter propagates to whatever branch you run
+from.</p>
+</li>
+</ol>
+<h2>Verdict</h2>
+<p>Smoke passes: protocol negotiation, tools/list, and tools/call all
+work. Two UX follow-ups worth filing as issues (extra-not-installed
+error message + empty MCP error responses), neither blocking.</p>
+<h2>Caveats</h2>
+<ul>
+<li>Did NOT exercise <code>search</code> against a populated DB. Item #10 called for
+poking <code>search / list_datasets from a real client.</code> <code>list_datasets</code>
+was exercised; <code>search</code> over a real index needs the user's actual
+setup.</li>
+</ul>
+</div>
+        </details>
+        
+      </li>
+    
+      <li>
+        <div class="task-head">
+          <span class="slug">0006-0006-e2e-flow-ux</span>
+          <span class="pill ok">plan</span>
+          <span class="pill missing">proposal</span>
+          <span class="pill missing">uncertainty</span>
+          
+        </div>
+        
+      </li>
+    
+    </ul>
+  
+
+  <h2>Things to approve</h2>
+  
+    <p class="empty">Nothing to approve this run.</p>
+  
+
+  <h2>Proposed planning</h2>
+  
+    <p class="empty">No planning artifacts proposed this run.</p>
+  
+
+  <h2>Proposed issues</h2>
+  
+    <p class="empty">No issues ideated this run. Run <code>nightly ideate</code> to surface candidates.</p>
+  
+
+  
+  
+
+  <footer>
+    Nightly briefing · run <b>2026-05-21T02-14-07Z</b> · generated by <code>nightly brief</code>
+  </footer>
+</main>
+</body>
+</html>

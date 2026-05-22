@@ -1,0 +1,24 @@
+# .nightly/config.yml — written by `nightly init`. Edit as needed.
+# See `.nightly/config.yml.example` (if present) for the full schema, or
+# `.planning/brainstorm.html` §05 for the design rationale.
+
+hosts:
+  - claude
+
+git:
+  # Branch Nightly cuts new worktrees from. Set to `main` so every
+  # accepted_rfc / unblocked task starts from the latest released
+  # state instead of whatever branch the human happens to have
+  # checked out when `nightly start` runs.
+  base_branch:   main
+  branch_prefix: nightly/
+  wip_prefix:    nightly/wip-
+  protected:     [main, master, "release/*"]
+
+refuse:
+  destructive_git:        true
+  production_state:       true
+  external_communication: true
+  network_egress_unknown: true
+  scope_creep:            true
+  bypass_test_or_type:    true
