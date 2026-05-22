@@ -2730,6 +2730,38 @@ def _render_scan_stats_table(scan_stats) -> None:
     print("")
 
 
+def _render_time_estimate_table(time_estimate) -> None:
+    """Render the "Estimated wall-clock" table for ``corpus-forge estimate``.
+
+    Skips silently if ``time_estimate`` is ``None`` (caller decided to
+    suppress it). The trailing footer line explains the calibration
+    state so the user knows whether the number reflects past runs.
+    """
+    if time_estimate is None:
+        return
+    from corpus_forge.time_estimate import format_duration
+
+    print("Estimated wall-clock:")
+    for phase in time_estimate.phases:
+        print(f"  {phase.name:<14} {format_duration(phase.seconds):>10}    ({phase.notes})")
+    print("  " + "-" * 28)
+    print(f"  {'Total':<14} {format_duration(time_estimate.total_seconds):>10}")
+    if time_estimate.calibration == "calibrated":
+        footer = f"Calibrated from {time_estimate.profile_samples} past sample(s)."
+    elif time_estimate.calibration == "hybrid":
+        footer = (
+            f"Calibration: hybrid ({time_estimate.profile_samples} sample(s) so far). "
+            "Run `corpus-forge ingest --once` and `embed` to refine further."
+        )
+    else:
+        footer = (
+            "Calibration: heuristic-only — run `corpus-forge ingest --once` and "
+            "`embed` once to calibrate this estimate to your hardware."
+        )
+    print(footer)
+    print("")
+
+
 def _render_pending_files_table(payload: dict[str, object]) -> None:
     """Render the "Pending files" table; skip if both counters are zero."""
     docs = int(cast(int, payload.get("documents_not_chunked", 0) or 0))
@@ -2927,21 +2959,23 @@ def estimate(
     # Phase L Wave 4 — compute scan stats + pending-files snapshot so the
     # CLI can render the two new sections regardless of human/JSON mode.
     from corpus_forge.estimate import get_last_scan_stats
+    from corpus_forge.time_estimate import estimate_time
 
     scan_stats = get_last_scan_stats()
     pending_payload = _estimate_pending_files(config, embedder_filter=chosen_embedders)
+    time_estimate = estimate_time(estimate_result, config)
 
     if json_out or ui_agent.is_agent_mode():
         # JSON estimate — stdout for piping (no markup mangling). Wave 4
-        # adds two new sibling keys ``"scan"`` + ``"pending"`` alongside
-        # the existing SyncEstimate fields so the shape stays additive.
-        # The MCP ``estimate_sync_size`` tool still consumes
-        # ``asdict(SyncEstimate)`` directly via the corpus_forge.estimate
-        # module — it is NOT affected by this CLI-side wrapping.
+        # added the ``"scan"`` + ``"pending"`` sibling keys; this commit
+        # adds ``"time"`` for the wall-clock prediction. The MCP
+        # ``estimate_sync_size`` tool gets the same additive payload via
+        # its own dispatch path.
         out_payload: dict[str, object] = {**asdict(estimate_result)}
         if scan_stats is not None:
             out_payload["scan"] = asdict(scan_stats)
         out_payload["pending"] = pending_payload
+        out_payload["time"] = asdict(time_estimate)
         if ui_agent.is_agent_mode():
             ui_agent.emit("result", cmd="estimate", status="ok", data=out_payload)
             return
@@ -2986,6 +3020,7 @@ def estimate(
     print("  " + "-" * 28)
     print(f"  {'Total':<18} {_human_bytes(estimate_result.total_bytes):>10}")
     print("")
+    _render_time_estimate_table(time_estimate)
     _render_pending_files_table(pending_payload)
     print(
         f"Assumed compression ratio: {estimate_result.compression_ratio}. "

@@ -286,6 +286,64 @@ def test_estimate_verbose_flag_does_not_crash(tmp_path: Path) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Wall-clock time estimate (new)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_estimate_human_output_contains_wall_clock_section(tmp_path: Path) -> None:
+    cfg_path = _build_test_config(tmp_path)
+    scan = _scan_dir(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["estimate", str(scan)],
+        env={"CORPUS_FORGE_CONFIG": str(cfg_path), "CF_RUNTIME_PROFILE": str(tmp_path / "rp.json")},
+    )
+    assert result.exit_code == 0, result.output
+    assert "Estimated wall-clock" in result.output
+    # Isolate the wall-clock subsection so the phase-name search can't be
+    # satisfied by the earlier "Scan stats" / "embeddings" sections (which
+    # also contain the words "scan" and "embed").
+    lower = result.output.lower()
+    start = lower.index("estimated wall-clock")
+    # The subsection ends at the calibration footer; that footer always
+    # begins with "calibration" or "calibrated". Fall back to EOF if we
+    # somehow can't find it.
+    end_candidates = [lower.find(needle, start + 1) for needle in ("calibration", "calibrated")]
+    end_candidates = [idx for idx in end_candidates if idx != -1]
+    end = min(end_candidates) if end_candidates else len(lower)
+    section = lower[start:end]
+    for phase in ("scan", "extract", "chunk", "embed", "db_write"):
+        assert phase in section, f"missing phase {phase} in wall-clock section"
+    # Calibration footer must mention one of the three labels.
+    assert "heuristic" in lower or "calibrat" in lower or "hybrid" in lower
+
+
+def test_estimate_json_output_includes_time_block(tmp_path: Path) -> None:
+    cfg_path = _build_test_config(tmp_path)
+    scan = _scan_dir(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["estimate", str(scan), "--json"],
+        env={"CORPUS_FORGE_CONFIG": str(cfg_path), "CF_RUNTIME_PROFILE": str(tmp_path / "rp.json")},
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json.loads(result.stdout)
+    assert "time" in payload
+    time_block = payload["time"]
+    assert time_block["schema_version"] == 1
+    assert time_block["total_seconds"] >= 0
+    assert {p["name"] for p in time_block["phases"]} == {
+        "scan",
+        "extract",
+        "chunk",
+        "embed",
+        "db_write",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # K1 — .corpusignore flag coverage
 # ─────────────────────────────────────────────────────────────────────────
 

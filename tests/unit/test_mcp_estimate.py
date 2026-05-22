@@ -155,6 +155,7 @@ def test_estimate_sync_size_returns_estimate_under_estimate_key(
     cfg_path = _write_config(tmp_path)
     scan = _scan_dir(tmp_path)
     monkeypatch.setenv("CORPUS_FORGE_CONFIG", str(cfg_path))
+    monkeypatch.setenv("CF_RUNTIME_PROFILE", str(tmp_path / "rp.json"))
     server = _build_server()
     result = _call_tool_via_handler(server, "estimate_sync_size", {"path": str(scan)})
     assert not result.isError, f"unexpected error: {result}"
@@ -163,6 +164,37 @@ def test_estimate_sync_size_returns_estimate_under_estimate_key(
     est = payload["estimate"]
     assert est["schema_version"] == 1
     assert est["file_count"] == 2
+
+
+def test_estimate_sync_size_returns_time_block_alongside_estimate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The MCP tool now returns a sibling ``time`` block (wall-clock).
+
+    Same schema_version contract (1), same JSON-serialisable shape as
+    the CLI ``--json`` payload.
+    """
+    cfg_path = _write_config(tmp_path)
+    scan = _scan_dir(tmp_path)
+    monkeypatch.setenv("CORPUS_FORGE_CONFIG", str(cfg_path))
+    monkeypatch.setenv("CF_RUNTIME_PROFILE", str(tmp_path / "rp.json"))
+    server = _build_server()
+    result = _call_tool_via_handler(server, "estimate_sync_size", {"path": str(scan)})
+    assert not result.isError, f"unexpected error: {result}"
+    payload = _extract_payload(result)
+    assert "time" in payload
+    time_block = payload["time"]
+    assert time_block["schema_version"] == 1
+    assert time_block["total_seconds"] >= 0
+    assert {p["name"] for p in time_block["phases"]} == {
+        "scan",
+        "extract",
+        "chunk",
+        "embed",
+        "db_write",
+    }
+    # Cold-start path — no calibration samples yet.
+    assert time_block["calibration"] in ("heuristic", "hybrid")
 
 
 def test_estimate_sync_size_passthrough_args_to_estimate_sync(

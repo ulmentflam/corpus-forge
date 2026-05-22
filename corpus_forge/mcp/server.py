@@ -952,12 +952,15 @@ def build_server(
             mt.Tool(
                 name="estimate_sync_size",
                 description=(
-                    "Estimate the Postgres storage footprint of syncing a folder "
-                    "into the corpus, without actually syncing. Pure-prediction; "
-                    "no backend opens, no extractor runs, no model calls. Returns "
-                    "per-extractor file counts, per-embedder embedding sizing, "
-                    "HNSW + btree index overhead, and a total bytes prediction. "
-                    "Result is JSON-serialisable with stable schema_version=1."
+                    "Estimate the Postgres storage footprint AND wall-clock time of "
+                    "syncing a folder into the corpus, without actually syncing. "
+                    "Pure-prediction; no backend opens, no extractor runs, no model "
+                    "calls. Returns per-extractor file counts, per-embedder embedding "
+                    "sizing, HNSW + btree index overhead, total bytes, and a per-phase "
+                    "wall-clock breakdown (scan / extract / chunk / embed / db_write). "
+                    "Wall-clock numbers calibrate themselves against past ingest runs "
+                    "on this host. Result is JSON-serialisable with stable "
+                    "schema_version=1 on both the `estimate` and `time` sub-payloads."
                 ),
                 inputSchema=_ESTIMATE_SYNC_SIZE_INPUT_SCHEMA,
             ),
@@ -1563,7 +1566,13 @@ def build_server(
         except ValueError as exc:
             return _error_result(str(exc))
 
-        return {"estimate": asdict(est)}
+        # Wall-clock prediction — additive sibling key. Pure-prediction
+        # like the storage estimate: reads the calibration profile from
+        # disk if present, otherwise falls back to heuristic constants.
+        from corpus_forge.time_estimate import estimate_time as _estimate_time
+
+        time_est = _estimate_time(est, config)
+        return {"estimate": asdict(est), "time": asdict(time_est)}
 
     # ── J4 curation read dispatchers ─────────────────────────────────────
 
