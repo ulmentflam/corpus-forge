@@ -232,6 +232,17 @@ class DatasetSourceConfig(BaseModel):
     # large set of mode-conditional fields doesn't pollute the
     # ``DatasetSourceConfig`` namespace.
     zotero: ZoteroSourceConfig | None = None
+    # RFC ``rfc-corpus-growth-controls`` — per-source growth caps. When
+    # set, the ingest loop enforces these AFTER each batch insert and
+    # evicts the lowest-scoring rows from this source (LRU + score) to
+    # make room. ``None`` (the default for both) means no cap — the
+    # source can grow without bound. The ingest-side eviction loop
+    # honours the global ``GrowthConfig.per_source_cap_default_rows``
+    # fallback when ``max_rows`` is None but the global default is
+    # non-zero. The eviction policy itself lands in a future RFC PR;
+    # this field is the storage.
+    max_rows: int | None = Field(default=None, gt=0)
+    max_bytes: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def _default_zotero_block_when_plugin_is_zotero(self) -> "DatasetSourceConfig":

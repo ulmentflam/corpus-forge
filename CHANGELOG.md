@@ -68,6 +68,12 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   command in its WARN detail; (2) a static scan of `cli.py` asserts
   every "No configuration found" message names `setup` and never
   `migrate`.
+- `DatasetSourceConfig.max_rows` / `DatasetSourceConfig.max_bytes`
+  — per-source growth caps (RFC `rfc-corpus-growth-controls`). Both
+  `int | None`, default `None` (uncapped), validated `> 0` when set.
+  Storage-only — the runtime eviction loop in `ingest_once` lands
+  in a follow-up PR. Existing configs without these fields continue
+  to validate identically.
 
 ## [0.1.0b7] - 2026-05-20
 
