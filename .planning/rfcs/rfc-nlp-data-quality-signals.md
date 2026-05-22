@@ -110,12 +110,19 @@ Pattern match first; only call an LLM if env var
       using `datasketch.MinHash` (`num_perm=128` default). Compute
       sig on ingest; LSH lookup against dataset for nearest neighbour;
       assign `dup_cluster_id` via union-find on `>=0.85` Jaccard.
-- [ ] `corpus_forge/enrichers/quality_heuristic.py`:
+- [x] `corpus_forge/enrichers/quality_heuristic.py`:
       `HeuristicQualityEnricher` — composite of token-rate
       (chars/whitespace), punctuation-balance,
       repetition-ratio (longest repeated n-gram fraction),
       shouting-ratio (uppercase fraction). Output a single
-      `quality_score`.
+      `quality_score`. **Landed at `corpus_forge/quality/heuristic.py`**
+      (new package distinct from `corpus_forge/enrichers/` — that
+      directory is the Phase H code-enricher pipeline whose
+      `CodeChunkEnrichment` shape doesn't match a quality-scoring
+      enricher). Pure-Python, deterministic, dependency-free; weighted
+      geometric mean of four signals on `[0, 1]`. 36 unit tests pinning
+      the RFC's "known good > known bad" acceptance criterion + per-
+      signal contracts.
 - [ ] `corpus_forge/enrichers/boilerplate.py`: rule-based first
       pass; emit `is_boilerplate: bool` + `boilerplate_kind:
       str | None`. Pattern file

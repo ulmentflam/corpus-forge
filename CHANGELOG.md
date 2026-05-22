@@ -404,6 +404,15 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   modes; unparseable lines (tracebacks, `print()` output) are also
   dropped when a level filter is active. Closes the `logs tail` /
   `--level` checkbox of RFC `rfc-developer-ux-verbs` (P3).
+- `corpus_forge.quality.HeuristicQualityEnricher` — pure-Python,
+  dependency-free composite quality scorer (token-rate, punctuation-
+  balance, repetition-ratio, shouting-ratio → weighted geometric mean
+  on `[0, 1]`). First foundation task of RFC
+  `rfc-nlp-data-quality-signals` (P1); subsequent PRs add language
+  detection, MinHash dedup, and boilerplate pattern-matching, plus
+  the curation-selector hookup. Distinct from the Phase H
+  `corpus_forge.enrichers` (code-enricher) pipeline — code lives in
+  the new `corpus_forge.quality` package.
 
 ## [0.1.0b7] - 2026-05-20
 
