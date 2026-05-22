@@ -113,10 +113,12 @@ Wire into the `@server.list_tools()` registration table alongside
 - [ ] Backend write helpers: `corpus_forge/backends/sqlite.py` and
       `postgres.py` insert/upsert paths populate the new columns from
       `TextChunk.metadata`.
-- [ ] Add a `git_context()` helper in `corpus_forge/sources/_git.py`
+- [x] Add a `git_context()` helper in `corpus_forge/sources/_git.py`
       that returns `(commit, branch)` for a given path, with a clean
       `(None, None)` fallback when `.git` is absent or `git` isn't on
-      PATH.
+      PATH. Includes detached-HEAD handling (branch=None,
+      commit=SHA), file-path resolution via parent dir, `~`
+      expansion, 2-second subprocess timeout.
 - [ ] Wire `git_context()` into `FilesystemSource.__init__` so
       ingest captures one commit per scan, not per file.
 - [ ] Chunkers populate `file_path` / `line_start` / `line_end`:
@@ -128,9 +130,11 @@ Wire into the `@server.list_tools()` registration table alongside
       `corpus_forge/mcp/server.py`. Register in the tool list and add
       its dispatch.
 - [ ] Tests:
-  - [ ] `tests/unit/test_git_context.py` — resolves SHA inside a
+  - [x] `tests/unit/test_git_context.py` — resolves SHA inside a
         synthetic temp git repo; returns `(None, None)` for a non-git
-        directory.
+        directory. 12 tests covering happy path, detached HEAD, and
+        every fallback (non-git dir, missing path, missing `git`
+        binary, OSError, TimeoutExpired, non-zero exit).
   - [ ] `tests/unit/test_chunker_line_numbers.py` — chunker output's
         line numbers match the source text.
   - [ ] `tests/integration/test_provenance_e2e.py` — ingest a temp
