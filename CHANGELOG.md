@@ -375,6 +375,18 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   previous unbounded spinner. The previous `_log_ingest_eta`
   helper was renamed to `_plan_ingest` and now returns a
   per-source file-count map alongside emitting the startup ETA.
+- `[growth]` config block — first foundation task of RFC
+  `rfc-corpus-growth-controls` (P1). `corpus_forge.config.GrowthConfig`
+  exposes three fields: `prune_percentile_default` (int 0-100,
+  default 10), `sync_cap_bytes` (int | None — accepts human-readable
+  strings like `"10G"`, `"500M"`, `"1.5T"` via the new private
+  `_parse_bytes` helper; IEC 1024-based, case-insensitive,
+  optional `B` suffix), and `per_source_cap_default_rows`
+  (int ≥ 0, default 0 = disabled). All fields default to
+  no-enforcement values so existing configs without a `[growth]`
+  block continue to validate and behave identically. Foundation
+  for the `prune` / `estimate sync` / per-source cap verbs landing
+  in subsequent RFC PRs.
 
 ## [0.1.0b7] - 2026-05-20
 
