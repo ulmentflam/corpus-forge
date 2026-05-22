@@ -1,6 +1,6 @@
 # RFC: Propagate git + file/line provenance onto chunks
 
-**Status**: accepted
+Status: accepted
 **Owner**: nightly (open for any agent to claim)
 **Priority**: P0
 **Depends on**: none

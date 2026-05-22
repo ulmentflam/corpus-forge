@@ -1,6 +1,6 @@
 # RFC: Self-distillation export — feedback pairs + SDFT preprocessing
 
-**Status**: accepted
+Status: accepted
 **Owner**: nightly (open for any agent to claim)
 **Priority**: P2
 **Depends on**: `rfc-runtime-feedback-exec-and-profile.md` is *not*

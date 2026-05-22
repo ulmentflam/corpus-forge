@@ -1,6 +1,6 @@
 # RFC: Profiling traces as a first-class source
 
-**Status**: accepted
+Status: accepted
 **Owner**: nightly (open for any agent to claim)
 **Priority**: P3
 **Depends on**: `rfc-source-provenance-git-and-lines.md` (we need

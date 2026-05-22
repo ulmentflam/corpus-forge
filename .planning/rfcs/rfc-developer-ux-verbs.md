@@ -1,6 +1,6 @@
 # RFC: Developer UX verbs — logs tail, stats, debug, config edit
 
-**Status**: accepted
+Status: accepted
 **Owner**: nightly (open for any agent to claim)
 **Priority**: P3
 **Depends on**: `rfc-source-provenance-git-and-lines.md` (for the
