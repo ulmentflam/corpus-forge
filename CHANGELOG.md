@@ -10,6 +10,13 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ### Fixed
 
+- Phase M Wave 4 source-nesting bug: doctor's Zotero check no longer
+  silently SKIPs sources declared as `plugin = "zotero"` without an
+  explicit `[datasets.sources.zotero]` block. `DatasetSourceConfig`
+  now default-instantiates `ZoteroSourceConfig()` (local mode, platform-
+  default library path) when `plugin == "zotero"` and the nested block
+  is absent. Three regression tests in
+  `TestZoteroSourceDefault` lock the contract.
 - `install.sh` and `install.ps1` now invoke `corpus-forge migrate`
   after the setup wizard so a first-run `ingest`/`embed` doesn't fail
   on an empty DB. The migrate call is failure-tolerant: a non-zero
