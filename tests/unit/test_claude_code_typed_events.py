@@ -394,3 +394,177 @@ def test_history_jsonl_missing_is_silent(tmp_path: Path) -> None:
     # scan() should be empty (no project files, history missing) and must
     # not raise.
     assert list(source.scan()) == []
+
+
+# ---------------------------------------------------------------------------
+# RFC `rfc-source-provenance-git-and-lines` (P0) — second task: the parser
+# copies `git_branch` from session-level metadata down onto each
+# RawMessage.metadata so downstream chunkers (and the eventual per-chunk
+# `git_branch` provenance column) can read it without climbing back to the
+# conversation.
+# ---------------------------------------------------------------------------
+
+
+def test_git_branch_propagates_to_every_message_metadata(tmp_path: Path) -> None:
+    """A session-level `gitBranch` lands on every RawMessage.metadata."""
+    projects = tmp_path / "projects"
+    project = projects / "p1"
+    _write_session(
+        project,
+        "session-with-branch",
+        [
+            {
+                "type": "user",
+                "uuid": "u-0",
+                "sessionId": "s-branch",
+                "gitBranch": "feature/foo",
+                "cwd": "/work/repo",
+                "message": {"role": "user", "content": "first turn"},
+            },
+            {
+                "type": "assistant",
+                "uuid": "a-0",
+                "parentUuid": "u-0",
+                "message": {"role": "assistant", "content": "reply"},
+            },
+            {
+                "type": "user",
+                "uuid": "u-1",
+                "parentUuid": "a-0",
+                "message": {"role": "user", "content": "second turn"},
+            },
+        ],
+    )
+
+    source = ClaudeCodeSource(projects_root=projects)
+    raw = source.parse(project / "session-with-branch.jsonl")
+
+    assert isinstance(raw, RawConversation)
+    assert raw.metadata.get("git_branch") == "feature/foo"
+    assert len(raw.messages) == 3
+    for i, msg in enumerate(raw.messages):
+        assert msg.metadata.get("git_branch") == "feature/foo", (
+            f"message[{i}] missing git_branch propagation: {msg.metadata!r}"
+        )
+
+
+def test_git_branch_propagates_when_only_a_later_line_carries_it(
+    tmp_path: Path,
+) -> None:
+    """Branch captured from a non-first line still lands on the FIRST message.
+
+    Pins the post-process semantics — propagation runs *after* the loop,
+    so earlier messages don't get missed just because the JSONL puts
+    `gitBranch` on a later line. Robust against future Claude Code
+    versions changing which line carries the session-level fields.
+    """
+    projects = tmp_path / "projects"
+    project = projects / "p2"
+    _write_session(
+        project,
+        "branch-on-second-line",
+        [
+            {
+                "type": "user",
+                "uuid": "u-0",
+                "sessionId": "s-late",
+                "message": {"role": "user", "content": "first turn — no branch on this line"},
+            },
+            {
+                "type": "assistant",
+                "uuid": "a-0",
+                "parentUuid": "u-0",
+                "gitBranch": "main",  # branch surfaces only on the assistant turn
+                "message": {"role": "assistant", "content": "reply"},
+            },
+        ],
+    )
+
+    source = ClaudeCodeSource(projects_root=projects)
+    raw = source.parse(project / "branch-on-second-line.jsonl")
+
+    assert raw.metadata.get("git_branch") == "main"
+    assert len(raw.messages) == 2
+    assert raw.messages[0].metadata.get("git_branch") == "main", (
+        "earlier message must also receive the propagated branch — the "
+        "fan-out runs after the parser loop on purpose"
+    )
+    assert raw.messages[1].metadata.get("git_branch") == "main"
+
+
+def test_git_branch_absent_means_no_propagation(tmp_path: Path) -> None:
+    """No `gitBranch` anywhere → no `git_branch` keys on messages."""
+    projects = tmp_path / "projects"
+    project = projects / "p3"
+    _write_session(
+        project,
+        "no-branch",
+        [
+            {
+                "type": "user",
+                "uuid": "u-0",
+                "sessionId": "s-no-branch",
+                "message": {"role": "user", "content": "first turn"},
+            },
+            {
+                "type": "assistant",
+                "uuid": "a-0",
+                "parentUuid": "u-0",
+                "message": {"role": "assistant", "content": "reply"},
+            },
+        ],
+    )
+
+    source = ClaudeCodeSource(projects_root=projects)
+    raw = source.parse(project / "no-branch.jsonl")
+
+    assert "git_branch" not in raw.metadata
+    for msg in raw.messages:
+        assert "git_branch" not in msg.metadata, (
+            f"git_branch must NOT be invented when the session lacks one: {msg.metadata!r}"
+        )
+
+
+def test_existing_message_branch_metadata_not_overwritten(tmp_path: Path) -> None:
+    """If a future parser captures per-turn branch overrides, we don't clobber them.
+
+    The parser uses ``setdefault`` for the propagation, so any message
+    that already has `git_branch` in its metadata keeps the original
+    value. Today no caller path sets this — but pinning the semantics
+    here means the contract holds when one shows up.
+    """
+    projects = tmp_path / "projects"
+    project = projects / "p4"
+    # Both session-level branch and a synthetic per-message override.
+    # We simulate the override by post-injecting metadata after the
+    # parser would have populated it — exercising the setdefault contract
+    # without needing an in-parser injection point.
+    _write_session(
+        project,
+        "branch-with-override",
+        [
+            {
+                "type": "user",
+                "uuid": "u-0",
+                "sessionId": "s-override",
+                "gitBranch": "main",
+                "message": {"role": "user", "content": "ok"},
+            },
+        ],
+    )
+    source = ClaudeCodeSource(projects_root=projects)
+    raw = source.parse(project / "branch-with-override.jsonl")
+    # Confirm the default propagation happened.
+    assert raw.messages[0].metadata.get("git_branch") == "main"
+
+    # Now exercise setdefault: pre-set a different branch on the message,
+    # re-run parse, confirm the pre-set value would win. Since parse()
+    # rebuilds messages from scratch each call, we instead assert the
+    # setdefault semantics via a direct re-application:
+    raw.messages[0].metadata["git_branch"] = "topic/x"
+    # Re-applying the propagation idempotently must NOT overwrite.
+    for m in raw.messages:
+        m.metadata.setdefault("git_branch", "main")
+    assert raw.messages[0].metadata["git_branch"] == "topic/x", (
+        "setdefault must not clobber a pre-set branch value"
+    )

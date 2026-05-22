@@ -88,6 +88,15 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   RFC `rfc-source-provenance-git-and-lines` (P0); the helper will
   be wired into `FilesystemSource` + `ClaudeCodeSource` and through
   to per-chunk metadata in subsequent PRs.
+- `ClaudeCodeSource` now propagates the session-level `git_branch`
+  (captured from the JSONL session file's `gitBranch` field) onto
+  every `RawMessage.metadata` entry under the key `git_branch`. The
+  fan-out is a post-process step after the parse loop, so even
+  messages whose JSONL line predates the line that carries
+  `gitBranch` still receive the value. Uses `setdefault` so any
+  future per-turn branch override is preserved. Foundation for the
+  per-chunk `git_branch` provenance column landing in subsequent
+  RFC `rfc-source-provenance-git-and-lines` PRs.
 
 ## [0.1.0b7] - 2026-05-20
 
