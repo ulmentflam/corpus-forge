@@ -130,8 +130,13 @@ def test_missing_mcp_extra_shows_install_hint(monkeypatch) -> None:
     class _MissingFinder:
         def find_spec(self, name, path=None, target=None):
             if name == "mcp" or name.startswith("mcp."):
-                raise ModuleNotFoundError(f"No module named {name!r}")
+                # Match how CPython's import machinery raises this so
+                # exc.name is populated — the cli's pre-flight uses
+                # exc.name == "mcp" to distinguish "extra not installed"
+                # from "import of `mcp`'s own deps failed."
+                raise ModuleNotFoundError(f"No module named {name!r}", name=name)
             # Defer to other finders for everything else.
+            return None
 
     finder = _MissingFinder()
     sys.meta_path.insert(0, finder)

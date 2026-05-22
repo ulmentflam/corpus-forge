@@ -962,7 +962,7 @@ def status(
         config = Config.load()
     except FileNotFoundError:
         ui_warn("No configuration found; run `corpus-forge setup` to create one.")
-        raise typer.Exit() from None
+        raise typer.Exit(code=2) from None
     backend = None
     with suppress(Exception):
         backend = _get_backend(config)
@@ -1032,7 +1032,7 @@ def pull(
         config = Config.load()
     except FileNotFoundError:
         ui_warn("No configuration found; run `corpus-forge setup` to create one.")
-        raise typer.Exit() from None
+        raise typer.Exit(code=2) from None
     try:
         backend = _get_backend(config)
         from corpus_forge.ingest import _instantiate_source
@@ -1075,7 +1075,7 @@ def push(
         config = Config.load()
     except FileNotFoundError:
         ui_warn("No configuration found; run `corpus-forge setup` to create one.")
-        raise typer.Exit() from None
+        raise typer.Exit(code=2) from None
     try:
         backend = _get_backend(config)
         from corpus_forge.ingest import _instantiate_source
@@ -1148,7 +1148,7 @@ def history(
         config = Config.load()
     except FileNotFoundError:
         ui_warn("No configuration found; run `corpus-forge setup` to create one.")
-        raise typer.Exit() from None
+        raise typer.Exit(code=2) from None
     try:
         backend = _get_backend(config)
         rows = backend._execute(
@@ -1776,7 +1776,13 @@ def mcp_serve(
     # inside `_serve_stdio_async` fires its ModuleNotFoundError.
     try:
         import mcp as _mcp  # noqa: F401  — pre-flight only; serve_stdio re-imports
-    except ImportError:
+    except ModuleNotFoundError as exc:
+        # Only swallow the case where `mcp` itself is missing. A real import
+        # failure inside `mcp` or one of its transitive deps (e.g. a broken
+        # `mcp.shared.*` module) must propagate so the user sees the actual
+        # traceback instead of a misleading "install the extra" hint.
+        if exc.name != "mcp":
+            raise
         # Escape the brackets in `[mcp]` so Rich markup doesn't eat the
         # extras specifier — without the escape Rich treats `[mcp]` as an
         # unknown style tag and silently drops it, leaving the user with

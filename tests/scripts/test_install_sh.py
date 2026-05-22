@@ -78,7 +78,7 @@ def _extract_handoff_body() -> str:
 
 HANDOFF_HARNESS_PREAMBLE = textwrap.dedent(
     """\
-    set -uo pipefail
+    set -euo pipefail
     info()  { printf '%s\\n' "INFO: $*"; }
     ok()    { printf '%s\\n' "OK:   $*"; }
     warn()  { printf '%s\\n' "WARN: $*"; }
@@ -93,7 +93,16 @@ def _run_handoff(
 ) -> subprocess.CompletedProcess[str]:
     """Run the extracted handoff with a controlled PATH and env."""
     body = _extract_handoff_body()
-    script = HANDOFF_HARNESS_PREAMBLE + body
+    # Wrap the extracted body in a function so `local` declarations remain
+    # valid (the body is the inside of `__cf_post_install_handoff() { ... }`
+    # in install.sh). Running the body at top-level would error out as soon
+    # as `local` is encountered under `set -e`.
+    script = (
+        HANDOFF_HARNESS_PREAMBLE
+        + "__cf_post_install_handoff() {\n"
+        + body
+        + "\n}\n__cf_post_install_handoff\n"
+    )
     safe_path = f"{bin_dir}:/usr/bin:/bin"
     env = {"PATH": safe_path, "HOME": str(bin_dir.parent)}
     if extra_env:

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     corpus-forge installer for Windows.
 
@@ -306,7 +306,11 @@ if (Get-Command corpus-forge -ErrorAction SilentlyContinue) {
     # --non-interactive the wizard reprompts on stdin this script has
     # already consumed (or was never a TTY when piped via
     # ``iwr | iex``), silently discarding the user's answers.
+    $LASTEXITCODE = 0
     corpus-forge setup --non-interactive
+    if ($LASTEXITCODE -ne 0) {
+        Write-Fail "corpus-forge setup failed (exit $LASTEXITCODE). Fix the reported error and re-run the installer."
+    }
 
     # Run schema migrations so first-run `ingest`/`embed` doesn't fail
     # on an empty DB. Tolerate failure (Postgres unreachable, etc.) —
@@ -332,7 +336,7 @@ if (Get-Command corpus-forge -ErrorAction SilentlyContinue) {
         Remove-Item -Path $migrateLog -ErrorAction SilentlyContinue
     }
 } else {
-    Write-Warn2 "corpus-forge not on PATH yet. Open a new PowerShell and run ``corpus-forge setup && corpus-forge migrate``."
+    Write-Warn2 "corpus-forge not on PATH yet. Open a new PowerShell and run ``corpus-forge setup ; corpus-forge migrate``."
 }
 
 Write-Host ''
