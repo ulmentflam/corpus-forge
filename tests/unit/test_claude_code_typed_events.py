@@ -525,20 +525,44 @@ def test_git_branch_absent_means_no_propagation(tmp_path: Path) -> None:
         )
 
 
-def test_existing_message_branch_metadata_not_overwritten(tmp_path: Path) -> None:
-    """If a future parser captures per-turn branch overrides, we don't clobber them.
+def test_existing_message_branch_metadata_not_overwritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If a future parser captures per-turn branch overrides, the propagation
+    pass must not clobber them.
 
-    The parser uses ``setdefault`` for the propagation, so any message
-    that already has `git_branch` in its metadata keeps the original
-    value. Today no caller path sets this — but pinning the semantics
-    here means the contract holds when one shows up.
+    Approach: monkeypatch ``corpus_forge.sources.claude_code.RawMessage`` with
+    a subclass whose ``__init__`` pre-seeds ``metadata["git_branch"] =
+    "topic/x"``. When ``ClaudeCodeSource.parse()`` constructs messages,
+    they'll carry that pre-seeded value going into the post-loop
+    propagation. The parser's ``setdefault`` must preserve "topic/x" rather
+    than overwrite it with the session-level "main".
+
+    This exercises the real ``parse()`` code path (the fan-out + setdefault
+    loop) rather than re-implementing the setdefault check at the test
+    layer.
     """
+    from corpus_forge.sources import claude_code as claude_code_module
+    from corpus_forge.sources.base import RawMessage
+
+    class _PreSeededRawMessage(RawMessage):
+        """Inject ``git_branch = "topic/x"`` into every message's metadata.
+
+        Simulates the future state where the parser captures per-turn
+        ``gitBranch`` overrides into ``msg_metadata`` before the post-loop
+        fan-out. By pre-seeding here, the test reaches the same
+        ``setdefault`` line in ``parse()`` that the real per-turn capture
+        would.
+        """
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+            self.metadata["git_branch"] = "topic/x"
+
+    monkeypatch.setattr(claude_code_module, "RawMessage", _PreSeededRawMessage)
+
     projects = tmp_path / "projects"
     project = projects / "p4"
-    # Both session-level branch and a synthetic per-message override.
-    # We simulate the override by post-injecting metadata after the
-    # parser would have populated it — exercising the setdefault contract
-    # without needing an in-parser injection point.
     _write_session(
         project,
         "branch-with-override",
@@ -547,24 +571,22 @@ def test_existing_message_branch_metadata_not_overwritten(tmp_path: Path) -> Non
                 "type": "user",
                 "uuid": "u-0",
                 "sessionId": "s-override",
-                "gitBranch": "main",
+                "gitBranch": "main",  # session-level
                 "message": {"role": "user", "content": "ok"},
             },
         ],
     )
     source = ClaudeCodeSource(projects_root=projects)
     raw = source.parse(project / "branch-with-override.jsonl")
-    # Confirm the default propagation happened.
-    assert raw.messages[0].metadata.get("git_branch") == "main"
 
-    # Now exercise setdefault: pre-set a different branch on the message,
-    # re-run parse, confirm the pre-set value would win. Since parse()
-    # rebuilds messages from scratch each call, we instead assert the
-    # setdefault semantics via a direct re-application:
-    raw.messages[0].metadata["git_branch"] = "topic/x"
-    # Re-applying the propagation idempotently must NOT overwrite.
-    for m in raw.messages:
-        m.metadata.setdefault("git_branch", "main")
+    # Session-level branch lands on the conversation metadata as documented.
+    assert raw.metadata.get("git_branch") == "main"
+    # Per-message branch was pre-seeded by the monkeypatched RawMessage and
+    # must survive the parser's setdefault propagation — the literal point
+    # of using setdefault.
+    assert len(raw.messages) == 1
     assert raw.messages[0].metadata["git_branch"] == "topic/x", (
-        "setdefault must not clobber a pre-set branch value"
+        "ClaudeCodeSource.parse() clobbered the pre-existing per-message "
+        "git_branch with the session-level value; setdefault is the "
+        "contract that prevents this"
     )

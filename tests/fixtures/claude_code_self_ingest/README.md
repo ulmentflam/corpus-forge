@@ -7,7 +7,7 @@ It backs `tests/integration/test_claude_code_self_ingest_e2e.py`.
 
 ## Layout
 
-```
+```text
 projects/
   -home-test-user-workspace-corpus-forge/
     fed1bafe-0001-4000-8000-000000000001.jsonl

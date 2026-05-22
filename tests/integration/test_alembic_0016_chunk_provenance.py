@@ -153,6 +153,9 @@ class TestChunkProvenanceColumnsSqlite:
             "message_id",
             "chunk_index",
             "text",
+            "heading",
+            "role",
+            "token_count",
             "metadata",
         }
         missing = required_pre_existing - set(cols)

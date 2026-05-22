@@ -262,17 +262,31 @@ class TestSelfIngestE2E:
         # Messages that are pure tool_use have empty `content` by design —
         # the text part is the tool call, surfaced via `tool_calls`. The
         # legitimate check is: any empty-content row must carry a
-        # tool_calls or tool_results payload (or be a `[shorthand]`
-        # placeholder from the parser).
+        # non-empty tool_calls or tool_results payload. SQLite stores
+        # these as JSON-serialised TEXT, so we decode before checking —
+        # `"[]"` is a truthy string but an empty payload, and we want to
+        # reject that shape as a regression.
+        def _decoded(val: object) -> list:
+            if val is None:
+                return []
+            if isinstance(val, str):
+                return json.loads(val)
+            assert isinstance(val, list), (
+                f"expected JSON string or list for tool field, got {type(val).__name__}"
+            )
+            return val
+
         for m in msgs:
             if not m["content"]:
-                assert m["tool_calls"] or m["tool_results"], (
+                tc = _decoded(m["tool_calls"])
+                tr = _decoded(m["tool_results"])
+                assert tc or tr, (
                     f"empty-content message {m['id']} has neither tool_calls "
                     f"nor tool_results — would be a permission-mode leak: {m!r}"
                 )
 
-        has_tool_calls = any(m["tool_calls"] for m in msgs)
-        has_tool_results = any(m["tool_results"] for m in msgs)
+        has_tool_calls = any(_decoded(m["tool_calls"]) for m in msgs)
+        has_tool_results = any(_decoded(m["tool_results"]) for m in msgs)
         assert has_tool_calls, "no message landed with non-empty tool_calls"
         assert has_tool_results, "no message landed with non-empty tool_results"
 
