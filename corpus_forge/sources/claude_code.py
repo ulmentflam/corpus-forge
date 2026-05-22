@@ -236,6 +236,17 @@ class ClaudeCodeSource(WatchedSource):
             meta["cwd"] = cwd
         if git_branch is not None:
             meta["git_branch"] = git_branch
+            # Propagate the session-level git_branch down onto each
+            # RawMessage.metadata so the per-message chunker (and the
+            # eventual per-chunk provenance columns from RFC
+            # rfc-source-provenance-git-and-lines) see the branch
+            # without having to climb back to the conversation. The
+            # branch is invariant within a session, so this is a fan-out
+            # of one value rather than a recompute. Skip messages that
+            # already carry a git_branch (in case a future parser
+            # captures per-turn branch overrides).
+            for m in messages:
+                m.metadata.setdefault("git_branch", git_branch)
         if version is not None:
             meta["client_version"] = version
         if last_prompt is not None:

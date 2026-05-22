@@ -122,8 +122,11 @@ Wire into the `@server.list_tools()` registration table alongside
 - [ ] Chunkers populate `file_path` / `line_start` / `line_end`:
       `corpus_forge/chunkers/markdown.py`, `code.py`, `cdc.py`,
       `passthrough.py`.
-- [ ] `ClaudeCodeSource` copies `git_branch` from conversation
-      metadata onto each `RawMessage.metadata`.
+- [x] `ClaudeCodeSource` copies `git_branch` from conversation
+      metadata onto each `RawMessage.metadata`. Post-process fan-out
+      after the parse loop; uses `setdefault` so any future per-turn
+      branch override on a message survives. 4 unit tests in
+      `tests/unit/test_claude_code_typed_events.py`.
 - [ ] New MCP tool `get_source_file_context(chunk_id)` in
       `corpus_forge/mcp/server.py`. Register in the tool list and add
       its dispatch.
