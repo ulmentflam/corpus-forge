@@ -68,6 +68,16 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   command in its WARN detail; (2) a static scan of `cli.py` asserts
   every "No configuration found" message names `setup` and never
   `migrate`.
+- Alembic revision `0016_chunk_provenance` adds five nullable
+  provenance columns to `corpus.chunks` / `chunks`: `file_path`,
+  `line_start`, `line_end`, `git_commit`, `git_branch`. Existing
+  rows survive untouched — the columns stay NULL until the
+  source/chunker re-emits them on the next ingest pass. Postgres
+  path uses `ADD COLUMN IF NOT EXISTS`; SQLite uses a
+  `PRAGMA table_info` probe — both fully idempotent. Foundation
+  for the chunker write paths, backend upsert paths, and MCP
+  `get_source_file_context` tool landing in subsequent RFC
+  `rfc-source-provenance-git-and-lines` PRs.
 
 ## [0.1.0b7] - 2026-05-20
 
