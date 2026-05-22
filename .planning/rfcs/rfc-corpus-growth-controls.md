@@ -1,6 +1,6 @@
 # RFC: Corpus-growth controls — decay, importance sampling, budget gates
 
-Status: accepted
+status: accepted
 **Owner**: nightly (open for any agent to claim)
 **Priority**: P1
 **Depends on**: none

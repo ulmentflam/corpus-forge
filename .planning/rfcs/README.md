@@ -13,13 +13,16 @@ Markdown):
 - Required sections: Status, Owner, Priority, Depends on, Context,
   Goals, Non-goals, Approach, Tasks, Verification, References.
 - Status line sits near the top of each RFC, on its own line, as
-  `Status: accepted` (or `in-progress` / `done`). Important: the
-  whole line MUST be unbolded — Nightly's cascade matches the literal
-  lowercase substring `status: accepted` to decide if an RFC is
-  claimable, and any markdown bold inside the line (e.g. `**Status**:`
-  or `Status: **accepted**`) breaks that match.
+  `status: accepted` (or `in-progress` / `done`). Important: the
+  whole line MUST be unbolded and use lowercase `status:` — Nightly's
+  cascade matches the literal lowercase substring `status: accepted`
+  to decide if an RFC is claimable, and any markdown bold inside the
+  line (e.g. `**Status**:` or `Status: **accepted**`) breaks that
+  match. The matcher applies `.lower()` to the file body so the
+  `accepted` token itself can be any case, but keep the whole line
+  lowercase for consistency with the contract.
 - Other field labels (`**Owner**`, `**Priority**`, `**Depends on**`,
-  …) stay bold as before — only the `Status:` line is special.
+  …) stay bold as before — only the `status:` line is special.
 - Tasks must use Markdown checkboxes (`- [ ] foo`) because the
   cascade scans for unchecked items.
 

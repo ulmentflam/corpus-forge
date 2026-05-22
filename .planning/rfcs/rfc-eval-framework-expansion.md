@@ -1,6 +1,6 @@
 # RFC: Evaluation framework expansion (classifier + chunk quality)
 
-Status: accepted
+status: accepted
 **Owner**: nightly (open for any agent to claim)
 **Priority**: P1
 **Depends on**: none (composes well with `rfc-nlp-data-quality-signals.md`)
