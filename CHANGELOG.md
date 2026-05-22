@@ -68,6 +68,17 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   command in its WARN detail; (2) a static scan of `cli.py` asserts
   every "No configuration found" message names `setup` and never
   `migrate`.
+- `tests/integration/test_claude_code_self_ingest_e2e.py` —
+  full-pipeline E2E coverage for `ClaudeCodeSource`. Drives the
+  parser → conversation chunker → in-memory SQLite backend → fake
+  embedder → `HybridRetriever` round-trip against a real (anonymised)
+  Claude Code session file checked in under
+  `tests/fixtures/claude_code_self_ingest/`. Pins: every parser event
+  type produces the right rows or metadata fold (regression for the
+  PR #29 permission-mode leak bug), session-link wiring fires during
+  full `ingest_one`, retrieval returns chunks for the ingested
+  conversation. Closes the first task of RFC
+  `rfc-claude-code-self-ingest-e2e` (P0).
 
 ## [0.1.0b7] - 2026-05-20
 
