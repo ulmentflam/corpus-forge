@@ -18,6 +18,47 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   `embed`, `analyze`, and several admin verbs. Property-#2 of the
   human-friendly CLI spec (`.planning/tdd/e2e_ux_flows.md`): error
   messages name the broken thing AND the fix.
+- `corpus-forge mcp serve` no longer surfaces a Rich-formatted
+  traceback when the optional `mcp` package isn't installed. A
+  pre-flight `import mcp` in the CLI catches `ImportError` and prints a
+  single-line install hint
+  (`uv tool install 'corpus-forge\[mcp]'` or
+  `pip install 'corpus-forge\[mcp]'`) before exiting 1. The Rich
+  markup escape on `\[mcp]` keeps the extras specifier from being
+  silently eaten as an unknown style tag. Regression test
+  `test_missing_mcp_extra_shows_install_hint`.
+- MCP `tools/call` responses no longer return `isError: true` with an
+  empty content block when a dispatcher throws an uncaught exception.
+  The catch-all wrapper in `corpus_forge.mcp.server._call_tool` now
+  packs the exception's class name and message into a `TextContent`
+  block so real MCP clients (Claude Desktop / Code) surface a useful
+  diagnostic instead of a blank error. Regression test
+  `TestDispatcherExceptionSurface::test_retriever_builder_failure_surfaces_in_content`.
+- Phase M Wave 4 source-nesting bug: doctor's Zotero check no longer
+  silently SKIPs sources declared as `plugin = "zotero"` without an
+  explicit `[datasets.sources.zotero]` block. `DatasetSourceConfig`
+  now default-instantiates `ZoteroSourceConfig()` (local mode, platform-
+  default library path) when `plugin == "zotero"` and the nested block
+  is absent. Three regression tests in
+  `TestZoteroSourceDefault` lock the contract.
+- `install.sh` and `install.ps1` now invoke `corpus-forge migrate`
+  after the setup wizard so a first-run `ingest`/`embed` doesn't fail
+  on an empty DB. The migrate call is failure-tolerant: a non-zero
+  exit (Postgres unreachable at install time, etc.) is logged to a
+  temp file, warned about, and the installer still exits 0 so the
+  user isn't left with a half-installed CLI. The PowerShell path also
+  resets `$LASTEXITCODE` on the warn branch and ends with an explicit
+  `exit 0` so `iwr | iex` callers don't propagate a stale 1.
+- `install.ps1` now always passes `--non-interactive` to
+  `corpus-forge setup` (mirrors the bug-#1 fix in #18 for `install.sh`):
+  the wizard's stdin was already consumed by the PowerShell prompts,
+  so prior re-prompts silently took defaults and discarded user
+  answers.
+- New smoke suite at `tests/scripts/test_install_sh.py` exercises the
+  handoff via a sentinel-extracted `__cf_post_install_handoff` and a
+  stubbed `corpus-forge` on PATH: happy path, migrate-failure path,
+  corpus-forge-missing path, and `CF_CONFIG` propagation. PowerShell
+  mirror test is skipped when `pwsh` isn't on PATH.
 
 ### Added
 

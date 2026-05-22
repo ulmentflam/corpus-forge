@@ -410,6 +410,34 @@ class TestInvalidInputHandling:
         assert result.isError
 
 
+class TestDispatcherExceptionSurface:
+    """Regression: when a dispatcher raises an uncaught exception, the
+    MCP response must carry the exception's text in ``content`` so real
+    clients (Claude Desktop / Code) see a useful error. Previously the
+    SDK turned uncaught exceptions into ``isError: true`` with an empty
+    text block, leaving the user with no diagnostic.
+    """
+
+    def test_retriever_builder_failure_surfaces_in_content(self) -> None:
+        from corpus_forge.mcp.server import build_server
+
+        def _failing_builder():
+            raise RuntimeError("Configuration file not found: /tmp/nope.toml")
+
+        server = build_server(retriever_builder=_failing_builder)
+        result = _call_tool_via_handler(server, "list_datasets", {})
+        assert result.isError, "uncaught dispatcher exception must surface as isError"
+        # The content block must carry the exception text, not be empty.
+        assert result.content, "isError response must have a non-empty content array"
+        first = result.content[0]
+        text = getattr(first, "text", "")
+        assert text, "isError content must include the exception text"
+        assert "Configuration file not found" in text, (
+            f"error content should carry the original exception message; got: {text!r}"
+        )
+        assert "RuntimeError" in text, "error content should name the exception class for triage"
+
+
 class TestImportSurface:
     def test_server_module_import_does_not_construct_retriever(self) -> None:
         """Importing the server module must not construct a Retriever."""
