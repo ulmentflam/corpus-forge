@@ -50,11 +50,67 @@ _LEVEL_STYLE: dict[str, str] = {
     "CRITICAL": "error",
 }
 
+# Severity ordering for ``--level`` filtering. Mirrors stdlib
+# ``logging`` numeric levels — higher value = more severe.
+# ``WARN`` is an alias for ``WARNING`` (stdlib accepts both spellings
+# from older code; the log format emits ``WARNING``).
+_LEVEL_RANK: dict[str, int] = {
+    "DEBUG": 10,
+    "INFO": 20,
+    "WARN": 30,
+    "WARNING": 30,
+    "ERROR": 40,
+    "CRITICAL": 50,
+}
+
 # Default Wave-1 log-format prefix shape:
 #   2026-05-18 12:34:56.789 [INFO   ] corpus_forge.ingest.scan: msg
 _LOG_LINE_RE = re.compile(
     r"^(?P<ts>\S+ \S+) \[(?P<level>[A-Z]+)\s*\]\s+(?P<logger>\S+): (?P<msg>.*)$"
 )
+
+
+def _passes_level_filter(line: str, min_level: int | None) -> bool:
+    """Return True if *line* clears the configured minimum level.
+
+    Three cases:
+
+    * ``min_level is None`` — no filter, everything passes.
+    * Line matches ``_LOG_LINE_RE`` — compare the parsed level's rank
+      against ``min_level``. Unknown levels (a hypothetical
+      ``[CUSTOM]`` token) get rank 0 so they pass through when the
+      user filters at INFO or above.
+    * Line is unparseable (tracebacks, ASCII art, ``print()`` output)
+      — drop it. A user who asked for ``--level error`` does not want
+      the unstructured noise that doesn't carry a level token; if they
+      did, they wouldn't be filtering.
+    """
+    if min_level is None:
+        return True
+    m = _LOG_LINE_RE.match(line.rstrip("\n"))
+    if not m:
+        return False
+    level = m.group("level").upper()
+    return _LEVEL_RANK.get(level, 0) >= min_level
+
+
+def _resolve_level_arg(level: str | None) -> int | None:
+    """Map a user-supplied ``--level`` string to a stdlib-rank int.
+
+    Returns ``None`` when no level was passed. Raises
+    ``typer.BadParameter`` when the user supplied an unknown token —
+    surfaces as a clean CLI error rather than a silent no-op.
+    """
+    if level is None:
+        return None
+    rank = _LEVEL_RANK.get(level.strip().upper())
+    if rank is None:
+        accepted = ", ".join(sorted({k.lower() for k in _LEVEL_RANK}))
+        raise typer.BadParameter(
+            f"unknown log level {level!r}; accepted: {accepted}",
+            param_hint="--level",
+        )
+    return rank
 
 
 # ── Helpers — pure, testable without spawning the CLI ────────────────
@@ -100,12 +156,22 @@ def _tail_lines(path: Path, n: int) -> list[str]:
     return lines[-n:] if n > 0 else lines
 
 
-def _tail_follow(path: Path, *, n_initial: int = 200, poll_seconds: float = 0.25) -> int:
+def _tail_follow(
+    path: Path,
+    *,
+    n_initial: int = 200,
+    poll_seconds: float = 0.25,
+    min_level: int | None = None,
+) -> int:
     """Print the last ``n_initial`` lines then poll for new bytes.
 
     Exits cleanly (``return 0``) on :class:`KeyboardInterrupt` so SIGINT
     from a user (or a test thread) is the documented "stop watching"
     gesture.  Returns the suggested CLI exit code.
+
+    When *min_level* is set, lines below that severity are dropped —
+    both from the initial tail and from the streaming poll. See
+    :func:`_passes_level_filter` for the unparseable-line semantics.
     """
 
     if not path.exists():
@@ -114,7 +180,8 @@ def _tail_follow(path: Path, *, n_initial: int = 200, poll_seconds: float = 0.25
 
     # Print the existing tail first.
     for line in _tail_lines(path, n_initial):
-        ui_console.print(_format_line(line))
+        if _passes_level_filter(line, min_level):
+            ui_console.print(_format_line(line))
 
     # Open the file fresh and seek to the end so we only stream new bytes.
     try:
@@ -130,7 +197,8 @@ def _tail_follow(path: Path, *, n_initial: int = 200, poll_seconds: float = 0.25
                     # next write).
                     while "\n" in buffer:
                         line, _, buffer = buffer.partition("\n")
-                        ui_console.print(_format_line(line))
+                        if _passes_level_filter(line, min_level):
+                            ui_console.print(_format_line(line))
                 else:
                     time.sleep(poll_seconds)
     except KeyboardInterrupt:
@@ -171,11 +239,24 @@ def logs_tail_cmd(
         "-f",
         help="Keep printing new lines as they arrive (250 ms poll).",
     ),
+    level: str = typer.Option(
+        None,
+        "--level",
+        help=(
+            "Minimum severity to print: debug, info, warn, warning, "
+            "error, critical (case-insensitive). Lines without a "
+            "parseable level (tracebacks, prints) are suppressed when "
+            "this is set."
+        ),
+    ),
 ) -> None:
     """Print the last N lines of ``<component>.log``.
 
     With ``--follow``, the command stays attached and polls every
     250 ms for new bytes.  Send SIGINT (Ctrl+C) to exit cleanly.
+
+    With ``--level <name>``, only lines at or above the named severity
+    are printed (in both single-shot and follow modes).
     """
 
     log_path = _component_log_path(component)
@@ -183,13 +264,16 @@ def logs_tail_cmd(
         ui_warn(f"{log_path} does not exist yet")
         return
 
+    min_level = _resolve_level_arg(level)
+
     if follow:
         # Returns 0 on KeyboardInterrupt.
-        _tail_follow(log_path, n_initial=n)
+        _tail_follow(log_path, n_initial=n, min_level=min_level)
         return
 
     for line in _tail_lines(log_path, n):
-        ui_console.print(_format_line(line))
+        if _passes_level_filter(line, min_level):
+            ui_console.print(_format_line(line))
 
 
 # ── Verb: clear ─────────────────────────────────────────────────────

@@ -114,6 +114,126 @@ class TestLogsTail:
         assert "this line" in result.output
 
 
+# ─── logs tail --level (severity filter) ────────────────────────────────
+
+
+class TestLogsTailLevelFilter:
+    """``--level`` drops lines below the threshold (incl. unparseable lines)."""
+
+    @staticmethod
+    def _mixed_log_lines() -> list[str]:
+        return [
+            "2026-05-18 12:00:00 [DEBUG  ] cli: debug message",
+            "2026-05-18 12:00:01 [INFO   ] cli: info message",
+            "2026-05-18 12:00:02 [WARNING] cli: warning message",
+            "2026-05-18 12:00:03 [ERROR  ] cli: error message",
+            "2026-05-18 12:00:04 [CRITICAL] cli: critical message",
+        ]
+
+    def test_no_level_arg_prints_everything(self, isolated_log_dir: Path) -> None:
+        from corpus_forge.diagnostics.logs import logs_app
+
+        (isolated_log_dir / "cli.log").write_text("\n".join(self._mixed_log_lines()) + "\n")
+        runner = CliRunner()
+        result = runner.invoke(logs_app, ["tail"])
+        assert result.exit_code == 0
+        for keyword in ("debug message", "info message", "warning message", "error message"):
+            assert keyword in result.output
+
+    def test_level_warn_drops_debug_and_info(self, isolated_log_dir: Path) -> None:
+        from corpus_forge.diagnostics.logs import logs_app
+
+        (isolated_log_dir / "cli.log").write_text("\n".join(self._mixed_log_lines()) + "\n")
+        runner = CliRunner()
+        result = runner.invoke(logs_app, ["tail", "--level", "warn"])
+        assert result.exit_code == 0
+        assert "debug message" not in result.output
+        assert "info message" not in result.output
+        assert "warning message" in result.output
+        assert "error message" in result.output
+        assert "critical message" in result.output
+
+    def test_level_error_drops_warning(self, isolated_log_dir: Path) -> None:
+        from corpus_forge.diagnostics.logs import logs_app
+
+        (isolated_log_dir / "cli.log").write_text("\n".join(self._mixed_log_lines()) + "\n")
+        runner = CliRunner()
+        result = runner.invoke(logs_app, ["tail", "--level", "error"])
+        assert result.exit_code == 0
+        assert "warning message" not in result.output
+        assert "error message" in result.output
+        assert "critical message" in result.output
+
+    def test_level_filter_is_case_insensitive(self, isolated_log_dir: Path) -> None:
+        from corpus_forge.diagnostics.logs import logs_app
+
+        (isolated_log_dir / "cli.log").write_text("\n".join(self._mixed_log_lines()) + "\n")
+        runner = CliRunner()
+        result = runner.invoke(logs_app, ["tail", "--level", "ERROR"])
+        assert result.exit_code == 0
+        assert "warning message" not in result.output
+        assert "error message" in result.output
+
+    def test_warning_alias_accepted(self, isolated_log_dir: Path) -> None:
+        """Both ``warn`` and ``warning`` resolve to the same threshold."""
+        from corpus_forge.diagnostics.logs import logs_app
+
+        (isolated_log_dir / "cli.log").write_text("\n".join(self._mixed_log_lines()) + "\n")
+        runner = CliRunner()
+        for token in ("warn", "warning", "WARNING"):
+            result = runner.invoke(logs_app, ["tail", "--level", token])
+            assert result.exit_code == 0, f"token {token!r} returned exit {result.exit_code}"
+            assert "info message" not in result.output, f"token {token!r} did not filter info"
+            assert "warning message" in result.output
+
+    def test_unknown_level_rejected_with_clean_error(self, isolated_log_dir: Path) -> None:
+        from corpus_forge.diagnostics.logs import logs_app
+
+        (isolated_log_dir / "cli.log").write_text("2026-05-18 12:00:00 [INFO   ] cli: x\n")
+        runner = CliRunner()
+        result = runner.invoke(logs_app, ["tail", "--level", "trace"])
+        # Typer's BadParameter → non-zero exit + 'Invalid value' in output.
+        assert result.exit_code != 0
+        # The error message names the bad token and lists the accepted set.
+        assert "trace" in result.output
+        # At least one of the documented levels appears in the accepted list.
+        assert "info" in result.output or "warning" in result.output
+
+    def test_level_drops_unparseable_lines(self, isolated_log_dir: Path) -> None:
+        """A user who asks for ``--level error`` wants only error lines.
+
+        Tracebacks / ASCII / ``print()`` output don't carry a level
+        token; per the documented contract they're suppressed when the
+        filter is active.
+        """
+        from corpus_forge.diagnostics.logs import logs_app
+
+        (isolated_log_dir / "cli.log").write_text(
+            "2026-05-18 12:00:00 [ERROR  ] cli: real error\n"
+            '  File "foo.py", line 1, in <module>\n'
+            "    raise RuntimeError('x')\n"
+            "RuntimeError: x\n"
+        )
+        runner = CliRunner()
+        result = runner.invoke(logs_app, ["tail", "--level", "error"])
+        assert result.exit_code == 0
+        assert "real error" in result.output
+        # Traceback frame lines (no [LEVEL] token) are dropped.
+        assert "RuntimeError: x" not in result.output
+
+    def test_level_filter_helper_independent_of_cli(self) -> None:
+        """``_passes_level_filter`` is exposed for non-CLI callers."""
+        from corpus_forge.diagnostics.logs import _LEVEL_RANK, _passes_level_filter
+
+        info_line = "2026-05-18 12:00:00 [INFO   ] cli: hi"
+        error_line = "2026-05-18 12:00:00 [ERROR  ] cli: bad"
+
+        assert _passes_level_filter(info_line, None) is True
+        assert _passes_level_filter(info_line, _LEVEL_RANK["INFO"]) is True
+        assert _passes_level_filter(info_line, _LEVEL_RANK["WARNING"]) is False
+        assert _passes_level_filter(error_line, _LEVEL_RANK["WARNING"]) is True
+
+
 # ─── logs tail --follow (SIGINT) ────────────────────────────────────────
 
 

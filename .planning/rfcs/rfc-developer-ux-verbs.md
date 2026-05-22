@@ -116,9 +116,19 @@ MCP tool becomes available; no extra work in this RFC.
 
 ## Tasks
 
-- [ ] `corpus_forge/admin/logs.py` — `tail` / `follow` / level filter
+- [x] `corpus_forge/admin/logs.py` — `tail` / `follow` / level filter
       against the rotating-file log path from
-      `corpus_forge/logging_config.py`.
+      `corpus_forge/logging_config.py`. **Lives at
+      `corpus_forge/diagnostics/logs.py`** (not the RFC's
+      `admin/` path) — that's where the existing `logs path` / `tail`
+      / `clear` verbs were already wired in Phase L Wave 6. This task
+      finished the trio by adding the `--level <name>` filter
+      (case-insensitive, supports `warn` / `warning` aliases) that
+      drops lines below the named severity in both single-shot and
+      `--follow` modes. Unparseable lines (tracebacks, `print()`)
+      are dropped when a level filter is active — the user who asks
+      for `--level error` does not want the unstructured noise.
+      8 new tests in `tests/diagnostics/test_logs_subcommand.py`.
 - [ ] `corpus_forge/admin/stats.py` — per-dataset + aggregate row
       counts and on-disk size estimate (reuse
       `corpus_forge/estimate.py` sizing model).
