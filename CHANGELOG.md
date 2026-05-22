@@ -8,6 +8,8 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+## [0.1.0b9] - 2026-05-22
+
 ### Fixed
 
 - `corpus-forge ingest --once` no longer crashes with
