@@ -387,6 +387,16 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   block continue to validate and behave identically. Foundation
   for the `prune` / `estimate sync` / per-source cap verbs landing
   in subsequent RFC PRs.
+- `corpus_forge.eval._schema.EvalOutput` — shared output envelope
+  for every `corpus-forge eval *` subcommand. Pydantic v2 model with
+  six top-level keys (`eval_kind` ∈ {classifier, quality, retrieval,
+  regression}, `dataset`, `git_commit`, `ts`, `metrics`, `config`).
+  `extra='forbid'` so future evaluators can't accidentally widen the
+  envelope. Foundation task of RFC `rfc-eval-framework-expansion`
+  (P1); subsequent PRs add `classifier_accuracy.py`,
+  `chunk_quality.py`, and `regression.py` which marshal their
+  results through this envelope so downstream dashboards see one
+  consistent shape.
 
 ## [0.1.0b7] - 2026-05-20
 
