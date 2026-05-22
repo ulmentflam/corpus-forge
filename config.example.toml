@@ -42,6 +42,9 @@ kind = "chat"
   [[datasets.sources]]
   plugin            = "claude_code"
   projects_root     = "~/.claude/projects"
+  # Optional: also ingest the raw user-prompt log (incl. pasted content)
+  # at ~/.claude/history.jsonl as separate history-only conversations.
+  history_path      = "~/.claude/history.jsonl"
   include_subagents = true
   chunker           = "conversation"
   chunker_config    = { mode = "per_message", role_prefix = true }
@@ -54,6 +57,57 @@ kind = "chat"
   storage_root   = "~/.local/share/opencode/storage"
   chunker        = "conversation"
   chunker_config = { mode = "sliding_window", window_turns = 6, stride_turns = 3 }
+
+# Gemini CLI chats — JSON lists under
+# ``<chats_root>/<projectHash>/chats/*.json``. Use the default
+# ``~/.gemini/tmp`` unless your install relocated it.
+[[datasets]]
+name = "gemini-cli"
+kind = "chat"
+  [[datasets.sources]]
+  plugin         = "gemini_cli"
+  chats_root     = "~/.gemini/tmp"
+  chunker        = "conversation"
+  chunker_config = { mode = "per_message", role_prefix = true }
+
+# OpenAI Codex CLI session rollouts. Modern builds shard sessions under
+# ``<sessions_root>/YYYY/MM/DD/rollout-*.jsonl``; older flat layouts are
+# also supported. Session metadata (``cwd``, ``cli_version``, ``model``)
+# is folded into conversation metadata.
+[[datasets]]
+name = "codex-cli"
+kind = "chat"
+  [[datasets.sources]]
+  plugin         = "codex_cli"
+  sessions_root  = "~/.codex/sessions"
+  chunker        = "conversation"
+  chunker_config = { mode = "per_message", role_prefix = true }
+
+# ChatGPT data-export bundle. Point ``export_root`` at the unzipped
+# directory containing ``conversations.json``; ``scan()`` linearises each
+# branch from the leaf node back to the root, then yields one
+# RawConversation per conversation object.
+# [[datasets]]
+# name = "chatgpt-export"
+# kind = "chat"
+#   [[datasets.sources]]
+#   plugin         = "chatgpt_export"
+#   export_root    = "~/Downloads/chatgpt-export-2026-05-21"
+#   chunker        = "conversation"
+#   chunker_config = { mode = "per_message", role_prefix = true }
+
+# Generic ``{role, content, ts}`` JSONL chat ingest. Use this for any
+# chat export already in the canonical shape (e.g. internal evals,
+# third-party tools). ``path`` may be a directory of ``*.jsonl`` files
+# or a single file.
+# [[datasets]]
+# name = "team-chat-archive"
+# kind = "chat"
+#   [[datasets.sources]]
+#   plugin         = "jsonl_chat"
+#   path           = "~/archive/team-chat"
+#   chunker        = "conversation"
+#   chunker_config = { mode = "sliding_window", window_turns = 6, stride_turns = 3 }
 
 # ─────────────────────────────────────────────────────────────────────
 # Phase D — Multi-format ingest example
