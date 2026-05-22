@@ -301,14 +301,44 @@ if (-not ($env:PATH -split ';' | Where-Object { $_ -eq $localBin })) {
 
 Write-Info 'Launching the post-install setup wizard'
 if (Get-Command corpus-forge -ErrorAction SilentlyContinue) {
-    if ($env:CF_NON_INTERACTIVE -eq '1') {
-        corpus-forge setup --non-interactive
+    # ALWAYS pass --non-interactive (mirrors the install.sh fix). The
+    # CF_* env vars are already populated above. If we omit
+    # --non-interactive the wizard reprompts on stdin this script has
+    # already consumed (or was never a TTY when piped via
+    # ``iwr | iex``), silently discarding the user's answers.
+    corpus-forge setup --non-interactive
+
+    # Run schema migrations so first-run `ingest`/`embed` doesn't fail
+    # on an empty DB. Tolerate failure (Postgres unreachable, etc.) —
+    # warn and continue so the user isn't left with a half-installed CLI.
+    # $ErrorActionPreference = 'Stop' is in force, so we wrap in
+    # try/catch AND also inspect $LASTEXITCODE to cover native-exe
+    # non-zero returns that don't throw.
+    $migrateLog = New-TemporaryFile
+    $migrateFailed = $false
+    $LASTEXITCODE = 0
+    try {
+        & corpus-forge migrate *>&1 | Out-File -FilePath $migrateLog -Encoding utf8
+        if ($LASTEXITCODE -ne 0) { $migrateFailed = $true }
+    } catch {
+        Add-Content -Path $migrateLog -Value $_.Exception.Message
+        $migrateFailed = $true
+        $LASTEXITCODE = 0
+    }
+    if ($migrateFailed) {
+        Write-Warn2 "corpus-forge migrate failed — see $migrateLog for details. Re-run ``corpus-forge migrate`` once your database is reachable."
+        $LASTEXITCODE = 0
     } else {
-        corpus-forge setup
+        Remove-Item -Path $migrateLog -ErrorAction SilentlyContinue
     }
 } else {
-    Write-Warn2 "corpus-forge not on PATH yet. Open a new PowerShell and run ``corpus-forge setup``."
+    Write-Warn2 "corpus-forge not on PATH yet. Open a new PowerShell and run ``corpus-forge setup && corpus-forge migrate``."
 }
 
 Write-Host ''
 Write-Ok 'Done. Run `corpus-forge --help` to get started.'
+
+# Explicit exit 0 — the migrate failure path may leave $LASTEXITCODE
+# non-zero on some PS versions; this guarantees `iwr | iex` callers
+# don't propagate a stale 1.
+exit 0
