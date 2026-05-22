@@ -270,7 +270,12 @@ class TestSelfIngestE2E:
             if val is None:
                 return []
             if isinstance(val, str):
-                return json.loads(val)
+                parsed = json.loads(val)
+                assert isinstance(parsed, list), (
+                    f"expected JSON-encoded list for tool field, got "
+                    f"{type(parsed).__name__} from {val!r}"
+                )
+                return parsed
             assert isinstance(val, list), (
                 f"expected JSON string or list for tool field, got {type(val).__name__}"
             )
