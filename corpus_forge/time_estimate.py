@@ -31,6 +31,7 @@ Surfaces:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -60,15 +61,15 @@ _DEFAULT_SCAN_SEC_PER_FILE = 1.0e-4  # ~10 k files/sec
 #: input. PDF and audio/video dominate; markdown and code are effectively
 #: free relative to embedding.
 _DEFAULT_EXTRACT_SEC_PER_BYTE: dict[str, float] = {
-    "markdown": 2.0e-8,   # ~50 MB/s
-    "pdf": 1.0e-6,        # ~1 MB/s (digital PDFs; OCR escalation is slower)
-    "code": 5.0e-8,       # ~20 MB/s (tree-sitter is moderately fast)
-    "notebook": 1.0e-7,   # ~10 MB/s (JSON parse + cell unwrap)
-    "csv": 3.3e-8,        # ~30 MB/s
-    "structured": 3.3e-8, # ~30 MB/s
-    "subtitle": 5.0e-8,   # ~20 MB/s
-    "image": 5.0e-7,      # ~2 MB/s (decode + optional OCR fast-path)
-    "audio_video": 1.0e-5, # ~100 KB/s (whisper dominates — VERY rough)
+    "markdown": 2.0e-8,  # ~50 MB/s
+    "pdf": 1.0e-6,  # ~1 MB/s (digital PDFs; OCR escalation is slower)
+    "code": 5.0e-8,  # ~20 MB/s (tree-sitter is moderately fast)
+    "notebook": 1.0e-7,  # ~10 MB/s (JSON parse + cell unwrap)
+    "csv": 3.3e-8,  # ~30 MB/s
+    "structured": 3.3e-8,  # ~30 MB/s
+    "subtitle": 5.0e-8,  # ~20 MB/s
+    "image": 5.0e-7,  # ~2 MB/s (decode + optional OCR fast-path)
+    "audio_video": 1.0e-5,  # ~100 KB/s (whisper dominates — VERY rough)
     "unknown": 0.0,
 }
 
@@ -77,12 +78,12 @@ _DEFAULT_EXTRACT_SEC_PER_BYTE: dict[str, float] = {
 _DEFAULT_CHUNK_SEC_PER_CHUNK: dict[str, float] = {
     "markdown": 2.0e-4,
     "pdf": 2.0e-4,
-    "code": 5.0e-4,       # tree-sitter AST descent
+    "code": 5.0e-4,  # tree-sitter AST descent
     "notebook": 2.0e-4,
     "csv": 2.0e-4,
     "structured": 2.0e-4,
     "subtitle": 2.0e-4,
-    "image": 0.0,         # image lane doesn't chunk text
+    "image": 0.0,  # image lane doesn't chunk text
     "audio_video": 2.0e-4,
     "unknown": 0.0,
 }
@@ -282,10 +283,10 @@ def estimate_time(
         seconds=embed_seconds,
         source=_collapse_sources(embed_sources) if embed_sources else "heuristic",
         units=total_chunks * max(len(sync.embedders_active), 1),
-        notes=f"{len(sync.embedders_active)} embedder(s) × {total_chunks} chunks",
+        notes=f"{len(sync.embedders_active)} embedder(s) x {total_chunks} chunks",
     )
 
-    # ── db_write (single flat rate × chunks, plus per-doc fixed cost) ──
+    # ── db_write (single flat rate x chunks, plus per-doc fixed cost) ──
     write_rate, write_src = _resolve_rate(
         profile,
         "db_write",
@@ -331,30 +332,35 @@ def _collapse_sources(sources: set[str]) -> str:
 # ─────────────────────────────────────────────────────────────────────────
 
 
+_SECONDS_PER_MINUTE = 60
+_MINUTES_PER_HOUR = 60
+_HOURS_PER_DAY = 24
+
+
 def format_duration(seconds: float) -> str:
     """Render ``seconds`` as a short ``Xh Ym Zs`` / ``Ym Zs`` / ``Zs`` string.
 
     Always rounds to whole seconds — sub-second resolution is noise at
     estimator-level accuracy.
     """
-    if seconds < 0 or seconds != seconds:  # NaN guard
+    if seconds < 0 or math.isnan(seconds):
         return "—"
-    total = int(round(seconds))
-    if total < 60:
+    total = round(seconds)
+    if total < _SECONDS_PER_MINUTE:
         return f"{total}s"
-    minutes, sec = divmod(total, 60)
-    if minutes < 60:
+    minutes, sec = divmod(total, _SECONDS_PER_MINUTE)
+    if minutes < _MINUTES_PER_HOUR:
         return f"{minutes}m {sec}s"
-    hours, minutes = divmod(minutes, 60)
-    if hours < 24:
+    hours, minutes = divmod(minutes, _MINUTES_PER_HOUR)
+    if hours < _HOURS_PER_DAY:
         return f"{hours}h {minutes}m"
-    days, hours = divmod(hours, 24)
+    days, hours = divmod(hours, _HOURS_PER_DAY)
     return f"{days}d {hours}h"
 
 
 __all__ = [
-    "PhaseTime",
     "SCHEMA_VERSION",
+    "PhaseTime",
     "TimeEstimate",
     "estimate_time",
     "format_duration",

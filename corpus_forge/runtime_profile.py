@@ -31,8 +31,10 @@ return ``None`` / continue so a read-only HOME never breaks ingest.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import math
 import os
 import sys
 import tempfile
@@ -252,15 +254,13 @@ def save(profile: RuntimeProfile, path: Path | None = None) -> bool:
         ) as tmp:
             json.dump(profile.to_dict(), tmp, ensure_ascii=False, indent=2)
             tmp.flush()
-            try:
+            # fsync isn't available on every filesystem (notably tmpfs);
+            # the rename still gives us atomicity, just without the
+            # durability guarantee.
+            with contextlib.suppress(OSError):
                 os.fsync(tmp.fileno())
-            except OSError:
-                # fsync isn't available on every filesystem (notably
-                # tmpfs); the rename still gives us atomicity, just
-                # without the durability guarantee.
-                pass
             tmp_path = Path(tmp.name)
-        os.replace(tmp_path, target)
+        tmp_path.replace(target)
     except OSError as exc:
         logger.debug("runtime_profile: failed to write %s: %s", target, exc)
         return False
@@ -315,7 +315,7 @@ def record(
         logger.debug("runtime_profile: phase %r requires a key — skipping", phase)
         return False
     sample = seconds / units
-    if not (sample > 0) or sample != sample:  # NaN guard
+    if not (sample > 0) or math.isnan(sample):
         return False
     with _LOCK:
         profile = load(path=path)
@@ -333,10 +333,10 @@ def record(
 
 __all__ = [
     "DEFAULT_ALPHA",
+    "SCHEMA_VERSION",
     "Phase",
     "Rate",
     "RuntimeProfile",
-    "SCHEMA_VERSION",
     "default_profile_path",
     "load",
     "record",

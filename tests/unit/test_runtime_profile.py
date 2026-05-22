@@ -96,7 +96,7 @@ def test_save_writes_valid_json(profile_path: Path) -> None:
     raw = json.loads(profile_path.read_text(encoding="utf-8"))
     assert raw["schema_version"] == rp.SCHEMA_VERSION
     assert raw["scan"]["sec_per_unit"] > 0
-    assert "updated_at" in raw and raw["updated_at"]
+    assert raw.get("updated_at")
 
 
 def test_record_tolerates_unwritable_directory(

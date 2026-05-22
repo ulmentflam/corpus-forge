@@ -2739,7 +2739,7 @@ def _render_time_estimate_table(time_estimate) -> None:
     """
     if time_estimate is None:
         return
-    from corpus_forge.time_estimate import format_duration  # noqa: PLC0415
+    from corpus_forge.time_estimate import format_duration
 
     print("Estimated wall-clock:")
     for phase in time_estimate.phases:

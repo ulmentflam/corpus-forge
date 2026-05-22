@@ -1569,7 +1569,7 @@ def build_server(
         # Wall-clock prediction — additive sibling key. Pure-prediction
         # like the storage estimate: reads the calibration profile from
         # disk if present, otherwise falls back to heuristic constants.
-        from corpus_forge.time_estimate import estimate_time as _estimate_time  # noqa: PLC0415
+        from corpus_forge.time_estimate import estimate_time as _estimate_time
 
         time_est = _estimate_time(est, config)
         return {"estimate": asdict(est), "time": asdict(time_est)}

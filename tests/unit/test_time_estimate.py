@@ -15,7 +15,6 @@ from corpus_forge import runtime_profile as rp
 from corpus_forge.estimate import EmbedderSizing, ExtractorClassSummary, SyncEstimate
 from corpus_forge.time_estimate import (
     SCHEMA_VERSION,
-    TimeEstimate,
     estimate_time,
     format_duration,
 )
