@@ -2,6 +2,7 @@
 
 import logging
 import socket
+import time
 from pathlib import Path
 from typing import Any
 
@@ -305,18 +306,16 @@ def ingest_one(
         # the wall-clock calibration profile. Per-document timings are
         # noisy but the EWMA in ``runtime_profile.record`` smooths them
         # out over the course of a real ingest pass.
-        import time as _time  # noqa: PLC0415
-
         cal_key = _calibration_key_for(raw)
         if isinstance(raw, RawDocument):
             # Process document
-            _t0 = _time.perf_counter()
+            _t0 = time.perf_counter()
             chunk_data = _process_document(raw, effective_chunker)
-            _chunk_elapsed = _time.perf_counter() - _t0
+            _chunk_elapsed = time.perf_counter() - _t0
 
-            _t1 = _time.perf_counter()
+            _t1 = time.perf_counter()
             backend.upsert_document(dataset_id, raw, chunk_data, embedder_ids=embedder_ids)
-            _write_elapsed = _time.perf_counter() - _t1
+            _write_elapsed = time.perf_counter() - _t1
 
             n_chunks = len(chunk_data)
             if n_chunks > 0:
@@ -697,50 +696,76 @@ def ingest_once(config: Config) -> None:
     embedders = get_active_embedders(config)
     logger.info(f"Active embedders: {[e.name for e in embedders]}")
 
-    # Process each dataset
-    for dataset in config.datasets:
-        logger.info(f"Processing dataset: {dataset.name} ({dataset.kind})")
+    # Single Rich ``Progress`` instance with TWO live tasks:
+    #
+    #   1. A persistent global task — total = sum of every source's
+    #      file count, so users see overall percentage + remaining-time
+    #      ETA across the entire run.
+    #   2. A transient per-source task — added when each source starts,
+    #      removed when it finishes, so the display always shows the
+    #      currently-running source's slice underneath the global bar.
+    #
+    # Two nested ``make_progress`` contexts would fight over the
+    # console (Rich's ``Live`` is single-active), so the per-source
+    # progress now lives as a child task of the outer ``Progress``.
+    global_total = sum(per_source_totals.values()) or None
+    with make_progress(
+        "Ingest (all sources)",
+        total=global_total,
+        logger=scan_logger,
+    ) as progress:
+        global_task = progress.add_task("Total", total=global_total)
 
-        # Get or create dataset record
-        dataset_id = _get_or_create_dataset(backend, dataset)
+        # Process each dataset
+        for dataset in config.datasets:
+            logger.info(f"Processing dataset: {dataset.name} ({dataset.kind})")
 
-        # Process each source in dataset
-        for source_config in dataset.sources:
-            scan_logger.info(
-                "Scanning source: plugin=%s dataset=%s",
-                source_config.plugin,
-                dataset.name,
-            )
+            # Get or create dataset record
+            dataset_id = _get_or_create_dataset(backend, dataset)
 
-            # Instantiate source
-            source = _instantiate_source(source_config, config=config)
+            # Process each source in dataset
+            for source_config in dataset.sources:
+                scan_logger.info(
+                    "Scanning source: plugin=%s dataset=%s",
+                    source_config.plugin,
+                    dataset.name,
+                )
 
-            # Register source in the DB (idempotent) so the sources table
-            # tracks which plugin/identity/host contributed to this dataset.
-            backend.register_source(
-                dataset_id,
-                source.name,
-                source.identity(),
-                socket.gethostname(),
-            )
+                # Instantiate source
+                source = _instantiate_source(source_config, config=config)
 
-            # Get chunker for this source
-            chunker = get_chunker_for_source(source, config)
+                # Register source in the DB (idempotent) so the sources
+                # table tracks which plugin/identity/host contributed
+                # to this dataset.
+                backend.register_source(
+                    dataset_id,
+                    source.name,
+                    source.identity(),
+                    socket.gethostname(),
+                )
 
-            # Scan and ingest — the progress bar gets a real total from
-            # the up-front planner walk so users see "X/Y" + live ETA
-            # instead of an unbounded spinner. ``None`` (planner couldn't
-            # determine a count, e.g. API-only source) falls back to the
-            # previous unbounded behaviour.
-            raw_items = source.scan()
-            docs_chunked = 0
-            source_total = per_source_totals.get(id(source_config))
-            with make_progress(
-                f"Ingest ({source.name})",
-                total=source_total,
-                logger=scan_logger,
-            ) as progress:
-                task = progress.add_task("Ingest", total=source_total)
+                # Get chunker for this source
+                chunker = get_chunker_for_source(source, config)
+
+                # Per-source task lives only for the duration of this
+                # source. ``total=None`` (API-only sources we couldn't
+                # count up front) renders as an indeterminate bar; the
+                # global task is still useful as long as at least one
+                # source contributed a count.
+                raw_items = source.scan()
+                docs_chunked = 0
+                source_total = per_source_totals.get(id(source_config))
+                source_task = progress.add_task(
+                    f"  {source.name}",
+                    total=source_total,
+                )
+                scan_logger.info(
+                    "Ingest (%s) started: %s items",
+                    source.name,
+                    source_total if source_total is not None else "unbounded",
+                )
+                source_started = time.perf_counter()
+
                 for raw in raw_items:
                     try:
                         ingest_one(backend, raw, chunker, embedders, dataset_id)
@@ -749,20 +774,35 @@ def ingest_once(config: Config) -> None:
                             chunk_logger.info("Chunked %d documents so far", docs_chunked)
                     except Exception as e:
                         # Per-file failures are recoverable. Categorise
-                        # the message so users can tell extractor crashes
-                        # apart from embedder/API failures — the previous
-                        # "Extractor failed on X" wording mis-attributed
-                        # Ollama 500s (NaN-in-response, rate limits) to
-                        # the extractor, which makes the model selection
-                        # vs. file content question harder to answer.
+                        # the message so users can tell extractor
+                        # crashes apart from embedder/API failures —
+                        # the previous "Extractor failed on X" wording
+                        # mis-attributed Ollama 500s (NaN-in-response,
+                        # rate limits) to the extractor, which makes
+                        # the model-selection vs. file-content
+                        # question harder to answer.
                         _classify_and_log_ingest_error(raw, e)
                         continue
-                    progress.update(task, advance=1)
-            scan_logger.info(
-                "Scan complete: %d documents (plugin=%s)",
-                docs_chunked,
-                source_config.plugin,
-            )
+                    progress.update(source_task, advance=1)
+                    progress.update(global_task, advance=1)
+
+                elapsed = time.perf_counter() - source_started
+                rate = (docs_chunked / elapsed) if elapsed > 0 else 0.0
+                scan_logger.info(
+                    "Ingest (%s) complete: %d documents in %.1fs (rate %.0f/s)",
+                    source.name,
+                    docs_chunked,
+                    elapsed,
+                    rate,
+                )
+                scan_logger.info(
+                    "Scan complete: %d documents (plugin=%s)",
+                    docs_chunked,
+                    source_config.plugin,
+                )
+                # Remove the per-source task so the next source's task
+                # appears underneath the global bar instead of stacking.
+                progress.remove_task(source_task)
 
 
 def _get_or_create_dataset(backend: StorageBackend, dataset_config) -> int:
