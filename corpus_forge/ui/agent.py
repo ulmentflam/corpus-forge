@@ -429,7 +429,7 @@ class ProgressEmitter:
         self._completed += delta
         self._maybe_emit()
 
-    def remove_task(self, task_id: int) -> None:  # noqa: ARG002 — Rich-compat
+    def remove_task(self, task_id: int) -> None:
         """No-op — ``ProgressEmitter`` doesn't track per-task state.
 
         Rich's :meth:`Progress.remove_task` is called by ``ingest_once``
