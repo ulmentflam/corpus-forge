@@ -8,6 +8,8 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+## [0.1.0b8] - 2026-05-22
+
 ### Fixed
 
 - Every "No configuration found" error in `corpus_forge/cli.py` now
@@ -59,6 +61,47 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   stubbed `corpus-forge` on PATH: happy path, migrate-failure path,
   corpus-forge-missing path, and `CF_CONFIG` propagation. PowerShell
   mirror test is skipped when `pwsh` isn't on PATH.
+- `FilesystemSource.parse` no longer crashes the ingest pass when an
+  iCloud Drive (or other network mount) evicts a file between text
+  extraction and the SHA-256 hash step. The hash call is wrapped to
+  match the extractor's contract — a `FileNotFoundError`/`OSError`
+  emits a WARNING (`Could not hash %s — skipping`) and returns
+  `None`, so the scan loop continues. Observed against a real
+  Obsidian vault on iCloud. Regression test
+  `test_parse_returns_none_when_file_evicted_between_extract_and_hash`.
+- Per-document failures that originate in the embedder rather than
+  the extractor are no longer misattributed as "Extractor failed"
+  (PR #46). `_classify_and_log_ingest_error` recognises the
+  Ollama-style `"failed to encode response: json: unsupported value:
+  NaN"` 5xx and logs it as a WARNING with an actionable hint
+  (swap embedders or filter empty-chunk input), and generic
+  embedder 5xx as a WARNING. Everything else keeps the historic
+  `extract_logger.info("Extractor failed on X: …")` taxonomy so
+  existing grep patterns / dashboards still match.
+- Per-file progress bars now advance on failure as well as
+  success (PR #46). Both `progress.update(..., advance=1)` calls
+  moved into a `try/finally` block — previously the `except`
+  branch ended with `continue`, so per-file failures silently
+  dropped advances. The global bar now reaches 100% even when
+  some files fail.
+
+### Changed
+
+- `openai>=1.30` is now a base dependency rather than an opt-in
+  `[openai]` extra. `provider = "openai"` in `[[embedders]]` (and
+  elsewhere) refers to the OpenAI REST *protocol* — every local
+  OpenAI-compatible endpoint (Ollama at `:11434/v1`, vLLM, llama.cpp
+  server, LM Studio, …) routes through the same client, so users
+  who deliberately opted out of the extra were hitting `openai
+  package is required` mid-ingest. The `[openai]` extra is kept as
+  an empty alias so existing install commands keep resolving.
+- OpenAI-compatible embedder now performs client-side Matryoshka
+  truncation when the configured `dimension` is smaller than the
+  model's native dim. The `dimensions=` request field is still
+  forwarded so servers that honour it (real OpenAI, vLLM) short-
+  circuit the work, but local servers that ignore the field
+  (Ollama, some llama.cpp builds) get the right shape back via the
+  client-side truncate + L2 renormalise path.
 
 ### Added
 
@@ -107,6 +150,102 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   for the chunker write paths, backend upsert paths, and MCP
   `get_source_file_context` tool landing in subsequent RFC
   `rfc-source-provenance-git-and-lines` PRs.
+- pgvector backend now supports native **4096-dim halfvec** indexes
+  alongside the existing `vector_cosine_ops` (≤2000d) and projected-
+  halfvec (>2000d, ≤4096d) strategies. `embedder repair-indexes`
+  gains a third detection axis so it can audit + rebuild any
+  drifted HNSW index. `corpus-forge doctor` reports the per-embedder
+  index strategy in its `embedder_indexes` check.
+- **Full chat-history coverage** for every agent CLI corpus-forge
+  can reach (PR #29). `gemini_cli`, `codex_cli`, `chatgpt_export`,
+  and `jsonl_chat` are now reachable from config (`_instantiate_source`
+  previously raised "Unknown source plugin" even though the code
+  existed). New `DatasetSourceConfig` fields — `chats_root`,
+  `sessions_root`, `export_root`, `path`, plus `history_path` for
+  Claude Code — each name the canonical default in their
+  missing-path `ValueError`. Parser-level upgrades:
+  - **Claude Code:** filters JSONL lines by `type` so
+    `permission-mode` / `file-history-snapshot` / `ai-title` /
+    `last-prompt` / `pr-link` events stop being ingested as empty
+    assistant turns. Metadata-only events fold into
+    `RawConversation.metadata` (titles, permission transitions,
+    PR links, file-history snapshots). `tool_use` / `tool_result`
+    blocks extracted into structured `tool_calls` / `tool_results`.
+    Optional `history_path` ingests `~/.claude/history.jsonl` as a
+    separate `claude-code-history://<sid>` conversation per
+    session, distinct enough not to false-link to feedback rows.
+  - **OpenCode:** new `scan()` reconstructs full conversations from
+    the modern `session/info` + `session/message` + `session/part`
+    triple-store. Legacy flat `message.json` still parses.
+  - **Codex CLI:** `discover()` switches to `rglob` for the modern
+    `sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl` shard layout
+    and handles the typed event stream (`session_meta`,
+    `event_msg`, `reasoning_summary`, `function_call` /
+    `function_call_output`). Legacy `{role, content, ts}` still
+    parses.
+  - All source constructors coerce `str | Path` to `Path` and
+    `.expanduser()` once, so str-typed `ExpandedPath` values from
+    pydantic config don't crash `.iterdir()` mid-ingest.
+  - `_SOURCE_URI_TO_CLIENT` learns `codex-cli://`,
+    `chatgpt-export://`, `jsonl-chat://`, and
+    `claude-code-history://` so feedback-session linking works for
+    every chat client.
+  - Four new test files (20 tests) pin: typed-event filtering,
+    tool-call extraction, history.jsonl ingestion, codex modern
+    shard layout, opencode triple-store reconstruction, and
+    `_instantiate_source` wiring for every plugin.
+- **Wall-clock time estimator** for `corpus-forge estimate` (PR #44)
+  — per-phase prediction (`scan` / `extract` / `chunk` / `embed` /
+  `db_write`) alongside the existing storage estimator. Heuristic
+  constants ship out of the box (~±50%); a per-host runtime
+  profile self-calibrates on real `ingest`/`embed` runs via an
+  EWMA so subsequent estimates converge on observed throughput
+  (~±20% after a handful of samples). Surfaces:
+  - CLI: new "Estimated wall-clock" table + `time:` key in
+    `--json` / agent JSONL output, with a footer line that
+    explains whether the number is heuristic-only, hybrid, or
+    calibrated from N past samples.
+  - MCP `estimate_sync_size`: sibling `time:` block alongside
+    `estimate:`, same `schema_version=1` contract.
+  - `corpus-forge ingest --once`: one-shot ETA INFO log at
+    startup, summed across filesystem-rooted sources.
+
+  Calibration is best-effort and never blocks ingest — profile
+  reads/writes degrade silently to heuristic-only mode on any
+  I/O failure or corrupt schema_version.
+- `scripts/check-pyrefly.sh` wrapper that exits 1 on any reported
+  error so `make typecheck` and the `pyrefly` pre-commit hook stop
+  silently passing (PR #45). `pre-commit` config gains two stages:
+  - `pre-commit` (fast, auto-fixing): `ruff format`,
+    `ruff check --fix`, per-file `pyrefly` scoped to
+    `^corpus_forge/`.
+  - `pre-push` (strict, no auto-fix): `ruff format --check`,
+    `ruff check`, project-wide `pyrefly`. Mirrors the CI
+    `quality` job step-for-step.
+
+  The previous `unit-tests` pre-push hook is dropped — it
+  depended on every optional extra being installed and blocked
+  legitimate pushes from partial dev envs; the CI matrix already
+  exercises tests. `make dev` installs both hook stages.
+- **Live ETA progress bar for `corpus-forge ingest`** (PR #46).
+  Replaces the unbounded `⠼ Ingest 0:00:01` spinner with a
+  bounded Rich progress bar that renders `X/Y` complete +
+  remaining time, computed from the planner walk that already
+  produced the startup ETA. Layout while ingest runs:
+
+  ```
+  Ingest (all sources) ━━━━━━━━ 4,321/250,003 0:01:30 1d 11h 30m
+    filesystem         ━━━━━━━━     4,321/51,001 0:01:30 0:08:13
+  ```
+
+  The top bar persists across every source; the indented
+  per-source bar appears when each source starts and is removed
+  when it finishes, so exactly one source task is visible at
+  any time under the persistent global view. Sources without a
+  resolvable filesystem root (API-only plugins) keep the
+  previous unbounded spinner. The previous `_log_ingest_eta`
+  helper was renamed to `_plan_ingest` and now returns a
+  per-source file-count map alongside emitting the startup ETA.
 
 ## [0.1.0b7] - 2026-05-20
 
