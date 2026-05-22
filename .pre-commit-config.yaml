@@ -7,6 +7,12 @@
 # greps the output and exits 1 on any reported error. Optional-extra
 # import noise is filtered via `--ignore missing-import` inside the
 # wrapper.
+# Hooks without an explicit ``stages:`` field default to this list.
+# Without it, the auto-fixing commit-stage hooks below would also fire
+# on ``git push`` alongside the strict push-stage hooks — running both
+# in sequence would let auto-fix silently rewrite files during a push.
+default_stages: [pre-commit]
+
 repos:
   - repo: local
     hooks:
