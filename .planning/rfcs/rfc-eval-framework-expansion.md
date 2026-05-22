@@ -130,8 +130,14 @@ share it.
       tolerance gating.
 - [ ] Extend `corpus_forge/cli.py` with `eval classifier`,
       `eval quality`, `eval regression`.
-- [ ] Pydantic `EvalRegressionConfig` block in
-      `corpus_forge/config.py` (tolerances).
+- [x] Pydantic `EvalRegressionConfig` block in
+      `corpus_forge/config.py` (tolerances). Three fields:
+      `enabled` (bool, default `True`), `default_tolerance` (float
+      in `[0.0, 1.0]`, default `0.02`), `per_metric` (dict[str, float],
+      bounded `[0.0, 1.0]`). Convenience `tolerance_for(name)` helper
+      returns `per_metric` override or default. Wired onto
+      `Config.eval_regression`. 16 unit tests in
+      `tests/unit/test_eval_regression_config.py`.
 - [ ] Tests:
   - [ ] `tests/unit/test_eval_classifier_accuracy.py` — known
         confusion matrix → expected metrics.

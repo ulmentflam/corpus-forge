@@ -668,6 +668,65 @@ class EstimateConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class EvalRegressionConfig(BaseModel):
+    """RFC ``rfc-eval-framework-expansion`` — tolerance gating for regression eval.
+
+    Drives the future ``corpus-forge eval regression --baseline`` verb:
+    given two ``EvalOutput`` JSON files (current run + baseline), the
+    runner computes per-metric deltas and exits non-zero if any metric
+    moves outside its configured tolerance band.
+
+    The tolerance is a *symmetric* threshold expressed in the metric's
+    own units. For ``ndcg@10`` (range 0-1), ``tolerance = 0.02`` means
+    "fail if the delta is ``> +0.02`` OR ``< -0.02``." Direction of
+    movement isn't policy-encoded here — most eval metrics regress
+    when they go DOWN, but classifier *loss* and quality *MAE* regress
+    when they go UP. The runner's per-metric "regression direction"
+    metadata (out of scope for the config) decides which sign to
+    treat as worse; the tolerance is the threshold magnitude either
+    way.
+
+    Fields:
+
+    - ``default_tolerance``: applied to any metric not named explicitly
+      in ``per_metric``. Default ``0.02`` (2 percentage points for
+      normalised metrics; reasonable starting point for noisy
+      retrieval / classifier scores).
+    - ``per_metric``: optional ``dict[metric_name, tolerance]`` for
+      metrics that need a tighter or looser band than the default.
+      Metric names match the keys inside ``EvalOutput.metrics`` (e.g.
+      ``"ndcg@10"``, ``"macro_f1"``, ``"mae.clarity"``).
+    - ``enabled``: master on/off switch. ``True`` by default so a
+      configured baseline actually gates the next run; flip to
+      ``False`` to record-only without failing CI.
+    """
+
+    enabled: bool = True
+    default_tolerance: float = Field(default=0.02, ge=0.0, le=1.0)
+    per_metric: dict[str, float] = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("per_metric")
+    @classmethod
+    def _check_per_metric_tolerances(cls, value: dict[str, float]) -> dict[str, float]:
+        """Each per-metric tolerance must be in ``[0.0, 1.0]``."""
+        bad = {name: tol for name, tol in value.items() if not 0.0 <= tol <= 1.0}
+        if bad:
+            raise ValueError(f"per_metric tolerances must be in [0.0, 1.0], got: {bad}")
+        return value
+
+    def tolerance_for(self, metric_name: str) -> float:
+        """Return the configured tolerance for *metric_name*.
+
+        Looks up ``per_metric[metric_name]`` first, falls back to
+        ``default_tolerance``. Convenience so the regression runner
+        doesn't need to re-implement the lookup logic at every call
+        site.
+        """
+        return self.per_metric.get(metric_name, self.default_tolerance)
+
+
 class ScanConfig(BaseModel):
     """Phase M Wave 2 — filesystem-walker knobs.
 
@@ -908,6 +967,14 @@ class Config(BaseModel):
     # existing configs without a ``[growth]`` block continue to validate
     # and behave identically.
     growth: GrowthConfig = Field(default_factory=GrowthConfig)
+    # RFC ``rfc-eval-framework-expansion`` — tolerance band for
+    # ``corpus-forge eval regression``. Defaults to ``enabled=True`` +
+    # ``default_tolerance=0.02`` so a configured baseline gates the
+    # next run with a reasonable 2-percentage-point band. Existing
+    # configs without an ``[eval_regression]`` block continue to
+    # validate; the regression runner short-circuits if no baseline
+    # JSON is passed in.
+    eval_regression: EvalRegressionConfig = Field(default_factory=EvalRegressionConfig)
 
     model_config = ConfigDict(
         str_strip_whitespace=True,

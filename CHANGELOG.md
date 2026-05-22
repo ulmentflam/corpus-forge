@@ -413,6 +413,14 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   the curation-selector hookup. Distinct from the Phase H
   `corpus_forge.enrichers` (code-enricher) pipeline — code lives in
   the new `corpus_forge.quality` package.
+- `[eval_regression]` config block — `corpus_forge.config.EvalRegressionConfig`
+  drives the future `corpus-forge eval regression --baseline` verb's
+  tolerance gating. Three fields: `enabled` (default `True`),
+  `default_tolerance` (float `[0, 1]`, default `0.02`),
+  `per_metric` (dict of metric-name → tolerance, each bounded
+  `[0, 1]`). Convenience `tolerance_for(name)` helper. Foundation
+  task of RFC `rfc-eval-framework-expansion` (P1); subsequent PR
+  adds the runner that consumes this block.
 
 ## [0.1.0b7] - 2026-05-20
 
