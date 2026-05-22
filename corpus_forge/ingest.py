@@ -2,6 +2,7 @@
 
 import logging
 import socket
+from pathlib import Path
 from typing import Any
 
 from .backends.base import StorageBackend
@@ -242,6 +243,35 @@ def get_active_embedders(config: Config) -> list[Embedder]:
 _DISPATCHER = ChunkerDispatcher()
 
 
+def _calibration_key_for(raw: "RawDocument | RawConversation") -> str:
+    """Best-effort extractor-class label for runtime-profile calibration.
+
+    Mirrors :func:`corpus_forge.estimate._classify_extension` so the
+    profile keys captured during a real ingest line up with the keys
+    consulted by :func:`corpus_forge.time_estimate.estimate_time` on the
+    next estimate pass. Falls back to ``"unknown"`` for sources that
+    don't surface a recognised extension.
+    """
+    # Prefer an explicit metadata hint when the source has stamped one.
+    metadata = getattr(raw, "metadata", None)
+    if isinstance(metadata, dict):
+        hint = metadata.get("extractor_class") or metadata.get("class_hint")
+        if isinstance(hint, str) and hint:
+            return hint
+    # Fall back to extension classification on the source URI.
+    uri = getattr(raw, "source_uri", "") or ""
+    last_slash = max(uri.rfind("/"), uri.rfind("\\"))
+    name = uri[last_slash + 1 :] if last_slash >= 0 else uri
+    last_dot = name.rfind(".")
+    if last_dot > 0:
+        from corpus_forge.estimate import _classify_extension  # noqa: PLC0415
+
+        cls = _classify_extension(name[last_dot:].lower())
+        if cls is not None:
+            return cls
+    return "unknown"
+
+
 def ingest_one(
     backend: StorageBackend,
     raw: RawDocument | RawConversation,
@@ -271,11 +301,37 @@ def ingest_one(
         # behaviour-preserving.
         effective_chunker = _DISPATCHER.dispatch_for(raw, fallback=chunker)
 
-        # Process based on type
+        # Process based on type — instrument chunk + db_write timings for
+        # the wall-clock calibration profile. Per-document timings are
+        # noisy but the EWMA in ``runtime_profile.record`` smooths them
+        # out over the course of a real ingest pass.
+        import time as _time  # noqa: PLC0415
+
+        cal_key = _calibration_key_for(raw)
         if isinstance(raw, RawDocument):
             # Process document
+            _t0 = _time.perf_counter()
             chunk_data = _process_document(raw, effective_chunker)
+            _chunk_elapsed = _time.perf_counter() - _t0
+
+            _t1 = _time.perf_counter()
             backend.upsert_document(dataset_id, raw, chunk_data, embedder_ids=embedder_ids)
+            _write_elapsed = _time.perf_counter() - _t1
+
+            n_chunks = len(chunk_data)
+            if n_chunks > 0:
+                try:
+                    from corpus_forge.runtime_profile import record as _record  # noqa: PLC0415
+
+                    _record(
+                        "chunk",
+                        units=n_chunks,
+                        seconds=_chunk_elapsed,
+                        key=cal_key,
+                    )
+                    _record("db_write", units=n_chunks, seconds=_write_elapsed)
+                except Exception as exc:  # pragma: no cover — defensive
+                    logger.debug("ingest: calibration write failed: %s", exc)
         else:  # RawConversation
             # Process conversation
             chunked_messages = _process_conversation(raw, effective_chunker)
@@ -437,9 +493,126 @@ def _write_embeddings_for_chunks(
     logger.info(f"Written {len(pairs)} embeddings for {embedder.name}")
 
 
+#: Candidate config-field names whose value (if set) is a filesystem
+#: root we can hand to the storage/time estimator. Order matches the
+#: priority we want for sources that expose more than one (e.g. zotero,
+#: which has a library root and an attachments root — library wins).
+_SOURCE_ROOT_FIELDS: tuple[str, ...] = (
+    "root",
+    "vault_root",
+    "projects_root",
+    "storage_root",
+    "chats_root",
+    "sessions_root",
+    "export_root",
+    "history_path",
+    "path",
+)
+
+
+def _source_root(source_config: Any) -> Path | None:
+    """Resolve a filesystem root from a dataset source config, if any.
+
+    Wall-clock-ETA helper for :func:`ingest_once`. Returns ``None`` for
+    sources whose work is API-driven (e.g. Zotero web library) and so
+    cannot be modelled with the disk-bound estimator. Best-effort —
+    blank-but-set fields are treated as missing.
+    """
+    from pathlib import Path as _Path  # noqa: PLC0415
+
+    for field_name in _SOURCE_ROOT_FIELDS:
+        value = getattr(source_config, field_name, None)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        candidate = _Path(text).expanduser()
+        if candidate.exists() and candidate.is_dir():
+            return candidate
+    return None
+
+
+def _log_ingest_eta(config: Config) -> None:
+    """Emit a single startup INFO line with the wall-clock ETA.
+
+    Sums per-source ``TimeEstimate``s across every dataset/source that
+    exposes a recognisable filesystem root. Sources without a root
+    (API-driven plugins, or a misconfigured root) are excluded — we log
+    them at DEBUG so a user can ``--verbose`` if they want to know what
+    was skipped.
+
+    Best-effort: any exception is swallowed (logged at DEBUG) so a
+    broken ETA can never block ingest.
+    """
+    try:
+        from corpus_forge.estimate import estimate_sync  # noqa: PLC0415
+        from corpus_forge.runtime_profile import load as _load_profile  # noqa: PLC0415
+        from corpus_forge.time_estimate import (  # noqa: PLC0415
+            estimate_time,
+            format_duration,
+        )
+
+        profile = _load_profile()
+        total_seconds = 0.0
+        per_phase: dict[str, float] = {}
+        roots_seen = 0
+        roots_skipped = 0
+        any_calibrated = False
+
+        for dataset in config.datasets:
+            for source_config in dataset.sources:
+                root = _source_root(source_config)
+                if root is None:
+                    roots_skipped += 1
+                    logger.debug(
+                        "ETA: skipping source plugin=%s (no resolvable filesystem root)",
+                        getattr(source_config, "plugin", "unknown"),
+                    )
+                    continue
+                try:
+                    sync = estimate_sync(root, config)
+                except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+                    logger.debug("ETA: estimate_sync failed for %s: %s", root, exc)
+                    continue
+                te = estimate_time(sync, config, profile=profile)
+                total_seconds += te.total_seconds
+                for phase in te.phases:
+                    per_phase[phase.name] = per_phase.get(phase.name, 0.0) + phase.seconds
+                roots_seen += 1
+                if te.calibration in ("calibrated", "hybrid"):
+                    any_calibrated = True
+
+        if roots_seen == 0:
+            logger.info(
+                "ETA: no filesystem-rooted sources detected — wall-clock prediction skipped"
+            )
+            return
+
+        breakdown = " / ".join(
+            f"{name} {format_duration(per_phase.get(name, 0.0))}"
+            for name in ("scan", "extract", "chunk", "embed", "db_write")
+        )
+        calibration_note = (
+            "calibrated" if any_calibrated else "heuristic (uncalibrated on this host)"
+        )
+        skipped_note = f" (+{roots_skipped} API-only source(s) excluded)" if roots_skipped else ""
+        logger.info(
+            "ETA ~%s [%s] across %d filesystem root(s)%s — %s",
+            format_duration(total_seconds),
+            breakdown,
+            roots_seen,
+            skipped_note,
+            calibration_note,
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("ETA computation failed: %s", exc)
+
+
 def ingest_once(config: Config) -> None:
     """Run one-shot ingestion pass."""
     logger.info("Starting one-shot ingestion pass")
+    _log_ingest_eta(config)
 
     # Setup backend
     backend_config = config.backend

@@ -286,6 +286,54 @@ def test_estimate_verbose_flag_does_not_crash(tmp_path: Path) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Wall-clock time estimate (new)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_estimate_human_output_contains_wall_clock_section(tmp_path: Path) -> None:
+    cfg_path = _build_test_config(tmp_path)
+    scan = _scan_dir(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["estimate", str(scan)],
+        env={"CORPUS_FORGE_CONFIG": str(cfg_path), "CF_RUNTIME_PROFILE": str(tmp_path / "rp.json")},
+    )
+    assert result.exit_code == 0, result.output
+    assert "Estimated wall-clock" in result.output
+    # All five phases are rendered.
+    for phase in ("scan", "extract", "chunk", "embed", "db_write"):
+        assert phase in result.output, f"missing phase {phase}"
+    # Calibration footer must mention one of the three labels.
+    lower = result.output.lower()
+    assert "heuristic" in lower or "calibrat" in lower or "hybrid" in lower
+
+
+def test_estimate_json_output_includes_time_block(tmp_path: Path) -> None:
+    cfg_path = _build_test_config(tmp_path)
+    scan = _scan_dir(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["estimate", str(scan), "--json"],
+        env={"CORPUS_FORGE_CONFIG": str(cfg_path), "CF_RUNTIME_PROFILE": str(tmp_path / "rp.json")},
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json.loads(result.stdout)
+    assert "time" in payload
+    time_block = payload["time"]
+    assert time_block["schema_version"] == 1
+    assert time_block["total_seconds"] >= 0
+    assert {p["name"] for p in time_block["phases"]} == {
+        "scan",
+        "extract",
+        "chunk",
+        "embed",
+        "db_write",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # K1 — .corpusignore flag coverage
 # ─────────────────────────────────────────────────────────────────────────
 

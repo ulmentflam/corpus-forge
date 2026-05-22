@@ -189,13 +189,41 @@ def backfill_embedder(
             # Generate embeddings (per-batch chatter demoted to DEBUG —
             # the progress bar + milestone INFO replace it on stdout/log).
             logger.debug(f"Generating embeddings for {len(texts)} chunks")
+            import time as _time  # noqa: PLC0415
+
+            _t0 = _time.perf_counter()
             embeddings = embedder.encode(texts)
+            _encode_elapsed = _time.perf_counter() - _t0
 
             # Write embeddings
             pairs = list(zip(chunk_ids, embeddings, strict=True))
+            _t1 = _time.perf_counter()
             backend.write_embeddings(embedder_id, pairs)
+            _write_elapsed = _time.perf_counter() - _t1
             processed += len(pairs)
             progress.update(task, completed=processed)
+
+            # Wall-clock calibration — record this batch's embed rate
+            # AND the per-chunk DB-write rate so the on-disk profile
+            # converges on real hardware. Best-effort; ``record`` swallows
+            # any IO failure on the profile file.
+            try:
+                from corpus_forge.runtime_profile import record as _record  # noqa: PLC0415
+
+                if pairs:
+                    _record(
+                        "embed",
+                        units=len(pairs),
+                        seconds=_encode_elapsed,
+                        key=embedder.name,
+                    )
+                    _record(
+                        "db_write",
+                        units=len(pairs),
+                        seconds=_write_elapsed,
+                    )
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.debug("embed: calibration write failed: %s", exc)
 
             logger.debug(f"Processed {processed} embeddings so far")
 

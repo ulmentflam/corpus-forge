@@ -568,6 +568,19 @@ def _walk(
     global _LAST_SCAN_STATS  # noqa: PLW0603 — module-level cache, intentional
     _LAST_SCAN_STATS = stats
 
+    # Wall-clock calibration — fold the scan rate into the on-disk
+    # runtime profile so future ``corpus-forge estimate`` invocations
+    # blend the live filesystem speed in instead of the heuristic
+    # constant. Best-effort; profile-write failures are swallowed inside
+    # ``record``.
+    if file_count > 0 and elapsed_s > 0:
+        try:
+            from corpus_forge.runtime_profile import record as _record  # noqa: PLC0415
+
+            _record("scan", units=file_count, seconds=elapsed_s)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug("estimate: scan calibration write failed: %s", exc)
+
     return buckets, file_count, dir_count, total_raw_bytes, stats
 
 
