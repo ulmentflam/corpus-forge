@@ -1,6 +1,6 @@
 # RFC: End-to-end test for Claude Code self-ingest of this repo
 
-**Status**: accepted
+status: accepted
 **Owner**: nightly (open for any agent to claim)
 **Priority**: P0
 **Depends on**: none
