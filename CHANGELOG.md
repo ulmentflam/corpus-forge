@@ -10,6 +10,29 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ### Added
 
+- New `embedder_drift` doctor check + `corpus-forge embedder gc`
+  CLI command. Catches the silent embedder-rename bug surfaced on
+  2026-05-22: renaming an embedder in `config.toml` (e.g.
+  `qwen3-2000` → `qwen3-4096`) left the original `corpus.embedders`
+  row plus its per-embedder `embeddings_<name>` table behind in the
+  database, and `corpus-forge embedder list` (which reads
+  config-side state only) was blind to it. The maintainer's instance
+  had accumulated a 209 MB orphan table on top of a 342 MB
+  real-data DB before this code landed. The new check walks
+  `corpus.embedders`, compares against `cfg.embedders[*].name`, and
+  WARNs when DB rows have no matching config entry — with a
+  reclaimable-bytes total and the `corpus-forge embedder gc --apply`
+  recovery hint. The new CLI lists orphans (`--dry-run` default)
+  and drops both the table and the catalog row on `--apply`.
+  Regression tests:
+  `tests/unit/test_doctor_embedder_drift.py` (10 tests pinning the
+  SKIP / OK / WARN branches + `run_doctor` registration) and
+  `tests/unit/test_embedder_gc.py` (19 tests on the underlying
+  `audit_embedder_drift` / `reconcile_embedder_drift` helpers
+  including SQLite short-circuit, error tolerance on size/count
+  probes, partially-cleaned orphans, and the `_human_bytes`
+  rendering helper). 60/60 doctor + embedder tests pass after the
+  change.
 - New module `corpus_forge.macos_tcc` — iCloud Drive + TCC integration
   for macOS hosts. Public surface:
   - `is_icloud_path` / `is_iclouddrive_managed` — classify a path as
