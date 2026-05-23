@@ -11,12 +11,41 @@ be marked failed even though only a handful of chunks were actually
 bad.
 
 This module pins the bisection-based recovery added to
-``OpenAIEmbedder``: on either a transport exception OR a NaN value
-detected in the returned vectors, the embedder recursively halves
-the batch until the offending chunk is isolated, logs its
-length / sha / preview, skips it, and returns the rest. Callers
-read ``embedder.last_failed_indices`` to know which original
-positions were skipped.
+``OpenAIEmbedder``. Three signals trigger a recursive halve-and-
+retry of the batch:
+
+1. A NaN value in any returned vector (the SDK returns 2xx but
+   the floats are NaN-laced).
+2. A row-count mismatch between the input batch and the response
+   (provider returns fewer or more rows than requested — we can't
+   map vectors back to chunk_ids).
+3. A recoverable transport-level exception
+   (``openai.APIConnectionError`` / ``openai.APITimeoutError``,
+   5xx, or HTTP 429).
+
+For all three signals the batch is recursively halved until the
+offending chunk(s) are isolated, then skipped. The skipped
+original-text-list positions are recorded on
+``embedder.last_failed_indices`` so the caller (``ingest_one`` /
+``backfill_embedder``) can filter those chunk_ids out of the
+``write_embeddings`` pair list. Skipped chunks stay in
+``chunks_missing_embedding`` for the next ingest pass to retry.
+
+Privacy guarantee
+-----------------
+The WARNING log emitted at the base case (``len(batch) == 1``)
+deliberately does **not** include any text preview from the
+chunk. Only non-PII metadata — ``orig_idx``, ``chars`` count, and
+a sha256 prefix — appears in the log. Users ingesting personal
+vaults or chat history can therefore safely surface these
+warnings in shared dashboards without worrying about leakage.
+The sha256 is enough to look up the chunk by hash in
+``corpus.chunks`` and reproduce the failure out-of-band.
+
+Non-recoverable errors (4xx other than 429 — auth, missing model,
+bad request) are **not** bisected; they re-raise immediately so
+the operator sees the real cause instead of N rounds of the same
+failure.
 
 What we pin
 -----------
@@ -206,7 +235,11 @@ class TestSingleChunkFailure:
     def test_single_chunk_5xx_logs_and_skips(self) -> None:
         emb = _make_embedder()
         client = MagicMock()
-        client.embeddings.create.side_effect = RuntimeError("APIError 500: NaN")
+        # Use a typed 5xx (carries ``.status_code``) so the narrowed
+        # ``_is_recoverable_exception`` policy lets it through to the
+        # bisection base case. A bare RuntimeError would (correctly)
+        # re-raise under the post-review policy.
+        client.embeddings.create.side_effect = _FakeStatusError(500, "internal")
         emb._client = client
 
         result = emb.encode(["bad-chunk"])
@@ -284,7 +317,7 @@ class TestBisection:
 
         def fake_create(*, model, input, encoding_format, dimensions):  # type: ignore[no-untyped-def]
             if "boom" in input:
-                raise RuntimeError("APIError 500: simulated upstream wedge")
+                raise _FakeStatusError(500, "simulated upstream wedge")
             return _embeddings_response([good_vec for _ in input])
 
         client.embeddings.create.side_effect = fake_create
@@ -345,7 +378,9 @@ class TestAllFailBatch:
     def test_every_chunk_fails_returns_empty_with_all_indices_flagged(self) -> None:
         emb = _make_embedder()
         client = MagicMock()
-        client.embeddings.create.side_effect = RuntimeError("APIError 500")
+        # Typed 5xx — recoverable per the narrowed
+        # ``_is_recoverable_exception`` policy.
+        client.embeddings.create.side_effect = _FakeStatusError(500, "internal")
         emb._client = client
 
         result = emb.encode(["a", "b", "c"])
@@ -416,18 +451,63 @@ class TestExceptionTriage:
         assert result.shape == (0, 4)
         assert set(emb.last_failed_indices) == {0, 1}
 
-    def test_connection_error_no_status_is_recoverable(self) -> None:
-        """A connection-level error has no ``status_code`` attribute;
-        treat as recoverable + bisect."""
+    def test_api_connection_error_is_recoverable(self) -> None:
+        """``openai.APIConnectionError`` carries no ``status_code`` but
+        is a known transport-level failure — bisect, don't bubble."""
+
+        from openai import APIConnectionError
+
+        # ``APIConnectionError.__init__`` requires a ``request`` kwarg.
+        # Side-step it via ``Exception.__init__`` so the test stays
+        # focused on the type-check path in ``_is_recoverable_exception``.
+        class _FakeConnError(APIConnectionError):
+            def __init__(self) -> None:  # type: ignore[no-untyped-def]
+                Exception.__init__(self, "fake ECONNRESET")
 
         emb = _make_embedder()
         client = MagicMock()
-        client.embeddings.create.side_effect = RuntimeError("ECONNRESET")
+        client.embeddings.create.side_effect = _FakeConnError()
         emb._client = client
 
         result = emb.encode(["a"])
         assert result.shape == (0, 4)
         assert emb.last_failed_indices == [0]
+
+    def test_api_timeout_error_is_recoverable(self) -> None:
+        """``openai.APITimeoutError`` is the other known transport-level
+        exception class without a ``status_code`` — also bisects."""
+
+        from openai import APITimeoutError
+
+        class _FakeTimeoutError(APITimeoutError):
+            def __init__(self) -> None:  # type: ignore[no-untyped-def]
+                Exception.__init__(self, "fake timeout")
+
+        emb = _make_embedder()
+        client = MagicMock()
+        client.embeddings.create.side_effect = _FakeTimeoutError()
+        emb._client = client
+
+        result = emb.encode(["a"])
+        assert result.shape == (0, 4)
+        assert emb.last_failed_indices == [0]
+
+    def test_random_exception_with_no_status_is_non_recoverable(self) -> None:
+        """A status-less exception that is NOT a known transport class
+        (e.g. a programming bug raising ``KeyError`` from response
+        parsing) is treated as non-recoverable. Without this guard,
+        the bisection would chew through O(N) calls before the
+        operator saw the real error."""
+
+        emb = _make_embedder()
+        client = MagicMock()
+        client.embeddings.create.side_effect = KeyError("unexpected response shape")
+        emb._client = client
+
+        with pytest.raises(KeyError):
+            emb.encode(["a", "b", "c", "d"])
+        # SDK was called exactly once — no bisection rounds wasted.
+        assert client.embeddings.create.call_count == 1
 
 
 # ─────────────────────────────────────────────────────────────────────

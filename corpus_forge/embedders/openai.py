@@ -16,7 +16,7 @@ import math
 from collections.abc import Sequence
 
 import numpy as np
-from openai import OpenAI
+from openai import APIConnectionError, APITimeoutError, OpenAI
 
 from .base import BaseEmbedder
 
@@ -45,18 +45,29 @@ def _is_recoverable_exception(exc: BaseException) -> bool:
     Policy:
 
     - 4xx **except** ``429`` (rate-limited) → non-recoverable; re-raise.
-    - 5xx, ``429``, or connection-level errors (no ``status_code``
-      attribute) → recoverable; let the bisection logic try.
+    - 5xx and ``429`` → recoverable; let the bisection logic try.
+    - ``openai.APIConnectionError`` / ``openai.APITimeoutError``
+      (transport-level failures with no ``status_code``) → recoverable.
+    - **Any other** ``status_code``-less exception → non-recoverable.
+      We used to treat all status-less exceptions as recoverable,
+      but a programming bug that raised (say) ``KeyError`` from our
+      own response-parsing code would then be bisected through
+      O(N) pointless retries before the operator ever saw it. Narrow
+      to known transport exception types so unexpected errors
+      surface immediately.
 
-    The check is duck-typed on a ``.status_code`` attribute so it
-    works against the OpenAI SDK's ``APIStatusError`` family without
-    importing every concrete subclass.
+    The HTTP-status check is duck-typed on a ``.status_code``
+    attribute so it works against the OpenAI SDK's
+    ``APIStatusError`` family without importing every concrete
+    subclass.
     """
 
     status = getattr(exc, "status_code", None)
     if status is None:
-        # Connection-level / unknown → give bisection a chance.
-        return True
+        # No status code → recoverable only for known transport-level
+        # SDK exceptions; everything else (programming bugs, decoded-
+        # response shape errors, …) bubbles up.
+        return isinstance(exc, (APIConnectionError, APITimeoutError))
     try:
         status_int = int(status)
     except (TypeError, ValueError):
