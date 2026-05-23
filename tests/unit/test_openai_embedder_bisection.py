@@ -48,7 +48,6 @@ import pytest
 
 from corpus_forge.embedders.openai import OpenAIEmbedder
 
-
 # ─────────────────────────────────────────────────────────────────────
 # Helpers / fixtures
 # ─────────────────────────────────────────────────────────────────────
