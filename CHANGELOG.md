@@ -8,6 +8,17 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Added
+
+- `corpus-forge ingest` now enforces `DatasetSourceConfig.max_rows` /
+  `max_bytes` per source by evicting the lowest-scoring chunks via
+  `score_for_pruning(...)` after each source completes a scan.
+  Attribution uses URI-scheme prefix matching
+  (`corpus_forge/admin/source_caps.py::derive_source_uri_prefix`) —
+  plugins whose scheme isn't uniquely owned (e.g. `zotero` without a
+  `library_id`, unknown plugins) are silently skipped with a one-line
+  WARNING. Fourth RFC item of `rfc-corpus-growth-controls`.
+
 ### Fixed
 
 - `OpenAIEmbedder.encode` now **bisects on failure** instead of

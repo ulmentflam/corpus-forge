@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .admin.source_caps import enforce_source_caps
 from .backends.base import StorageBackend
 from .chunkers.base import Chunker, PassthroughChunker, TextChunk
 from .config import Config
@@ -830,6 +831,38 @@ def ingest_once(config: Config) -> None:
                     docs_chunked,
                     source_config.plugin,
                 )
+
+                # RFC ``rfc-corpus-growth-controls`` — per-source cap
+                # enforcement. Runs once per source per ingest cycle
+                # (NOT inside the per-file loop — scoring every
+                # candidate after every file would dominate ingest
+                # cost). When caps aren't set, this is a fast-return
+                # no-op. Failures are isolated: a misbehaving cap
+                # check must not break ingest itself.
+                if (
+                    getattr(source_config, "max_rows", None) is not None
+                    or getattr(source_config, "max_bytes", None) is not None
+                ):
+                    try:
+                        cap_report = enforce_source_caps(backend, dataset_id, source_config)
+                        if cap_report.rows_evicted:
+                            logger.info(
+                                "cap enforcement: evicted %d rows (%d bytes) from %s "
+                                "(cap_max_rows=%s cap_max_bytes=%s reason=%s)",
+                                cap_report.rows_evicted,
+                                cap_report.bytes_evicted,
+                                cap_report.source_uri_prefix,
+                                cap_report.cap_max_rows,
+                                cap_report.cap_max_bytes,
+                                cap_report.reason,
+                            )
+                    except Exception as cap_exc:
+                        logger.warning(
+                            "cap enforcement failed for %s: %r",
+                            source_config.plugin,
+                            cap_exc,
+                        )
+
                 # Remove the per-source task so the next source's task
                 # appears underneath the global bar instead of stacking.
                 progress.remove_task(source_task)
