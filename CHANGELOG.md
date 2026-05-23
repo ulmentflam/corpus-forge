@@ -8,6 +8,15 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Changed
+
+- chore(tests): tighten 45 → 0 `Any` usages in
+  `tests/unit/test_mcp_server_enrichment.py` — replaced opaque `Any`
+  with `mcp.server.Server` (for the server arg), `dict[str, object]` /
+  `list[object]` (for JSON-ish shapes), and `object` (for genuinely-
+  opaque return values). Lint-debt cleanup; ideate-fallback proposal
+  from this Nightly session.
+
 ### Added
 
 - New module `corpus_forge.macos_tcc` — iCloud Drive + TCC integration

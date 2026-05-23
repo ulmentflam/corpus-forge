@@ -22,12 +22,15 @@ import asyncio
 import contextlib
 import hashlib
 import json
-from typing import Any
+from typing import TYPE_CHECKING
 
 import pytest
 
 from corpus_forge.backends.sqlite import SQLiteBackend
 from corpus_forge.mcp.server import build_server
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from mcp.server import Server
 
 # ---------------------------------------------------------------------------
 # Helpers: SQLite in-memory backend + minimal seeding
@@ -118,7 +121,7 @@ class _LexicalRetriever:
     def __init__(self, backend: SQLiteBackend) -> None:
         self.backend = backend
 
-    def search(self, query: str, options: Any) -> list[Any]:
+    def search(self, query: str, options: object) -> list[object]:
         k = getattr(options, "k", 10)
         return self.backend.search_lexical(query, k=k)
 
@@ -128,10 +131,10 @@ class _LexicalRetriever:
 # ---------------------------------------------------------------------------
 
 
-def _call_tool(server: Any, name: str, arguments: dict) -> dict:
+def _call_tool(server: Server, name: str, arguments: dict[str, object]) -> dict[str, object]:
     """Drive an MCP tool call synchronously and return the structured payload."""
 
-    async def _run() -> dict:
+    async def _run() -> dict[str, object]:
         from mcp.types import CallToolRequest, CallToolRequestParams
 
         handler = server.request_handlers.get(CallToolRequest)
@@ -154,10 +157,10 @@ def _call_tool(server: Any, name: str, arguments: dict) -> dict:
     return asyncio.run(_run())
 
 
-def _call_tool_raw(server: Any, name: str, arguments: dict) -> Any:
+def _call_tool_raw(server: Server, name: str, arguments: dict[str, object]) -> object:
     """Return the raw CallToolResult root without raising on isError."""
 
-    async def _run() -> Any:
+    async def _run() -> object:
         from mcp.types import CallToolRequest, CallToolRequestParams
 
         handler = server.request_handlers.get(CallToolRequest)
@@ -171,7 +174,7 @@ def _call_tool_raw(server: Any, name: str, arguments: dict) -> Any:
     return asyncio.run(_run())
 
 
-def _list_tools(server: Any) -> list[str]:
+def _list_tools(server: Server) -> list[str]:
     """Return the list of registered tool names."""
 
     async def _run() -> list[str]:
@@ -186,13 +189,13 @@ def _list_tools(server: Any) -> list[str]:
     return asyncio.run(_run())
 
 
-def _build_server(backend: SQLiteBackend, writes_enabled: bool = True) -> Any:
+def _build_server(backend: SQLiteBackend, writes_enabled: bool = True) -> Server:
     retriever = _LexicalRetriever(backend)
     return build_server(retriever_builder=lambda: retriever, writes_enabled=writes_enabled)
 
 
-def _search_first_hit(server: Any, query: str, **extra: Any) -> dict:
-    args: dict = {"query": query, "k": 5}
+def _search_first_hit(server: Server, query: str, **extra: object) -> dict[str, object]:
+    args: dict[str, object] = {"query": query, "k": 5}
     args.update(extra)
     result = _call_tool(server, "search", args)
     hits = result.get("hits", [])
@@ -216,13 +219,13 @@ def seeded(backend: SQLiteBackend) -> dict[str, int]:
 
 
 @pytest.fixture
-def server_writes(backend: SQLiteBackend, seeded: dict[str, int]) -> Any:
+def server_writes(backend: SQLiteBackend, seeded: dict[str, int]) -> Server:
     """Server with writes_enabled=True + seeded data."""
     return _build_server(backend, writes_enabled=True)
 
 
 @pytest.fixture
-def server_readonly(backend: SQLiteBackend, seeded: dict[str, int]) -> Any:
+def server_readonly(backend: SQLiteBackend, seeded: dict[str, int]) -> Server:
     """Server with writes_enabled=False + seeded data."""
     return _build_server(backend, writes_enabled=False)
 
@@ -360,7 +363,7 @@ class TestWritesEnabledGate:
 
 class TestAddLabelViaMCP:
     def test_happy_path_returns_label_id_and_created(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """add_label via MCP dispatch returns {label_id, created, audit_id}."""
         result = _call_tool(
@@ -378,7 +381,7 @@ class TestAddLabelViaMCP:
         assert isinstance(result.get("audit_id"), int)
 
     def test_duplicate_returns_created_false(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """Second add_label for same ns/value returns created=False."""
         args = {
@@ -392,7 +395,7 @@ class TestAddLabelViaMCP:
         assert result.get("created") is False
 
     def test_dry_run_returns_none_label_id(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """dry_run=True → label_id is None, nothing persisted."""
         result = _call_tool(
@@ -415,7 +418,7 @@ class TestAddLabelViaMCP:
 
 class TestRemoveLabelViaMCP:
     def test_happy_path_returns_removed_true(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """remove_label after add_label returns removed=True + audit_id."""
         _call_tool(
@@ -442,7 +445,7 @@ class TestRemoveLabelViaMCP:
         assert isinstance(result.get("audit_id"), int)
 
     def test_nonexistent_label_returns_removed_false(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """Removing a never-applied label returns removed=False."""
         result = _call_tool(
@@ -460,7 +463,7 @@ class TestRemoveLabelViaMCP:
 
 class TestSetMetadataViaMCP:
     def test_happy_path_returns_before_after(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """set_metadata returns {before, after, audit_id}; before is empty on first call."""
         result = _call_tool(
@@ -479,7 +482,7 @@ class TestSetMetadataViaMCP:
         assert isinstance(result.get("audit_id"), int)
 
     def test_before_reflects_previous_state(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """Second set_metadata call has before={"k": old} and after={"k": new}."""
         _call_tool(
@@ -508,7 +511,7 @@ class TestSetMetadataViaMCP:
 
 class TestSetDescriptionViaMCP:
     def test_happy_path_sets_description(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """set_description returns {before, after, audit_id}; before=None on first call."""
         result = _call_tool(
@@ -525,7 +528,7 @@ class TestSetDescriptionViaMCP:
         assert isinstance(result.get("audit_id"), int)
 
     def test_clear_description_with_null(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """Setting text=None clears the description; after is None."""
         _call_tool(
@@ -552,7 +555,7 @@ class TestSetDescriptionViaMCP:
 
 class TestListLabelsViaMCP:
     def test_returns_labels_key(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """list_labels returns a dict with 'labels' key (list)."""
         result = _call_tool(server_writes, "list_labels", {})
@@ -560,7 +563,7 @@ class TestListLabelsViaMCP:
         assert isinstance(result["labels"], list)
 
     def test_returns_applied_labels(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """Labels applied via add_label appear in list_labels output."""
         _call_tool(
@@ -578,7 +581,7 @@ class TestListLabelsViaMCP:
         assert "topic" in namespaces
 
     def test_filter_by_entity_type(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """entity_type filter narrows list_labels results."""
         _call_tool(
@@ -599,7 +602,7 @@ class TestListLabelsViaMCP:
 
 class TestAppendConversationViaMCP:
     def test_happy_path_returns_conversation_id(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """append_conversation creates a conversation and returns its id + message_count."""
         messages = [
@@ -620,7 +623,7 @@ class TestAppendConversationViaMCP:
         assert isinstance(result.get("audit_id"), int)
 
     def test_dry_run_returns_none_conversation_id(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """dry_run=True returns conversation_id=None and does not persist."""
         messages = [{"role": "user", "content": "dry"}]
@@ -638,7 +641,7 @@ class TestAppendConversationViaMCP:
         assert result.get("message_count") == 1
 
     def test_messages_turn_indexes_are_sequential(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """Messages inside the appended conversation get turn_index 0..N-1."""
         messages = [
@@ -666,7 +669,7 @@ class TestAppendConversationViaMCP:
 
 class TestAppendMessageViaMCP:
     def test_happy_path_returns_message_id_and_turn_index(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """append_message returns {message_id, turn_index, audit_id}."""
         result = _call_tool(
@@ -684,7 +687,7 @@ class TestAppendMessageViaMCP:
         assert isinstance(result.get("audit_id"), int)
 
     def test_turn_index_advances_monotonically(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """Successive append_message calls produce strictly increasing turn_index values."""
         r1 = _call_tool(
@@ -708,7 +711,7 @@ class TestAppendMessageViaMCP:
         assert r1["turn_index"] < r2["turn_index"]
 
     def test_dry_run_returns_none_message_id(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """dry_run=True returns message_id=None and does not persist the message."""
         with backend._get_connection() as conn:
@@ -739,7 +742,7 @@ class TestAppendMessageViaMCP:
 
 class TestAddFeedbackViaMCP:
     def test_happy_path_returns_feedback_id(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """add_feedback returns {feedback_id, audit_id} on success."""
         result = _call_tool(
@@ -758,7 +761,7 @@ class TestAddFeedbackViaMCP:
         assert isinstance(result.get("audit_id"), int)
 
     def test_dry_run_returns_none_feedback_id(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """dry_run=True returns feedback_id=None and does not persist feedback."""
         result = _call_tool(
@@ -778,7 +781,7 @@ class TestAddFeedbackViaMCP:
         assert count == 0
 
     def test_rating_optional(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """add_feedback with text but no rating is accepted."""
         result = _call_tool(
@@ -801,7 +804,7 @@ class TestAddFeedbackViaMCP:
 
 class TestSearchEnrichment:
     def test_search_response_includes_labels_when_enabled(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """search() hit has a 'labels' list containing the seeded label dict."""
         _call_tool(
@@ -826,7 +829,7 @@ class TestSearchEnrichment:
         assert "confidence" in label
 
     def test_search_response_omits_labels_when_disabled(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """search(include_labels=False) → 'labels' key must be absent from each hit."""
         _call_tool(
@@ -845,7 +848,7 @@ class TestSearchEnrichment:
         )
 
     def test_search_response_includes_description(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """search() hit has 'description' matching what was set."""
         _call_tool(
@@ -862,7 +865,7 @@ class TestSearchEnrichment:
         assert hit["description"] == "Key passage about quantization."
 
     def test_search_response_omits_description_when_disabled(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """search(include_description=False) → 'description' key is absent."""
         _call_tool(
@@ -880,7 +883,7 @@ class TestSearchEnrichment:
         )
 
     def test_search_response_includes_recent_feedback(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """search() hit has 'recent_feedback' with the seeded feedback entries."""
         _call_tool(
@@ -900,7 +903,7 @@ class TestSearchEnrichment:
         assert len(fb) >= 1, f"Expected at least 1 feedback entry; got {fb}"
 
     def test_search_response_omits_feedback_when_disabled(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """search(include_feedback=False) → 'recent_feedback' key is absent."""
         _call_tool(
@@ -956,7 +959,7 @@ class TestSearchEnrichment:
 
 class TestGetChunkEnrichment:
     def test_get_chunk_includes_description(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """get_chunk result includes 'description' field after set_description."""
         _call_tool(
@@ -975,7 +978,7 @@ class TestGetChunkEnrichment:
         assert result["description"] == "This chunk discusses quantization."
 
     def test_get_chunk_includes_labels(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """get_chunk result includes 'labels' after add_label."""
         _call_tool(
@@ -994,7 +997,7 @@ class TestGetChunkEnrichment:
         assert result["labels"][0].get("namespace") == "quality"
 
     def test_get_chunk_includes_recent_feedback(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """get_chunk result includes 'recent_feedback' after add_feedback."""
         _call_tool(
@@ -1014,7 +1017,7 @@ class TestGetChunkEnrichment:
         assert len(result["recent_feedback"]) >= 1
 
     def test_get_chunk_omits_labels_when_disabled(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """get_chunk(include_labels=False) → 'labels' key absent."""
         _call_tool(
@@ -1037,7 +1040,7 @@ class TestGetChunkEnrichment:
         )
 
     def test_get_chunk_returns_error_for_missing_chunk(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """get_chunk with unknown chunk_id returns isError=True."""
         result = _call_tool_raw(server_writes, "get_chunk", {"chunk_id": 999999})
@@ -1051,7 +1054,7 @@ class TestGetChunkEnrichment:
 
 class TestSearchParentRollup:
     def test_search_chunk_hit_includes_parent_rollup(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """Chunk hit with a document_id includes a 'parent' dict with doc enrichment."""
         # Set description on the DOCUMENT, not the chunk
@@ -1088,7 +1091,7 @@ class TestSearchParentRollup:
         assert "recent_feedback" in parent
 
     def test_get_chunk_parent_rollup(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """get_chunk result includes 'parent' dict with document enrichment."""
         _call_tool(
@@ -1115,7 +1118,7 @@ class TestLabelsToWire:
     """Exercise the internal _labels_to_wire helper via enriched search results."""
 
     def test_dict_label_items_wire_correctly(
-        self, backend: SQLiteBackend, seeded: dict, server_writes: Any
+        self, backend: SQLiteBackend, seeded: dict, server_writes: Server
     ) -> None:
         """Labels stored as dicts come through with source + confidence fields."""
         _call_tool(
