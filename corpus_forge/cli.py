@@ -3028,6 +3028,185 @@ def estimate(
     )
 
 
+# ── prune command (rfc-corpus-growth-controls) ─────────────────────────
+
+
+@app.command("prune")
+def prune(
+    dataset: str = typer.Option(
+        ...,
+        "--dataset",
+        help="Name of the dataset to prune. Required.",
+    ),
+    percentile: int = typer.Option(
+        10,
+        "--percentile",
+        help="Bottom percentile of the candidate pool selected for pruning (1..100).",
+    ),
+    apply: bool = typer.Option(
+        False,
+        "--apply/--no-apply",
+        help=(
+            "When set, actually delete the selected chunks. Default is "
+            "dry-run-only — the report is rendered but nothing is deleted."
+        ),
+    ),
+    dry_run_json: Path = typer.Option(
+        None,
+        "--dry-run-json",
+        help=(
+            "Write the PruneReport as JSON to this path (and suppress the "
+            "human table). Compatible with --apply."
+        ),
+    ),
+) -> None:
+    """Score and (optionally) delete the bottom-percentile chunks of a dataset.
+
+    Default is dry-run — pass ``--apply`` to actually delete. The rubric
+    lives in ``corpus_forge.curation.selector.score_for_pruning`` and is
+    shared with the curation surface. See
+    ``rfc-corpus-growth-controls.md`` for the design intent.
+    """
+
+    import contextlib
+    import json as _json
+    from dataclasses import asdict
+
+    from corpus_forge.admin.prune import prune_dataset
+    from corpus_forge.config import Config
+
+    # Validate percentile range at the CLI layer so the typer.BadParameter
+    # surfaces with exit code 2 (CLI usage error) — distinct from the
+    # exit-code-3 path for "unknown dataset" and exit-code-1 for generic
+    # errors.
+    _MIN_PCT = 1
+    _MAX_PCT = 100
+    if not _MIN_PCT <= percentile <= _MAX_PCT:
+        raise typer.BadParameter(
+            f"--percentile must be in [{_MIN_PCT}, {_MAX_PCT}]; got {percentile!r}",
+            param_hint="--percentile",
+        )
+
+    # Emit command.start early so the agent wrapper sees the canonical pair
+    # even on early-exit error paths.
+    if ui_agent.is_agent_mode():
+        ui_agent.emit(
+            "command.start",
+            cmd="prune",
+            args={
+                "dataset": dataset,
+                "percentile": percentile,
+                "apply": apply,
+                "dry_run_json": str(dry_run_json) if dry_run_json is not None else None,
+            },
+            version=__version__,
+            agent=ui_agent.current_detection().client.value,
+        )
+
+    try:
+        config = Config.load()
+    except FileNotFoundError:
+        ui_error("No configuration found; run `corpus-forge setup` to create one.")
+        raise typer.Exit(code=2) from None
+
+    backend = _build_backend_from_config(config)
+    try:
+        try:
+            report = prune_dataset(
+                backend,
+                dataset=dataset,
+                percentile=percentile,
+                apply=apply,
+            )
+        except ValueError as exc:
+            # Unknown-dataset guard — prune_dataset() raises
+            # ValueError("dataset 'x' not found") before any candidate
+            # walk. Distinct exit code (3) so callers can disambiguate
+            # config / typo errors from internal failures (1).
+            msg = str(exc)
+            if ui_agent.is_agent_mode():
+                ui_agent.emit(
+                    "error",
+                    cmd="prune",
+                    kind="dataset_not_found",
+                    msg=msg,
+                )
+            ui_error(msg)
+            raise typer.Exit(code=3) from None
+        except typer.Exit:
+            raise
+        except Exception as exc:
+            if ui_agent.is_agent_mode():
+                ui_agent.emit(
+                    "error",
+                    cmd="prune",
+                    kind=type(exc).__name__,
+                    msg=str(exc),
+                )
+            ui_error(f"prune error: {exc}")
+            raise typer.Exit(code=1) from None
+    finally:
+        # Best-effort backend close — mirrors the pattern other verbs
+        # follow (search/embed don't explicitly close either, but it
+        # doesn't hurt to call it when available).
+        closer = getattr(backend, "close", None)
+        if callable(closer):
+            with contextlib.suppress(Exception):  # pragma: no cover — defensive
+                closer()
+
+    # Serialise the report once; both the JSON and the agent-mode paths
+    # use it. ``default=str`` covers any stray datetime fields without
+    # forcing a custom encoder.
+    report_payload = asdict(report)
+
+    if dry_run_json is not None:
+        dry_run_json.write_text(
+            _json.dumps(report_payload, indent=2, default=str),
+            encoding="utf-8",
+        )
+        # Single-line receipt to stdout so pipes / scripts can confirm.
+        print(f"wrote {len(report.selected)} candidates to {dry_run_json}")
+        return
+
+    if ui_agent.is_agent_mode():
+        ui_agent.emit(
+            "command.end",
+            cmd="prune",
+            status="ok",
+            data=report_payload,
+        )
+        return
+
+    # Human output — Rich table for the top 20 candidates, then a
+    # one-line summary footer.
+    from rich.table import Table
+
+    table = Table(
+        title=f"prune candidates (dataset={report.dataset}, percentile={report.percentile})",
+        show_header=True,
+    )
+    table.add_column("chunk_id", justify="right")
+    table.add_column("prune_score", justify="right")
+    table.add_column("source")
+    table.add_column("reason")
+    for cand in report.selected[:20]:
+        table.add_row(
+            str(cand.chunk_id),
+            f"{cand.prune_score:.4f}",
+            str(cand.source_uri or ""),
+            cand.reason,
+        )
+    ui_console.print(table)
+    print(
+        f"considered={report.considered} "
+        f"selected={len(report.selected)} "
+        f"deleted={report.deleted} "
+        f"duplicate_density_available={str(report.duplicate_density_available).lower()}"
+    )
+    if apply and not report.applied:
+        ui_warn("apply requested but no rows were selected — nothing to delete.")
+
+
 # ── Phase L Wave 9 — global agent-mode invocation wrapper ──────────────
 
 
@@ -3039,6 +3218,7 @@ _AGENT_SELF_EMITTING: frozenset[str] = frozenset(
         "search",
         "doctor",
         "estimate",
+        "prune",
         "bug-report",
         "capabilities",
         # mcp serve: stdio carve-out — DO NOT emit anything to stdout.
