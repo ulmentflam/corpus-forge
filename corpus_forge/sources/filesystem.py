@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 from corpus_forge.config import ExtractionConfig
 from corpus_forge.extractors.registry import ExtractorRegistry, register_default_extractors
 from corpus_forge.ignore import CorpusIgnore, IgnoreStack
+from corpus_forge.macos_tcc import download_if_evicted, is_iclouddrive_managed
 from corpus_forge.sources.base import RawDocument, WatchedSource
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
@@ -269,6 +270,25 @@ class FilesystemSource(WatchedSource):
                 "Extractor family %s disabled (%s=False) — skipping %s",
                 type(extractor).__name__,
                 flag_name,
+                path,
+            )
+            return None
+
+        # Proactive iCloud download: when ``path`` lives under
+        # macOS's iCloud Drive mirror and is currently a cloud-only
+        # placeholder, ask the iCloud daemon to materialise it before
+        # the extractor reads it. macOS auto-downloads transparently
+        # on ``open()`` when TCC is granted, but the explicit ``brctl
+        # download`` hand-off makes a network hiccup on a metered
+        # link surface as a clean ``Could not materialise…`` WARNING
+        # instead of a wedged-extractor timeout further down the
+        # pipeline. Best-effort: ``download_if_evicted`` is a no-op
+        # on non-macOS hosts and a safe-fallback when ``brctl`` is
+        # unavailable, so it's cheap to call unconditionally.
+        if is_iclouddrive_managed(path) and not download_if_evicted(path):
+            logger.warning(
+                "Could not materialise iCloud placeholder %s — skipping "
+                "(brctl download failed or file still evicted)",
                 path,
             )
             return None

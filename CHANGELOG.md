@@ -48,6 +48,24 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   non-interactive mode the same handshake runs without opening the
   pane (CI / unattended installs would never see a GUI dialog
   anyway) so a denial still surfaces in the install log.
+- `FilesystemSource.parse` now proactively materialises iCloud
+  placeholders before extraction. When the path is iCloud-managed
+  (any `Mobile Documents` provider) and the file is currently
+  evicted, `brctl download` is invoked before the extractor reads.
+  macOS already auto-downloads on `open()` when TCC is granted, but
+  the explicit hand-off turns a network hiccup on a metered link
+  into a clean `Could not materialise iCloud placeholder…` WARNING
+  instead of a wedged-extractor timeout. No-op on non-macOS hosts
+  and best-effort on macOS (a missing `brctl` falls back to the
+  existing eviction-tolerance shim from PR #19).
+- `corpus-forge service install --apply --launchd` now runs a TCC
+  handshake right after `launchctl load` succeeds. A freshly-loaded
+  LaunchAgent inherits TCC from launchd itself rather than the
+  terminal that installed it; if the agent's grant is missing, the
+  daemon would die on the first iCloud read. Surface that
+  requirement up-front by probing the configured iCloud roots and,
+  on denial, opening System Settings → Full Disk Access with the
+  recovery instruction printed to stderr.
 
 ## [0.1.0b9] - 2026-05-22
 
