@@ -36,8 +36,6 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   reset semantics, all-fail batch, and the ``max_retries=0``
   constructor kwarg).
 
-## [Unreleased]
-
 ### Added
 
 - New `embedder_drift` doctor check + `corpus-forge embedder gc`
