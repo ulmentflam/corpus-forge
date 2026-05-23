@@ -23,6 +23,50 @@ from .base import BaseEmbedder
 logger = logging.getLogger(__name__)
 
 
+# Status-code threshold helpers — named so the ``_is_recoverable_exception``
+# below isn't peppered with magic numbers.
+_HTTP_CLIENT_ERROR_FLOOR = 400
+_HTTP_SERVER_ERROR_FLOOR = 500
+_HTTP_RATE_LIMITED = 429
+
+
+def _is_recoverable_exception(exc: BaseException) -> bool:
+    """Return ``True`` when bisecting / retrying ``exc`` might help.
+
+    Bisection is the recovery for content-specific failures (one bad
+    chunk in a batch poisons the response) and intermittent upstream
+    glitches (5xx, rate-limit, connection blip). It's the wrong tool
+    for **deterministic** failures: a wrong model name (404), a bad
+    API key (401), a forbidden endpoint (403), or a request-shape
+    mismatch (400/422) won't change between attempts, and bisecting
+    them just wastes O(N) requests per batch on the same error. For
+    those, we re-raise immediately so the caller sees the real cause.
+
+    Policy:
+
+    - 4xx **except** ``429`` (rate-limited) → non-recoverable; re-raise.
+    - 5xx, ``429``, or connection-level errors (no ``status_code``
+      attribute) → recoverable; let the bisection logic try.
+
+    The check is duck-typed on a ``.status_code`` attribute so it
+    works against the OpenAI SDK's ``APIStatusError`` family without
+    importing every concrete subclass.
+    """
+
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        # Connection-level / unknown → give bisection a chance.
+        return True
+    try:
+        status_int = int(status)
+    except (TypeError, ValueError):
+        return True
+    return not (
+        _HTTP_CLIENT_ERROR_FLOOR <= status_int < _HTTP_SERVER_ERROR_FLOOR
+        and status_int != _HTTP_RATE_LIMITED
+    )
+
+
 class OpenAIEmbedder(BaseEmbedder):
     """OpenAI / OpenAI-compatible HTTP embedder."""
 
@@ -240,22 +284,52 @@ class OpenAIEmbedder(BaseEmbedder):
                 dimensions=self.dimension,
             )
             row_vecs = [item.embedding for item in response.data]
-            # Local NaN check — Ollama in particular sometimes returns
-            # 2xx with NaN-laced floats; the SDK happily passes those
-            # through. Treat any NaN-containing row as a failure for
-            # the bisection.
-            nan_row_idx_within_batch = [
-                i for i, vec in enumerate(row_vecs) if any(math.isnan(x) for x in vec)
-            ]
-            if not nan_row_idx_within_batch:
-                return row_vecs, []
-            logger.debug(
-                "Embed batch (size=%d) returned %d NaN rows; bisecting to isolate",
-                len(texts),
-                len(nan_row_idx_within_batch),
-            )
-            # Fall through to bisection below.
+            # Row-count sanity check — if the provider returned fewer
+            # (or more) rows than we asked for we can't map vectors
+            # back to inputs, so treat the whole batch as failed and
+            # let the bisection isolate the offender. Surfaces broken
+            # server-side responses (the OpenAI / Ollama SDKs trust
+            # the response shape and would silently misalign otherwise).
+            if len(row_vecs) != len(texts):
+                logger.warning(
+                    "Embed batch row-count mismatch: expected %d, got %d — "
+                    "treating batch as failed and bisecting to isolate",
+                    len(texts),
+                    len(row_vecs),
+                )
+                if len(texts) == 1:
+                    return [], list(orig_indices)
+                # Fall through to bisection — drop the partial response.
+            else:
+                # Local NaN check — Ollama in particular sometimes
+                # returns 2xx with NaN-laced floats; the SDK happily
+                # passes those through. Treat any NaN-containing row
+                # as a failure for the bisection.
+                nan_row_idx_within_batch = [
+                    i for i, vec in enumerate(row_vecs) if any(math.isnan(x) for x in vec)
+                ]
+                if not nan_row_idx_within_batch:
+                    return row_vecs, []
+                logger.debug(
+                    "Embed batch (size=%d) returned %d NaN rows; bisecting to isolate",
+                    len(texts),
+                    len(nan_row_idx_within_batch),
+                )
+                # Fall through to bisection below.
         except Exception as exc:
+            # Re-raise non-recoverable errors immediately — bisecting a
+            # wrong-model-name or bad-API-key error just produces N
+            # rounds of the same 4xx and hides the real cause. The
+            # helper inspects ``exc.status_code`` (duck-typed against
+            # the OpenAI SDK's ``APIStatusError`` family) and only
+            # treats 4xx-except-429 as deterministic.
+            if not _is_recoverable_exception(exc):
+                logger.error(
+                    "Non-recoverable embed error (status=%s): %s — re-raising",
+                    getattr(exc, "status_code", "?"),
+                    str(exc)[:200],
+                )
+                raise
             logger.debug(
                 "Embed batch (size=%d) raised %s: %s — bisecting to isolate",
                 len(texts),
@@ -267,23 +341,21 @@ class OpenAIEmbedder(BaseEmbedder):
         if len(texts) == 1:
             single_text = texts[0]
             sha = hashlib.sha256(single_text.encode("utf-8", errors="replace")).hexdigest()[:12]
-            _PREVIEW_CHARS = 80  # chars of head/tail to show in the WARNING log
-            head = single_text[:_PREVIEW_CHARS].replace("\n", "\\n")
-            tail = (
-                single_text[-_PREVIEW_CHARS:].replace("\n", "\\n")
-                if len(single_text) > _PREVIEW_CHARS
-                else ""
-            )
+            # NOTE: we intentionally do NOT log chunk text here — even
+            # short previews leak PII for users ingesting personal
+            # vaults / chat history. ``sha256`` is enough to reproduce
+            # the failure out-of-band (look up the chunk by hash in
+            # ``corpus.chunks`` and replay against the embedder) and
+            # ``orig_idx`` + ``chars`` give operators enough context
+            # to find the corpus-forge log entry that processed it.
             logger.warning(
                 "Skipping chunk that the embedder cannot encode "
-                "(orig_idx=%d, chars=%d, sha256=%s, first80=%r, last80=%r). "
+                "(orig_idx=%d, chars=%d, sha256=%s). "
                 "The chunk stays in chunks_missing_embedding; a future "
                 "ingest pass will retry it once the embedder recovers.",
                 orig_indices[0],
                 len(single_text),
                 sha,
-                head,
-                tail,
             )
             return [], [orig_indices[0]]
 

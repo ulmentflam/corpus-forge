@@ -90,7 +90,21 @@ class TestConstruction:
     def test_client_constructed_with_max_retries_zero(self) -> None:
         """``max_retries=0`` is essential — without it the SDK adds
         ~7s of backoff per failed batch and the bisection loop slows
-        to a crawl. Pin the constructor kwarg."""
+        to a crawl. Pin the constructor kwarg.
+
+        Coupling note for future maintainers
+        ------------------------------------
+        We monkey-patch the ``OpenAI`` symbol on the
+        ``corpus_forge.embedders.openai`` module (the exact attribute
+        ``_get_client`` reads) rather than ``openai.OpenAI`` directly,
+        because ``_get_client`` does
+        ``from openai import OpenAI`` once at module-import time and
+        binds the result as ``openai_mod.OpenAI``. Patching the
+        global ``openai`` package wouldn't intercept the cached
+        binding. If ``_get_client`` is ever refactored to look up
+        ``openai.OpenAI`` lazily, switch this spy to patch there
+        instead.
+        """
 
         emb = _make_embedder()
         import corpus_forge.embedders.openai as openai_mod
@@ -140,8 +154,26 @@ class TestHappyPath:
 
 class TestSingleChunkFailure:
     def test_single_chunk_nan_logs_and_skips(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The WARNING log must carry enough metadata to reproduce the
+        failure out-of-band, but must NOT include the chunk text (PII).
+
+        We validate the metadata flexibly — an integer ``orig_idx``,
+        an integer ``chars`` count, and a hex sha256 prefix — rather
+        than asserting on literal tag substrings, so the log message
+        can be rephrased without breaking the test. The hex regex
+        accepts the current 12-char truncation and any reasonable
+        length up to a full 64-char sha256.
+        """
+
+        import logging
+        import re
+
         emb = _make_embedder()
         client = MagicMock()
+
+        # Use distinctive PII-shaped content so we can also assert
+        # it does NOT leak into the log.
+        secret_text = "SSN: 123-45-6789 — email: alice@example.com"
 
         def fake_create(*, model, input, encoding_format, dimensions):  # type: ignore[no-untyped-def]
             return _embeddings_response([[float("nan"), float("nan"), float("nan"), float("nan")]])
@@ -149,19 +181,27 @@ class TestSingleChunkFailure:
         client.embeddings.create.side_effect = fake_create
         emb._client = client
 
-        import logging
-
         with caplog.at_level(logging.WARNING, logger="corpus_forge.embedders.openai"):
-            result = emb.encode(["bad-chunk"])
+            result = emb.encode([secret_text])
+
         assert result.shape == (0, 4)
         assert emb.last_failed_indices == [0]
-        assert any(
-            "Skipping chunk that the embedder cannot encode" in r.message for r in caplog.records
+        warning_records = [r for r in caplog.records if "Skipping chunk" in r.message]
+        assert warning_records, "expected a 'Skipping chunk' WARNING in caplog"
+        log_msg = warning_records[0].message
+
+        # Flexible metadata checks — survive reasonable rephrasings.
+        assert re.search(r"orig[_\s]?idx[=:]?\s*\d+", log_msg, flags=re.IGNORECASE), log_msg
+        assert re.search(r"chars[=:]?\s*\d+", log_msg, flags=re.IGNORECASE), log_msg
+        assert re.search(r"sha(?:256)?[=:]?\s*[0-9a-f]{8,64}", log_msg, flags=re.IGNORECASE), (
+            log_msg
         )
-        # The log must include enough detail to reproduce the failure
-        log_msg = next(r.message for r in caplog.records if "Skipping chunk" in r.message)
-        for tag in ("orig_idx=", "chars=", "sha256=", "first80=", "last80="):
-            assert tag in log_msg, f"missing {tag} in WARNING log: {log_msg!r}"
+
+        # PII guard — neither the SSN nor the email may appear.
+        assert "123-45-6789" not in log_msg
+        assert "alice@example.com" not in log_msg
+        # No raw text preview at all (PII-shaped or otherwise).
+        assert "SSN" not in log_msg
 
     def test_single_chunk_5xx_logs_and_skips(self) -> None:
         emb = _make_embedder()
@@ -311,3 +351,127 @@ class TestAllFailBatch:
         result = emb.encode(["a", "b", "c"])
         assert result.shape == (0, 4)
         assert set(emb.last_failed_indices) == {0, 1, 2}
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Recoverable-vs-non-recoverable triage
+# ─────────────────────────────────────────────────────────────────────
+
+
+class _FakeStatusError(Exception):
+    """Stands in for ``openai.APIStatusError`` — carries ``.status_code``."""
+
+    def __init__(self, status_code: int, message: str = "fake") -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class TestExceptionTriage:
+    """4xx (except 429) must NOT be bisected — they're deterministic
+    config / protocol errors, and re-trying them just wastes O(N)
+    requests per batch on the same error. Re-raise immediately so the
+    caller sees the real cause.
+
+    5xx, 429, and connection-level errors (no ``status_code``) still
+    bisect — they're recoverable.
+    """
+
+    @pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+    def test_4xx_non_recoverable_reraises_immediately(self, status: int) -> None:
+        emb = _make_embedder()
+        client = MagicMock()
+        client.embeddings.create.side_effect = _FakeStatusError(status, f"{status} bad")
+        emb._client = client
+
+        with pytest.raises(_FakeStatusError) as excinfo:
+            emb.encode(["a", "b", "c", "d"])
+        assert excinfo.value.status_code == status
+        # And the SDK should have been called exactly once — no
+        # bisection rounds wasted on a deterministic failure.
+        assert client.embeddings.create.call_count == 1
+
+    def test_429_is_recoverable_and_bisects(self) -> None:
+        """Rate-limited is a transient condition; bisection still
+        eventually lands on the per-chunk path which logs + skips."""
+
+        emb = _make_embedder()
+        client = MagicMock()
+        client.embeddings.create.side_effect = _FakeStatusError(429, "rate limited")
+        emb._client = client
+
+        # No raise — bisection runs to the base case and skips.
+        result = emb.encode(["a", "b"])
+        assert result.shape == (0, 4)
+        assert set(emb.last_failed_indices) == {0, 1}
+        # Bisection: 1 (whole batch) + 2 (each half) = 3 calls.
+        assert client.embeddings.create.call_count == 3
+
+    def test_5xx_is_recoverable_and_bisects(self) -> None:
+        emb = _make_embedder()
+        client = MagicMock()
+        client.embeddings.create.side_effect = _FakeStatusError(500, "internal")
+        emb._client = client
+
+        result = emb.encode(["a", "b"])
+        assert result.shape == (0, 4)
+        assert set(emb.last_failed_indices) == {0, 1}
+
+    def test_connection_error_no_status_is_recoverable(self) -> None:
+        """A connection-level error has no ``status_code`` attribute;
+        treat as recoverable + bisect."""
+
+        emb = _make_embedder()
+        client = MagicMock()
+        client.embeddings.create.side_effect = RuntimeError("ECONNRESET")
+        emb._client = client
+
+        result = emb.encode(["a"])
+        assert result.shape == (0, 4)
+        assert emb.last_failed_indices == [0]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Row-count mismatch
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestRowCountMismatch:
+    """The provider must return exactly ``len(input)`` rows. If it
+    doesn't, we can't map vectors back to chunk_ids and have to treat
+    the batch as failed for the bisection."""
+
+    def test_short_response_triggers_bisection(self) -> None:
+        """Server returns fewer rows than asked → bisect to isolate."""
+
+        emb = _make_embedder()
+        client = MagicMock()
+        # 4 inputs, 3 rows back. Bisection should still recover the
+        # subset that does respond cleanly when batched alone.
+        call_count = {"n": 0}
+
+        def fake_create(*, model, input, encoding_format, dimensions):  # type: ignore[no-untyped-def]
+            call_count["n"] += 1
+            if len(input) == 4:
+                # Top-level short response.
+                return _embeddings_response([[1.0, 0.0, 0.0, 0.0]] * 3)
+            return _embeddings_response([[1.0, 0.0, 0.0, 0.0]] * len(input))
+
+        client.embeddings.create.side_effect = fake_create
+        emb._client = client
+
+        result = emb.encode(["a", "b", "c", "d"])
+        # All 4 succeed once they're split into halves of 2 (no mismatch).
+        assert result.shape == (4, 4)
+        assert emb.last_failed_indices == []
+
+    def test_single_chunk_short_response_skips(self) -> None:
+        """A response with zero rows for a single-chunk input → skip."""
+
+        emb = _make_embedder()
+        client = MagicMock()
+        client.embeddings.create.return_value = _embeddings_response([])  # 0 rows
+        emb._client = client
+
+        result = emb.encode(["alone"])
+        assert result.shape == (0, 4)
+        assert emb.last_failed_indices == [0]
