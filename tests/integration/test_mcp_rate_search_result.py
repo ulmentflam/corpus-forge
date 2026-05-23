@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -55,6 +55,11 @@ from corpus_forge.mcp.server import build_server
 
 mcp = pytest.importorskip("mcp")
 from mcp import types as mcp_types  # noqa: E402
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from collections.abc import Coroutine
+
+    from mcp.server import Server
 
 pytestmark = pytest.mark.integration
 
@@ -69,11 +74,11 @@ _TOOL_NAME = "rate_search_result"
 # ---------------------------------------------------------------------------
 
 
-def _run(coro: Any) -> Any:
+def _run(coro: Coroutine[object, object, object]) -> object:
     return asyncio.run(coro)
 
 
-def _list_tool_names(server: Any) -> set[str]:
+def _list_tool_names(server: Server) -> set[str]:
     handler = server.request_handlers[mcp_types.ListToolsRequest]
     request = mcp_types.ListToolsRequest(method="tools/list")
     result = _run(handler(request))
@@ -81,7 +86,7 @@ def _list_tool_names(server: Any) -> set[str]:
     return {t.name for t in root.tools}
 
 
-def _call_raw(server: Any, name: str, arguments: dict[str, Any]) -> Any:
+def _call_raw(server: Server, name: str, arguments: dict[str, object]) -> object:
     """Return the raw CallToolResult root (do NOT raise on isError)."""
     handler = server.request_handlers[mcp_types.CallToolRequest]
     request = mcp_types.CallToolRequest(
@@ -92,7 +97,7 @@ def _call_raw(server: Any, name: str, arguments: dict[str, Any]) -> Any:
     return result.root if hasattr(result, "root") else result
 
 
-def _payload(root: Any) -> dict:
+def _payload(root: object) -> dict[str, object]:
     """Extract dict payload from a successful CallToolResult."""
     sc = getattr(root, "structuredContent", None)
     if sc is not None:
@@ -101,11 +106,11 @@ def _payload(root: Any) -> dict:
     return json.loads(content[0].text)
 
 
-def _is_error(root: Any) -> bool:
+def _is_error(root: object) -> bool:
     return bool(getattr(root, "isError", False))
 
 
-def _error_text(root: Any) -> str:
+def _error_text(root: object) -> str:
     content = getattr(root, "content", [])
     return "".join(getattr(b, "text", "") for b in content)
 
@@ -127,7 +132,7 @@ class _BackedRetriever:
     def __init__(self, backend: SQLiteBackend) -> None:
         self.backend = backend
 
-    def search(self, query: str, options: Any) -> list[Any]:
+    def search(self, query: str, options: object) -> list[object]:
         return []
 
 
@@ -175,7 +180,7 @@ def _seed(backend: SQLiteBackend) -> dict[str, int]:
     }
 
 
-def _build_server(backend: SQLiteBackend, *, writes_enabled: bool) -> Any:
+def _build_server(backend: SQLiteBackend, *, writes_enabled: bool) -> Server:
     retriever = _BackedRetriever(backend)
     return build_server(
         retriever_builder=lambda: retriever,
@@ -214,12 +219,12 @@ def seeded(backend: SQLiteBackend) -> dict[str, int]:
 
 
 @pytest.fixture
-def server_rw(backend: SQLiteBackend, seeded: dict) -> Any:
+def server_rw(backend: SQLiteBackend, seeded: dict) -> Server:
     return _build_server(backend, writes_enabled=True)
 
 
 @pytest.fixture
-def server_ro(backend: SQLiteBackend, seeded: dict) -> Any:
+def server_ro(backend: SQLiteBackend, seeded: dict) -> Server:
     return _build_server(backend, writes_enabled=False)
 
 
@@ -256,7 +261,7 @@ class TestToolRegistration:
 class TestWriteGate:
     """Calling the tool with writes_enabled=False returns the standard gate error."""
 
-    def test_calling_write_gated_tool_returns_error(self, server_ro: Any, seeded: dict) -> None:
+    def test_calling_write_gated_tool_returns_error(self, server_ro: Server, seeded: dict) -> None:
         """rate_search_result with writes_enabled=False returns isError or unknown-tool."""
         root = _call_raw(
             server_ro,
@@ -276,7 +281,7 @@ class TestWriteGate:
         )
 
     def test_write_gate_error_message_contains_tool_name(
-        self, server_ro: Any, seeded: dict
+        self, server_ro: Server, seeded: dict
     ) -> None:
         """The error text from the gated call names the tool or says 'unknown'."""
         root = _call_raw(
@@ -313,7 +318,7 @@ class TestHappyPath:
         return int(rows[0]["id"])
 
     def test_happy_path_existing_session(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """Inserts event row and audit row; returns {event_id, session_id}."""
         self._pre_insert_session(backend, "q-existing-1", seeded["dataset_id"])
@@ -335,7 +340,7 @@ class TestHappyPath:
         assert isinstance(result.get("session_id"), int), f"Expected session_id int; got {result}"
 
     def test_happy_path_event_row_persisted(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """A search_result_events row is actually written to the database."""
         self._pre_insert_session(backend, "q-persist-check", seeded["dataset_id"])
@@ -357,7 +362,7 @@ class TestHappyPath:
         )
 
     def test_happy_path_audit_row_written(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """rate_search_result emits exactly one mcp_audit row."""
         self._pre_insert_session(backend, "q-audit-check", seeded["dataset_id"])
@@ -379,7 +384,7 @@ class TestHappyPath:
         )
 
     def test_output_is_json_serialisable(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """The return value round-trips through json.dumps without error."""
         self._pre_insert_session(backend, "q-json-serial", seeded["dataset_id"])
@@ -410,7 +415,7 @@ class TestAutoCreateSession:
     """When query_id is not in search_sessions, a row is auto-created."""
 
     def test_autocreate_session_when_query_id_unknown(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """A brand-new query_id triggers session creation; no exception raised."""
         before_sessions = _count_sessions(backend)
@@ -431,7 +436,7 @@ class TestAutoCreateSession:
         )
 
     def test_autocreated_session_query_text_matches_query_id(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """Auto-created session stores the supplied query_id as its query text.
 
@@ -459,7 +464,7 @@ class TestAutoCreateSession:
         )
 
     def test_autocreated_session_id_is_returned(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """The returned session_id matches the auto-created row's id."""
         root = _call_raw(
@@ -491,7 +496,7 @@ class TestReplacementChunkId:
     """replacement_chunk_id is stored cleanly on the event row."""
 
     def test_replacement_chunk_id_recorded(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """replacement_chunk_id appears verbatim in the search_result_events row."""
         root = _call_raw(
@@ -519,7 +524,7 @@ class TestReplacementChunkId:
         )
 
     def test_replacement_chunk_id_defaults_to_null(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """When replacement_chunk_id is omitted, the column is NULL."""
         root = _call_raw(
@@ -555,7 +560,7 @@ class TestValueNone:
     """value=None is accepted for signals that carry no numeric magnitude."""
 
     def test_value_none_creates_event_row(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """thumbs_up signal with value=None inserts a row without error."""
         root = _call_raw(
@@ -574,7 +579,7 @@ class TestValueNone:
         assert isinstance(result.get("event_id"), int)
 
     def test_value_none_stored_as_null(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """NULL value is persisted verbatim on the event row."""
         root = _call_raw(
@@ -609,7 +614,7 @@ class TestInvalidChunkId:
     """An unknown chunk_id does not silently succeed — a clear error is returned."""
 
     def test_unknown_chunk_id_returns_error(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """rate_search_result with a non-existent chunk_id returns isError=True."""
         root = _call_raw(
@@ -639,7 +644,7 @@ class TestDuplicateRatingsAreAllRecorded:
     machine with a unique constraint."""
 
     def test_two_consecutive_ratings_create_two_rows(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         common_args = {
             "query_id": "qid-dup-signal",
@@ -665,7 +670,7 @@ class TestDuplicateRatingsAreAllRecorded:
         )
 
     def test_two_ratings_yield_exactly_two_db_rows(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """DB count confirms both rows persisted."""
         before = _count_events(backend)
@@ -692,7 +697,7 @@ class TestSourcePreserved:
     """The source field is stored and returned exactly as passed."""
 
     def test_source_verbatim_in_db(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         source = "reranker-v2/bge-reranker-large"
         root = _call_raw(
@@ -800,7 +805,7 @@ class TestRateSearchResultPostgres:
             "replacement_chunk_id": repl_id,
         }
 
-    def _pg_backend(self, pg_dsn: str) -> Any:
+    def _pg_backend(self, pg_dsn: str) -> object:
         from corpus_forge.backends.postgres import PostgresBackend
 
         return PostgresBackend(dsn=pg_dsn, schema="corpus")
