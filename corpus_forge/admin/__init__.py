@@ -24,4 +24,10 @@ Surface map:
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from corpus_forge.admin.prune import PruneCandidate, PruneReport, prune_dataset
+
+__all__: list[str] = [
+    "PruneCandidate",
+    "PruneReport",
+    "prune_dataset",
+]
