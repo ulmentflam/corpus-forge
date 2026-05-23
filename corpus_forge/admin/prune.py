@@ -2,8 +2,11 @@
 
 The module exposes a single entry point — :func:`prune_dataset` — that
 walks the configured candidate pool, scores every chunk under the
-:data:`_PRUNE_WEIGHTS` rubric, and surfaces the bottom-percentile rows
-as :class:`PruneCandidate` objects in a :class:`PruneReport`.
+:data:`corpus_forge.curation.selector.PRUNE_WEIGHTS` rubric, and surfaces
+the bottom-percentile rows as :class:`PruneCandidate` objects in a
+:class:`PruneReport`. The weighted-sum lives in
+:func:`corpus_forge.curation.selector.score_for_pruning` so curation +
+prune share one source of truth for the rubric.
 
 Scoring **reuses** the existing curation primitives in
 :mod:`corpus_forge.curation.selector` so the two surfaces stay aligned
@@ -53,11 +56,13 @@ from pathlib import Path
 from typing import Any
 
 from corpus_forge.curation.selector import (
+    PRUNE_WEIGHTS,
     _Candidate,
     _compute_confidence_deficit,
     _compute_freshness,
     _compute_missing_metadata,
     _iter_curation_candidates,
+    score_for_pruning,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,20 +73,9 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────
 
 
-_PRUNE_WEIGHTS: dict[str, float] = {
-    "confidence_deficit": 0.20,
-    "missing_metadata": 0.20,
-    "freshness_inverted": 0.15,  # 1.0 - freshness
-    "duplicate_density": 0.25,
-    "feedback_drag": 0.20,
-}
-"""Weight table for the five prune sub-scores. Sums to 1.0.
-
-A change here ripples directly into :func:`prune_dataset` (no per-row
-weight selection — the rubric is fixed across the pool) and the
-``test_score_ordering_invariants`` lock-test in
-``tests/unit/test_prune_scorer.py``.
-"""
+# The prune weight rubric now lives in :mod:`corpus_forge.curation.selector`
+# (``PRUNE_WEIGHTS``); the weighted-sum is computed by
+# :func:`score_for_pruning` so curation + prune share one source of truth.
 
 
 # Default pool size pulled from the backend; larger pools cost more memory
@@ -310,14 +304,14 @@ def _prune_reason(sub_scores: dict[str, float]) -> str:
 
     weighted = {
         "confidence_deficit": sub_scores.get("confidence_deficit", 0.0)
-        * _PRUNE_WEIGHTS["confidence_deficit"],
+        * PRUNE_WEIGHTS["confidence_deficit"],
         "missing_metadata": sub_scores.get("missing_metadata", 0.0)
-        * _PRUNE_WEIGHTS["missing_metadata"],
+        * PRUNE_WEIGHTS["missing_metadata"],
         "freshness_inverted": sub_scores.get("freshness_inverted", 0.0)
-        * _PRUNE_WEIGHTS["freshness_inverted"],
+        * PRUNE_WEIGHTS["freshness_inverted"],
         "duplicate_density": sub_scores.get("duplicate_density", 0.0)
-        * _PRUNE_WEIGHTS["duplicate_density"],
-        "feedback_drag": sub_scores.get("feedback_drag", 0.0) * _PRUNE_WEIGHTS["feedback_drag"],
+        * PRUNE_WEIGHTS["duplicate_density"],
+        "feedback_drag": sub_scores.get("feedback_drag", 0.0) * PRUNE_WEIGHTS["feedback_drag"],
     }
     top = max(weighted, key=lambda k: weighted[k])
     if weighted[top] <= 0.0:
@@ -525,15 +519,6 @@ def prune_dataset(
         dup_density = _duplicate_density(cand, minhash_module=minhash_module)
         fb_drag = _feedback_drag(cand, feedback_rows)
 
-        score = (
-            deficit * _PRUNE_WEIGHTS["confidence_deficit"]
-            + missing_score * _PRUNE_WEIGHTS["missing_metadata"]
-            + fresh_inv * _PRUNE_WEIGHTS["freshness_inverted"]
-            + dup_density * _PRUNE_WEIGHTS["duplicate_density"]
-            + fb_drag * _PRUNE_WEIGHTS["feedback_drag"]
-        )
-        score = max(0.0, min(1.0, score))
-
         sub_scores: dict[str, float] = {
             "confidence_deficit": deficit,
             "missing_metadata": missing_score,
@@ -541,6 +526,7 @@ def prune_dataset(
             "duplicate_density": dup_density,
             "feedback_drag": fb_drag,
         }
+        score, sub_scores = score_for_pruning(cand, sub_scores=sub_scores)
         scored.append(
             PruneCandidate(
                 chunk_id=cand.chunk_id,
