@@ -121,7 +121,7 @@ class TestWiredOntoConfig:
         nested fields the regression-config test shouldn't have to
         know about); the schema introspection is sufficient.
         """
-        from corpus_forge.config import Config  # noqa: PLC0415
+        from corpus_forge.config import Config
 
         assert "eval_regression" in Config.model_fields
         field = Config.model_fields["eval_regression"]
