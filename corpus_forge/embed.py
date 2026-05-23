@@ -200,6 +200,22 @@ def backfill_embedder(
             embeddings = embedder.encode(texts)
             _encode_elapsed = _time.perf_counter() - _t0
 
+            # Same bisection-recovery contract as ingest.py: skip
+            # chunk_ids whose corresponding text was bisected out by
+            # the embedder. The skipped chunks stay pending so the
+            # next ``corpus-forge embed`` pass retries them after the
+            # model recovers.
+            failed_indices: set[int] = set(getattr(embedder, "last_failed_indices", []))
+            if failed_indices:
+                chunk_ids = [cid for i, cid in enumerate(chunk_ids) if i not in failed_indices]
+                logger.warning(
+                    "Embedder %s skipped %d/%d chunks in this batch (NaN-shaped "
+                    "response or 5xx); they stay pending for retry.",
+                    embedder.name,
+                    len(failed_indices),
+                    len(texts),
+                )
+
             # Write embeddings
             pairs = list(zip(chunk_ids, embeddings, strict=True))
             _t1 = _time.perf_counter()

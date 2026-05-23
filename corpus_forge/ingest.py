@@ -482,12 +482,34 @@ def _write_embeddings_for_chunks(
         zip(*chunks_needing_embedding, strict=True) if chunks_needing_embedding else ([], [])
     )
 
-    # Generate embeddings
+    # Generate embeddings. The OpenAI embedder bisects-and-skips on
+    # NaN-shaped responses (PR #49); the indices it skipped are read
+    # back via ``getattr`` so non-bisecting embedders (sentence-
+    # transformers, model2vec) keep their existing contract.
     logger.info(f"Generating {embedder.name} embeddings for {len(texts)} chunks")
     embeddings = embedder.encode(texts)
+    failed_indices: set[int] = set(getattr(embedder, "last_failed_indices", []))
 
-    # Write embeddings
-    pairs = list(zip(chunk_ids_needing, embeddings, strict=True))
+    if failed_indices:
+        # Keep only chunk_ids whose embeddings actually came back.
+        # The skipped chunks stay in chunks_missing_embedding so a
+        # future ingest pass retries them after the model recovers.
+        chunk_ids_for_pairs = [
+            cid for i, cid in enumerate(chunk_ids_needing) if i not in failed_indices
+        ]
+        logger.warning(
+            "Embedder %s skipped %d/%d chunks (NaN-shaped response or 5xx); "
+            "they stay pending for the next ingest pass. Sample skipped "
+            "indices: %s",
+            embedder.name,
+            len(failed_indices),
+            len(texts),
+            sorted(failed_indices)[:5],
+        )
+    else:
+        chunk_ids_for_pairs = list(chunk_ids_needing)
+
+    pairs = list(zip(chunk_ids_for_pairs, embeddings, strict=True))
     backend.write_embeddings(embedder_id, pairs)
     logger.info(f"Written {len(pairs)} embeddings for {embedder.name}")
 
