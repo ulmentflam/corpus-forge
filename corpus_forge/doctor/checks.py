@@ -539,7 +539,7 @@ def _check_icloud_access(cfg: Config) -> CheckResult:
     icloud_paths: list[Path] = []
     for dataset in cfg.datasets:
         for source in dataset.sources:
-            if source.plugin != "filesystem":
+            if getattr(source, "plugin", None) != "filesystem":
                 continue
             root = getattr(source, "root", None) or getattr(source, "vault_root", None)
             if root is None:
