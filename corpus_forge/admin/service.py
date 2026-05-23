@@ -628,6 +628,75 @@ def _apply_launchd(plist_text: str) -> None:
             f"Run `launchctl load -w {target}` manually."
         )
 
+    _launchd_tcc_handshake()
+
+
+def _launchd_tcc_handshake() -> None:
+    """Probe iCloud TCC access after a fresh ``launchctl load``.
+
+    The freshly-loaded LaunchAgent inherits TCC from launchd itself,
+    not from whichever terminal ran ``service install --apply``. If
+    that grant is missing, the agent will keep dying on the first
+    iCloud read until the user adds the corpus-forge binary to Full
+    Disk Access. Surface that requirement now — while we still have
+    the user's attention — instead of letting them discover it later
+    by tailing the daemon log.
+
+    On non-macOS hosts (defensive — ``_apply_launchd`` only fires on
+    macOS) this is a no-op. When no iCloud-rooted source is
+    configured, the handshake skips silently.
+    """
+
+    from corpus_forge import macos_tcc
+
+    if not macos_tcc.is_macos():
+        return
+
+    try:
+        from corpus_forge.config import Config
+
+        cfg_path = Path.home() / ".config" / "corpus-forge" / "config.toml"
+        if not cfg_path.exists():
+            return
+        cfg = Config.load(config_path=cfg_path, secrets_path=cfg_path.parent / "secrets.env")
+    except Exception:
+        # Config load failure isn't a launchd-install problem; the
+        # ``corpus-forge doctor`` command already reports config issues.
+        return
+
+    icloud_paths: list[Path] = []
+    for dataset in cfg.datasets:
+        for source in dataset.sources:
+            if getattr(source, "plugin", None) != "filesystem":
+                continue
+            root = getattr(source, "root", None) or getattr(source, "vault_root", None)
+            if root is None:
+                continue
+            root_path = Path(root).expanduser()
+            if macos_tcc.is_iclouddrive_managed(root_path):
+                icloud_paths.append(root_path)
+
+    if not icloud_paths:
+        return
+
+    result = macos_tcc.request_full_disk_access(icloud_paths)
+    if result.granted:
+        ui_ok(
+            "TCC: Full Disk Access already granted "
+            f"for {len(icloud_paths)} iCloud-rooted source(s)."
+        )
+        return
+
+    ui_warn(
+        "The LaunchAgent has been installed, BUT macOS TCC is currently "
+        "blocking corpus-forge from reading the configured iCloud Drive "
+        "paths. The daemon will keep dying on the first iCloud read "
+        "until the access grant lands. Recovery:"
+    )
+    # ``ui_warn`` only takes one line cleanly; print the multi-line
+    # instruction to stderr afterwards so the user sees it.
+    print(result.instruction, file=sys.stderr)
+
 
 def _apply_schtasks(argv: list[str]) -> None:
     """Invoke ``schtasks /create`` to register the Windows task."""

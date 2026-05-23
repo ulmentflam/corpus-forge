@@ -502,7 +502,82 @@ def _check_zotero(cfg: Config) -> CheckResult:
     return CheckResult("zotero", worst, "; ".join(details))
 
 
-# ── orchestrator ──────────────────────────────────────────────────────
+def _check_icloud_access(cfg: Config) -> CheckResult:
+    """Probe TCC access for each configured iCloud-rooted source.
+
+    macOS gates ``~/Library/Mobile Documents/...`` behind the TCC
+    permission system. corpus-forge's filesystem source can configure
+    iCloud Drive paths (CloudDocs, Obsidian, etc.); when the running
+    process's terminal hasn't been granted Full Disk Access (or the
+    granular Files and Folders → iCloud Drive toggle), every read
+    fails with ``[Errno 1] Operation not permitted`` — and the
+    ingest crashes on the first file.
+
+    Status logic:
+
+    - ``SKIP`` on non-macOS hosts (no TCC layer to probe).
+    - ``SKIP`` when no filesystem source resolves to an
+      iCloud-managed path.
+    - ``OK`` when every iCloud root probes ``GRANTED`` (or
+      ``MISSING``, which is a separate problem the corpusignore /
+      source checks surface).
+    - ``WARN`` when at least one probe returns ``DENIED``. Not
+      ``FAIL`` because corpus-forge ships with a graceful eviction
+      handler (PR #19) — an unreachable iCloud root degrades the
+      run, but doesn't have to abort it.
+    """
+
+    from corpus_forge import macos_tcc  # noqa: PLC0415 — keeps cold start fast
+
+    if not macos_tcc.is_macos():
+        return CheckResult(
+            "icloud_access",
+            CheckStatus.SKIP,
+            "not a macOS host; TCC does not apply",
+        )
+
+    icloud_paths: list[Path] = []
+    for dataset in cfg.datasets:
+        for source in dataset.sources:
+            if getattr(source, "plugin", None) != "filesystem":
+                continue
+            root = getattr(source, "root", None) or getattr(source, "vault_root", None)
+            if root is None:
+                continue
+            root_path = Path(root).expanduser()
+            if macos_tcc.is_iclouddrive_managed(root_path):
+                icloud_paths.append(root_path)
+
+    if not icloud_paths:
+        return CheckResult(
+            "icloud_access",
+            CheckStatus.SKIP,
+            "no iCloud-rooted filesystem sources configured",
+        )
+
+    denials: list[str] = []
+    for path in icloud_paths:
+        probe = macos_tcc.probe_tcc_access(path)
+        if probe.denied:
+            denials.append(str(path))
+
+    if not denials:
+        return CheckResult(
+            "icloud_access",
+            CheckStatus.OK,
+            f"TCC grants access to {len(icloud_paths)} iCloud-rooted source(s)",
+        )
+
+    detail = (
+        f"{len(denials)} of {len(icloud_paths)} iCloud root(s) blocked by macOS TCC. "
+        "Run `corpus-forge setup` to open the Privacy pane, or grant "
+        "Full Disk Access to your terminal app manually in "
+        "System Settings → Privacy & Security."
+    )
+    return CheckResult("icloud_access", CheckStatus.WARN, detail)
+
+
+# ── orchestrator ──────────────────────────────────────────────────────────────────
 
 
 _CHECKS: tuple[Callable[[], CheckResult], ...] = (
@@ -645,8 +720,16 @@ def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
                 "skipped (config not loaded)",
             )
         )
+        results.append(
+            CheckResult(
+                "icloud_access",
+                CheckStatus.SKIP,
+                "skipped (config not loaded)",
+            )
+        )
     else:
         results.append(_check_corpusignore(loaded_cfg))
         results.append(_check_zotero(loaded_cfg))
         results.append(_check_embedder_indexes(loaded_cfg))
+        results.append(_check_icloud_access(loaded_cfg))
     return DoctorReport(results=results)

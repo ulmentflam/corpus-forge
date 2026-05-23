@@ -519,6 +519,7 @@ def run_wizard(
     resolved_dir = config_dir or DEFAULT_CONFIG_DIR
     config_path, secrets_path = _write_config(resolved_dir, answers)
     _apply_corpusignore(answers, resolved_dir)
+    _run_macos_tcc_handshake(answers, stream_out=stream_out or sys.stdout)
     return config_path, secrets_path, answers
 
 
@@ -538,7 +539,75 @@ def run_non_interactive(
     resolved_dir = config_dir or DEFAULT_CONFIG_DIR
     config_path, secrets_path = _write_config(resolved_dir, answers)
     _apply_corpusignore(answers, resolved_dir)
+    # Non-interactive mode runs in CI/headless environments — skip the
+    # System Settings open() but still surface a denial via stderr so a
+    # human reviewer sees it in the install logs.
+    _run_macos_tcc_handshake(
+        answers,
+        stream_out=sys.stderr,
+        open_settings=False,
+    )
     return config_path, secrets_path, answers
+
+
+def _run_macos_tcc_handshake(
+    answers: dict[str, str],
+    *,
+    stream_out: IO[str],
+    open_settings: bool = True,
+) -> None:
+    """Probe TCC access for any iCloud-rooted paths in the rendered config.
+
+    On macOS, the install handshake walks the configured filesystem
+    roots (and the answers for ``[fs_extra_path]`` questions, since
+    those become roots in :func:`render_config_toml`), classifies any
+    that live under ``~/Library/Mobile Documents/...``, and probes
+    them with :func:`corpus_forge.macos_tcc.probe_tcc_access`. On
+    denial, opens System Settings → Privacy & Security → Full Disk
+    Access and prints the recovery message.
+
+    Non-macOS hosts: silent no-op. The cost is one ``sys.platform``
+    check; we don't even import the macOS module on Linux/Windows.
+    """
+
+    if sys.platform != "darwin":
+        return
+
+    from corpus_forge import macos_tcc  # noqa: PLC0415 — keep cold-start fast
+
+    # The answers map carries free-form filesystem roots in fields
+    # like ``fs_root``, ``extra_root``, plus the new question IDs the
+    # ``filesystem_*_path`` pattern produces. Be generous about which
+    # keys we probe — any answer that looks like a path under
+    # ``Mobile Documents`` qualifies.
+    candidate_paths: list[Path] = []
+    for value in answers.values():
+        if not value or not isinstance(value, str):
+            continue
+        candidate = Path(value).expanduser()
+        if macos_tcc.is_iclouddrive_managed(candidate):
+            candidate_paths.append(candidate)
+
+    if not candidate_paths:
+        return
+
+    result = macos_tcc.request_full_disk_access(
+        candidate_paths,
+        open_settings_on_denial=open_settings,
+    )
+
+    if result.granted:
+        stream_out.write(
+            "[corpus-forge setup] macOS TCC: Full Disk Access already granted "
+            f"for {len(candidate_paths)} iCloud-rooted path(s).\n"
+        )
+        return
+
+    stream_out.write("\n")
+    stream_out.write("[corpus-forge setup] macOS TCC handshake — ACTION NEEDED\n")
+    stream_out.write("=" * 64 + "\n")
+    stream_out.write(result.instruction + "\n")
+    stream_out.write("=" * 64 + "\n\n")
 
 
 # ───────────────────────────────────────────────────────────────────────────

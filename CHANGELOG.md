@@ -8,6 +8,65 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Added
+
+- New module `corpus_forge.macos_tcc` — iCloud Drive + TCC integration
+  for macOS hosts. Public surface:
+  - `is_icloud_path` / `is_iclouddrive_managed` — classify a path as
+    iCloud-rooted (CloudDocs strict / Mobile Documents broad).
+  - `probe_tcc_access` — non-destructive 1-byte read that
+    distinguishes `GRANTED` / `DENIED` / `MISSING` / `ERROR` /
+    `NOT_APPLICABLE`. Catches the canonical
+    `PermissionError(errno=1, "Operation not permitted")` that macOS
+    surfaces when the running terminal hasn't been granted Full Disk
+    Access for `~/Library/Mobile Documents/`.
+  - `open_privacy_settings(pane)` — launches System Settings to the
+    Full Disk Access or Files and Folders pane via the
+    `x-apple.systempreferences:` URL scheme.
+  - `request_full_disk_access(paths)` — the install-time handshake.
+    Probes the supplied iCloud paths, opens the Privacy pane on
+    denial, and returns a structured outcome plus human-readable
+    instruction text naming the binary the user should add.
+  - `download_if_evicted(path)` — best-effort `brctl download`
+    wrapper for cloud-only placeholders. Proactive companion to the
+    `FilesystemSource` eviction-tolerance fix from PR #19.
+  Every public function degrades to a safe no-op on non-macOS hosts
+  (Linux / Windows installs are zero-cost). Module is exercised by
+  `tests/unit/test_macos_tcc.py` (29 tests pinning both macOS and
+  non-macOS branches via `sys.platform` monkeypatch).
+- `corpus-forge doctor` gains an `icloud_access` check that walks
+  every configured filesystem source, classifies iCloud-rooted
+  roots, and probes each one for TCC access. `OK` when all probes
+  succeed, `WARN` when at least one is `DENIED` (with the
+  `Run corpus-forge setup` recovery hint), `SKIP` on non-macOS hosts
+  or when no iCloud-rooted source is configured.
+- `corpus-forge setup` now runs a macOS TCC handshake after writing
+  `config.toml`. When any answer in the wizard resolves to an
+  iCloud-managed path and the probe fails, System Settings →
+  Privacy & Security → Full Disk Access opens automatically and the
+  wizard prints the exact terminal binary the user should add. In
+  non-interactive mode the same handshake runs without opening the
+  pane (CI / unattended installs would never see a GUI dialog
+  anyway) so a denial still surfaces in the install log.
+- `FilesystemSource.parse` now proactively materialises iCloud
+  placeholders before extraction. When the path is iCloud-managed
+  (any `Mobile Documents` provider) and the file is currently
+  evicted, `brctl download` is invoked before the extractor reads.
+  macOS already auto-downloads on `open()` when TCC is granted, but
+  the explicit hand-off turns a network hiccup on a metered link
+  into a clean `Could not materialise iCloud placeholder…` WARNING
+  instead of a wedged-extractor timeout. No-op on non-macOS hosts
+  and best-effort on macOS (a missing `brctl` falls back to the
+  existing eviction-tolerance shim from PR #19).
+- `corpus-forge service install --apply --launchd` now runs a TCC
+  handshake right after `launchctl load` succeeds. A freshly-loaded
+  LaunchAgent inherits TCC from launchd itself rather than the
+  terminal that installed it; if the agent's grant is missing, the
+  daemon would die on the first iCloud read. Surface that
+  requirement up-front by probing the configured iCloud roots and,
+  on denial, opening System Settings → Full Disk Access with the
+  recovery instruction printed to stderr.
+
 ## [0.1.0b9] - 2026-05-22
 
 ### Fixed
