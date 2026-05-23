@@ -54,7 +54,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -63,6 +63,11 @@ from corpus_forge.mcp.server import build_server
 
 mcp = pytest.importorskip("mcp")
 from mcp import types as mcp_types  # noqa: E402
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from collections.abc import Coroutine
+
+    from mcp.server import Server
 
 pytestmark = pytest.mark.integration
 
@@ -90,11 +95,11 @@ _VALID_SOURCES = {
 # ---------------------------------------------------------------------------
 
 
-def _run(coro: Any) -> Any:
+def _run(coro: Coroutine[object, object, object]) -> object:
     return asyncio.run(coro)
 
 
-def _list_tool_names(server: Any) -> set[str]:
+def _list_tool_names(server: Server) -> set[str]:
     handler = server.request_handlers[mcp_types.ListToolsRequest]
     request = mcp_types.ListToolsRequest(method="tools/list")
     result = _run(handler(request))
@@ -102,7 +107,7 @@ def _list_tool_names(server: Any) -> set[str]:
     return {t.name for t in root.tools}
 
 
-def _call_raw(server: Any, name: str, arguments: dict[str, Any]) -> Any:
+def _call_raw(server: Server, name: str, arguments: dict[str, object]) -> object:
     """Return the raw CallToolResult root (do NOT raise on isError)."""
     handler = server.request_handlers[mcp_types.CallToolRequest]
     request = mcp_types.CallToolRequest(
@@ -113,7 +118,7 @@ def _call_raw(server: Any, name: str, arguments: dict[str, Any]) -> Any:
     return result.root if hasattr(result, "root") else result
 
 
-def _payload(root: Any) -> dict:
+def _payload(root: object) -> dict[str, object]:
     """Extract dict payload from a successful CallToolResult."""
     sc = getattr(root, "structuredContent", None)
     if sc is not None:
@@ -122,11 +127,11 @@ def _payload(root: Any) -> dict:
     return json.loads(content[0].text)
 
 
-def _is_error(root: Any) -> bool:
+def _is_error(root: object) -> bool:
     return bool(getattr(root, "isError", False))
 
 
-def _error_text(root: Any) -> str:
+def _error_text(root: object) -> str:
     content = getattr(root, "content", [])
     return "".join(getattr(b, "text", "") for b in content)
 
@@ -148,7 +153,7 @@ class _BackedRetriever:
     def __init__(self, backend: SQLiteBackend) -> None:
         self.backend = backend
 
-    def search(self, query: str, options: Any) -> list[Any]:
+    def search(self, query: str, options: object) -> list[object]:
         return []
 
 
@@ -164,7 +169,7 @@ def _seed_dataset(backend: SQLiteBackend) -> dict[str, int]:
     return {"dataset_id": dataset_id}
 
 
-def _build_server(backend: SQLiteBackend, *, writes_enabled: bool) -> Any:
+def _build_server(backend: SQLiteBackend, *, writes_enabled: bool) -> Server:
     retriever = _BackedRetriever(backend)
     return build_server(
         retriever_builder=lambda: retriever,
@@ -198,12 +203,12 @@ def seeded(backend: SQLiteBackend) -> dict[str, int]:
 
 
 @pytest.fixture
-def server_rw(backend: SQLiteBackend, seeded: dict) -> Any:
+def server_rw(backend: SQLiteBackend, seeded: dict) -> Server:
     return _build_server(backend, writes_enabled=True)
 
 
 @pytest.fixture
-def server_ro(backend: SQLiteBackend, seeded: dict) -> Any:
+def server_ro(backend: SQLiteBackend, seeded: dict) -> Server:
     return _build_server(backend, writes_enabled=False)
 
 
@@ -218,9 +223,9 @@ def _demo_args(
     source: str = "record_demonstration",
     query: str = "What is the eigenvalue of the Hamiltonian for a hydrogen atom?",
     trace_id: str | None = None,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Return a valid record_demonstration argument dict."""
-    args: dict[str, Any] = {
+    args: dict[str, object] = {
         "query": query,
         "student_messages": [
             {"role": "assistant", "content": "The eigenvalue is approximately -13.6 eV."}
@@ -270,7 +275,7 @@ class TestToolRegistration:
 class TestWriteGate:
     """Calling the tool with writes_enabled=False returns the standard gate error."""
 
-    def test_calling_write_gated_tool_returns_error(self, server_ro: Any, seeded: dict) -> None:
+    def test_calling_write_gated_tool_returns_error(self, server_ro: Server, seeded: dict) -> None:
         """record_demonstration with writes_enabled=False returns isError=True."""
         root = _call_raw(server_ro, _TOOL_NAME, _demo_args())
         assert _is_error(root), (
@@ -278,7 +283,7 @@ class TestWriteGate:
         )
 
     def test_write_gate_error_message_names_tool_or_unknown(
-        self, server_ro: Any, seeded: dict
+        self, server_ro: Server, seeded: dict
     ) -> None:
         """The error text from the gated call names the tool or says 'unknown'."""
         root = _call_raw(server_ro, _TOOL_NAME, _demo_args())
@@ -297,7 +302,7 @@ class TestHappyPath:
     """Nominal round-trip: valid args → row inserted, audit written, payload returned."""
 
     def test_happy_path_returns_demonstration_id_and_deduped_flag(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """Returns {demonstration_id: int, deduped: bool}."""
         root = _call_raw(server_rw, _TOOL_NAME, _demo_args())
@@ -309,7 +314,7 @@ class TestHappyPath:
         assert isinstance(result.get("deduped"), bool), f"Expected deduped bool; got {result}"
 
     def test_happy_path_deduped_false_on_first_call(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """First call must return deduped=False (not a dedup hit)."""
         root = _call_raw(server_rw, _TOOL_NAME, _demo_args())
@@ -320,7 +325,7 @@ class TestHappyPath:
         )
 
     def test_happy_path_row_persisted_in_db(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """A sdft_demonstrations row is actually written to the database."""
         before = _count_demonstrations(backend)
@@ -330,7 +335,7 @@ class TestHappyPath:
         )
 
     def test_happy_path_audit_row_written(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """record_demonstration emits exactly one mcp_audit row."""
         before = _count_audit_rows(backend)
@@ -340,7 +345,7 @@ class TestHappyPath:
         )
 
     def test_output_is_json_serialisable(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """The return value round-trips through json.dumps without error."""
         root = _call_raw(server_rw, _TOOL_NAME, _demo_args())
@@ -359,7 +364,7 @@ class TestIdempotentDedup:
     """Identical calls deduplicate via content_hash; second call returns deduped=True."""
 
     def test_second_identical_call_returns_deduped_true(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """Second call with same payload must return deduped=True."""
         args = _demo_args()
@@ -372,7 +377,7 @@ class TestIdempotentDedup:
         )
 
     def test_second_identical_call_returns_same_demonstration_id(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """Deduped call returns the same demonstration_id as the original."""
         args = _demo_args()
@@ -386,7 +391,7 @@ class TestIdempotentDedup:
         )
 
     def test_second_identical_call_adds_no_new_db_row(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """DB row count stays at 1 after two identical calls."""
         args = _demo_args()
@@ -400,7 +405,7 @@ class TestIdempotentDedup:
         )
 
     def test_deduped_call_still_writes_audit_row(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """Even a deduped call emits an mcp_audit row for traceability."""
         args = _demo_args()
@@ -413,7 +418,7 @@ class TestIdempotentDedup:
         )
 
     def test_different_query_not_deduped(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """Two calls with different queries produce two distinct rows."""
         args1 = _demo_args(query="First distinct question about physics.")
@@ -446,7 +451,7 @@ class TestSourceTaxonomy:
         assert not _is_error(root), f"Valid source {source!r} was rejected: {_error_text(root)}"
 
     def test_invalid_source_returns_error(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """An unrecognised source value must return isError=True."""
         args = _demo_args(source="not_a_real_source_value_xyz")
@@ -479,7 +484,7 @@ class TestTraceIdRoundTrip:
     """trace_id is stored and returned if provided."""
 
     def test_trace_id_stored_in_db(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """trace_id appears verbatim in the sdft_demonstrations row."""
         trace = "trace-q1-test-001"
@@ -497,7 +502,7 @@ class TestTraceIdRoundTrip:
         )
 
     def test_trace_id_null_when_omitted(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """trace_id is NULL in DB when not passed."""
         root = _call_raw(server_rw, _TOOL_NAME, _demo_args())
@@ -523,7 +528,7 @@ class TestFKViolation:
     """Passing a dataset that does not exist must return isError=True."""
 
     def test_unknown_dataset_returns_error(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """record_demonstration with a non-existent dataset returns isError=True."""
         args = _demo_args(dataset="nonexistent-dataset-xyz-9999")
@@ -533,7 +538,7 @@ class TestFKViolation:
         )
 
     def test_unknown_dataset_error_text_is_descriptive(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict, server_rw: Server
     ) -> None:
         """Error message for unknown dataset names the dataset or says 'not found'."""
         args = _demo_args(dataset="no-such-dataset-abc")
@@ -598,7 +603,7 @@ class TestRecordDemonstrationPostgres:
         return int(ds_id)
 
     @staticmethod
-    def _pg_backend(pg_dsn: str) -> Any:
+    def _pg_backend(pg_dsn: str) -> object:
         from corpus_forge.backends.postgres import PostgresBackend
 
         return PostgresBackend(dsn=pg_dsn, schema="corpus")
