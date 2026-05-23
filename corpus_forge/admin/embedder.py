@@ -735,11 +735,230 @@ def cmd_repair_indexes(
     ui_ok(f"Rebuilt {len(drifted)} index(es).")
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Drift detection — stale ``corpus.embedders`` rows whose ``name`` is
+# no longer in the active config. ``embedder list`` reads config-side
+# state and can't see these orphans; without dedicated tooling they
+# silently bloat the DB (the maintainer's instance had a 209 MB
+# orphan ``embeddings_qwen3_2000`` table on top of a 342 MB
+# real-data DB before this code landed).
+# ──────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class EmbedderDriftRow:
+    """Per-orphan summary returned by :func:`audit_embedder_drift`.
+
+    A row is an "orphan" when its ``name`` exists in
+    ``corpus.embedders`` but NOT in the live config's
+    ``[[embedders]]`` blocks. ``table_size_bytes`` is best-effort —
+    ``None`` when the per-embedder table is missing or
+    ``pg_total_relation_size`` errors.
+    """
+
+    name: str
+    db_id: int
+    dimension: int
+    table_name: str
+    table_exists: bool
+    table_size_bytes: int | None
+    row_count: int | None
+
+
+def audit_embedder_drift(backend, cfg) -> list[EmbedderDriftRow]:
+    """Walk ``corpus.embedders`` and return rows whose name isn't in ``cfg``.
+
+    The active-config side is read from ``cfg.embedders[*].name``.
+    Names that appear in the DB but not in config are orphans and
+    get reported here so doctor / ``embedder gc`` can act.
+
+    SQLite backends short-circuit to ``[]`` — sqlite-vec stores
+    embeddings in a virtual table, but corpus-forge still maintains
+    the ``embedders`` catalog row, so drift can technically occur.
+    SQLite paths are rarely renamed in practice though, so we keep
+    this simple for now and add coverage if a user files an issue.
+    """
+
+    if backend.__class__.__name__ == "SQLiteBackend":
+        return []
+
+    rows: list[EmbedderDriftRow] = []
+    db_embedders = backend._execute(
+        "SELECT id, name, dimension, table_name FROM corpus.embedders ORDER BY id"
+    )
+    config_names = {e.name for e in (cfg.embedders or [])}
+
+    for r in db_embedders:
+        name = r["name"]
+        if name in config_names:
+            continue
+
+        table_name = r["table_name"] or ""
+        table_exists = False
+        size_bytes: int | None = None
+        row_count: int | None = None
+        if table_name:
+            exists_rows = backend._execute(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = 'corpus' AND table_name = %s",
+                (table_name,),
+            )
+            table_exists = bool(exists_rows)
+            if table_exists:
+                try:
+                    size_rows = backend._execute(
+                        "SELECT pg_total_relation_size('corpus.' || %s) AS bytes",
+                        (table_name,),
+                    )
+                    if size_rows:
+                        size_bytes = int(size_rows[0]["bytes"])
+                except Exception:
+                    size_bytes = None
+                try:
+                    count_rows = backend._execute(
+                        f'SELECT COUNT(*) AS n FROM corpus."{table_name}"'
+                    )
+                    if count_rows:
+                        row_count = int(count_rows[0]["n"])
+                except Exception:
+                    row_count = None
+
+        rows.append(
+            EmbedderDriftRow(
+                name=name,
+                db_id=int(r["id"]),
+                dimension=int(r["dimension"]),
+                table_name=table_name,
+                table_exists=table_exists,
+                table_size_bytes=size_bytes,
+                row_count=row_count,
+            )
+        )
+
+    return rows
+
+
+def reconcile_embedder_drift(backend, orphans: list[EmbedderDriftRow]) -> None:
+    """Drop each orphan's per-embedder table + ``corpus.embedders`` row.
+
+    A missing table is treated as "already partially cleaned" rather
+    than an error — corpus-forge may previously have evolved enough
+    to drop the table but leave the catalog row, and the doctor check
+    still surfaces that so this codepath can finish the cleanup.
+    """
+
+    for o in orphans:
+        if o.table_name and o.table_exists:
+            backend._execute(f'DROP TABLE IF EXISTS corpus."{o.table_name}" CASCADE')
+        backend._execute(
+            "DELETE FROM corpus.embedders WHERE id = %s",
+            (o.db_id,),
+        )
+
+
+@embedder_app.command("gc")
+def cmd_gc(
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply",
+            help=(
+                "Actually drop orphan tables and delete embedder rows. "
+                "Without this flag, the command reports what would be "
+                "dropped and exits."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Drop ``corpus.embedders`` rows whose name isn't in the active config.
+
+    Surfaces the drift the maintainer's instance hit on 2026-05-22:
+    a renamed embedder (``qwen3-2000`` → ``qwen3-4096``) left the old
+    catalog row + 209 MB table behind, and ``embedder list`` (config-
+    side only) couldn't see it. This command is the explicit fix
+    paired with the new ``embedder_drift`` doctor check.
+
+    Default mode is **dry-run** — orphans are listed with their table
+    size and row count, but nothing is dropped. Pass ``--apply`` to
+    actually clean up.
+    """
+
+    try:
+        config = _load_config()
+    except Exception as exc:
+        ui_error(f"Could not load config: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        backend = _get_backend(config)
+    except Exception as exc:
+        ui_error(f"Could not reach backend: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    orphans = audit_embedder_drift(backend, config)
+    if not orphans:
+        ui_ok("No orphan embedders — DB matches config.")
+        return
+
+    table = Table(title="Orphan embedders", title_style="h1", show_header=True)
+    table.add_column("Name", style="accent.path")
+    table.add_column("DB id", justify="right")
+    table.add_column("Dim", justify="right", style="accent.number")
+    table.add_column("Table", style="muted")
+    table.add_column("Rows", justify="right", style="accent.number")
+    table.add_column("Size", justify="right", style="accent.number")
+    total_bytes = 0
+    for o in orphans:
+        size_human = _human_bytes(o.table_size_bytes) if o.table_size_bytes else "—"
+        if o.table_size_bytes:
+            total_bytes += o.table_size_bytes
+        table.add_row(
+            o.name,
+            str(o.db_id),
+            str(o.dimension),
+            o.table_name + ("" if o.table_exists else " (missing)"),
+            "?" if o.row_count is None else str(o.row_count),
+            size_human,
+        )
+    ui_console.print(table)
+    ui_info(f"Total reclaimable: {_human_bytes(total_bytes)} across {len(orphans)} embedder(s).")
+
+    if not apply:
+        ui_info(
+            "Dry-run — pass `--apply` to drop these rows + tables. "
+            "`corpus-forge doctor` will keep WARNing on `embedder_drift` "
+            "until they're removed."
+        )
+        return
+
+    reconcile_embedder_drift(backend, orphans)
+    ui_ok(f"Dropped {len(orphans)} orphan embedder(s). Reclaimed ~{_human_bytes(total_bytes)}.")
+
+
+_BYTES_PER_UNIT = 1024.0
+
+
+def _human_bytes(n: int | None) -> str:
+    """Render a byte count as a short human string. ``None`` → ``"—"``."""
+
+    if not n or n <= 0:
+        return "—"
+    value = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(value) < _BYTES_PER_UNIT:
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= _BYTES_PER_UNIT
+    return f"{value:.1f} PB"
+
+
 __all__ = [
+    "EmbedderDriftRow",
     "EmbedderSmokeOutcome",
     "IndexAuditRow",
+    "audit_embedder_drift",
     "audit_embedder_indexes",
     "embedder_app",
+    "reconcile_embedder_drift",
     "repair_embedder_index",
     "run_embedder_smoke",
 ]

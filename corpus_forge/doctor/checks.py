@@ -502,6 +502,89 @@ def _check_zotero(cfg: Config) -> CheckResult:
     return CheckResult("zotero", worst, "; ".join(details))
 
 
+def _check_embedder_drift(cfg: Config) -> CheckResult:
+    """Detect ``corpus.embedders`` rows whose name isn't in the active config.
+
+    Renaming an embedder in ``config.toml`` (or deleting one) leaves
+    the original ``corpus.embedders`` row + per-embedder
+    ``embeddings_<name>`` table behind. ``corpus-forge embedder list``
+    reads config state, not DB state, so these orphans are silently
+    invisible until something like ``embedder list --verify`` or this
+    check catches them. The maintainer's instance hit this on
+    2026-05-22: ``qwen3-2000`` → ``qwen3-4096`` rename left a 209 MB
+    orphan table on top of a 342 MB real-data DB.
+
+    Status logic:
+
+    - ``SKIP`` for SQLite backends (drift is rare in single-host
+      sqlite installs; the audit helper short-circuits for them).
+    - ``SKIP`` when the backend isn't reachable (we don't want
+      ``doctor`` to wedge on a temporarily-down Postgres).
+    - ``SKIP`` when ``corpus.embedders`` doesn't exist yet
+      (pre-migrate state).
+    - ``OK`` when every DB-side embedder name matches one in config.
+    - ``WARN`` when at least one DB row is orphaned, with the
+      ``corpus-forge embedder gc --apply`` recovery command and a
+      reclaimable-bytes total.
+
+    ``WARN``-not-``FAIL`` because the orphan doesn't break the active
+    ingest — it just bloats the DB and confuses readers of the
+    ``embedders`` catalog.
+    """
+    if cfg.backend.kind == "sqlite":
+        return CheckResult(
+            "embedder_drift",
+            CheckStatus.SKIP,
+            "sqlite backend (drift uncommon; not audited)",
+        )
+
+    try:
+        from corpus_forge.admin.embedder import audit_embedder_drift  # noqa: PLC0415
+        from corpus_forge.backends.postgres import PostgresBackend  # noqa: PLC0415
+    except ImportError as exc:
+        return CheckResult(
+            "embedder_drift",
+            CheckStatus.SKIP,
+            f"postgres backend unavailable: {exc}",
+        )
+
+    try:
+        backend = PostgresBackend(dsn=cfg.backend.dsn, schema=cfg.backend.schema)
+    except Exception as exc:
+        return CheckResult(
+            "embedder_drift",
+            CheckStatus.SKIP,
+            f"backend unreachable: {exc}",
+        )
+
+    try:
+        orphans = audit_embedder_drift(backend, cfg)
+    except Exception as exc:
+        return CheckResult(
+            "embedder_drift",
+            CheckStatus.SKIP,
+            f"audit failed (likely pre-migrate state): {exc}",
+        )
+
+    if not orphans:
+        return CheckResult(
+            "embedder_drift",
+            CheckStatus.OK,
+            "every corpus.embedders row matches an active config embedder",
+        )
+
+    total_bytes = sum(o.table_size_bytes or 0 for o in orphans)
+    total_rows = sum(o.row_count or 0 for o in orphans)
+    names = ", ".join(o.name for o in orphans)
+    detail = (
+        f"{len(orphans)} orphan embedder row(s) — names {{{names}}}; "
+        f"~{total_bytes // (1024 * 1024)} MB / {total_rows} rows reclaimable. "
+        f"Run `corpus-forge embedder gc --apply` to drop the stale "
+        f"tables and catalog rows."
+    )
+    return CheckResult("embedder_drift", CheckStatus.WARN, detail)
+
+
 def _check_icloud_access(cfg: Config) -> CheckResult:
     """Probe TCC access for each configured iCloud-rooted source.
 
@@ -722,6 +805,13 @@ def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
         )
         results.append(
             CheckResult(
+                "embedder_drift",
+                CheckStatus.SKIP,
+                "skipped (config not loaded)",
+            )
+        )
+        results.append(
+            CheckResult(
                 "icloud_access",
                 CheckStatus.SKIP,
                 "skipped (config not loaded)",
@@ -731,5 +821,6 @@ def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
         results.append(_check_corpusignore(loaded_cfg))
         results.append(_check_zotero(loaded_cfg))
         results.append(_check_embedder_indexes(loaded_cfg))
+        results.append(_check_embedder_drift(loaded_cfg))
         results.append(_check_icloud_access(loaded_cfg))
     return DoctorReport(results=results)
