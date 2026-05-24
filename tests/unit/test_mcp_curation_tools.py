@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -52,7 +51,7 @@ def _tool(server, name: str) -> mcp_types.Tool:
     raise KeyError(name)
 
 
-def _call(server, name: str, arguments: dict[str, Any]):
+def _call(server, name: str, arguments: dict[str, object]):
     handler = server.request_handlers[mcp_types.CallToolRequest]
     request = mcp_types.CallToolRequest(
         method="tools/call",
@@ -89,7 +88,7 @@ def _build(*, writes_enabled: bool = False):
     )
 
 
-def _fake_target(**overrides: Any) -> CurationTarget:
+def _fake_target(**overrides: object) -> CurationTarget:
     breakdown = ScoreBreakdown(
         confidence_deficit=0.5,
         missing_metadata=0.3,
@@ -164,7 +163,7 @@ def test_commit_curation_schema_rejects_extra_args() -> None:
 
 
 def test_next_curation_target_dispatch_calls_selector(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, Any] = {}
+    captured: dict[str, object] = {}
 
     def fake(**kwargs):
         captured.update(kwargs)
@@ -214,7 +213,7 @@ def test_next_curation_target_seed_query_triggers_reranker_build(
 
     monkeypatch.setattr(cli_mod, "_build_reranker_from_config", fake_build_reranker)
 
-    captured: dict[str, Any] = {}
+    captured: dict[str, object] = {}
 
     def fake_selector(**kwargs):
         captured.update(kwargs)
@@ -267,7 +266,7 @@ def test_next_curation_target_handles_reranker_build_failure(
 
     monkeypatch.setattr(cli_mod, "_build_reranker_from_config", fail)
 
-    captured: dict[str, Any] = {}
+    captured: dict[str, object] = {}
 
     def fake_selector(**kwargs):
         captured.update(kwargs)
@@ -302,7 +301,7 @@ def test_next_curation_target_selector_raises_value_error(
 
 
 def test_next_curation_batch_dispatch_calls_selector(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, Any] = {}
+    captured: dict[str, object] = {}
 
     def fake(**kwargs):
         captured.update(kwargs)
@@ -323,7 +322,7 @@ def test_next_curation_batch_dispatch_calls_selector(monkeypatch: pytest.MonkeyP
 def test_next_curation_batch_default_limit_is_ten(monkeypatch: pytest.MonkeyPatch) -> None:
     import corpus_forge.curation as curation_mod
 
-    captured: dict[str, Any] = {}
+    captured: dict[str, object] = {}
 
     def fake(**kwargs):
         captured.update(kwargs)
