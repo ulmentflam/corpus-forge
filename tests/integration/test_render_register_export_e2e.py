@@ -31,13 +31,17 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import pytest
 
 from corpus_forge.backends.sqlite import SQLiteBackend
 from corpus_forge.export import export_chat
 from corpus_forge.mcp.server import build_server
+from corpus_forge.retrieval.types import Hit, SearchOptions
+
+if TYPE_CHECKING:
+    from mcp.server import Server
 
 pytestmark = pytest.mark.integration
 
@@ -56,12 +60,11 @@ class _LexicalRetriever:
     def __init__(self, backend: SQLiteBackend) -> None:
         self.backend = backend
 
-    def search(self, query: str, options: Any) -> list[Any]:
-        k = getattr(options, "k", 10)
-        return self.backend.search_lexical(query, k=k)
+    def search(self, query: str, options: SearchOptions) -> list[Hit]:
+        return self.backend.search_lexical(query, k=options.k)
 
 
-def _make_server(backend: SQLiteBackend) -> Any:
+def _make_server(backend: SQLiteBackend) -> Server[object]:
     retriever = _LexicalRetriever(backend)
     return build_server(retriever_builder=lambda: retriever, writes_enabled=True)
 
@@ -71,7 +74,7 @@ def _make_server(backend: SQLiteBackend) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _call_tool(server: Any, name: str, arguments: dict) -> dict:
+def _call_tool(server: Server[object], name: str, arguments: dict) -> dict:
     """Invoke a named MCP tool in-process; returns the structured result dict."""
 
     async def _run() -> dict:
@@ -88,8 +91,9 @@ def _call_tool(server: Any, name: str, arguments: dict) -> dict:
         if getattr(root, "isError", False):
             text = "".join(getattr(b, "text", "") for b in getattr(root, "content", []))
             raise AssertionError(f"MCP tool {name!r} returned isError=True: {text}")
-        if getattr(root, "structuredContent", None) is not None:
-            return dict(root.structuredContent)
+        structured = getattr(root, "structuredContent", None)
+        if structured is not None:
+            return dict(structured)
         text_blocks = [getattr(b, "text", "") for b in getattr(root, "content", [])]
         return json.loads("".join(text_blocks))
 
@@ -117,7 +121,7 @@ def _create_dataset(backend: SQLiteBackend, name: str, kind: str = "chat") -> in
 # ---------------------------------------------------------------------------
 
 
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+def _read_jsonl(path: Path) -> list[dict[str, object]]:
     lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
     return [json.loads(ln) for ln in lines]
 
