@@ -45,23 +45,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
+
+from corpus_forge.retrieval.types import SearchResponse
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_search_response(n_hits: int = 2) -> Any:
+def _make_search_response(n_hits: int = 2) -> SearchResponse:
     """Return a canned SearchResponse with ``n_hits`` fake Hit objects."""
     from datetime import UTC, datetime
 
-    from corpus_forge.retrieval.types import Hit, SearchResponse
+    from corpus_forge.retrieval.types import Hit
 
     hits = [
         Hit(
@@ -86,7 +88,7 @@ def _make_search_response(n_hits: int = 2) -> Any:
     )
 
 
-def _make_retriever(response: Any | None = None) -> MagicMock:
+def _make_retriever(response: SearchResponse | None = None) -> MagicMock:
     """Build a mock retriever that returns ``response`` from ``.search()``."""
     r = MagicMock()
     r.search.return_value = response if response is not None else _make_search_response()
@@ -105,7 +107,7 @@ def _cache_key(query: str, dataset: str, template: str = "default") -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _write_cache_file(root: Path, dataset: str, query: str, payload: dict[str, Any]) -> Path:
+def _write_cache_file(root: Path, dataset: str, query: str, payload: Mapping[str, object]) -> Path:
     """Write a cache JSON file at the expected path and return it."""
     dataset_dir = root / dataset
     dataset_dir.mkdir(parents=True, exist_ok=True)
@@ -115,7 +117,7 @@ def _write_cache_file(root: Path, dataset: str, query: str, payload: dict[str, A
     return path
 
 
-def _payload(label: str = "p") -> dict[str, Any]:
+def _payload(label: str = "p") -> dict[str, object]:
     return {"label": label, "content": f"cached answer for {label}"}
 
 
