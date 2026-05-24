@@ -280,7 +280,7 @@ def _build_hybrid_retriever() -> tuple[Any, dict[int, dict[str, Any]]]:
         CrossEncoderReranker,
     )
 
-    reranker: Any | None
+    reranker: CrossEncoderReranker | None
     try:
         reranker = CrossEncoderReranker(device="cpu", batch_size=16)
         # Force the model load up-front so the first query's latency
@@ -572,7 +572,7 @@ def _strip_per_query(metrics: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in metrics.items() if k != "per_query"}
 
 
-def _json_default(obj: Any) -> Any:
+def _json_default(obj: object) -> object:
     # Fallback for SimpleNamespace / dataclasses leaking into the dump.
     if hasattr(obj, "__dict__"):
         return obj.__dict__
