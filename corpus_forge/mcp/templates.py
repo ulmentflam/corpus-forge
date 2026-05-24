@@ -34,7 +34,102 @@ standard ``get_chunk`` result dict.  Document chunks (no ``message_id``) get
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Protocol, cast
+
+if TYPE_CHECKING:
+    from corpus_forge.mcp.writes import _WriteBackend as _WriteBackendProto
+
+# ---------------------------------------------------------------------------
+# Duck-typed Protocols for ``backend`` and ``ctx`` parameters.
+#
+# The real backend (``corpus_forge.backends.base.StorageBackend``) does NOT
+# expose the conversation / chat-template / audit helpers used here — those
+# methods live on the concrete SQLite / Postgres implementations.  Rather
+# than widen the canonical Protocol just for this dispatch layer, we define
+# a structural sub-Protocol that captures exactly the duck-typed contract
+# the four functions in this module rely on.  Tests pass real SQLiteBackend
+# instances, which satisfy the Protocol structurally.
+# ---------------------------------------------------------------------------
+
+
+class _Ctx(Protocol):
+    """Minimal MCP-caller identity carrier.
+
+    Mirrors ``corpus_forge.mcp.writes.WriteContext`` and the ``_MCPContext``
+    dataclass that the unit tests instantiate — three required attributes,
+    no methods.
+    """
+
+    host: str
+    client: str | None
+    session_id: str | None
+
+
+class _TemplateBackend(Protocol):
+    """Structural type for the backend methods this module calls.
+
+    Defined here rather than on ``StorageBackend`` because these helpers are
+    template-dispatch-specific and not part of the storage core contract.
+    """
+
+    def get_conversation(self, conversation_id: int) -> dict | None: ...
+
+    def count_messages(self, conversation_id: int) -> int: ...
+
+    def list_conversation_messages(self, conversation_id: int) -> list[dict]: ...
+
+    def list_chat_templates(self) -> list[dict]: ...
+
+    def get_chat_template_by_name(self, name: str) -> dict | None: ...
+
+    def get_chunk(self, chunk_id: int) -> dict | None: ...
+
+    def register_chat_template(
+        self,
+        name: str,
+        source: str,
+        *,
+        jinja: str | None = ...,
+        model_id: str | None = ...,
+        description: str | None = ...,
+        host: str,
+    ) -> tuple[int, bool]: ...
+
+    def audit_event(
+        self,
+        host: str,
+        client: str | None,
+        session_id: str | None,
+        tool: str,
+        entity_type: str,
+        entity_id: int,
+        before: object,
+        after: object,
+        dry_run: bool,
+    ) -> int: ...
+
+    # --- session linkage (required by ``_link_to_session``) ----------------
+    def upsert_feedback_session(
+        self,
+        client: str,
+        session_id: str,
+        host: str,
+        started_at: datetime | str,
+    ) -> int: ...
+
+    def append_feedback_event(
+        self,
+        feedback_session_id: int,
+        *,
+        audit_id: int | None = ...,
+        feedback_id: int | None = ...,
+        entity_type: str,
+        entity_id: int,
+    ) -> int: ...
+
+    def get_feedback_session_by_key(self, client: str, session_id: str) -> dict | None: ...
+
 
 # ---------------------------------------------------------------------------
 # Truncation threshold
@@ -50,8 +145,8 @@ _TRUNCATION_THRESHOLD: int = 1000
 
 
 def render_conversation(
-    backend: Any,
-    ctx: Any,  # noqa: ARG001 — accepted for API symmetry; not used (no audit for reads)
+    backend: _TemplateBackend,
+    ctx: _Ctx,  # noqa: ARG001 — accepted for API symmetry; not used (no audit for reads)
     conversation_id: int,
     template: str = "chatml",
     *,
@@ -92,7 +187,9 @@ def render_conversation(
     if truncated:
         messages_raw = messages_raw[:_TRUNCATION_THRESHOLD]
 
-    # Normalise to plain dicts with role/content keys.
+    # Normalise to plain dicts with role/content keys.  ``_tpl.render`` is
+    # annotated ``list[dict[str, Any]]``, so we keep ``Any`` here to stay
+    # type-compatible with the templates module's public surface.
     messages: list[dict[str, Any]] = [
         {"role": str(m["role"]), "content": str(m["content"])} for m in messages_raw
     ]
@@ -130,8 +227,8 @@ def render_conversation(
 
 
 def list_chat_templates(
-    backend: Any,
-    ctx: Any,  # noqa: ARG001 — accepted for API symmetry; not used (no audit)
+    backend: _TemplateBackend,
+    ctx: _Ctx,  # noqa: ARG001 — accepted for API symmetry; not used (no audit)
 ) -> dict:
     """Return all registered chat templates.
 
@@ -158,8 +255,8 @@ def list_chat_templates(
 
 
 def register_template(
-    backend: Any,
-    ctx: Any,
+    backend: _TemplateBackend,
+    ctx: _Ctx,
     name: str,
     jinja: str,
     *,
@@ -173,7 +270,7 @@ def register_template(
     (matching the F-03 convention for write tools).
     """
     before: dict | None = None
-    after: dict = {"name": name, "source": "custom", "dry_run": dry_run}
+    after: dict[str, object] = {"name": name, "source": "custom", "dry_run": dry_run}
 
     if dry_run:
         audit_id = backend.audit_event(
@@ -189,7 +286,13 @@ def register_template(
         )
         from corpus_forge.mcp.writes import _link_to_session
 
-        _link_to_session(backend, ctx, audit_id=audit_id, entity_type="chat_template", entity_id=0)
+        _link_to_session(
+            cast("_WriteBackendProto", backend),
+            ctx,
+            audit_id=audit_id,
+            entity_type="chat_template",
+            entity_id=0,
+        )
         return {"template_id": None, "audit_id": audit_id}
 
     template_id, _created = backend.register_chat_template(
@@ -215,7 +318,11 @@ def register_template(
     from corpus_forge.mcp.writes import _link_to_session
 
     _link_to_session(
-        backend, ctx, audit_id=audit_id, entity_type="chat_template", entity_id=template_id
+        cast("_WriteBackendProto", backend),
+        ctx,
+        audit_id=audit_id,
+        entity_type="chat_template",
+        entity_id=template_id,
     )
     return {"template_id": template_id, "audit_id": audit_id}
 
@@ -226,8 +333,8 @@ def register_template(
 
 
 def get_chunk_with_template(
-    backend: Any,
-    ctx: Any,  # noqa: ARG001 — accepted for API symmetry; not used
+    backend: _TemplateBackend,
+    ctx: _Ctx,  # noqa: ARG001 — accepted for API symmetry; not used
     chunk_id: int,
     template: str,
 ) -> dict:
@@ -246,6 +353,9 @@ def get_chunk_with_template(
     if chunk is None:
         raise ValueError(f"chunk_id={chunk_id!r} not found")
 
+    # ``backend.get_chunk`` returns a row dict whose values are arbitrary
+    # SQL types; we mutate it in place and the renderer only inspects a
+    # handful of string-ish columns, so ``Any`` is the honest annotation.
     result: dict[str, Any] = dict(chunk)
 
     message_id = result.get("message_id")

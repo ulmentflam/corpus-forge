@@ -34,6 +34,7 @@ from typing import Annotated, Any
 
 import tomlkit
 import typer
+from pydantic.fields import FieldInfo
 from rich.table import Table
 
 from corpus_forge.admin._path import (
@@ -162,7 +163,12 @@ def _resolve_field_info(dotted: str):
 
 
 def _list_inner_type(annotation: Any) -> Any:
-    """Return the inner type of a ``list[X]`` annotation; passthrough otherwise."""
+    """Return the inner type of a ``list[X]`` annotation; passthrough otherwise.
+
+    Both parameter and return value are *type annotations* (e.g. ``int``,
+    ``list[str]``, ``"X | None"``), so ``Any`` is the honest type — the
+    function deliberately accepts and returns arbitrary type objects.
+    """
 
     from typing import get_args, get_origin
 
@@ -250,7 +256,7 @@ def _set_config_value_atomic(
     raw_value: str,
     *,
     config_path: Path | None = None,
-) -> Any:
+) -> object:
     """Set ``key`` to ``raw_value`` in the live config (atomic).
 
     Steps:
@@ -343,7 +349,7 @@ def _unset_config_value_atomic(
 _SENTINEL_REMOVE = object()
 
 
-def _field_default(field_info) -> Any:
+def _field_default(field_info: FieldInfo) -> object:
     """Resolve the default value for ``field_info``.
 
     Returns :data:`_SENTINEL_REMOVE` when the field has no default and
@@ -354,7 +360,17 @@ def _field_default(field_info) -> Any:
         return field_info.default
     if field_info.default_factory is not None:
         try:
-            return field_info.default_factory()
+            # Pydantic v2's ``default_factory`` is typed as a one-arg
+            # callable (taking the validated-data dict) even though most
+            # real factories accept zero args.  We don't have the
+            # validated-data context here, so route through ``Callable``
+            # to keep the type-checker honest while preserving the
+            # no-arg call shape that covers the common case.
+            from collections.abc import Callable
+            from typing import cast
+
+            factory = cast(Callable[[], object], field_info.default_factory)
+            return factory()
         except Exception:
             return _SENTINEL_REMOVE
     # No default — treat as removable when the field is Optional.
@@ -362,18 +378,26 @@ def _field_default(field_info) -> Any:
 
 
 def _remove_at_path(doc: Any, tokens: Iterable[Token]) -> None:
-    """Best-effort delete of the leaf at ``tokens``."""
+    """Best-effort delete of the leaf at ``tokens``.
 
-    tokens = list(tokens)
-    if not tokens:
+    ``doc`` is intentionally ``Any``: it may be a ``tomlkit.TOMLDocument``,
+    a plain ``dict`` (tests), or any intermediate tomlkit ``Table`` /
+    ``Array`` node reached by ``_walk_one``.  All of these support both
+    subscript reads and ``del`` writes, but no single static type
+    captures the union without a tomlkit-specific Protocol that would
+    leak implementation details into this CRUD shim.
+    """
+
+    token_list = list(tokens)
+    if not token_list:
         return
     node = doc
     try:
-        for token in tokens[:-1]:
+        for token in token_list[:-1]:
             node = _walk_one(node, token)
     except PathNotFound:
         return
-    last = tokens[-1]
+    last = token_list[-1]
     try:
         if last.kind == "index" and isinstance(node, list):
             idx = int(last.key)
@@ -386,6 +410,12 @@ def _remove_at_path(doc: Any, tokens: Iterable[Token]) -> None:
 
 
 def _walk_one(container: Any, token: Token) -> Any:
+    """Step into ``container`` by one path token.
+
+    ``container`` stays ``Any``: it's any node in the tomlkit/dict tree the
+    caller has reached, and the subscript shape (``list``-like vs
+    ``dict``-like) is decided at runtime by ``token.kind``.
+    """
     if token.kind == "index":
         return container[int(token.key)]
     return container[token.key]
@@ -420,7 +450,7 @@ def cmd_get(
     print(rendered)
 
 
-def _render_value(value: Any) -> str:
+def _render_value(value: object) -> str:
     """Render ``value`` for stdout: scalars as-is, containers as JSON."""
 
     if isinstance(value, (dict, list, tuple)):
@@ -430,7 +460,7 @@ def _render_value(value: Any) -> str:
     return str(value)
 
 
-def _to_json_safe(value: Any) -> Any:
+def _to_json_safe(value: object) -> object:
     """Recursively coerce tomlkit values into plain Python for JSON output."""
 
     if isinstance(value, dict):
@@ -497,7 +527,11 @@ def cmd_show(
         # Convert to plain dict for the diff (we don't want comment
         # nodes in the diff calculus).  Then re-render as JSON for
         # output — diff doesn't try to preserve TOML formatting.
-        live = _to_json_safe(json.loads(json.dumps(_to_plain(doc))))
+        live_raw = _to_json_safe(json.loads(json.dumps(_to_plain(doc))))
+        # ``_to_json_safe`` returns ``object`` because its input is arbitrary
+        # tomlkit nodes; at this call site the top of a TOML document is
+        # always a mapping, so narrow before handing off to ``_diff_dicts``.
+        live: dict = live_raw if isinstance(live_raw, dict) else {}
         baseline = _config_defaults()
         delta = _diff_dicts(live, baseline)
         print(json.dumps(delta, indent=2, sort_keys=True, default=str))
@@ -506,7 +540,7 @@ def cmd_show(
     print(tomlkit.dumps(doc))
 
 
-def _to_plain(doc: Any) -> Any:
+def _to_plain(doc: object) -> object:
     """Best-effort tomlkit → plain Python (for the diff path)."""
 
     if isinstance(doc, dict):
