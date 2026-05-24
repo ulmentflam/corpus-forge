@@ -31,10 +31,13 @@ from __future__ import annotations
 import importlib
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import psycopg
 import pytest
+
+if TYPE_CHECKING:
+    from testcontainers.postgres import PostgresContainer
 
 pytestmark = pytest.mark.integration
 
@@ -61,7 +64,7 @@ _ALEMBIC_INI = _REPO_ROOT / "alembic.ini"
 # ---------------------------------------------------------------------------
 
 
-def _dsn_from_container(c: Any) -> str:
+def _dsn_from_container(c: PostgresContainer) -> str:
     """Build a bare postgresql:// DSN from a testcontainers Postgres container."""
     return (
         f"postgresql://{c.username}:{c.password}"
@@ -160,7 +163,7 @@ def _index_names(
 
 
 @_skip_no_tc
-def test_description_columns_added(postgres_container: Any) -> None:  # type: ignore[return]
+def test_description_columns_added(postgres_container: PostgresContainer) -> None:  # type: ignore[return]
     """description TEXT NULL is added to documents, conversations, and chunks.
 
     Revision 0006_writes_and_feedback runs three ALTER TABLE … ADD COLUMN
@@ -197,7 +200,7 @@ def test_description_columns_added(postgres_container: Any) -> None:  # type: ig
 
 
 @_skip_no_tc
-def test_mcp_audit_table_shape(postgres_container: Any) -> None:  # type: ignore[return]
+def test_mcp_audit_table_shape(postgres_container: PostgresContainer) -> None:  # type: ignore[return]
     """corpus.mcp_audit exists with 11 columns matching the Phase F plan and 2 indexes.
 
     Expected columns (in plan order):
@@ -380,7 +383,7 @@ def test_mcp_audit_table_shape(postgres_container: Any) -> None:  # type: ignore
 
 
 @_skip_no_tc
-def test_feedback_table_shape(postgres_container: Any) -> None:  # type: ignore[return]
+def test_feedback_table_shape(postgres_container: PostgresContainer) -> None:  # type: ignore[return]
     """corpus.feedback exists with 11 columns matching the Phase F plan and 2 indexes.
 
     Expected columns (in plan order):
