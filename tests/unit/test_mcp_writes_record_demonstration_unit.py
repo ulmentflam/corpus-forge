@@ -10,7 +10,7 @@ contribute to unit-suite coverage too.
 from __future__ import annotations
 
 import sqlite3
-from typing import Any
+from contextlib import AbstractContextManager
 
 import pytest
 
@@ -29,7 +29,7 @@ class _FakeBackend:
     def __init__(self, *, dataset_id: int | None = 1, audit_returns: int = 99) -> None:
         self._dataset_id = dataset_id
         self._audit_returns = audit_returns
-        self.audit_calls: list[tuple[Any, ...]] = []
+        self.audit_calls: list[tuple[object, ...]] = []
         # In-memory SQLite for the underlying _record path.
         self._conn = sqlite3.connect(":memory:")
         self._conn.execute(
@@ -53,20 +53,20 @@ class _FakeBackend:
     def find_dataset_id_by_name(self, name: str) -> int | None:
         return self._dataset_id
 
-    def _get_connection(self) -> Any:
-        class _Cx:
+    def _get_connection(self) -> AbstractContextManager[sqlite3.Connection]:
+        class _Cx(AbstractContextManager[sqlite3.Connection]):
             def __init__(self, conn: sqlite3.Connection) -> None:
                 self._conn = conn
 
             def __enter__(self) -> sqlite3.Connection:
                 return self._conn
 
-            def __exit__(self, *_a: Any) -> None:
+            def __exit__(self, *_a: object) -> None:
                 return None
 
         return _Cx(self._conn)
 
-    def audit_event(self, *args: Any) -> int:
+    def audit_event(self, *args: object) -> int:
         self.audit_calls.append(args)
         return self._audit_returns
 
