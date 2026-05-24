@@ -30,7 +30,6 @@ from __future__ import annotations
 import dataclasses
 import json
 from datetime import UTC, datetime
-from typing import Any
 from unittest.mock import patch
 
 import numpy as np
@@ -361,7 +360,7 @@ class TestSearchResponseIterationShim:
 class TestSearchResponseJsonSerializable:
     """SearchResponse must survive a dataclasses.asdict + json.dumps round-trip."""
 
-    def _to_json_safe(self, obj: Any) -> Any:
+    def _to_json_safe(self, obj: object) -> object:
         """Recursively convert datetime to isoformat string for JSON safety."""
         if isinstance(obj, datetime):
             return _isoformat_aware(obj)
@@ -393,8 +392,12 @@ class TestSearchResponseJsonSerializable:
         response = r.search("q", SearchOptions(k=1))
         raw = dataclasses.asdict(response)
         json_safe = self._to_json_safe(raw)
+        assert isinstance(json_safe, dict)
         if raw["results"]:
-            hit_dict = json_safe["results"][0]
+            results_field = json_safe["results"]
+            assert isinstance(results_field, list)
+            hit_dict = results_field[0]
+            assert isinstance(hit_dict, dict)
             assert hit_dict["chunk_id"] == 42
             assert abs(hit_dict["score"] - 0.77) < 1e-3 or "score" in hit_dict
 
