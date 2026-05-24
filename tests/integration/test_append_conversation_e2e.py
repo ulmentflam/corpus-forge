@@ -21,12 +21,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import TYPE_CHECKING
 
 import pytest
 
 from corpus_forge.backends.postgres import PostgresBackend
 from corpus_forge.mcp.server import build_server
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from mcp.server import Server
 
 pytestmark = pytest.mark.integration
 
@@ -47,7 +50,7 @@ class _PgLexicalRetriever:
     def __init__(self, backend: PostgresBackend) -> None:
         self.backend = backend
 
-    def search(self, query: str, options: Any) -> list[Any]:
+    def search(self, query: str, options: object) -> list[object]:
         k = getattr(options, "k", 10)
         return self.backend.search_lexical(query, k=k)
 
@@ -58,13 +61,13 @@ def _make_pg_backend(pg_dsn: str) -> PostgresBackend:
     return b
 
 
-def _build_pg_server(backend: PostgresBackend, writes_enabled: bool = True) -> Any:
+def _build_pg_server(backend: PostgresBackend, writes_enabled: bool = True) -> Server:
     retriever = _PgLexicalRetriever(backend)
     return build_server(retriever_builder=lambda: retriever, writes_enabled=writes_enabled)
 
 
-def _call_tool(server: Any, name: str, arguments: dict) -> dict:
-    async def _run() -> dict:
+def _call_tool(server: Server, name: str, arguments: dict[str, object]) -> dict[str, object]:
+    async def _run() -> dict[str, object]:
         from mcp.types import CallToolRequest, CallToolRequestParams
 
         handler = server.request_handlers.get(CallToolRequest)
@@ -78,8 +81,9 @@ def _call_tool(server: Any, name: str, arguments: dict) -> dict:
         if getattr(root, "isError", False):
             text = "".join(getattr(b, "text", "") for b in getattr(root, "content", []))
             raise AssertionError(f"MCP tool {name!r} returned isError=True: {text}")
-        if getattr(root, "structuredContent", None) is not None:
-            return dict(root.structuredContent)
+        structured = getattr(root, "structuredContent", None)
+        if structured is not None:
+            return dict(structured)
         text_blocks = [getattr(b, "text", "") for b in getattr(root, "content", [])]
         return json.loads("".join(text_blocks))
 
@@ -109,7 +113,7 @@ def pg_backend(pg_dsn: str) -> PostgresBackend:
 
 
 @pytest.fixture
-def server(pg_backend: PostgresBackend) -> Any:
+def server(pg_backend: PostgresBackend) -> Server:
     return _build_pg_server(pg_backend, writes_enabled=True)
 
 
@@ -118,7 +122,7 @@ def server(pg_backend: PostgresBackend) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def test_live_chat_round_trip(pg_backend: PostgresBackend, server: Any) -> None:
+def test_live_chat_round_trip(pg_backend: PostgresBackend, server: Server) -> None:
     """Append a 6-msg conversation; search for unique phrase from msg 4 finds a hit.
 
     The self-distillation loop: a live chat session is indexed (via
@@ -160,7 +164,9 @@ def test_live_chat_round_trip(pg_backend: PostgresBackend, server: Any) -> None:
 
     # Now search for the unique phrase; should return a hit in this conversation
     search_result = _call_tool(server, "search", {"query": _UNIQUE_PHRASE, "k": 5})
-    hits = search_result.get("hits", [])
+    hits_obj = search_result.get("hits", [])
+    assert isinstance(hits_obj, list), f"Expected hits list; got {type(hits_obj)}"
+    hits: list[dict[str, object]] = hits_obj
     assert hits, (
         f"Expected at least one hit for unique phrase {_UNIQUE_PHRASE!r}; got 0. "
         f"conversation_id={conv_id}"
@@ -219,7 +225,9 @@ def test_append_conversation_cross_host_visible(pg_dsn: str) -> None:
     server_b = _build_pg_server(backend_b, writes_enabled=False)
 
     search_result = _call_tool(server_b, "search", {"query": unique_content, "k": 5})
-    hits = search_result.get("hits", [])
+    hits_obj = search_result.get("hits", [])
+    assert isinstance(hits_obj, list), f"Expected hits list; got {type(hits_obj)}"
+    hits: list[dict[str, object]] = hits_obj
 
     # CRITICAL assertion: cross-host visibility
     assert hits, (
