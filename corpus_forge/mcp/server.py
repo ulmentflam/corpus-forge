@@ -38,13 +38,15 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
     from mcp.server import Server
 
+    from corpus_forge.mcp.writes import WriteContext
+
 
 # Sentinel used to distinguish "set_description was omitted" from
 # "set_description was explicitly set to None" in the commit_curation
 # payload. ``None`` is a legitimate value for set_description (it
 # clears the entity's description) so we can't use ``None`` as the
 # absence marker.
-_SENTINEL_UNSET: Any = object()
+_SENTINEL_UNSET: object = object()
 
 
 # ── JSON schemas for the three tools ─────────────────────────────────────
@@ -800,7 +802,7 @@ _SCORE_QUALITY_INPUT_SCHEMA: dict[str, Any] = {
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
-def _labels_to_wire(raw_labels: list[Any]) -> list[dict[str, Any]]:
+def _labels_to_wire(raw_labels: list[object]) -> list[dict[str, Any]]:
     """Convert label values to the pinned wire format.
 
     ``hydrate_hit_metadata`` stores labels as ``(namespace, value)`` tuples.
@@ -818,7 +820,7 @@ def _labels_to_wire(raw_labels: list[Any]) -> list[dict[str, Any]]:
                     "confidence": item.get("confidence"),
                 }
             )
-        else:
+        elif isinstance(item, tuple | list):
             # Tuple form: (namespace, value)
             ns, val = item[0], item[1]
             out.append({"namespace": ns, "value": val, "source": "user", "confidence": None})
@@ -847,7 +849,7 @@ def _hit_to_dict(hit: Any) -> dict[str, Any]:
     }
 
 
-def _error_result(message: str) -> Any:
+def _error_result(message: str) -> object:
     """Build a ``CallToolResult`` flagged ``isError=True`` with a text block."""
     from mcp import types as mt  # local import — heavy module
 
@@ -902,6 +904,12 @@ def build_server(
 
     # Lazy / memoized state.  We keep these in closure-scoped containers
     # so the inner async handlers can mutate without `nonlocal` boilerplate.
+    # ``Any`` is load-bearing here: the retriever returned by
+    # ``retriever_builder`` is duck-typed (HybridRetriever in prod, test
+    # fakes in unit tests) and the MCP code dynamically reads/writes
+    # ``.backend`` / ``.reranker`` attributes that aren't on the base
+    # ``Retriever`` Protocol — narrowing further would force isinstance
+    # gates at every dispatcher call site.
     state: dict[str, Any] = {"retriever": None, "reranker": None}
 
     def _get_retriever() -> Any:
@@ -1209,7 +1217,7 @@ def build_server(
         return tools
 
     @server.call_tool(validate_input=True)
-    async def _call_tool(name: str, arguments: dict[str, Any]) -> Any:
+    async def _call_tool(name: str, arguments: dict[str, Any]) -> object:
         # Catch-all wrapper so any uncaught exception from a dispatcher
         # becomes a populated ``_error_result`` instead of bubbling up to
         # the MCP SDK, which converts it to an empty ``isError: true``
@@ -1225,7 +1233,7 @@ def build_server(
         except Exception as exc:
             return _error_result(f"{type(exc).__name__}: {exc}")
 
-    async def _call_tool_impl(name: str, arguments: dict[str, Any]) -> Any:
+    async def _call_tool_impl(name: str, arguments: dict[str, Any]) -> object:
         if name == "search":
             return await _dispatch_search(arguments)
         if name == "get_chunk":
@@ -1421,7 +1429,7 @@ def build_server(
             result["query_id"] = query_id
         return result
 
-    async def _dispatch_get_chunk(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_get_chunk(arguments: dict[str, Any]) -> object:
         chunk_id = int(arguments["chunk_id"])
         include_labels = bool(arguments.get("include_labels", True))
         include_description = bool(arguments.get("include_description", True))
@@ -1500,7 +1508,7 @@ def build_server(
         catalogue = backend.list_datasets()
         return {"datasets": [dict(d) for d in catalogue]}
 
-    async def _dispatch_estimate_sync_size(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_estimate_sync_size(arguments: dict[str, Any]) -> object:
         """Pure-prediction storage estimator (Phase J / J1).
 
         Does NOT use ``_get_retriever`` — the estimator never opens the
@@ -1600,7 +1608,7 @@ def build_server(
             )
             return None
 
-    async def _dispatch_next_curation_target(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_next_curation_target(arguments: dict[str, Any]) -> object:
         from dataclasses import asdict
 
         from corpus_forge.curation import next_curation_target
@@ -1626,7 +1634,7 @@ def build_server(
             return {"target": None}
         return {"target": asdict(target)}
 
-    async def _dispatch_next_curation_batch(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_next_curation_batch(arguments: dict[str, Any]) -> object:
         from dataclasses import asdict
 
         from corpus_forge.curation import next_curation_batch
@@ -1655,7 +1663,7 @@ def build_server(
 
     # ── Phase O Wave 4 analyze dispatchers ──────────────────────────────
 
-    async def _dispatch_analyze_corpus(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_analyze_corpus(arguments: dict[str, Any]) -> object:
         from corpus_forge.mcp._dispatch_analyze import (
             _dispatch_analyze_corpus as _da_corpus,
         )
@@ -1663,7 +1671,7 @@ def build_server(
         backend = _get_write_backend()
         return await _da_corpus(arguments, backend=backend, writes_enabled=writes_enabled)
 
-    async def _dispatch_find_duplicates(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_find_duplicates(arguments: dict[str, Any]) -> object:
         from corpus_forge.mcp._dispatch_analyze import (
             _dispatch_find_duplicates as _da_find_dups,
         )
@@ -1671,7 +1679,7 @@ def build_server(
         backend = _get_write_backend()
         return await _da_find_dups(arguments, backend=backend, writes_enabled=writes_enabled)
 
-    async def _dispatch_cluster_topics(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_cluster_topics(arguments: dict[str, Any]) -> object:
         from corpus_forge.mcp._dispatch_analyze import (
             _dispatch_cluster_topics as _da_cluster,
         )
@@ -1679,7 +1687,7 @@ def build_server(
         backend = _get_write_backend()
         return await _da_cluster(arguments, backend=backend, writes_enabled=writes_enabled)
 
-    async def _dispatch_score_quality(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_score_quality(arguments: dict[str, Any]) -> object:
         from corpus_forge.mcp._dispatch_analyze import (
             _dispatch_score_quality as _da_score,
         )
@@ -1689,13 +1697,13 @@ def build_server(
 
     # ── write dispatchers (only reached when writes_enabled=True) ────────
 
-    def _make_write_ctx() -> Any:
+    def _make_write_ctx() -> WriteContext:
         """Build a WriteContext from env vars + config host identity."""
         import os
 
-        from corpus_forge.mcp.writes import WriteContext
+        from corpus_forge.mcp.writes import WriteContext as _WriteContext
 
-        return WriteContext(
+        return _WriteContext(
             host="mcp-server",
             client=os.environ.get("CORPUS_FORGE_CLIENT"),
             session_id=os.environ.get("CORPUS_FORGE_SESSION_ID"),
@@ -1705,7 +1713,7 @@ def build_server(
         retriever = _get_retriever()
         return getattr(retriever, "backend", None)
 
-    async def _dispatch_add_label(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_add_label(arguments: dict[str, Any]) -> object:
         from corpus_forge.mcp import writes
 
         backend = _get_write_backend()
@@ -1724,7 +1732,7 @@ def build_server(
         )
         return result
 
-    async def _dispatch_remove_label(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_remove_label(arguments: dict[str, Any]) -> object:
         from corpus_forge.mcp import writes
 
         backend = _get_write_backend()
@@ -1742,7 +1750,7 @@ def build_server(
         )
         return result
 
-    async def _dispatch_set_metadata(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_set_metadata(arguments: dict[str, Any]) -> object:
         from corpus_forge.mcp import writes
 
         backend = _get_write_backend()
@@ -1760,7 +1768,7 @@ def build_server(
         )
         return result
 
-    async def _dispatch_set_description(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_set_description(arguments: dict[str, Any]) -> object:
         from corpus_forge.mcp import writes
 
         backend = _get_write_backend()
@@ -1777,7 +1785,7 @@ def build_server(
         )
         return result
 
-    async def _dispatch_list_labels(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_list_labels(arguments: dict[str, Any]) -> object:
         from corpus_forge.mcp import writes
 
         backend = _get_write_backend()
@@ -1791,7 +1799,7 @@ def build_server(
             namespace=arguments.get("namespace"),
         )
 
-    async def _dispatch_append_conversation(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_append_conversation(arguments: dict[str, Any]) -> object:
         from corpus_forge.mcp import writes
 
         backend = _get_write_backend()
@@ -1811,7 +1819,7 @@ def build_server(
         )
         return result
 
-    async def _dispatch_append_message(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_append_message(arguments: dict[str, Any]) -> object:
         from corpus_forge.mcp import writes
 
         backend = _get_write_backend()
@@ -1832,7 +1840,7 @@ def build_server(
         )
         return result
 
-    async def _dispatch_add_feedback(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_add_feedback(arguments: dict[str, Any]) -> object:
         from corpus_forge.mcp import writes
 
         backend = _get_write_backend()
@@ -1852,7 +1860,7 @@ def build_server(
         )
         return result
 
-    async def _dispatch_rate_search_result(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_rate_search_result(arguments: dict[str, Any]) -> object:
         """Phase P Wave 2 — record a signal for a search result chunk."""
         from corpus_forge.mcp import writes
 
@@ -1940,7 +1948,7 @@ def build_server(
 
         return result
 
-    async def _dispatch_record_demonstration(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_record_demonstration(arguments: dict[str, Any]) -> object:
         """Phase Q Wave 1 — record an SDFT teacher→student demonstration pair."""
         from corpus_forge.mcp import writes
 
@@ -1966,7 +1974,7 @@ def build_server(
             return _error_result(str(exc))
         return {"demonstration_id": result["demonstration_id"], "deduped": result["deduped"]}
 
-    async def _dispatch_commit_curation(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_commit_curation(arguments: dict[str, Any]) -> object:
         """J4 — atomic-ish multi-write composing the existing write surface.
 
         This is NOT a single transactional commit (the underlying
@@ -2247,7 +2255,7 @@ def build_server(
 
     # ── G-03 template dispatchers ────────────────────────────────────────
 
-    async def _dispatch_render_conversation(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_render_conversation(arguments: dict[str, Any]) -> object:
         from corpus_forge.mcp import templates as _tmpl
 
         backend = _get_write_backend()
@@ -2268,7 +2276,7 @@ def build_server(
             return _error_result(str(exc))
         return result
 
-    async def _dispatch_list_chat_templates(_arguments: dict[str, Any]) -> Any:
+    async def _dispatch_list_chat_templates(_arguments: dict[str, Any]) -> object:
         from corpus_forge.mcp import templates as _tmpl
 
         backend = _get_write_backend()
@@ -2277,7 +2285,7 @@ def build_server(
         ctx = _make_write_ctx()
         return _tmpl.list_chat_templates(backend, ctx)
 
-    async def _dispatch_register_template(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_register_template(arguments: dict[str, Any]) -> object:
         from corpus_forge.mcp import templates as _tmpl
 
         backend = _get_write_backend()
@@ -2294,7 +2302,7 @@ def build_server(
         )
         return result
 
-    async def _dispatch_register_session(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_register_session(arguments: dict[str, Any]) -> object:
         from corpus_forge.mcp import writes
 
         backend = _get_write_backend()
@@ -2312,7 +2320,7 @@ def build_server(
 
     # ── Phase M Wave 3 — ignore_* dispatchers ────────────────────────────
 
-    def _resolve_path_arg(arg: Any) -> Path | None:
+    def _resolve_path_arg(arg: object) -> Path | None:
         """Coerce a wire-side path string into an absolute :class:`Path`."""
 
         if arg in (None, ""):
@@ -2324,7 +2332,7 @@ def build_server(
             path = _Path.cwd() / path
         return path
 
-    async def _dispatch_list_ignore(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_list_ignore(arguments: dict[str, Any]) -> object:
         from corpus_forge.admin import ignore as admin_ignore
 
         scope = arguments.get("scope", "local")
@@ -2348,7 +2356,7 @@ def build_server(
             "count": len(entries),
         }
 
-    async def _dispatch_validate_ignore(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_validate_ignore(arguments: dict[str, Any]) -> object:
         from corpus_forge.admin import ignore as admin_ignore
 
         path = _resolve_path_arg(arguments.get("path"))
@@ -2362,7 +2370,7 @@ def build_server(
             "reason": result.reason,
         }
 
-    async def _dispatch_add_ignore_pattern(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_add_ignore_pattern(arguments: dict[str, Any]) -> object:
         from corpus_forge.admin import ignore as admin_ignore
 
         scope = arguments.get("scope")
@@ -2378,7 +2386,7 @@ def build_server(
             return _error_result(f"invalid_pattern: {exc}")
         return {"path": str(result.path), "pattern": result.pattern, "added": result.added}
 
-    async def _dispatch_remove_ignore_pattern(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_remove_ignore_pattern(arguments: dict[str, Any]) -> object:
         from corpus_forge.admin import ignore as admin_ignore
 
         scope = arguments.get("scope")
@@ -2396,7 +2404,7 @@ def build_server(
             )
         return {"path": str(result.path), "pattern": result.pattern, "removed": result.removed}
 
-    async def _dispatch_sync_ignore(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_sync_ignore(arguments: dict[str, Any]) -> object:
         from corpus_forge.admin import ignore as admin_ignore
 
         root = _resolve_path_arg(arguments.get("root"))
@@ -2415,7 +2423,7 @@ def build_server(
 
     # ── Phase M Wave 4 — zotero_sync dispatcher ──────────────────────────
 
-    async def _dispatch_zotero_sync(arguments: dict[str, Any]) -> Any:
+    async def _dispatch_zotero_sync(arguments: dict[str, Any]) -> object:
         """Trigger an ingest pass over a dataset's Zotero sources.
 
         Module-level hooks ``_zotero_dry_run_count`` and
