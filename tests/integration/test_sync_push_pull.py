@@ -26,7 +26,6 @@ import itertools
 import time
 import uuid
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock
 
 import psycopg
@@ -78,7 +77,7 @@ def _unique_dataset_name() -> str:
     return f"sync-e2e-{uuid.uuid4().hex[:8]}"
 
 
-def _make_dataset_config(dataset_id: int) -> Any:
+def _make_dataset_config(dataset_id: int) -> MagicMock:
     """Duck-typed dataset config providing .id, .exclude_globs."""
     cfg = MagicMock()
     cfg.id = dataset_id
@@ -86,7 +85,7 @@ def _make_dataset_config(dataset_id: int) -> Any:
     return cfg
 
 
-def _make_source(root: Path) -> Any:
+def _make_source(root: Path) -> MagicMock:
     """Duck-typed source object providing .root."""
     src = MagicMock()
     src.root = root
