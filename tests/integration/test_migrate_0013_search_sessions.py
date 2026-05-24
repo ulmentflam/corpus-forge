@@ -42,9 +42,12 @@ import importlib
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    import psycopg
 
 pytestmark = [pytest.mark.integration]
 
@@ -118,7 +121,7 @@ def _reset_pg_schema(dsn: str) -> None:
 
 
 def _pg_column_info(
-    conn: Any,
+    conn: psycopg.Connection,
     table_schema: str,
     table_name: str,
 ) -> dict[str, dict[str, str | None]]:
@@ -152,7 +155,7 @@ def _pg_column_info(
 
 
 def _pg_index_defs(
-    conn: Any,
+    conn: psycopg.Connection,
     schema_name: str,
     table_name: str,
 ) -> dict[str, str]:
@@ -172,7 +175,7 @@ def _pg_index_defs(
 
 
 def _pg_fk_info(
-    conn: Any,
+    conn: psycopg.Connection,
     schema_name: str,
     table_name: str,
 ) -> list[dict[str, str]]:
@@ -291,7 +294,7 @@ def _sqlite_seed_dataset_and_chunks(
 
 
 def _pg_seed_dataset_and_chunks(
-    conn: Any,
+    conn: psycopg.Connection,
     dataset_id: int,
     chunk_ids: list[int],
 ) -> None:
