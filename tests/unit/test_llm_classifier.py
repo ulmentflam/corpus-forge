@@ -27,7 +27,6 @@ Coverage matrix (one test class per concern):
 from __future__ import annotations
 
 import json
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -47,9 +46,9 @@ from corpus_forge.classifiers.llm import LLMClassifier
 # ---------------------------------------------------------------------------
 
 
-def _doc(text: str = "hello world", **overrides: Any) -> ClassifiableDocument:
+def _doc(text: str = "hello world", **overrides: object) -> ClassifiableDocument:
     """Build a default :class:`ClassifiableDocument` for unit tests."""
-    defaults: dict[str, Any] = {
+    defaults: dict[str, object] = {
         "document_id": 1,
         "source_uri": "file:///x/y.md",
         "title": "A document",
@@ -61,7 +60,7 @@ def _doc(text: str = "hello world", **overrides: Any) -> ClassifiableDocument:
     return ClassifiableDocument(**defaults)  # type: ignore[arg-type]
 
 
-def _ok_response(body: dict[str, Any]) -> MagicMock:
+def _ok_response(body: dict[str, object]) -> MagicMock:
     """Build a 200 OK response with a parseable JSON body."""
     resp = MagicMock()
     resp.ok = True

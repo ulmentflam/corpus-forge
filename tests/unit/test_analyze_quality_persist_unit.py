@@ -9,7 +9,6 @@ full migration-chain integration is exercised by
 from __future__ import annotations
 
 import sqlite3
-from typing import Any
 
 import pytest
 
@@ -93,7 +92,7 @@ class _FakeCursor:
     def __enter__(self) -> _FakeCursor:
         return self
 
-    def __exit__(self, *_a: Any) -> None:
+    def __exit__(self, *_a: object) -> None:
         return None
 
     def execute(self, sql: str, params: tuple) -> None:

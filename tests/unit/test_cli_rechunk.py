@@ -13,7 +13,6 @@ in / same chunk texts out → skip the upsert).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -41,7 +40,7 @@ class _FakeConfig:
     """Bare-bones Config stand-in — only the attributes the rechunk
     code path actually reads."""
 
-    backend: Any = None
+    backend: object | None = None
     datasets: list = field(default_factory=list)
     embedders: list = field(default_factory=list)
 

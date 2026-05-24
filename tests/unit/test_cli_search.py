@@ -18,11 +18,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 from typer.testing import CliRunner
+
+from corpus_forge.retrieval.types import SearchOptions
 
 # ── Fakes ────────────────────────────────────────────────────────────────
 
@@ -47,10 +48,10 @@ class _FakeHit:
 class _FakeRetriever:
     def __init__(self, hits: list[_FakeHit]):
         self.hits = hits
-        self.calls: list[tuple[str, Any]] = []
+        self.calls: list[tuple[str, SearchOptions]] = []
         self.reranker = None
 
-    def search(self, query: str, options: Any) -> list[_FakeHit]:
+    def search(self, query: str, options: SearchOptions) -> list[_FakeHit]:
         self.calls.append((query, options))
         return list(self.hits)
 

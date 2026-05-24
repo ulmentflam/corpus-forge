@@ -7,8 +7,6 @@ session row.
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from corpus_forge.mcp.writes import _q, rate_search_result
@@ -35,7 +33,7 @@ class _FakeBackend:
         self._responses: list[list[dict] | None] = list(responses or [])
         self._audit_returns = audit_returns
         self.executes: list[tuple[str, tuple]] = []
-        self.audit_calls: list[tuple[Any, ...]] = []
+        self.audit_calls: list[tuple[object, ...]] = []
         # `_q` uses type(backend).__module__ to decide placeholder style;
         # we live in this test module, so placeholders stay as `?`.
 
@@ -45,7 +43,7 @@ class _FakeBackend:
             return []
         return self._responses.pop(0) or []
 
-    def audit_event(self, *args: Any) -> int:
+    def audit_event(self, *args: object) -> int:
         self.audit_calls.append(args)
         return self._audit_returns
 
