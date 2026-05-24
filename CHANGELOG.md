@@ -8,6 +8,18 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Docs
+
+- Reconcile Phase E / J / K TDD plans with shipped reality — tick the
+  Done-criteria checkboxes for items already implemented (classifier
+  package + CLI + `document_labels.confidence` migration, `.corpusignore`
+  matcher + estimate flags + MCP args, `corpus_forge/estimate.py` +
+  `corpus-forge estimate` + `estimate_sync_size` MCP tool,
+  CLAUDE/GEMINI/AGENTS docs, curation skill + 3 MCP tools, README
+  reframe). Release-cut items in `phase_j_living_corpus.md#J5` remain
+  unchecked — they require human-initiated publishing actions
+  (PyPI/Homebrew/Scoop/Docker/release-notes).
+
 ### Added
 
 - New module `corpus_forge.macos_tcc` — iCloud Drive + TCC integration

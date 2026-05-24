@@ -129,13 +129,13 @@ JSON output mirrors the same structure under a stable schema (`schema_version: 1
 
 ### Done criteria
 
-- [ ] `corpus_forge/estimate.py` exists with `SyncEstimate` dataclass + `estimate_sync(path, config, *, embedders=None, compression_ratio=1.0)` function.
-- [ ] `corpus-forge estimate <path>` lands and is registered in `__main__.py`.
-- [ ] MCP tool `estimate_sync_size` registered in `_list_tools` + `_call_tool` dispatch.
-- [ ] Unit tests ≥30 cases, all green.
-- [ ] Integration test runs in <2s.
-- [ ] `make ci` green; coverage ≥90%.
-- [ ] CHANGELOG `[Unreleased]` section adds the new command + tool under "Added".
+- [x] `corpus_forge/estimate.py` exists with `SyncEstimate` dataclass + `estimate_sync(path, config, *, embedders=None, compression_ratio=1.0)` function — shipped.
+- [x] `corpus-forge estimate <path>` lands and is registered in `__main__.py` — shipped.
+- [x] MCP tool `estimate_sync_size` registered in `_list_tools` + `_call_tool` dispatch — shipped (`corpus_forge/mcp/server.py:953`).
+- [x] Unit tests ≥30 cases, all green — passing post-PR #54.
+- [x] Integration test runs in <2s — shipped.
+- [x] `make ci` green; coverage ≥90% — verified at PR #54 merge gate.
+- [x] CHANGELOG `[Unreleased]` section adds the new command + tool under "Added" — shipped.
 
 ---
 
@@ -183,10 +183,10 @@ None (pure docs). QA gate: `make lint` (no executable code) + a markdown-lint ch
 
 ### Done criteria
 
-- [ ] `CLAUDE.md`, `GEMINI.md`, `AGENTS.md` exist at repo root.
-- [ ] All three reference the *same* version of the install + MCP-config + skill-registration snippets — diffed by hand or by an inline `make docs-check` if cheap.
-- [ ] README cross-links to all three under a new "For AI assistants" section.
-- [ ] CHANGELOG `[Unreleased]` adds an entry under "Added".
+- [x] `CLAUDE.md`, `GEMINI.md`, `AGENTS.md` exist at repo root — shipped.
+- [x] All three reference the *same* version of the install + MCP-config + skill-registration snippets — diffed by hand or by an inline `make docs-check` if cheap — shipped.
+- [x] README cross-links to all three under a new "For AI assistants" section — shipped (`README.md` has `## For AI assistants`).
+- [x] CHANGELOG `[Unreleased]` adds an entry under "Added" — shipped.
 
 ---
 
@@ -259,12 +259,12 @@ Each skill file shares a common chat-loop prompt template (`corpus_forge/curatio
 
 ### Done criteria
 
-- [ ] `corpus_forge/curation/{selector,prompts,__init__}.py` exists with documented API.
-- [ ] Three new MCP tools registered and wired through to selector + write surface.
-- [ ] Four skill assets (Claude / OpenCode / Gemini / AGENTS recipe) land.
-- [ ] Unit + integration tests green; coverage ≥90% on `corpus_forge/curation/`.
-- [ ] `make ci` green.
-- [ ] CHANGELOG `[Unreleased]` gets an "Added" entry: "Data-curation chat skill (Claude / Gemini / OpenCode) — pulls low-confidence or metadata-poor entries, facilitates a chat to improve them, and commits changes via MCP."
+- [x] `corpus_forge/curation/{selector,prompts,__init__}.py` exists with documented API — shipped.
+- [x] Three new MCP tools registered and wired through to selector + write surface — shipped (`next_curation_target`, `next_curation_batch`, `commit_curation` in `corpus_forge/mcp/server.py`).
+- [x] Four skill assets (Claude / OpenCode / Gemini / AGENTS recipe) land — shipped.
+- [x] Unit + integration tests green; coverage ≥90% on `corpus_forge/curation/` — passing post-PR #54.
+- [x] `make ci` green — verified at PR #54 merge gate.
+- [x] CHANGELOG `[Unreleased]` gets an "Added" entry: "Data-curation chat skill (Claude / Gemini / OpenCode) — pulls low-confidence or metadata-poor entries, facilitates a chat to improve them, and commits changes via MCP." — shipped.
 
 ---
 
@@ -289,11 +289,11 @@ None — proof-read pass + `markdown-link-check` if available.
 
 ### Done criteria
 
-- [ ] Tagline updated.
-- [ ] Quickstart shows the two new commands.
-- [ ] "For AI assistants" section exists and links to all three J2 files.
-- [ ] CHANGELOG `[Unreleased]` consolidates the Phase J additions under a single "Phase J — Living Corpus" subhead.
-- [ ] README diff under 250 lines (this is a reframe, not a rewrite).
+- [x] Tagline updated — shipped (`README.md:7` — "Chat with your data. Forge a living, trainable corpus that makes any model smarter.").
+- [x] Quickstart shows the two new commands — shipped.
+- [x] "For AI assistants" section exists and links to all three J2 files — shipped.
+- [x] CHANGELOG `[Unreleased]` consolidates the Phase J additions under a single "Phase J — Living Corpus" subhead — shipped.
+- [x] README diff under 250 lines (this is a reframe, not a rewrite) — historical landing constraint, satisfied at landing.
 
 ---
 

@@ -281,16 +281,16 @@ marker pattern. Skip live tests when daemon down or model not pulled.
 
 ### P0 (gate C-09)
 
-- [ ] `corpus_forge/classifiers/` package with `base.py`, `registry.py`, `rule_based.py`, `__init__.py`
-- [ ] All nine `class=*` values emittable by `RuleBasedClassifier` on the smoke-test fixture corpora
-- [ ] `corpus-forge classify --dry-run --json` produces an auditable plan
-- [ ] `corpus-forge classify` is idempotent (re-run is a no-op)
-- [ ] `--reclassify` re-runs the chain
-- [ ] `ClassifierConfig` accepted in TOML; existing configs unaffected
-- [ ] `document_labels.confidence` column added via Alembic revision
-- [ ] `make test-unit` green at ≥90% coverage
-- [ ] `make test-integration` green including `test_classify_cli_e2e.py`
-- [ ] `make ci` green
+- [x] `corpus_forge/classifiers/` package with `base.py`, `registry.py`, `rule_based.py`, `__init__.py` — shipped
+- [x] All nine `class=*` values emittable by `RuleBasedClassifier` on the smoke-test fixture corpora — shipped (`rule_based.py` + `test_classify_*` integration tests)
+- [x] `corpus-forge classify --dry-run --json` produces an auditable plan — shipped (`corpus_forge/cli.py:1964`)
+- [x] `corpus-forge classify` is idempotent (re-run is a no-op) — shipped
+- [x] `--reclassify` re-runs the chain — shipped
+- [x] `ClassifierConfig` accepted in TOML; existing configs unaffected — shipped (`corpus_forge/config.py:509`)
+- [x] `document_labels.confidence` column added via Alembic revision — shipped (`0010_document_label_confidence.py`)
+- [x] `make test-unit` green at ≥90% coverage — verified post-PR #54 (4853 passed)
+- [x] `make test-integration` green including `test_classify_cli_e2e.py` — shipped (`tests/integration/test_classify_cli_e2e.py` exists and passes)
+- [x] `make ci` green — verified at PR #54 merge gate
 
 ### P1 (gate C-14)
 

@@ -176,17 +176,17 @@ The MCP tool dispatch (`_dispatch_estimate_sync_size`) gets the same handling. N
 
 ### Done criteria
 
-- [ ] `corpus_forge/ignore.py` exists with `CorpusIgnore`, `IgnoreStack`, `load_global_ignore`, `load_local_ignore` per the surfaces above.
-- [ ] `corpus-forge estimate` accepts `--ignore-file` / `--no-ignore-file` / `--no-global-ignore`.
-- [ ] MCP `estimate_sync_size` accepts `ignore_file` + `disable_global_ignore` args.
-- [ ] Auto-detect at `<root>/.corpusignore` works.
-- [ ] Global ignore loaded from `~/.config/corpus-forge/ignore` by default; overridable via `CF_GLOBAL_IGNORE_FILE` env var.
-- [ ] Hard-coded `_SKIP_DIR_NAMES` remain absolute (negations cannot un-skip them).
-- [ ] Unit + integration tests green, coverage ≥90% on `corpus_forge/ignore.py`.
-- [ ] `make ci` green.
-- [ ] `.corpusignore.example` lands at repo root with sensible defaults (Apple metadata, Photos library, large media, common backup dirs, etc.).
-- [ ] CHANGELOG `[Unreleased]` adds a "Phase K — .corpusignore" subhead with the flags, MCP args, paths, and the example file.
-- [ ] CLAUDE.md / GEMINI.md / AGENTS.md briefly reference `.corpusignore` (local + global) in the "First-run sanity" section.
+- [x] `corpus_forge/ignore.py` exists with `CorpusIgnore`, `IgnoreStack`, `load_global_ignore`, `load_local_ignore` per the surfaces above — shipped.
+- [x] `corpus-forge estimate` accepts `--ignore-file` / `--no-ignore-file` / `--no-global-ignore` — shipped (`corpus_forge/cli.py:2833`).
+- [x] MCP `estimate_sync_size` accepts `ignore_file` + `disable_global_ignore` args — shipped (`corpus_forge/mcp/server.py:182,190,1542`).
+- [x] Auto-detect at `<root>/.corpusignore` works — shipped.
+- [x] Global ignore loaded from `~/.config/corpus-forge/ignore` by default; overridable via `CF_GLOBAL_IGNORE_FILE` env var — shipped.
+- [x] Hard-coded `_SKIP_DIR_NAMES` remain absolute (negations cannot un-skip them) — shipped.
+- [x] Unit + integration tests green, coverage ≥90% on `corpus_forge/ignore.py` — passing post-PR #54.
+- [x] `make ci` green — verified at PR #54 merge gate.
+- [x] `.corpusignore.example` lands at repo root with sensible defaults (Apple metadata, Photos library, large media, common backup dirs, etc.) — shipped.
+- [x] CHANGELOG `[Unreleased]` adds a "Phase K — .corpusignore" subhead with the flags, MCP args, paths, and the example file — shipped (`#### Phase K — .corpusignore`).
+- [x] CLAUDE.md / GEMINI.md / AGENTS.md briefly reference `.corpusignore` (local + global) in the "First-run sanity" section — shipped.
 
 ---
 
