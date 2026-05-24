@@ -258,10 +258,20 @@ class TestExportSdftParquet:
         assert out.exists(), "parquet output file must be created"
         assert result["row_count"] == 1
 
-    def test_parquet_round_trips_via_datasets(self, tmp_path: Path) -> None:
+    def test_parquet_round_trips_via_datasets(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """HF datasets.load_dataset('parquet', ...) can read the produced file."""
         pytest.importorskip("pyarrow", reason="pyarrow not installed")
         datasets_lib = pytest.importorskip("datasets", reason="datasets not installed")
+        # The default HF cache (~/.cache/huggingface) may be owned by root
+        # on dev machines / CI; point every relevant env var at a per-test
+        # tmp dir so ``load_dataset`` can create its cache without a perms
+        # collision.  ``HF_HOME`` covers the umbrella default;
+        # ``HF_DATASETS_CACHE`` is the dedicated datasets-cache override.
+        hf_cache = tmp_path / "hf_cache"
+        monkeypatch.setenv("HF_HOME", str(hf_cache))
+        monkeypatch.setenv("HF_DATASETS_CACHE", str(hf_cache / "datasets"))
         backend = _make_backend()
         ds_id = _insert_dataset(backend)
         _seed_three_rows(backend, ds_id)
@@ -269,7 +279,12 @@ class TestExportSdftParquet:
 
         export_sdft("q4-ds", "chatml", out, format="parquet", backend=backend)
 
-        ds = datasets_lib.load_dataset("parquet", data_files=str(out), split="train")
+        ds = datasets_lib.load_dataset(
+            "parquet",
+            data_files=str(out),
+            split="train",
+            cache_dir=str(hf_cache / "datasets"),
+        )
         assert len(ds) == 3
         assert set(_REQUIRED_SDFT_KEYS).issubset(set(ds.column_names))
 
@@ -699,9 +714,16 @@ class TestExportSdftReturnValue:
 
 
 class TestExportSdftHFRoundTrip:
-    def test_jsonl_loads_via_hf_datasets(self, tmp_path: Path) -> None:
+    def test_jsonl_loads_via_hf_datasets(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """datasets.load_dataset('json', data_files=...) can parse the JSONL output."""
         datasets_lib = pytest.importorskip("datasets", reason="datasets not installed")
+        # Same HF-cache-perms guard as the parquet round-trip test above —
+        # ``~/.cache/huggingface`` may be root-owned on dev machines / CI.
+        hf_cache = tmp_path / "hf_cache"
+        monkeypatch.setenv("HF_HOME", str(hf_cache))
+        monkeypatch.setenv("HF_DATASETS_CACHE", str(hf_cache / "datasets"))
         backend = _make_backend()
         ds_id = _insert_dataset(backend)
         _seed_three_rows(backend, ds_id)
@@ -709,7 +731,12 @@ class TestExportSdftHFRoundTrip:
 
         export_sdft("q4-ds", "chatml", out, format="jsonl", backend=backend)
 
-        hf_ds = datasets_lib.load_dataset("json", data_files=str(out), split="train")
+        hf_ds = datasets_lib.load_dataset(
+            "json",
+            data_files=str(out),
+            split="train",
+            cache_dir=str(hf_cache / "datasets"),
+        )
         assert len(hf_ds) == 3
         for col in _REQUIRED_SDFT_KEYS:
             assert col in hf_ds.column_names, f"HF dataset missing column {col!r}"
