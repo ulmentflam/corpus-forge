@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
@@ -32,6 +32,11 @@ import pytest
 # Guard: skip the whole file if the mcp package is not installed.
 mcp = pytest.importorskip("mcp")
 from mcp import types as mcp_types  # noqa: E402
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from collections.abc import Coroutine
+
+    from mcp.server import Server
 
 pytestmark = pytest.mark.integration
 
@@ -51,11 +56,11 @@ _ALL_ANALYZE_TOOLS = {_ANALYZE_CORPUS, _FIND_DUPLICATES, _CLUSTER_TOPICS, _SCORE
 # ---------------------------------------------------------------------------
 
 
-def _run(coro: Any) -> Any:
+def _run(coro: Coroutine[object, object, object]) -> object:
     return asyncio.run(coro)
 
 
-def _list_tools(server: Any) -> set[str]:
+def _list_tools(server: Server) -> set[str]:
     handler = server.request_handlers[mcp_types.ListToolsRequest]
     request = mcp_types.ListToolsRequest(method="tools/list")
     result = _run(handler(request))
@@ -63,7 +68,7 @@ def _list_tools(server: Any) -> set[str]:
     return {t.name for t in root.tools}
 
 
-def _get_tool(server: Any, name: str) -> mcp_types.Tool:
+def _get_tool(server: Server, name: str) -> mcp_types.Tool:
     handler = server.request_handlers[mcp_types.ListToolsRequest]
     request = mcp_types.ListToolsRequest(method="tools/list")
     result = _run(handler(request))
@@ -74,7 +79,7 @@ def _get_tool(server: Any, name: str) -> mcp_types.Tool:
     raise KeyError(f"Tool {name!r} not registered on this server")
 
 
-def _call(server: Any, name: str, arguments: dict[str, Any]) -> Any:
+def _call(server: Server, name: str, arguments: dict[str, object]) -> object:
     handler = server.request_handlers[mcp_types.CallToolRequest]
     request = mcp_types.CallToolRequest(
         method="tools/call",
@@ -84,7 +89,7 @@ def _call(server: Any, name: str, arguments: dict[str, Any]) -> Any:
     return result.root if hasattr(result, "root") else result
 
 
-def _payload(result: Any) -> dict:
+def _payload(result: object) -> dict[str, object]:
     """Extract the structured dict payload from a CallToolResult."""
     sc = getattr(result, "structuredContent", None)
     if sc is not None:
@@ -114,7 +119,7 @@ class _FakeRetriever:
         ]
 
 
-def _build_server(*, writes_enabled: bool = False) -> Any:
+def _build_server(*, writes_enabled: bool = False) -> Server:
     from corpus_forge.mcp.server import build_server
 
     retriever = _FakeRetriever()
@@ -337,7 +342,7 @@ class TestAnalyzeCorpusDispatch:
         """A dataset name that doesn't exist returns a clear error payload, not a crash."""
         import corpus_forge.mcp._dispatch_analyze as _da
 
-        def _raise(backend: Any, ds: str) -> list:
+        def _raise(backend: object, ds: str) -> list[object]:
             raise ValueError(f"Dataset {ds!r} not found")
 
         monkeypatch.setattr(_da, "_fetch_chunks_for_dataset", _raise)
@@ -555,7 +560,7 @@ class TestClusterTopicsDispatch:
     def test_missing_dataset_returns_error_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import corpus_forge.mcp._dispatch_analyze as _da
 
-        def _raise(backend: Any, ds: str) -> list:
+        def _raise(backend: object, ds: str) -> list[object]:
             raise ValueError(f"Dataset {ds!r} not found")
 
         monkeypatch.setattr(_da, "_fetch_chunks_for_dataset", _raise)
@@ -581,7 +586,7 @@ class TestScoreQualityDispatch:
         persist: bool = False,
         writes_enabled: bool = False,
         chunks: list[dict] | None = None,
-    ) -> Any:
+    ) -> object:
         if chunk_ids is None:
             chunk_ids = _DEMO_CHUNK_IDS
         if chunks is None:
@@ -639,9 +644,9 @@ class TestScoreQualityDispatch:
         )
         server = _build_server(writes_enabled=False)
         # Spy on persist_quality_signals via monkeypatch on the module.
-        persist_calls: list[Any] = []
+        persist_calls: list[object] = []
 
-        def _fake_persist(*args: Any, **kwargs: Any) -> int:
+        def _fake_persist(*args: object, **kwargs: object) -> int:
             persist_calls.append((args, kwargs))
             return 0
 
@@ -688,9 +693,9 @@ class TestScoreQualityDispatch:
             "_fetch_chunks_by_ids",
             lambda backend, ids: [c for c in _DEMO_CHUNKS if c["id"] in ids],
         )
-        persist_calls: list[Any] = []
+        persist_calls: list[object] = []
 
-        def _fake_persist(*args: Any, **kwargs: Any) -> int:
+        def _fake_persist(*args: object, **kwargs: object) -> int:
             persist_calls.append((args, kwargs))
             return len(args[1]) if len(args) > 1 else 0
 
