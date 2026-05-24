@@ -13,7 +13,8 @@ that surface under ``pytest -n auto --cov``.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from collections.abc import Coroutine
+from typing import TypeVar
 from unittest.mock import MagicMock
 
 import pytest
@@ -30,16 +31,18 @@ from corpus_forge.mcp._dispatch_analyze import (
     _persist_quality_signals,
 )
 
+_T = TypeVar("_T")
 
-def _run(coro: Any) -> Any:
+
+def _run(coro: Coroutine[object, object, _T]) -> _T:
     return asyncio.run(coro)
 
 
-def _is_error_result(result: Any) -> bool:
+def _is_error_result(result: object) -> bool:
     return bool(getattr(result, "isError", False))
 
 
-def _error_text(result: Any) -> str:
+def _error_text(result: object) -> str:
     content = getattr(result, "content", [])
     return "".join(getattr(b, "text", "") for b in content)
 
@@ -457,8 +460,16 @@ class _PersistRecordingBackend(_FakeBackend):
     we point it at an in-memory SQLite so persist actually writes rows.
     """
 
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
+    def __init__(
+        self,
+        *,
+        chunks_by_dataset: dict[str, list[dict] | None] | None = None,
+        chunks_by_id: dict[int, dict] | None = None,
+    ) -> None:
+        super().__init__(
+            chunks_by_dataset=chunks_by_dataset,
+            chunks_by_id=chunks_by_id,
+        )
         import sqlite3 as _sqlite3
 
         self.conn = _sqlite3.connect(":memory:")
