@@ -44,9 +44,29 @@ import json
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict
 
 import pytest
+
+if TYPE_CHECKING:
+    import psycopg
+
+
+class _SqliteColInfo(TypedDict):
+    """PRAGMA table_info row, projected to the fields this module asserts on."""
+
+    type: str
+    notnull: bool
+    dflt_value: str | None
+    pk: bool
+
+
+class _SqliteIndexRow(TypedDict):
+    """sqlite_master index row (name + DDL, DDL is None for autoindexes)."""
+
+    name: str
+    sql: str | None
+
 
 pytestmark = [pytest.mark.integration]
 
@@ -116,7 +136,7 @@ def _reset_pg_schema(dsn: str) -> None:
 
 
 def _pg_column_info(
-    conn: Any,
+    conn: psycopg.Connection,
     table_schema: str,
     table_name: str,
 ) -> dict[str, dict[str, str | None]]:
@@ -148,7 +168,7 @@ def _pg_column_info(
 
 
 def _pg_index_defs(
-    conn: Any,
+    conn: psycopg.Connection,
     schema_name: str,
     table_name: str,
 ) -> dict[str, str]:
@@ -168,7 +188,7 @@ def _pg_index_defs(
 
 
 def _pg_fk_info(
-    conn: Any,
+    conn: psycopg.Connection,
     schema_name: str,
     table_name: str,
 ) -> list[dict[str, str]]:
@@ -211,7 +231,7 @@ def _pg_fk_info(
 
 
 def _pg_unique_constraints(
-    conn: Any,
+    conn: psycopg.Connection,
     schema_name: str,
     table_name: str,
 ) -> list[list[str]]:
@@ -240,27 +260,27 @@ def _pg_unique_constraints(
 # ---------------------------------------------------------------------------
 
 
-def _sqlite_col_map(conn: sqlite3.Connection, table: str) -> dict[str, dict]:
+def _sqlite_col_map(conn: sqlite3.Connection, table: str) -> dict[str, _SqliteColInfo]:
     """Return PRAGMA table_info as ``{name: {type, notnull, dflt_value, pk}}``."""
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     return {
-        row[1]: {
-            "type": row[2].upper(),
-            "notnull": bool(row[3]),
-            "dflt_value": row[4],
-            "pk": bool(row[5]),
-        }
+        row[1]: _SqliteColInfo(
+            type=str(row[2]).upper(),
+            notnull=bool(row[3]),
+            dflt_value=row[4],
+            pk=bool(row[5]),
+        )
         for row in rows
     }
 
 
-def _sqlite_indexes(conn: sqlite3.Connection, table: str) -> list[dict]:
+def _sqlite_indexes(conn: sqlite3.Connection, table: str) -> list[_SqliteIndexRow]:
     """Return sqlite_master index rows for *table*."""
     rows = conn.execute(
         "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name=?",
         (table,),
     ).fetchall()
-    return [{"name": row[0], "sql": row[1]} for row in rows]
+    return [_SqliteIndexRow(name=row[0], sql=row[1]) for row in rows]
 
 
 def _sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -307,7 +327,7 @@ def _sqlite_seed_dataset(
 # ---------------------------------------------------------------------------
 
 
-def _pg_seed_dataset(conn: Any, dataset_id: int) -> None:
+def _pg_seed_dataset(conn: psycopg.Connection, dataset_id: int) -> None:
     """Insert a minimal corpus.datasets row for FK satisfaction (Postgres)."""
     with conn.cursor() as cur:
         cur.execute(
