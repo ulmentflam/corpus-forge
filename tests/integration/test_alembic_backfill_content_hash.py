@@ -32,10 +32,13 @@ import hashlib
 import importlib
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import psycopg
 import pytest
+
+if TYPE_CHECKING:
+    from testcontainers.postgres import PostgresContainer
 
 pytestmark = pytest.mark.integration
 
@@ -62,7 +65,7 @@ _ALEMBIC_INI = _REPO_ROOT / "alembic.ini"
 # ---------------------------------------------------------------------------
 
 
-def _dsn_from_container(c: Any) -> str:
+def _dsn_from_container(c: PostgresContainer) -> str:
     """Build a bare postgresql:// DSN from a testcontainers Postgres container."""
     return (
         f"postgresql://{c.username}:{c.password}"
@@ -124,7 +127,7 @@ def _expected_hash(text: str) -> str:
 
 
 @_skip_no_tc
-def test_backfill_populates_content_hash(postgres_container: Any) -> None:  # type: ignore[return]
+def test_backfill_populates_content_hash(postgres_container: PostgresContainer) -> None:  # type: ignore[return]
     """content_hash column is added and back-filled by 0002_chunk_content_hash.
 
     Steps:
@@ -249,7 +252,7 @@ def test_backfill_populates_content_hash(postgres_container: Any) -> None:  # ty
 
 
 @_skip_no_tc
-def test_chunks_content_hash_idx_exists(postgres_container: Any) -> None:  # type: ignore[return]
+def test_chunks_content_hash_idx_exists(postgres_container: PostgresContainer) -> None:  # type: ignore[return]
     """chunks_content_hash_idx index is present after 0002_chunk_content_hash upgrade.
 
     RED: fails with CommandError because revision doesn't exist yet.
@@ -279,7 +282,7 @@ def test_chunks_content_hash_idx_exists(postgres_container: Any) -> None:  # typ
 
 
 @_skip_no_tc
-def test_backfill_null_text_handled(postgres_container: Any) -> None:  # type: ignore[return]
+def test_backfill_null_text_handled(postgres_container: PostgresContainer) -> None:  # type: ignore[return]
     """Chunks that have non-null text all get hashed; the query is idempotent on re-run.
 
     Exercises the WHERE content_hash IS NULL guard — running the backfill SQL a
