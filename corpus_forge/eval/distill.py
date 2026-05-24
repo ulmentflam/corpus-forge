@@ -28,8 +28,23 @@ token_stats
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Protocol, cast
+
+
+class _DistillBackend(Protocol):
+    """Minimal duck-typed shape used by :func:`run_distill_eval`.
+
+    Concrete callers pass ``SQLiteBackend`` or ``PostgresBackend``; tests pass
+    in-memory doubles.  The protocol omits the wider ``StorageBackend``
+    surface to keep the test-double burden small.
+    """
+
+    def find_dataset_id_by_name(self, name: str) -> int | None: ...
+    def list_sdft_demonstrations(self, dataset_id: int) -> list[dict]: ...
+    def _execute(self, sql: str, params: Sequence[object] = ()) -> Sequence[dict]: ...
+
 
 # Token count proxy: one token ≈ 4 characters (same as analyze/stats.py convention).
 _CHARS_PER_TOKEN = 4
@@ -56,10 +71,15 @@ _ALL_SDFT_SOURCES = [
 # ---------------------------------------------------------------------------
 
 
-def _build_backend() -> Any:
+def _build_backend() -> _DistillBackend:
     """Return the default backend from the loaded config.
 
     Tests monkeypatch this to inject an in-memory SQLiteBackend.
+
+    Return type is the local :class:`_DistillBackend` Protocol, which
+    captures only the three methods this module needs (``find_dataset_id_by_name``,
+    ``list_sdft_demonstrations``, ``_execute``) — keeping the test-double
+    surface narrow.
     """
     from corpus_forge.config import Config  # noqa: PLC0415
 
@@ -68,16 +88,22 @@ def _build_backend() -> Any:
     if kind == "sqlite":
         from corpus_forge.backends.sqlite import SQLiteBackend  # noqa: PLC0415
 
-        return SQLiteBackend(
-            path=config.backend.dsn,
-            schema=getattr(config.backend, "schema", "") or "",
+        return cast(
+            _DistillBackend,
+            SQLiteBackend(
+                path=config.backend.dsn,
+                schema=getattr(config.backend, "schema", "") or "",
+            ),
         )
     from corpus_forge.backends.postgres import PostgresBackend  # noqa: PLC0415
 
-    return PostgresBackend(dsn=config.backend.dsn, schema=config.backend.schema)
+    return cast(
+        _DistillBackend,
+        PostgresBackend(dsn=config.backend.dsn, schema=config.backend.schema),
+    )
 
 
-def _get_backend() -> Any:
+def _get_backend() -> _DistillBackend:
     """Alias for ``_build_backend``; both are monkeypatched by tests."""
     return _build_backend()
 
@@ -155,7 +181,7 @@ def _compute_template_fidelity(
     }
 
 
-def _compute_token_stats(sdft_rows: list[dict]) -> dict[str, Any]:
+def _compute_token_stats(sdft_rows: list[dict]) -> dict[str, object]:
     """Compute p50/p95/max/mean/total over rough target token counts."""
     if not sdft_rows:
         return {"p50": 0, "p95": 0, "max": 0, "mean": 0.0, "total": 0}
@@ -187,7 +213,7 @@ def _compute_token_stats(sdft_rows: list[dict]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _write_md_report(report_dir: Path, result: dict[str, Any], dataset: str) -> None:
+def _write_md_report(report_dir: Path, result: dict[str, object], dataset: str) -> None:
     """Write a human-readable Markdown report."""
     lines = [
         f"# Distill Eval Report — {dataset}",
@@ -203,7 +229,8 @@ def _write_md_report(report_dir: Path, result: dict[str, Any], dataset: str) -> 
         "| Source | Count |",
         "|--------|-------|",
     ]
-    for src, count in sorted(result["source_mix"].items()):
+    source_mix = cast(dict[str, int], result["source_mix"])
+    for src, count in sorted(source_mix.items()):
         lines.append(f"| {src} | {count} |")
     lines += [
         "",
@@ -212,7 +239,7 @@ def _write_md_report(report_dir: Path, result: dict[str, Any], dataset: str) -> 
         "| Metric | Value |",
         "|--------|-------|",
     ]
-    fidelity = result["template_fidelity"]
+    fidelity = cast(dict[str, int], result["template_fidelity"])
     for key in ("n_rows", "n_rendered_ok", "n_truncated", "n_failed"):
         lines.append(f"| {key} | {fidelity.get(key, 0)} |")
     lines += [
@@ -222,14 +249,14 @@ def _write_md_report(report_dir: Path, result: dict[str, Any], dataset: str) -> 
         "| Metric | Value |",
         "|--------|-------|",
     ]
-    stats = result["token_stats"]
+    stats = cast(dict[str, object], result["token_stats"])
     for key in ("p50", "p95", "max", "mean", "total"):
         lines.append(f"| {key} | {stats.get(key, 0)} |")
     p = report_dir / "eval_distill.md"
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _write_json_report(report_dir: Path, result: dict[str, Any]) -> None:
+def _write_json_report(report_dir: Path, result: dict[str, object]) -> None:
     """Write a machine-readable JSON report (excludes generated_at for determinism)."""
     # Exclude generated_at from the persisted JSON so cross-run comparison is stable.
     storable = {k: v for k, v in result.items() if k != "generated_at"}
@@ -247,8 +274,8 @@ def run_distill_eval(
     *,
     template: str = "chatml",
     report_dir: Path | None = None,
-    backend: Any = None,
-) -> dict[str, Any]:
+    backend: _DistillBackend | None = None,
+) -> dict[str, object]:
     """Run preprocessing-health metrics over the SDFT capture set.
 
     Parameters
@@ -297,7 +324,7 @@ def run_distill_eval(
     template_fidelity = _compute_template_fidelity(sdft_rows, template)
     token_stats = _compute_token_stats(sdft_rows)
 
-    result: dict[str, Any] = {
+    result: dict[str, object] = {
         "coverage": coverage,
         "dataset": dataset,
         "source_mix": source_mix,
@@ -325,7 +352,7 @@ def run_distill_eval(
 # ---------------------------------------------------------------------------
 
 
-def _list_chunks_for_dataset(backend: Any, dataset_id: int) -> list[dict]:
+def _list_chunks_for_dataset(backend: _DistillBackend, dataset_id: int) -> list[dict]:
     """Return all chunks for *dataset_id* as a list of dicts with a ``text`` key.
 
     Fetches via a raw SQL query that joins chunks → documents → dataset.

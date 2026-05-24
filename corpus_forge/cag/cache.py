@@ -40,9 +40,28 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Protocol, cast
+
+
+class _CagCursor(Protocol):
+    """Minimal duck-typed cursor used by :func:`_fetch_chunks`."""
+
+    def fetchall(self) -> Sequence[object]: ...
+    def fetchone(self) -> object | None: ...
+
+
+class _CagConnection(Protocol):
+    """Minimal duck-typed DB-API connection used by the CAG cache helpers.
+
+    Concrete callers pass ``sqlite3.Connection``, ``psycopg.Connection``, or a
+    test double — they all expose ``execute(sql, params) -> cursor``.
+    """
+
+    def execute(self, sql: str, params: Sequence[object] = ()) -> _CagCursor: ...
+
 
 _log = logging.getLogger(__name__)
 
@@ -83,7 +102,9 @@ def cache_path(root: Path, dataset: str, key: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _fetch_chunks(conn: Any, dataset: str, top_k: int) -> tuple[int, list[dict[str, Any]]]:
+def _fetch_chunks(
+    conn: _CagConnection, dataset: str, top_k: int
+) -> tuple[int, list[dict[str, object]]]:
     """Fetch the top-*top_k* chunks for *dataset* from *conn*.
 
     Returns ``(dataset_id, list_of_chunk_dicts)``.  Each dict has at least
@@ -95,7 +116,12 @@ def _fetch_chunks(conn: Any, dataset: str, top_k: int) -> tuple[int, list[dict[s
     ).fetchone()
     if row is None:
         raise ValueError(f"dataset {dataset!r} not found")
-    dataset_id: int = int(row[0]) if not isinstance(row, dict) else int(row["id"])
+    if isinstance(row, dict):
+        dataset_id: int = int(row["id"])
+    else:
+        # SELECT id returns an integer column; cast narrows the row to a
+        # 1-tuple of int so `int()` accepts the element. Runtime is unchanged.
+        dataset_id = int(cast(Sequence[int], row)[0])
 
     # `chunks` and `documents` both have an `id` column — qualify each
     # selected column so the JOIN resolves unambiguously.
@@ -110,16 +136,17 @@ def _fetch_chunks(conn: Any, dataset: str, top_k: int) -> tuple[int, list[dict[s
         (dataset_id, top_k),
     )
     rows = cursor.fetchall()
-    chunks: list[dict[str, Any]] = []
+    chunks: list[dict[str, object]] = []
     for r in rows:
         if isinstance(r, dict):
             chunks.append(dict(r))
         else:
-            chunks.append({"id": r[0], "content_hash": r[1], "text": r[2]})
+            tup = cast(Sequence[object], r)
+            chunks.append({"id": tup[0], "content_hash": tup[1], "text": tup[2]})
     return dataset_id, chunks
 
 
-def _render_template(chunks: list[dict[str, Any]], template: str) -> str:
+def _render_template(chunks: list[dict[str, object]], template: str) -> str:
     """Render *chunks* into a prompt string using *template*.
 
     This is a minimal implementation; downstream clients can substitute a
@@ -128,12 +155,12 @@ def _render_template(chunks: list[dict[str, Any]], template: str) -> str:
     if template == "chatml":
         parts = ["<|im_start|>system\n"]
         for chunk in chunks:
-            parts.append(chunk.get("text", ""))
+            parts.append(str(chunk.get("text", "")))
             parts.append("\n")
         parts.append("<|im_end|>")
         return "".join(parts)
     # Generic fallback: newline-joined texts.
-    return "\n\n".join(chunk.get("text", "") for chunk in chunks)
+    return "\n\n".join(str(chunk.get("text", "")) for chunk in chunks)
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +169,7 @@ def _render_template(chunks: list[dict[str, Any]], template: str) -> str:
 
 
 def build_cache(
-    conn: Any,
+    conn: _CagConnection,
     dataset: str,
     *,
     top_k: int = 50,
@@ -175,13 +202,13 @@ def build_cache(
     dataset_id, chunks = _fetch_chunks(conn, dataset, top_k)
     messages = _render_template(chunks, template)
 
-    hashes = [c["content_hash"] for c in chunks if c.get("content_hash")]
+    hashes: list[str] = [str(c["content_hash"]) for c in chunks if c.get("content_hash")]
     key = cache_key(dataset_id, hashes, template)
     path = cache_path(root, dataset, key)
 
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    payload: dict[str, Any] = {
+    payload: dict[str, object] = {
         "dataset": dataset,
         "template": template,
         "content_hashes": hashes,
@@ -279,7 +306,7 @@ def invalidate_for_chunk(
     dataset_id: int,
     *,
     root: Path,
-    conn: Any,
+    conn: _CagConnection,
 ) -> int:
     """Look up the chunk's ``content_hash`` and call :func:`invalidate`.
 
@@ -307,7 +334,10 @@ def invalidate_for_chunk(
     ).fetchone()
     if row is None:
         return 0
-    content_hash = row[0] if not isinstance(row, dict) else row.get("content_hash")
+    if isinstance(row, dict):
+        content_hash = row.get("content_hash")
+    else:
+        content_hash = cast(Sequence[object], row)[0]
     if not content_hash:
         return 0
 
@@ -317,10 +347,10 @@ def invalidate_for_chunk(
         (dataset_id,),
     ).fetchone()
     if ds_row is None:
-        dataset_name = str(dataset_id)
+        dataset_name: str = str(dataset_id)
+    elif isinstance(ds_row, dict):
+        dataset_name = str(ds_row.get("name", str(dataset_id)))
     else:
-        dataset_name = (
-            ds_row[0] if not isinstance(ds_row, dict) else ds_row.get("name", str(dataset_id))
-        )
+        dataset_name = str(cast(Sequence[object], ds_row)[0])
 
-    return invalidate(root, dataset_name, content_hash)
+    return invalidate(root, dataset_name, str(content_hash))

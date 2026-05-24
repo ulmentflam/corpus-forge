@@ -30,9 +30,45 @@ import sqlite3
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Protocol, cast
 
 import typer
+
+if TYPE_CHECKING:
+    from corpus_forge.config import Config
+
+
+class _DBAPICursor(Protocol):
+    """Minimal duck-typed DB-API 2.0 cursor.
+
+    Concrete callers pass ``sqlite3.Cursor``, ``psycopg.Cursor``, or a test
+    double (typically a ``unittest.mock.MagicMock``).  We narrow to only the
+    three methods the analyze subcommands actually call.
+    """
+
+    def execute(self, sql: str, params: object = ..., /) -> object: ...
+    def fetchall(self) -> object: ...
+    def fetchone(self) -> object: ...
+
+
+class _DBAPIConnection(Protocol):
+    """Minimal duck-typed DB-API 2.0 connection.
+
+    Concrete callers pass ``sqlite3.Connection``, ``psycopg.Connection``, or a
+    test double.  Only ``cursor()`` is part of the protocol surface — the
+    SQLite branch already narrows via ``isinstance(conn, sqlite3.Connection)``
+    before reaching for any sqlite-specific behavior.
+
+    ``cursor()`` accepts arbitrary keyword arguments because the concrete
+    driver signatures diverge (sqlite3 takes ``factory=``, psycopg takes
+    ``binary=`` / ``name=`` / ``row_factory=`` / etc.).  This module always
+    calls it with no arguments, but the broader signature is required so
+    ``sqlite3.Connection`` and ``psycopg.Connection`` both satisfy the
+    structural check.
+    """
+
+    def cursor(self, *args: object, **kwargs: object) -> _DBAPICursor: ...
+
 
 # ---------------------------------------------------------------------------
 # Sub-app
@@ -52,7 +88,7 @@ _DEFAULT_REPORT_ENV_VAR = "CORPUS_FORGE_REPORT_DIR"
 _DEFAULT_REPORT_BASE = Path.home() / ".cache" / "corpus-forge" / "reports"
 
 
-def _get_backend_conn(cfg: Any) -> Any:
+def _get_backend_conn(cfg: Config) -> _DBAPIConnection:
     """Open and return a DB-API 2.0 connection for the given Config object.
 
     This thin wrapper exists so tests can monkeypatch it without touching
@@ -62,21 +98,29 @@ def _get_backend_conn(cfg: Any) -> Any:
         cfg: A ``corpus_forge.config.Config`` instance (or mock equivalent).
 
     Returns:
-        A ``sqlite3.Connection`` for SQLite backends, or a psycopg connection
-        for Postgres backends.
+        A duck-typed DB-API 2.0 connection — ``sqlite3.Connection`` for SQLite
+        backends, ``psycopg.Connection`` for Postgres backends, or a test
+        double.  Typed as :class:`_DBAPIConnection` (a minimal Protocol over
+        ``cursor()``); callers ``isinstance``-narrow to ``sqlite3.Connection``
+        for the SQLite-specific branches.  The cast at each driver-creation
+        site is structural-only — sqlite3 and psycopg both satisfy the
+        protocol at runtime; pyrefly rejects the implicit conversion because
+        the drivers' overloaded ``cursor()`` signatures use keyword-only
+        params that don't align variance-wise with the protocol's broad
+        ``*args, **kwargs`` form.
     """
     backend = cfg.backend
     kind: str = getattr(backend, "kind", "sqlite")
     dsn: str = str(backend.dsn)
 
     if kind == "sqlite":
-        return sqlite3.connect(dsn)
+        return cast(_DBAPIConnection, sqlite3.connect(dsn))
 
     # Postgres path — lazy import psycopg so CLI startup is unaffected on
     # environments that have only the SQLite extra installed.
     import psycopg  # noqa: PLC0415
 
-    return psycopg.connect(dsn)
+    return cast(_DBAPIConnection, psycopg.connect(dsn))
 
 
 def _resolve_report_dir(
@@ -123,11 +167,11 @@ def _write_report(path: Path, content: str) -> None:
 
 
 def _load_chunks_for_dataset(
-    conn: Any,
+    conn: _DBAPIConnection,
     dataset: str,
     *,
     limit: int | None = None,
-) -> list[dict[str, Any]] | None:
+) -> list[dict[str, object]] | None:
     """Query chunks for *dataset* from the corpus DB.
 
     Returns:
@@ -239,7 +283,7 @@ def _load_chunks_for_dataset(
     ]
 
 
-def _check_dataset_exists(conn: Any, dataset: str) -> bool:
+def _check_dataset_exists(conn: _DBAPIConnection, dataset: str) -> bool:
     """Return True if any chunks exist for *dataset*, False otherwise.
 
     For mock connections (test T3/T10) returns True unconditionally so the
@@ -383,7 +427,7 @@ def cmd_duplicates(
     exact_groups = exact_duplicates(chunks)
 
     # near_duplicates requires datasketch; gracefully degrade when unavailable
-    near_clusters: list[dict[str, Any]] = []
+    near_clusters: list[dict[str, object]] = []
     try:
         near_clusters = near_duplicates(chunks, threshold=threshold)
     except Exception:
@@ -460,23 +504,26 @@ def cmd_topics(
 
     # Build placeholder embeddings (zeros) for CLI path — real embeddings
     # require the backend's embedder machinery; the CLI uses text-only fallback.
-    texts = [c.get("text") or "" for c in chunks]
+    texts: list[str] = [str(c.get("text") or "") for c in chunks]
     dim = 4
     embeddings: list[list[float]] = [[0.0] * dim for _ in chunks]
 
     min_cluster_size = getattr(cfg.analyze, "topic_min_cluster_size", 2)
 
     # cluster_topics requires hdbscan; gracefully degrade
-    topic_result: dict[str, Any] = {
+    topic_result: dict[str, object] = {
         "cluster_assignments": [],
         "n_clusters": 0,
         "method": "hdbscan",
         "noise_count": 0,
     }
-    top_terms: dict[int, list[Any]] = {}
+    top_terms: dict[int, list[tuple[str, float]]] = {}
     try:
         topic_result = cluster_topics(embeddings, min_cluster_size=min_cluster_size)
-        assignments = topic_result.get("cluster_assignments", [])
+        assignments_obj = topic_result.get("cluster_assignments", [])
+        assignments: list[int] = (
+            [int(a) for a in assignments_obj] if isinstance(assignments_obj, list) else []
+        )
         top_terms = top_terms_per_cluster(texts, assignments)
     except Exception:
         pass
@@ -600,7 +647,7 @@ def cmd_drift(
     half_a = chunks[:mid]
     half_b = chunks[mid:]
 
-    drift_result: dict[str, Any] = {}
+    drift_result: dict[str, object] = {}
     try:
         drift_result = compare_distributions(half_a, half_b)
     except Exception:
@@ -664,7 +711,10 @@ def cmd_quality(
         chunks = []
 
     scores = score_chunks_batch(chunks)
-    chunk_ids = [int(c["id"]) for c in chunks]
+    # `c["id"]` is statically `object` (rows are duck-typed DB-API tuples);
+    # the SELECT guarantees an int column at runtime. Cast narrows the
+    # static type so `int()` accepts the value; runtime is unchanged.
+    chunk_ids = [int(cast(int, c["id"])) for c in chunks]
 
     inserted = persist_quality_signals(conn, chunk_ids, scores)
 
