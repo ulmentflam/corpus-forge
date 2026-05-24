@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -44,6 +44,11 @@ from corpus_forge.mcp.server import build_server
 
 mcp = pytest.importorskip("mcp")
 from mcp import types as mcp_types  # noqa: E402
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from collections.abc import Coroutine
+
+    from mcp.server import Server
 
 pytestmark = pytest.mark.integration
 
@@ -63,11 +68,11 @@ _CHAT_CLIENT_SOURCES = [
 # ---------------------------------------------------------------------------
 
 
-def _run(coro: Any) -> Any:
+def _run(coro: Coroutine[object, object, object]) -> object:
     return asyncio.run(coro)
 
 
-def _list_tool_names(server: Any) -> set[str]:
+def _list_tool_names(server: Server) -> set[str]:
     handler = server.request_handlers[mcp_types.ListToolsRequest]
     request = mcp_types.ListToolsRequest(method="tools/list")
     result = _run(handler(request))
@@ -75,7 +80,7 @@ def _list_tool_names(server: Any) -> set[str]:
     return {t.name for t in root.tools}
 
 
-def _call_raw(server: Any, name: str, arguments: dict[str, Any]) -> Any:
+def _call_raw(server: Server, name: str, arguments: dict[str, object]) -> object:
     """Return the raw CallToolResult root (do NOT raise on isError)."""
     handler = server.request_handlers[mcp_types.CallToolRequest]
     request = mcp_types.CallToolRequest(
@@ -86,7 +91,7 @@ def _call_raw(server: Any, name: str, arguments: dict[str, Any]) -> Any:
     return result.root if hasattr(result, "root") else result
 
 
-def _payload(root: Any) -> dict:
+def _payload(root: object) -> dict[str, object]:
     """Extract dict payload from a successful CallToolResult."""
     sc = getattr(root, "structuredContent", None)
     if sc is not None:
@@ -95,11 +100,11 @@ def _payload(root: Any) -> dict:
     return json.loads(content[0].text)
 
 
-def _is_error(root: Any) -> bool:
+def _is_error(root: object) -> bool:
     return bool(getattr(root, "isError", False))
 
 
-def _error_text(root: Any) -> str:
+def _error_text(root: object) -> str:
     content = getattr(root, "content", [])
     return "".join(getattr(b, "text", "") for b in content)
 
@@ -119,11 +124,11 @@ class _BackedRetriever:
     def __init__(self, backend: SQLiteBackend) -> None:
         self.backend = backend
 
-    def search(self, query: str, options: Any) -> list[Any]:
+    def search(self, query: str, options: object) -> list[object]:
         return []
 
 
-def _build_server(backend: SQLiteBackend, *, writes_enabled: bool = True) -> Any:
+def _build_server(backend: SQLiteBackend, *, writes_enabled: bool = True) -> Server:
     retriever = _BackedRetriever(backend)
     return build_server(
         retriever_builder=lambda: retriever,
@@ -151,13 +156,13 @@ def _count_audit_rows(backend: SQLiteBackend) -> int:
     return int(rows[0]["n"])
 
 
-def _get_latest_demonstration(backend: SQLiteBackend) -> dict:
+def _get_latest_demonstration(backend: SQLiteBackend) -> dict[str, object]:
     rows = backend._execute("SELECT * FROM sdft_demonstrations ORDER BY id DESC LIMIT 1")
     assert rows, "No sdft_demonstrations rows found"
     return dict(rows[0])
 
 
-def _get_latest_audit(backend: SQLiteBackend) -> dict:
+def _get_latest_audit(backend: SQLiteBackend) -> dict[str, object]:
     rows = backend._execute("SELECT * FROM mcp_audit ORDER BY id DESC LIMIT 1")
     assert rows, "No mcp_audit rows found"
     return dict(rows[0])
@@ -173,7 +178,7 @@ def _demo_args(
     source: str,
     dataset: str = "provenance-test-ds",
     query: str | None = None,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Return a valid ``record_demonstration`` argument dict for the given source."""
     if query is None:
         # Make unique per source so content_hash doesn't collide across parametrize iterations.
@@ -214,7 +219,7 @@ def seeded(backend: SQLiteBackend) -> dict[str, int]:
 
 
 @pytest.fixture
-def server_rw(backend: SQLiteBackend, seeded: dict) -> Any:
+def server_rw(backend: SQLiteBackend, seeded: dict[str, int]) -> Server:
     return _build_server(backend, writes_enabled=True)
 
 
@@ -228,7 +233,7 @@ class TestChatClientSourceHappyPath:
 
     @pytest.mark.parametrize("source", _CHAT_CLIENT_SOURCES)
     def test_source_stored_correctly(
-        self, backend: SQLiteBackend, seeded: dict, source: str
+        self, backend: SQLiteBackend, seeded: dict[str, int], source: str
     ) -> None:
         """``source={source}`` round-trips into ``sdft_demonstrations.source``."""
         server = _build_server(backend, writes_enabled=True)
@@ -243,7 +248,7 @@ class TestChatClientSourceHappyPath:
 
     @pytest.mark.parametrize("source", _CHAT_CLIENT_SOURCES)
     def test_audit_row_written_per_client(
-        self, backend: SQLiteBackend, seeded: dict, source: str
+        self, backend: SQLiteBackend, seeded: dict[str, int], source: str
     ) -> None:
         """Each chat-client call writes an mcp_audit row."""
         server = _build_server(backend, writes_enabled=True)
@@ -267,7 +272,7 @@ class TestClaudeCodeProvenance:
     """claude_code source is stored and audit captures originating client."""
 
     def test_claude_code_source_in_sdft_row(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict[str, int], server_rw: Server
     ) -> None:
         """source='claude_code' is stored verbatim in sdft_demonstrations."""
         root = _call_raw(server_rw, "record_demonstration", _demo_args(source="claude_code"))
@@ -276,7 +281,7 @@ class TestClaudeCodeProvenance:
         assert row["source"] == "claude_code"
 
     def test_claude_code_produces_demonstration_row(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict[str, int], server_rw: Server
     ) -> None:
         """Calling with source='claude_code' writes exactly one new row."""
         before = _count_demonstrations(backend)
@@ -289,7 +294,7 @@ class TestGeminiProvenance:
     """gemini source is stored and audit captures originating client."""
 
     def test_gemini_source_in_sdft_row(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict[str, int], server_rw: Server
     ) -> None:
         """source='gemini' is stored verbatim in sdft_demonstrations."""
         root = _call_raw(server_rw, "record_demonstration", _demo_args(source="gemini"))
@@ -302,7 +307,7 @@ class TestOpenCodeProvenance:
     """opencode source is stored and audit captures originating client."""
 
     def test_opencode_source_in_sdft_row(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict[str, int], server_rw: Server
     ) -> None:
         """source='opencode' is stored verbatim in sdft_demonstrations."""
         root = _call_raw(server_rw, "record_demonstration", _demo_args(source="opencode"))
@@ -315,7 +320,7 @@ class TestCodexProvenance:
     """codex source is stored and audit captures originating client."""
 
     def test_codex_source_in_sdft_row(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict[str, int], server_rw: Server
     ) -> None:
         """source='codex' is stored verbatim in sdft_demonstrations."""
         root = _call_raw(server_rw, "record_demonstration", _demo_args(source="codex"))
@@ -333,7 +338,7 @@ class TestDefaultSource:
     """When source='claude_code' is explicitly passed, it is accepted."""
 
     def test_claude_code_is_valid_explicit_source(
-        self, backend: SQLiteBackend, seeded: dict, server_rw: Any
+        self, backend: SQLiteBackend, seeded: dict[str, int], server_rw: Server
     ) -> None:
         """source='claude_code' is a valid enum value and round-trips correctly."""
         root = _call_raw(server_rw, "record_demonstration", _demo_args(source="claude_code"))
