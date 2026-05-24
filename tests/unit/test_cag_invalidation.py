@@ -31,7 +31,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -43,6 +43,12 @@ mcp = pytest.importorskip("mcp")
 
 from corpus_forge.backends.sqlite import SQLiteBackend  # noqa: E402
 from corpus_forge.mcp.server import build_server  # noqa: E402
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    import sqlite3
+    from collections.abc import Callable
+
+    from mcp.server import Server
 
 # ---------------------------------------------------------------------------
 # Constants + helpers
@@ -63,7 +69,7 @@ def _make_backend() -> SQLiteBackend:
     return b
 
 
-def _seed_backend(backend: SQLiteBackend) -> dict[str, Any]:
+def _seed_backend(backend: SQLiteBackend) -> dict[str, object]:
     """Insert one dataset + two chunks; return their ids and content_hashes."""
     with backend._get_connection() as conn:
         dataset_id = conn.execute(
@@ -124,7 +130,7 @@ class _StubRetriever:
         self.backend = backend
 
 
-def _build_mcp_server(backend: SQLiteBackend, *, writes_enabled: bool = True) -> Any:
+def _build_mcp_server(backend: SQLiteBackend, *, writes_enabled: bool = True) -> Server:
     retriever = _StubRetriever(backend)
     return build_server(retriever_builder=lambda: retriever, writes_enabled=writes_enabled)
 
@@ -134,10 +140,10 @@ def _build_mcp_server(backend: SQLiteBackend, *, writes_enabled: bool = True) ->
 # ---------------------------------------------------------------------------
 
 
-def _call_tool(server: Any, name: str, arguments: dict) -> Any:
+def _call_tool(server: Server, name: str, arguments: dict[str, object]) -> object:
     """Fire an MCP tool call and return the raw result root."""
 
-    async def _run() -> Any:
+    async def _run() -> object:
         from mcp.types import CallToolRequest, CallToolRequestParams
 
         handler = server.request_handlers.get(CallToolRequest)
@@ -152,7 +158,7 @@ def _call_tool(server: Any, name: str, arguments: dict) -> Any:
     return asyncio.run(_run())
 
 
-def _payload(result: Any) -> dict:
+def _payload(result: object) -> dict[str, object]:
     if getattr(result, "structuredContent", None) is not None:
         return dict(result.structuredContent)
     return json.loads("".join(getattr(b, "text", "") for b in getattr(result, "content", [])))
@@ -234,7 +240,7 @@ class TestInvalidateFunction:
         ids = _seed_backend(_make_backend())
         _write_cache_file(tmp_path, ids["dataset_name"], ids["hash_a"])
 
-        def _raise_permission(*args: Any, **kwargs: Any) -> None:
+        def _raise_permission(*args: object, **kwargs: object) -> None:
             raise PermissionError("mocked permission denied")
 
         monkeypatch.setattr(Path, "unlink", _raise_permission)
@@ -302,9 +308,9 @@ class TestInvalidateForChunk:
         """invalidate_for_chunk must call invalidate(root, dataset, content_hash)."""
         backend = _make_backend()
         ids = _seed_backend(backend)
-        calls: list[tuple] = []
+        calls: list[tuple[Path, str, str]] = []
 
-        def _capture(root: Any, dataset: Any, content_hash: Any) -> int:
+        def _capture(root: Path, dataset: str, content_hash: str) -> int:
             calls.append((root, dataset, content_hash))
             return 0
 
@@ -331,7 +337,7 @@ class TestInvalidateForChunk:
 # ---------------------------------------------------------------------------
 
 
-def _make_real_invalidate_for_chunk(root: Path) -> Any:
+def _make_real_invalidate_for_chunk(root: Path) -> Callable[..., int]:
     """Factory: returns an invalidate_for_chunk closure wired to ``root``."""
 
     def _fn(
@@ -339,7 +345,7 @@ def _make_real_invalidate_for_chunk(root: Path) -> Any:
         dataset_id: int,
         *,
         root: Path = root,
-        conn: Any,
+        conn: sqlite3.Connection,
     ) -> int:
         row = conn.execute("SELECT name FROM datasets WHERE id = ?", (dataset_id,)).fetchone()
         dataset_name = row[0] if row else str(dataset_id)
@@ -431,7 +437,7 @@ class TestCommitCurationTriggersInvalidation:
 
         calls: list[int] = []
 
-        def _spy(chunk_id: int, dataset_id: int, *, root: Path, conn: Any) -> int:
+        def _spy(chunk_id: int, dataset_id: int, *, root: Path, conn: sqlite3.Connection) -> int:
             calls.append(chunk_id)
             return 0
 
@@ -498,7 +504,7 @@ class TestCommitCurationTriggersInvalidation:
 
         import corpus_forge.cag.cache as _cache_mod  # type: ignore[import]
 
-        def _raise(chunk_id: int, dataset_id: int, *, root: Path, conn: Any) -> int:
+        def _raise(chunk_id: int, dataset_id: int, *, root: Path, conn: sqlite3.Connection) -> int:
             raise PermissionError("simulated permission denied on cache dir")
 
         monkeypatch.setattr(_cache_mod, "invalidate_for_chunk", _raise)
@@ -533,7 +539,7 @@ class TestCommitCurationTriggersInvalidation:
 
         import corpus_forge.cag.cache as _cache_mod  # type: ignore[import]
 
-        def _raise(chunk_id: int, dataset_id: int, *, root: Path, conn: Any) -> int:
+        def _raise(chunk_id: int, dataset_id: int, *, root: Path, conn: sqlite3.Connection) -> int:
             raise OSError("disk full simulation")
 
         monkeypatch.setattr(_cache_mod, "invalidate_for_chunk", _raise)
