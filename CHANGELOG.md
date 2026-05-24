@@ -76,6 +76,10 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   on denial, opening System Settings → Full Disk Access with the
   recovery instruction printed to stderr.
 
+### Chore
+
+- chore(tests): tighten 3 → 0 Any usages in tests/integration/test_two_ingester_one_mcp.py. Ideate-fallback proposal #47.
+
 ## [0.1.0b9] - 2026-05-22
 
 ### Fixed

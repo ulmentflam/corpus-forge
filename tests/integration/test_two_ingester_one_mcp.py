@@ -34,14 +34,19 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import psycopg
 import pytest
 
 from corpus_forge.backends.postgres import PostgresBackend
 from corpus_forge.mcp.server import build_server
+from corpus_forge.retrieval.types import Hit, SearchOptions
 from corpus_forge.schema.migrate import apply_migrations
+
+if TYPE_CHECKING:
+    from mcp.server import Server
+    from testcontainers.postgres import PostgresContainer
 
 pytestmark = pytest.mark.integration
 
@@ -166,19 +171,18 @@ class _LexicalRetriever:
     def __init__(self, backend: PostgresBackend) -> None:
         self.backend = backend
 
-    def search(self, query: str, options: Any) -> list[Any]:
+    def search(self, query: str, options: SearchOptions) -> list[Hit]:
         dataset_id: int | None = None
-        if getattr(options, "dataset", None) is not None:
+        if options.dataset is not None:
             dataset_id = self.backend.find_dataset_id_by_name(options.dataset)
-        k = getattr(options, "k", 10)
-        return self.backend.search_lexical(query, k=k, dataset_id=dataset_id)
+        return self.backend.search_lexical(query, k=options.k, dataset_id=dataset_id)
 
 
 # ── module-level shared state (set up once per test session via fixture) ──────
 
 
 @pytest.fixture(scope="module")
-def cross_host_setup(postgres_container: Any):  # type: ignore[return]
+def cross_host_setup(postgres_container: PostgresContainer):  # type: ignore[return]
     """Stand up the two-backend topology + MCP server once for the module.
 
     Yields a dict with keys:
@@ -227,7 +231,7 @@ def cross_host_setup(postgres_container: Any):  # type: ignore[return]
 # ── helper: drive an MCP tool call synchronously ─────────────────────────────
 
 
-def _call_tool_sync(server: Any, name: str, arguments: dict) -> dict:
+def _call_tool_sync(server: Server[object], name: str, arguments: dict) -> dict:
     """Invoke an MCP tool and return its structured result dict.
 
     Drives the request handler registered by build_server() directly,
@@ -255,8 +259,9 @@ def _call_tool_sync(server: Any, name: str, arguments: dict) -> dict:
                 content_text += getattr(block, "text", "")
             raise AssertionError(f"MCP tool {name!r} returned isError=True: {content_text}")
         # structuredContent is the decoded dict; fall back to parsing content[0].text
-        if root.structuredContent is not None:
-            return dict(root.structuredContent)
+        structured = getattr(root, "structuredContent", None)
+        if structured is not None:
+            return dict(structured)
         import json
 
         text_blocks = [getattr(b, "text", "") for b in getattr(root, "content", [])]
