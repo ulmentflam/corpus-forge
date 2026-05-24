@@ -22,7 +22,6 @@ production reranker.  Tests pin the prompt template + parser:
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -134,7 +133,7 @@ class TestEmptyInput:
 # ---------------------------------------------------------------------------
 
 
-def _build_mock_client(per_call_responses: list[str]) -> Any:
+def _build_mock_client(per_call_responses: list[str]) -> MagicMock:
     """Build a MagicMock OpenAI client whose `chat.completions.create`
     returns the next response in `per_call_responses` per call."""
     client = MagicMock()

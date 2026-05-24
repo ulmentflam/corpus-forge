@@ -42,7 +42,6 @@ import json
 import random
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 from hypothesis import given, settings
@@ -58,7 +57,7 @@ def _make_chunk(
     content_hash: str,
     text: str = "A representative corpus chunk about domain topic.",
     modified_at: str = "2026-01-01T00:00:00Z",
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Return a minimal chunk dict matching the corpus_forge chunk row shape."""
     return {
         "id": chunk_id,
@@ -68,7 +67,7 @@ def _make_chunk(
     }
 
 
-def _make_conn(chunks: list[dict[str, Any]], dataset_id: int = 42) -> Any:
+def _make_conn(chunks: list[dict[str, object]], dataset_id: int = 42) -> MagicMock:
     """Return a mock connection whose ``execute`` returns ``chunks``."""
     conn = MagicMock()
     cursor = MagicMock()

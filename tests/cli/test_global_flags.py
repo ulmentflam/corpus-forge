@@ -22,8 +22,6 @@ crashing under the new flag surface.
 
 from __future__ import annotations
 
-from typing import Any
-
 import typer
 from typer.testing import CliRunner
 
@@ -101,7 +99,7 @@ def test_global_state_stashed_in_context_obj(monkeypatch) -> None:
 
     from corpus_forge import cli as cli_mod
 
-    captured: dict[str, Any] = {}
+    captured: dict[str, object] = {}
 
     @cli_mod.app.command("_probe_global_state")
     def _probe(ctx: typer.Context) -> None:
@@ -140,11 +138,11 @@ def test_global_callback_calls_init_logging(monkeypatch) -> None:
     from corpus_forge import logging_config
     from corpus_forge.cli import app
 
-    calls: list[dict[str, Any]] = []
+    calls: list[dict[str, object]] = []
 
     original = logging_config.init_logging
 
-    def _spy(component: str, **kwargs: Any) -> None:
+    def _spy(component: str, **kwargs: object) -> None:
         calls.append({"component": component, **kwargs})
         return original(component, **kwargs)
 

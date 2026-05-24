@@ -141,7 +141,7 @@ class _FakeCursor:
     def __enter__(self) -> _FakeCursor:
         return self
 
-    def __exit__(self, *_a: Any) -> None:
+    def __exit__(self, *_a: object) -> None:
         return None
 
     def execute(self, sql: str, params: tuple) -> None:
@@ -179,10 +179,6 @@ class _FakePgConn:
 
     def rollback(self) -> None:
         self.rollback_called = True
-
-
-# Now import after the class definitions so we don't re-import Any.
-from typing import Any  # noqa: E402
 
 
 def test_persist_postgres_branch_uses_pct_s_placeholders() -> None:

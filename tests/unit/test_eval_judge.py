@@ -7,7 +7,6 @@ the failure paths that raise ``JudgeUnavailable`` without hitting the network.
 from __future__ import annotations
 
 import json
-from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -57,7 +56,7 @@ class _FakeResponse:
     def __enter__(self) -> _FakeResponse:
         return self
 
-    def __exit__(self, *_exc: Any) -> None:
+    def __exit__(self, *_exc: object) -> None:
         return None
 
 
