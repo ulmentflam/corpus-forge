@@ -42,9 +42,24 @@ from __future__ import annotations
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict
 
 import pytest
+
+if TYPE_CHECKING:
+    import psycopg
+
+
+class _CqsRow(TypedDict):
+    """Row shape returned by ``_sqlite_cqs_rows`` / ``_pg_cqs_rows``."""
+
+    id: int
+    chunk_id: int
+    signal_name: str
+    signal_value: float
+    source: str
+    computed_at: object
+
 
 pytestmark = [pytest.mark.integration]
 
@@ -75,7 +90,7 @@ def _alembic_upgrade_sqlite(db_path: Path, target: str) -> None:
     command.upgrade(cfg, target)
 
 
-def _sqlite_row_count(conn: sqlite3.Connection, table: str, **where: Any) -> int:
+def _sqlite_row_count(conn: sqlite3.Connection, table: str, **where: object) -> int:
     """Row count from *table* filtered by kwargs."""
     clauses = " AND ".join(f"{col} = ?" for col in where)
     sql = f"SELECT COUNT(*) FROM {table}"
@@ -84,21 +99,21 @@ def _sqlite_row_count(conn: sqlite3.Connection, table: str, **where: Any) -> int
     return conn.execute(sql, tuple(where.values())).fetchone()[0]
 
 
-def _sqlite_cqs_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def _sqlite_cqs_rows(conn: sqlite3.Connection) -> list[_CqsRow]:
     """Fetch all chunk_quality_signals rows as dicts."""
     rows = conn.execute(
         "SELECT id, chunk_id, signal_name, signal_value, source, computed_at "
         "FROM chunk_quality_signals ORDER BY id"
     ).fetchall()
     return [
-        {
-            "id": r[0],
-            "chunk_id": r[1],
-            "signal_name": r[2],
-            "signal_value": r[3],
-            "source": r[4],
-            "computed_at": r[5],
-        }
+        _CqsRow(
+            id=int(r[0]),
+            chunk_id=int(r[1]),
+            signal_name=str(r[2]),
+            signal_value=float(r[3]),
+            source=str(r[4]),
+            computed_at=r[5],
+        )
         for r in rows
     ]
 
@@ -387,7 +402,7 @@ def _reset_pg_schema(dsn: str) -> None:
         cur.execute("CREATE SCHEMA IF NOT EXISTS corpus")
 
 
-def _pg_cqs_rows(conn: Any) -> list[dict[str, Any]]:
+def _pg_cqs_rows(conn: psycopg.Connection) -> list[_CqsRow]:
     """Fetch all chunk_quality_signals rows from Postgres."""
     with conn.cursor() as cur:
         cur.execute(
@@ -396,19 +411,19 @@ def _pg_cqs_rows(conn: Any) -> list[dict[str, Any]]:
         )
         rows = cur.fetchall()
     return [
-        {
-            "id": r[0],
-            "chunk_id": r[1],
-            "signal_name": r[2],
-            "signal_value": r[3],
-            "source": r[4],
-            "computed_at": r[5],
-        }
+        _CqsRow(
+            id=int(r[0]),
+            chunk_id=int(r[1]),
+            signal_name=str(r[2]),
+            signal_value=float(r[3]),
+            source=str(r[4]),
+            computed_at=r[5],
+        )
         for r in rows
     ]
 
 
-def _pg_seed_chunks(conn: Any, chunk_ids: list[int]) -> None:
+def _pg_seed_chunks(conn: psycopg.Connection, chunk_ids: list[int]) -> None:
     """Insert minimal corpus.chunks rows for FK satisfaction (Postgres).
 
     Follows the pattern established in test_analyze_dedup_persist.py's
@@ -437,11 +452,15 @@ def _pg_seed_chunks(conn: Any, chunk_ids: list[int]) -> None:
     conn.commit()
 
 
-def _pg_row_count(conn: Any, table: str) -> int:
+def _pg_row_count(conn: psycopg.Connection, table: str) -> int:
     """Return total row count for a table in corpus schema (Postgres)."""
+    from psycopg import sql
+
     with conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) FROM corpus.{table}")
-        return cur.fetchone()[0]
+        cur.execute(sql.SQL("SELECT COUNT(*) FROM corpus.{tbl}").format(tbl=sql.Identifier(table)))
+        row = cur.fetchone()
+        assert row is not None
+        return int(row[0])
 
 
 @pytest.mark.requires_docker
