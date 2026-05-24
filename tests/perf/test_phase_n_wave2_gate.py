@@ -78,10 +78,44 @@ import json
 import os
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from corpus_forge.backends.sqlite import SQLiteBackend
+    from corpus_forge.embedders.base import Embedder
+    from corpus_forge.retrieval.rerank.cross_encoder import CrossEncoderReranker
+    from corpus_forge.retrieval.retriever import HybridRetriever
+    from corpus_forge.retrieval.types import SearchResponse
+
+
+class _Harness(TypedDict):
+    """Lazy-imported references to the Wave 0 bench harness internals."""
+
+    iter_current: Callable[[], Iterator[Path]]
+    iter_vendored: Callable[[], Iterator[Path]]
+    classify: Callable[[dict[str, object]], str]
+    normalise_hits: Callable[[SearchResponse, dict[int, dict[str, object]]], list[object]]
+    aggregate: Callable[[dict[str, dict[str, object]]], dict[str, object]]
+    strip_per_query: Callable[[dict[str, object]], dict[str, object]]
+    json_default: Callable[[object], object]
+    vendored_snapshot: Path
+    build_indexed_backend: Callable[
+        ...,
+        tuple[
+            SQLiteBackend,
+            Embedder,
+            int,
+            CrossEncoderReranker | None,
+            dict[int, dict[str, object]],
+        ],
+    ]
+
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("CF_PHASE_N_GATE") != "1",
@@ -103,7 +137,7 @@ _PROTECT_DROP = 0.05
 # ── shared harness imports (lazy so the unit suite never pulls these) ──────
 
 
-def _import_bench_harness() -> dict[str, Any]:
+def _import_bench_harness() -> _Harness:
     """Import the Wave 0/1 bench harness internals lazily.
 
     Wave 2's gate needs a code-aware indexer (Wave 1's helper uses
@@ -115,28 +149,34 @@ def _import_bench_harness() -> dict[str, Any]:
     """
     from tests.perf import test_phase_n_bench as bench
 
-    return {
-        "iter_current": bench._iter_current_corpus_files,
-        "iter_vendored": bench._iter_vendored_corpus_files,
-        "classify": bench._classify_corpus,
-        "normalise_hits": bench._normalise_hybrid_hits,
-        "aggregate": bench._aggregate,
-        "strip_per_query": bench._strip_per_query,
-        "json_default": bench._json_default,
-        "vendored_snapshot": bench._VENDORED_SNAPSHOT,
-        "build_indexed_backend": _build_indexed_backend_code_aware,
-    }
+    return _Harness(
+        iter_current=bench._iter_current_corpus_files,
+        iter_vendored=bench._iter_vendored_corpus_files,
+        classify=bench._classify_corpus,
+        normalise_hits=bench._normalise_hybrid_hits,
+        aggregate=bench._aggregate,
+        strip_per_query=bench._strip_per_query,
+        json_default=bench._json_default,
+        vendored_snapshot=bench._VENDORED_SNAPSHOT,
+        build_indexed_backend=_build_indexed_backend_code_aware,
+    )
 
 
 # ── code-aware index builder ──────────────────────────────────────────────
 
 
 def _build_indexed_backend_code_aware(
-    files: list[Any],
+    files: list[Path],
     *,
-    file_to_rel: dict[Any, str],
+    file_to_rel: dict[Path, str],
     corpus_name: str,
-) -> tuple[Any, Any, int, Any, dict[int, dict[str, Any]]]:
+) -> tuple[
+    SQLiteBackend,
+    Embedder,
+    int,
+    CrossEncoderReranker | None,
+    dict[int, dict[str, object]],
+]:
     """Build the SQLite backend + embedder + reranker for ``files``.
 
     Mirrors the Wave 1 gate's ``_build_indexed_backend`` but dispatches
@@ -178,7 +218,7 @@ def _build_indexed_backend_code_aware(
 
     md_chunker = MarkdownChunker(max_chars=1500, overlap=200)
     code_chunker = CodeChunker(max_chars=1500, min_chars=100, overlap=100)
-    chunk_index: dict[int, dict[str, Any]] = {}
+    chunk_index: dict[int, dict[str, object]] = {}
 
     for path in files:
         try:
@@ -252,7 +292,7 @@ def _build_indexed_backend_code_aware(
             pairs = [(cid, vecs_arr[i]) for i, cid in enumerate(chunk_ids)]
             backend.write_embeddings(embedder_id, pairs)
 
-    reranker: Any | None
+    reranker: CrossEncoderReranker | None
     try:
         reranker = CrossEncoderReranker(device="cpu", batch_size=16)
         reranker._get_model()  # type: ignore[attr-defined]
@@ -268,13 +308,13 @@ def _build_indexed_backend_code_aware(
 
 def _build_wave2_retriever(
     *,
-    backend: Any,
-    embedder: Any,
+    backend: SQLiteBackend,
+    embedder: Embedder,
     embedder_id: int,
-    reranker: Any | None,
+    reranker: CrossEncoderReranker | None,
     adaptive: bool,
     boost: bool,
-) -> Any:
+) -> HybridRetriever:
     """Construct a HybridRetriever with composite Wave 1 + Wave 2 flags."""
     from corpus_forge.config import RetrievalConfig
     from corpus_forge.retrieval.retriever import HybridRetriever
@@ -303,17 +343,17 @@ def _build_wave2_retriever(
 def _run_arm(
     arm_name: str,
     corpus_name: str,
-    queries: list[dict[str, Any]],
+    queries: list[dict[str, object]],
     *,
-    retriever: Any,
-    chunk_index: dict[int, dict[str, Any]],
-    harness: dict[str, Any],
-) -> dict[str, Any]:
+    retriever: HybridRetriever,
+    chunk_index: dict[int, dict[str, object]],
+    harness: _Harness,
+) -> dict[str, object]:
     """Run ``queries`` through ``retriever`` and score per-category."""
     from corpus_forge.retrieval.types import SearchOptions
     from tests.perf.metrics import compute_metrics
 
-    runs: dict[str, dict[str, Any]] = {}
+    runs: dict[str, dict[str, object]] = {}
     for i, q in enumerate(queries):
         qid = f"{corpus_name}_q{i + 1:03d}"
         opts = SearchOptions(
@@ -324,23 +364,27 @@ def _run_arm(
             rerank_top_n=50,
         )
         t_q = time.perf_counter()
-        hits = retriever.search(q["query"], opts)
+        hits = retriever.search(str(q["query"]), opts)
         latency_ms = (time.perf_counter() - t_q) * 1000.0
         runs[qid] = {
             "hits": harness["normalise_hits"](hits, chunk_index),
             "latency_ms": latency_ms,
         }
 
-    ground_truth: dict[str, list[dict[str, Any]]] = {}
+    ground_truth: dict[str, list[dict[str, object]]] = {}
     by_cat: dict[str, list[str]] = {}
     for i, q in enumerate(queries):
         qid = f"{corpus_name}_q{i + 1:03d}"
-        ground_truth[qid] = q["ground_truth_chunks"]
-        by_cat.setdefault(q["category"], []).append(qid)
+        gt = q["ground_truth_chunks"]
+        assert isinstance(gt, list)
+        ground_truth[qid] = gt
+        cat = q["category"]
+        assert isinstance(cat, str)
+        by_cat.setdefault(cat, []).append(qid)
 
     overall = compute_metrics(runs, ground_truth)
 
-    per_cat: dict[str, dict[str, Any]] = {}
+    per_cat: dict[str, dict[str, object]] = {}
     for cat, qids in by_cat.items():
         sub_gt = {qid: ground_truth[qid] for qid in qids}
         sub_runs = {qid: runs[qid] for qid in qids if qid in runs}
@@ -361,21 +405,25 @@ def _run_arm(
 # ── Pareto helpers (mirror Wave 1) ─────────────────────────────────────────
 
 
-def _category_metric(payload: dict[str, Any], category: str, metric: str) -> float | None:
+def _category_metric(payload: dict[str, object], category: str, metric: str) -> float | None:
     agg = payload.get("aggregated", {})
+    if not isinstance(agg, dict):
+        return None
     by_cat = agg.get("by_category", {})
+    if not isinstance(by_cat, dict):
+        return None
     block = by_cat.get(category)
-    if block is None:
+    if not isinstance(block, dict):
         return None
     val = block.get(metric)
-    if val is None:
+    if not isinstance(val, (int, float)):
         return None
     return float(val)
 
 
 def _pareto_violation(
-    head: dict[str, Any],
-    base: dict[str, Any],
+    head: dict[str, object],
+    base: dict[str, object],
     category: str,
     metric: str,
     max_drop: float,
@@ -414,8 +462,8 @@ def test_phase_n_wave2_gate() -> None:
 
     # Load queries; split by corpus.
     with _QUERIES_PATH.open() as f:
-        queries = [json.loads(line) for line in f if line.strip()]
-    queries_by_corpus: dict[str, list[dict[str, Any]]] = {"current": [], "vendored": []}
+        queries: list[dict[str, object]] = [json.loads(line) for line in f if line.strip()]
+    queries_by_corpus: dict[str, list[dict[str, object]]] = {"current": [], "vendored": []}
     for q in queries:
         queries_by_corpus[harness["classify"](q)].append(q)
 
@@ -424,10 +472,10 @@ def test_phase_n_wave2_gate() -> None:
     current_rel = {p: (p.relative_to(_REPO_ROOT).as_posix()) for p in current_files}
     vendored_rel = {p: (p.relative_to(_REPO_ROOT).as_posix()) for p in vendored_files}
 
-    control_by_corpus: dict[str, dict[str, Any]] = {}
-    treatment_by_corpus: dict[str, dict[str, Any]] = {}
+    control_by_corpus: dict[str, dict[str, object]] = {}
+    treatment_by_corpus: dict[str, dict[str, object]] = {}
     build_seconds: dict[str, float] = {}
-    reranker_info: dict[str, Any] | None = None
+    reranker_info: dict[str, object] | None = None
 
     for corpus_name, files, rel_map in (
         ("current", current_files, current_rel),
@@ -483,10 +531,16 @@ def test_phase_n_wave2_gate() -> None:
     iso = _dt.datetime.now(_dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     out_path = _OUT_DIR / f"phase_n_wave2_{iso}.json"
 
-    control_payload = {"by_corpus": control_by_corpus, "aggregated": control_agg}
-    treatment_payload = {"by_corpus": treatment_by_corpus, "aggregated": treatment_agg}
+    control_payload: dict[str, object] = {
+        "by_corpus": control_by_corpus,
+        "aggregated": control_agg,
+    }
+    treatment_payload: dict[str, object] = {
+        "by_corpus": treatment_by_corpus,
+        "aggregated": treatment_agg,
+    }
 
-    payload: dict[str, Any] = {
+    payload: dict[str, object] = {
         "schema_version": 1,
         "phase": "N",
         "wave": 2,
