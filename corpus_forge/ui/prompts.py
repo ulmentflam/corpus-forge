@@ -8,8 +8,6 @@ must supply values via flags / env vars instead of expecting a TTY.
 
 from __future__ import annotations
 
-from typing import Any
-
 from rich.prompt import Confirm as _RichConfirm
 from rich.prompt import Prompt as _RichPrompt
 
@@ -21,7 +19,7 @@ from .console import console as _default_console
 _PROMPT_SUFFIX = "[prompt.glyph]❯[/prompt.glyph] "  # noqa: RUF001
 
 
-def _raise_if_agent(prompt_text: Any) -> None:
+def _raise_if_agent(prompt_text: object) -> None:
     """Block interactive prompts under agent mode.
 
     The CLI global error handler catches the raised exception and emits
@@ -37,11 +35,16 @@ class Prompt(_RichPrompt):
 
     prompt_suffix = _PROMPT_SUFFIX
 
+    # `rich.prompt.Prompt.ask` is itself ``(*args: Any, **kwargs: Any)`` on the
+    # rich side, so the override signature stays untyped — the alternative is
+    # re-declaring the full rich signature here, which the upstream library
+    # doesn't expose as a stable type alias.  Falling back to ``object`` for
+    # the variadic params keeps the wrapper transparent.
     @classmethod
-    def ask(cls, *args: Any, **kwargs: Any):  # type: ignore[override]
+    def ask(cls, *args: object, **kwargs: object):  # type: ignore[override]
         _raise_if_agent(args[0] if args else kwargs.get("prompt", ""))
         kwargs.setdefault("console", _default_console)
-        return super().ask(*args, **kwargs)
+        return super().ask(*args, **kwargs)  # type: ignore[arg-type]
 
 
 class Confirm(_RichConfirm):
@@ -49,11 +52,12 @@ class Confirm(_RichConfirm):
 
     prompt_suffix = _PROMPT_SUFFIX
 
+    # See ``Prompt.ask`` above — rich's upstream signature is variadic Any.
     @classmethod
-    def ask(cls, *args: Any, **kwargs: Any):  # type: ignore[override]
+    def ask(cls, *args: object, **kwargs: object):  # type: ignore[override]
         _raise_if_agent(args[0] if args else kwargs.get("prompt", ""))
         kwargs.setdefault("console", _default_console)
-        return super().ask(*args, **kwargs)
+        return super().ask(*args, **kwargs)  # type: ignore[arg-type]
 
 
 __all__ = ["Confirm", "Prompt", "RequiresInteractiveError"]

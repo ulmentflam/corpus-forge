@@ -52,9 +52,26 @@ silently ignored — single-corpus spike.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol  # Any retained for Hit.metadata
+
+
+class _SembleChunkLike(Protocol):
+    """Structural type for the bits of ``semble.Chunk`` this adapter relies on.
+
+    Declared locally so we can avoid importing ``semble`` at module level
+    (it's an optional dep).  Mirrors the attributes the adapter touches:
+    ``file_path``, ``start_line``, ``end_line``, ``language``, ``content``.
+    """
+
+    file_path: str
+    start_line: int
+    end_line: int
+    language: str
+    content: str
+
 
 if TYPE_CHECKING:
     from corpus_forge.retrieval.types import Hit, SearchOptions
@@ -110,8 +127,10 @@ class SembleRetriever:
         self._index = index
         # Snapshot the chunk list so ``chunk_id -> (file, lines)`` joins
         # are stable across calls even if a future semble version starts
-        # re-indexing in place.
-        self.chunks: list[Any] = list(index.chunks)
+        # re-indexing in place.  Typed via the ``_SembleChunkLike``
+        # Protocol so we don't need to import the optional ``semble``
+        # package at module level.
+        self.chunks: list[_SembleChunkLike] = list(index.chunks)
         # file_path -> {line: chunk_idx} for fast (file, line) -> chunk_id
         # lookups; only built on demand because most calls don't need it.
         self._line_index: dict[str, list[tuple[int, int, int]]] | None = None
@@ -172,8 +191,7 @@ class SembleRetriever:
         # This is the inverse of the snapshot built in ``__init__`` and
         # is rebuilt per-call (cheap; <2k chunks for this repo).
         key_to_id: dict[tuple[str, int, int], int] = {
-            (c.file_path, c.start_line, c.end_line): i
-            for i, c in enumerate(self.chunks)
+            (c.file_path, c.start_line, c.end_line): i for i, c in enumerate(self.chunks)
         }
 
         hits: list[SembleHit] = []
@@ -203,7 +221,7 @@ class SembleRetriever:
 
     # ── bench-harness helpers ───────────────────────────────────────────
 
-    def chunk_span_for_hit(self, hit: Any) -> tuple[str, int, int] | None:
+    def chunk_span_for_hit(self, hit: object) -> tuple[str, int, int] | None:
         """Return ``(file_path, start_line, end_line)`` for ``hit``.
 
         ``hit`` may be a ``SembleHit`` from this adapter OR a generic
@@ -212,9 +230,11 @@ class SembleRetriever:
         passed in by mistake).
         """
         meta = getattr(hit, "metadata", None) or {}
+        if not isinstance(meta, Mapping):
+            return None
         fp = meta.get("file_path")
         sl = meta.get("start_line")
         el = meta.get("end_line")
         if fp is None or sl is None or el is None:
             return None
-        return (str(fp), int(sl), int(el))
+        return (str(fp), int(sl), int(el))  # type: ignore[arg-type]

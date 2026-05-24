@@ -54,7 +54,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import replace as _dc_replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from corpus_forge.retrieval.fusion import alpha_blend, reciprocal_rank_fusion
 from corpus_forge.retrieval.normalize import min_max
@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from corpus_forge.backends.base import StorageBackend
     from corpus_forge.config import RetrievalConfig
     from corpus_forge.embedders.base import Embedder
+    from corpus_forge.retrieval.rerank.base import Reranker
 
 
 # Multiplier applied to ``k`` before calling each backend search.  Standard
@@ -106,7 +107,7 @@ class HybridRetriever:
         backend: StorageBackend,
         embedder: Embedder,
         embedder_id: int,
-        reranker: Any | None = None,
+        reranker: Reranker | None = None,
         config: RetrievalConfig | None = None,
         *,
         fast_embedder: Embedder | None = None,
@@ -220,27 +221,36 @@ class HybridRetriever:
         # In shortcut mode, ``chunk_ids`` restricts BOTH search calls to
         # the fast-tier candidate pool — that's the load-bearing
         # latency win (the cross-encoder downstream sees only the
-        # candidate slice).
-        dense_kwargs: dict[str, Any] = {
-            "k": overfetch_k,
-            "dataset_id": dataset_id,
-        }
-        lex_kwargs: dict[str, Any] = {
-            "k": overfetch_k,
-            "dataset_id": dataset_id,
-        }
+        # candidate slice).  Branch on ``candidate_ids`` so older
+        # backend implementations that pre-date Phase N Wave 3 (no
+        # ``chunk_ids`` kwarg) still work when ``fast_tier_mode='skip'``
+        # (which is the default).
         if candidate_ids is not None:
-            dense_kwargs["chunk_ids"] = candidate_ids
-            lex_kwargs["chunk_ids"] = candidate_ids
-        dense_hits = self.backend.search_dense(
-            self.embedder_id,
-            qvec,
-            **dense_kwargs,
-        )
-        lexical_hits = self.backend.search_lexical(
-            query,
-            **lex_kwargs,
-        )
+            dense_hits = self.backend.search_dense(
+                self.embedder_id,
+                qvec,
+                k=overfetch_k,
+                dataset_id=dataset_id,
+                chunk_ids=candidate_ids,
+            )
+            lexical_hits = self.backend.search_lexical(
+                query,
+                k=overfetch_k,
+                dataset_id=dataset_id,
+                chunk_ids=candidate_ids,
+            )
+        else:
+            dense_hits = self.backend.search_dense(
+                self.embedder_id,
+                qvec,
+                k=overfetch_k,
+                dataset_id=dataset_id,
+            )
+            lexical_hits = self.backend.search_lexical(
+                query,
+                k=overfetch_k,
+                dataset_id=dataset_id,
+            )
 
         # Build chunk_id → Hit map for quick lookup post-fusion.  When the
         # same chunk_id appears in both lists, prefer the dense Hit's

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-from typing import Any
+from typing import Any  # retained for DB-API conn (psycopg/sqlite3 duck-typed)
 
 # Minimum number of members required to report a duplicate group / cluster.
 _MIN_GROUP_SIZE: int = 2
@@ -60,7 +60,7 @@ def near_duplicates(
     *,
     threshold: float = 0.85,
     num_perm: int = 128,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, object]]:
     """Cluster near-duplicate chunks using MinHash LSH.
 
     Datasketch is imported lazily so importing this module does not load it.
@@ -138,7 +138,7 @@ def near_duplicates(
         chunk_id = int(chunk["id"])
         component_map.setdefault(find(chunk_id), []).append(chunk_id)
 
-    results: list[dict[str, Any]] = []
+    results: list[dict[str, object]] = []
     for members in component_map.values():
         if len(members) < _MIN_GROUP_SIZE:
             continue

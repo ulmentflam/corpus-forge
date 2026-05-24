@@ -15,32 +15,35 @@ top level.  Importing this module does not pull in either package, keeping the
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import Any  # retained for numpy-array ``_softmax`` shim + heterogeneous
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
 
-def _get_token_count(chunk: dict[str, Any]) -> int:
+def _get_token_count(chunk: Mapping[str, object]) -> int:
     """Extract token count from a chunk, falling back to text-length estimate."""
     tc = chunk.get("token_count")
     if tc is not None:
-        return int(tc)
+        return int(tc)  # type: ignore[arg-type]
     text = chunk.get("text", "")
     if not text:
         return 0
+    if not isinstance(text, str):
+        text = str(text)
     return max(1, len(text) // 4)
 
 
-def _has_embeddings(chunks: list[dict[str, Any]]) -> bool:
+def _has_embeddings(chunks: Sequence[Mapping[str, object]]) -> bool:
     """Return True if at least one chunk has an ``'embedding'`` key."""
     return any("embedding" in c for c in chunks)
 
 
-def _extract_embeddings(chunks: list[dict[str, Any]]) -> list[list[float]]:
+def _extract_embeddings(chunks: Sequence[Mapping[str, object]]) -> list[list[float]]:
     """Return the embedding lists from all chunks that carry one."""
-    return [c["embedding"] for c in chunks if "embedding" in c]
+    return [c["embedding"] for c in chunks if "embedding" in c]  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------

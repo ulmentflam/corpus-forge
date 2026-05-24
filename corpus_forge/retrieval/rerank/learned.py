@@ -65,11 +65,11 @@ _DEFAULT_NAME = "learned-reranker"
 
 
 def train_reranker(
-    conn: Any,
+    conn: Any,  # DB-API 2.0 connection (sqlite3 or psycopg) — duck-typed
     out_path: Path,
     *,
     source_filter: list[str] | None = None,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Train a LogisticRegression reranker on search-feedback events.
 
     Pulls rows from ``search_result_events`` joined to ``search_sessions``
@@ -193,6 +193,11 @@ def train_reranker(
         # gets a usable artifact with auc=None recorded.
         from sklearn.dummy import DummyClassifier
 
+        # sklearn estimator base type is too narrow for ``fit(X=list[...])``
+        # — sklearn's stubs accept only ``ndarray | DataFrame | spmatrix``
+        # but runtime accepts a plain list-of-lists.  Keeping ``Any`` here
+        # bypasses sklearn's overly-strict stub for the duck-typed code
+        # path; the persisted artifact's typing is tightened elsewhere.
         clf_to_persist: Any = DummyClassifier(strategy="most_frequent")
         clf_to_persist.fit(X, y)
         clf = clf_to_persist
@@ -249,7 +254,7 @@ class LearnedReranker:
         self.model_path = model_path
         self.model_id = str(model_path)
         # Memoised model artifact.  Populated by :meth:`_load_model`.
-        self._artifact: dict[str, Any] | None = None
+        self._artifact: dict[str, object] | None = None
 
     # ── lazy model accessor ────────────────────────────────────────────────
 
