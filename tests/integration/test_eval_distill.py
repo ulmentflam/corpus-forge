@@ -32,9 +32,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import pytest
+from click.testing import Result
 from typer.testing import CliRunner
 
 from corpus_forge.backends.sqlite import SQLiteBackend
@@ -61,7 +61,7 @@ _ALL_SOURCES = [
 ]
 
 
-def _invoke(args: list[str]) -> Any:
+def _invoke(args: list[str]) -> Result:
     return _RUNNER.invoke(app, args)
 
 
@@ -572,7 +572,7 @@ def _invoke_with_backend(
     json_flag: bool,
     extra_args: list[str] | None = None,
     report_dir: Path | None = None,
-) -> Any:
+) -> Result:
     """Invoke ``eval distill`` with an in-memory backend patched in.
 
     Patches ``corpus_forge.eval.distill._get_backend`` (or the equivalent
