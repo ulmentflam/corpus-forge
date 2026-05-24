@@ -37,13 +37,16 @@ import asyncio
 import contextlib
 import hashlib
 import json
-from typing import Any
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 
 from corpus_forge.backends.sqlite import SQLiteBackend
 from corpus_forge.mcp.server import build_server
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from mcp.server import Server
 
 pytestmark = pytest.mark.integration
 
@@ -126,7 +129,7 @@ class _LexicalRetriever:
     def __init__(self, backend: SQLiteBackend) -> None:
         self.backend = backend
 
-    def search(self, query: str, options: Any) -> list[Any]:
+    def search(self, query: str, options: object) -> list[object]:
         k = getattr(options, "k", 10)
         return self.backend.search_lexical(query, k=k)
 
@@ -136,10 +139,10 @@ class _LexicalRetriever:
 # ---------------------------------------------------------------------------
 
 
-def _call_tool(server: Any, name: str, arguments: dict) -> dict:
+def _call_tool(server: Server, name: str, arguments: dict[str, object]) -> dict[str, object]:
     """Drive an MCP tool call synchronously and return its structured payload."""
 
-    async def _run() -> dict:
+    async def _run() -> dict[str, object]:
         from mcp.types import CallToolRequest, CallToolRequestParams
 
         handler = server.request_handlers.get(CallToolRequest)
@@ -162,7 +165,7 @@ def _call_tool(server: Any, name: str, arguments: dict) -> dict:
     return asyncio.run(_run())
 
 
-def _build_server(backend: SQLiteBackend, writes_enabled: bool = True) -> Any:
+def _build_server(backend: SQLiteBackend, writes_enabled: bool = True) -> Server:
     retriever = _LexicalRetriever(backend)
     return build_server(
         retriever_builder=lambda: retriever,
@@ -170,7 +173,7 @@ def _build_server(backend: SQLiteBackend, writes_enabled: bool = True) -> Any:
     )
 
 
-def _call_write(server: Any, tool: str, **kwargs: Any) -> dict:
+def _call_write(server: Server, tool: str, **kwargs: object) -> dict[str, object]:
     return _call_tool(server, tool, kwargs)
 
 
@@ -190,7 +193,7 @@ def seeded(backend: SQLiteBackend) -> dict[str, int]:
 
 
 @pytest.fixture
-def server(backend: SQLiteBackend) -> Any:
+def server(backend: SQLiteBackend) -> Server:
     return _build_server(backend)
 
 
@@ -199,8 +202,8 @@ def server(backend: SQLiteBackend) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _search_first_hit(server: Any, query: str, **extra: Any) -> dict:
-    args: dict = {"query": query, "k": 5}
+def _search_first_hit(server: Server, query: str, **extra: object) -> dict[str, object]:
+    args: dict[str, object] = {"query": query, "k": 5}
     args.update(extra)
     result = _call_tool(server, "search", args)
     hits = result.get("hits", [])
@@ -213,7 +216,9 @@ def _search_first_hit(server: Any, query: str, **extra: Any) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_search_hit_includes_labels(backend: SQLiteBackend, seeded: dict, server: Any) -> None:
+def test_search_hit_includes_labels(
+    backend: SQLiteBackend, seeded: dict[str, int], server: Server
+) -> None:
     """search() hit must have a `labels` list with the seeded label dict."""
     # Seed: apply a label to the chunk via the write tool.
     _call_write(
@@ -246,7 +251,9 @@ def test_search_hit_includes_labels(backend: SQLiteBackend, seeded: dict, server
 # ---------------------------------------------------------------------------
 
 
-def test_search_hit_includes_description(backend: SQLiteBackend, seeded: dict, server: Any) -> None:
+def test_search_hit_includes_description(
+    backend: SQLiteBackend, seeded: dict[str, int], server: Server
+) -> None:
     """search() hit must have a `description` field matching what was set."""
     _call_write(
         server,
@@ -273,7 +280,7 @@ def test_search_hit_includes_description(backend: SQLiteBackend, seeded: dict, s
 
 
 def test_search_hit_includes_recent_feedback(
-    backend: SQLiteBackend, seeded: dict, server: Any
+    backend: SQLiteBackend, seeded: dict[str, int], server: Server
 ) -> None:
     """search() hit must have `recent_feedback` with 2 entries (kind-sorted ts DESC)."""
     _call_write(
@@ -314,7 +321,7 @@ def test_search_hit_includes_recent_feedback(
 
 
 def test_search_hit_recent_feedback_bounded_to_5(
-    backend: SQLiteBackend, seeded: dict, server: Any
+    backend: SQLiteBackend, seeded: dict[str, int], server: Server
 ) -> None:
     """recent_feedback length must be <= 5 even when 7 feedback rows exist."""
     for i in range(7):
@@ -344,7 +351,9 @@ def test_search_hit_recent_feedback_bounded_to_5(
 # ---------------------------------------------------------------------------
 
 
-def test_get_chunk_includes_enrichment(backend: SQLiteBackend, seeded: dict, server: Any) -> None:
+def test_get_chunk_includes_enrichment(
+    backend: SQLiteBackend, seeded: dict[str, int], server: Server
+) -> None:
     """get_chunk(chunk_id) response must include labels, description, recent_feedback."""
     _call_write(
         server,
@@ -399,7 +408,7 @@ def test_get_chunk_includes_enrichment(backend: SQLiteBackend, seeded: dict, ser
 
 
 def test_search_include_labels_false_omits_labels(
-    backend: SQLiteBackend, seeded: dict, server: Any
+    backend: SQLiteBackend, seeded: dict[str, int], server: Server
 ) -> None:
     """search(include_labels=False) → `labels` key must be ABSENT from each hit."""
     _call_write(
@@ -427,7 +436,7 @@ def test_search_include_labels_false_omits_labels(
 
 
 def test_search_include_description_false_omits_description(
-    backend: SQLiteBackend, seeded: dict, server: Any
+    backend: SQLiteBackend, seeded: dict[str, int], server: Server
 ) -> None:
     """search(include_description=False) → `description` key must be ABSENT."""
     _call_write(
@@ -453,7 +462,7 @@ def test_search_include_description_false_omits_description(
 
 
 def test_search_include_feedback_false_omits_recent_feedback(
-    backend: SQLiteBackend, seeded: dict, server: Any
+    backend: SQLiteBackend, seeded: dict[str, int], server: Server
 ) -> None:
     """search(include_feedback=False) → `recent_feedback` key must be ABSENT."""
     _call_write(
@@ -480,7 +489,7 @@ def test_search_include_feedback_false_omits_recent_feedback(
 
 
 def test_search_chunk_hit_includes_parent_rollup(
-    backend: SQLiteBackend, seeded: dict, server: Any
+    backend: SQLiteBackend, seeded: dict[str, int], server: Server
 ) -> None:
     """Chunk hit must include a `parent` key with the document's enrichment.
 
