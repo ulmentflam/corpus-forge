@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from types import TracebackType
-from typing import Any, Final
+from typing import Final
 
 
 class AgentClient(StrEnum):
@@ -310,7 +310,7 @@ def _iso_now() -> str:
     return raw
 
 
-def _sanitize(value: Any) -> Any:
+def _sanitize(value: object) -> object:
     """Best-effort make ``value`` JSON-serializable."""
 
     if isinstance(value, (str, int, float, bool)) or value is None:
@@ -322,7 +322,7 @@ def _sanitize(value: Any) -> Any:
     return str(value)
 
 
-def emit(event_type: str, **fields: Any) -> None:
+def emit(event_type: str, **fields: object) -> None:
     """Write one JSONL line to stdout, then flush.
 
     Field order is stable (``event``, ``ts``, …) so transcripts diff
@@ -331,7 +331,7 @@ def emit(event_type: str, **fields: Any) -> None:
     explode at the wire.
     """
 
-    payload: dict[str, Any] = {"event": event_type, "ts": _iso_now()}
+    payload: dict[str, object] = {"event": event_type, "ts": _iso_now()}
     for k, v in fields.items():
         payload[k] = _sanitize(v)
     line = json.dumps(payload, ensure_ascii=False, default=str)
@@ -341,7 +341,7 @@ def emit(event_type: str, **fields: Any) -> None:
     sys.stdout.flush()
 
 
-def result(cmd: str, *, status: str = "ok", data: dict[str, Any] | None = None) -> int:
+def result(cmd: str, *, status: str = "ok", data: dict[str, object] | None = None) -> int:
     """Emit a terminal ``result`` event and return a process exit code."""
 
     emit("result", cmd=cmd, status=status, data=data or {})
@@ -386,7 +386,7 @@ class ProgressEmitter:
 
     # ── Rich-compatible task surface ──────────────────────────────
 
-    def add_task(self, description: str, *, total: int | None = None, **_kwargs: Any) -> int:
+    def add_task(self, description: str, *, total: int | None = None, **_kwargs: object) -> int:
         """Mimic Rich's ``Progress.add_task`` — we honour ``total``.
 
         ``description`` is accepted (and ignored) so existing call sites
@@ -406,7 +406,7 @@ class ProgressEmitter:
         *,
         advance: int | None = None,
         completed: int | None = None,
-        **_kwargs: Any,
+        **_kwargs: object,
     ) -> None:
         if completed is not None:
             self._completed = int(completed)
@@ -465,7 +465,7 @@ class ProgressEmitter:
             self._emit_progress(pct)
 
     def _emit_progress(self, pct: float | None) -> None:
-        fields: dict[str, Any] = {
+        fields: dict[str, object] = {
             "op": self._op,
             "done": self._completed,
         }
@@ -536,7 +536,7 @@ def cmd_wrap(name: str):
     """
 
     def _decorate(fn):
-        def _wrapped(*args: Any, **kwargs: Any) -> Any:
+        def _wrapped(*args: object, **kwargs: object) -> object:
             if not is_agent_mode():
                 return fn(*args, **kwargs)
             # Strip Typer's ctx from args so the emitted payload is JSON-safe.
@@ -579,7 +579,7 @@ def cmd_wrap(name: str):
     return _decorate
 
 
-def _is_context_like(value: Any) -> bool:
+def _is_context_like(value: object) -> bool:
     """Return True iff ``value`` is a Click / Typer ``Context``.
 
     Lazy import so this module stays import-light.  Failures return

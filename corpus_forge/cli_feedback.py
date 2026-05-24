@@ -42,9 +42,37 @@ import sys
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Protocol
 
 import typer
+
+if TYPE_CHECKING:
+    from corpus_forge.config import Config
+
+
+# ---------------------------------------------------------------------------
+# Duck-typed Protocols
+#
+# DB-API 2.0 connections (both sqlite3.Connection and psycopg.Connection
+# satisfy this).  We only use the small slice of the surface area we
+# actually call here — ``cursor()`` (for psycopg) plus ``execute()`` (for
+# sqlite3) plus ``close()``.  Typing the conn this loosely lets pyrefly
+# accept either backend without us having to import psycopg at type time.
+# ---------------------------------------------------------------------------
+
+
+class _DBConnection(Protocol):
+    """Minimal DB-API 2.0 ``Connection`` surface used by this module.
+
+    Both ``sqlite3.Connection`` and ``psycopg.Connection`` satisfy this
+    structurally.  ``cursor()`` return is left wide because sqlite3 hands
+    back a plain ``Cursor`` while psycopg returns a context-managed one,
+    and we duck-type the difference at the call sites.
+    """
+
+    def cursor(self) -> Any: ...
+    def close(self) -> None: ...
+
 
 # ---------------------------------------------------------------------------
 # Sub-app
@@ -69,7 +97,7 @@ _DEMO_PARTS = 4
 # ---------------------------------------------------------------------------
 
 
-def _get_backend_conn(cfg: Any) -> Any:
+def _get_backend_conn(cfg: Config) -> _DBConnection:
     """Open and return a DB-API 2.0 connection for the given Config object.
 
     This thin wrapper exists so tests can monkeypatch it without touching
@@ -106,7 +134,7 @@ def _new_session_id() -> str:
     return f"feedback-{iso_ts}-{short}"
 
 
-def _load_session(feedback_dir: Path, session_id: str) -> dict:
+def _load_session(feedback_dir: Path, session_id: str) -> dict[str, object]:
     """Load session JSON; raises SystemExit on missing file."""
     path = _session_file(feedback_dir, session_id)
     if not path.exists():
@@ -118,25 +146,33 @@ def _load_session(feedback_dir: Path, session_id: str) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _save_session(feedback_dir: Path, session: dict) -> None:
+def _save_session(feedback_dir: Path, session: dict[str, object]) -> None:
     """Write session dict to disk."""
     feedback_dir.mkdir(parents=True, exist_ok=True)
-    path = _session_file(feedback_dir, session["session_id"])
+    path = _session_file(feedback_dir, str(session["session_id"]))
     path.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _fetch_chunks(conn: Any, dataset: str) -> list[dict]:
+def _fetch_chunks(conn: _DBConnection, dataset: str) -> list[dict[str, object]]:
     """Fetch all chunks for *dataset* in deterministic order (chunk_id ASC).
 
     Returns an empty list if the chunks table does not exist (e.g. :memory: DB
     used by tests that only need action-loop smoke coverage).
     """
-    is_postgres = "psycopg" in type(conn).__module__
-
     # Chunks are owned by documents (or conversations); join through documents
     # and filter by the dataset *name* on datasets.name.
     try:
-        if is_postgres:
+        if isinstance(conn, sqlite3.Connection):
+            rows = conn.execute(
+                "SELECT c.id, c.text, c.token_count "
+                "FROM chunks c "
+                "JOIN documents d ON d.id = c.document_id "
+                "JOIN datasets ds ON ds.id = d.dataset_id "
+                "WHERE ds.name = ? "
+                "ORDER BY c.id ASC",
+                (dataset,),
+            ).fetchall()
+        else:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT c.id, c.text, c.token_count "
@@ -148,48 +184,37 @@ def _fetch_chunks(conn: Any, dataset: str) -> list[dict]:
                     (dataset,),
                 )
                 rows = cur.fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT c.id, c.text, c.token_count "
-                "FROM chunks c "
-                "JOIN documents d ON d.id = c.document_id "
-                "JOIN datasets ds ON ds.id = d.dataset_id "
-                "WHERE ds.name = ? "
-                "ORDER BY c.id ASC",
-                (dataset,),
-            ).fetchall()
     except Exception:
         return []
 
     return [{"id": r[0], "text": r[1], "token_count": r[2]} for r in rows]
 
 
-def _get_dataset_id(conn: Any, dataset: str) -> int | None:
+def _get_dataset_id(conn: _DBConnection, dataset: str) -> int | None:
     """Look up the integer dataset_id for *dataset* name.
 
     Returns None if the datasets table doesn't exist or the name is absent.
     """
-    is_postgres = "psycopg" in type(conn).__module__
     try:
-        if is_postgres:
-            with conn.cursor() as cur:
-                cur.execute("SELECT id FROM corpus.datasets WHERE name = %s LIMIT 1", (dataset,))
-                row = cur.fetchone()
-        else:
+        if isinstance(conn, sqlite3.Connection):
             row = conn.execute(
                 "SELECT id FROM datasets WHERE name = ? LIMIT 1", (dataset,)
             ).fetchone()
+        else:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM corpus.datasets WHERE name = %s LIMIT 1", (dataset,))
+                row = cur.fetchone()
     except Exception:
         return None
     return int(row[0]) if row else None
 
 
 def _do_record_demo(
-    conn: Any,
+    conn: _DBConnection | None,
     demo_str: str,
     dataset: str,
     dry_run: bool,
-    pending_writes: list[dict],
+    pending_writes: list[dict[str, object]],
 ) -> None:
     """Parse a pipe-separated demo string and record a demonstration (or preview it)."""
     parts = demo_str.split("|", _DEMO_PARTS - 1)
@@ -206,7 +231,7 @@ def _do_record_demo(
     student_messages = [{"role": "user", "content": student_raw}]
     teacher_messages = [{"role": "assistant", "content": teacher_raw}]
 
-    payload = {
+    payload: dict[str, object] = {
         "query": query,
         "student_messages": student_messages,
         "teacher_messages": teacher_messages,
@@ -218,6 +243,9 @@ def _do_record_demo(
         print(f"[dry-run] would record demonstration: query={query!r} target={target!r}")
         return
 
+    if conn is None:
+        # Defensive — non-dry-run paths always supply a real connection.
+        return
     dataset_id = _get_dataset_id(conn, dataset)
     if dataset_id is None:
         # Fail loudly rather than persist a row under a sentinel id — a
@@ -247,12 +275,12 @@ def _do_record_demo(
 
 def _run_scripted_session(
     *,
-    conn: Any,
+    conn: _DBConnection,
     dataset: str,
     actions: list[str],
     record_demos: list[str],
     dry_run: bool,
-    session: dict,
+    session: dict[str, object],
     feedback_dir: Path,
 ) -> None:
     """Execute the scripted (--no-tui) action loop.
@@ -261,13 +289,20 @@ def _run_scripted_session(
     After all actions are consumed (or 'quit' reached), the session ends.
     """
     chunks = _fetch_chunks(conn, dataset)
-    position: int = session["position"]
+    position_raw = session["position"]
+    position: int = int(position_raw) if isinstance(position_raw, int) else 0
 
     # Process --record-demo flags first (before action loop)
-    pending_writes: list[dict] = list(session.get("pending_writes", []))
+    existing = session.get("pending_writes", [])
+    pending_writes: list[dict[str, object]] = list(existing) if isinstance(existing, list) else []
 
     for demo_str in record_demos:
         _do_record_demo(conn, demo_str, dataset, dry_run, pending_writes)
+
+    processed = session.setdefault("processed_chunk_ids", [])
+    if not isinstance(processed, list):
+        processed = []
+        session["processed_chunk_ids"] = processed
 
     # Action loop
     for raw_action in actions:
@@ -281,8 +316,8 @@ def _run_scripted_session(
             position = max(position - 1, 0)
         elif act == "approve" and chunks and position < len(chunks):
             chunk_id = chunks[position]["id"]
-            if chunk_id not in session["processed_chunk_ids"]:
-                session["processed_chunk_ids"].append(chunk_id)
+            if chunk_id not in processed:
+                processed.append(chunk_id)
             position = min(position + 1, len(chunks))
         # Unknown actions are silently ignored (tolerant scripted mode)
 
@@ -345,7 +380,7 @@ def start(
     feedback_dir = _feedback_dir()
 
     session_id = _new_session_id()
-    session: dict = {
+    session: dict[str, object] = {
         "session_id": session_id,
         "dataset": dataset,
         "started_at": datetime.now(tz=UTC).isoformat(),
@@ -361,7 +396,7 @@ def start(
             "preview mode — no DB writes, no session JSON."
         )
         # Still process record-demo flags so their dry-run messages are printed
-        dummy_pending: list[dict] = []
+        dummy_pending: list[dict[str, object]] = []
         for demo_str in record_demo or []:
             _do_record_demo(None, demo_str, dataset, dry_run=True, pending_writes=dummy_pending)
         return
@@ -412,7 +447,7 @@ def resume(
 
     session = _load_session(feedback_dir, session_id)
 
-    dataset: str = session["dataset"]
+    dataset: str = str(session["dataset"])
 
     if no_tui:
         conn = _get_backend_conn(cfg)
@@ -469,7 +504,10 @@ def export_session(
     feedback_dir = _feedback_dir()
 
     session = _load_session(feedback_dir, session_id)
-    pending_writes: list[dict] = session.get("pending_writes", [])
+    pending_raw = session.get("pending_writes", [])
+    pending_writes: list[dict[str, object]] = (
+        list(pending_raw) if isinstance(pending_raw, list) else []
+    )
 
     out.parent.mkdir(parents=True, exist_ok=True)
 

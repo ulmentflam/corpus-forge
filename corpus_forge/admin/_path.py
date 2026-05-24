@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import re
 import types
+from collections.abc import MutableMapping
 from dataclasses import dataclass
 from typing import Any, get_args, get_origin
 
@@ -106,7 +107,7 @@ class PathNotFound(KeyError):
     """Raised when ``get_at_path`` cannot resolve a token."""
 
 
-def _get_one(container: Any, token: Token) -> Any:
+def _get_one(container: object, token: Token) -> object:
     if token.kind == "index":
         if not isinstance(container, (list, tuple)):
             raise PathNotFound(
@@ -117,8 +118,11 @@ def _get_one(container: Any, token: Token) -> Any:
             return container[idx]
         except IndexError as exc:
             raise PathNotFound(f"index {idx} out of range") from exc
-    # Key access — dict-like.
-    if not hasattr(container, "__getitem__"):
+    # Key access — dict-like.  Both plain ``dict`` and tomlkit
+    # ``Table`` / ``TOMLDocument`` derive from ``MutableMapping``,
+    # so this narrowing covers every shape ``get_at_path`` is meant
+    # to traverse.
+    if not isinstance(container, MutableMapping):
         raise PathNotFound(f"cannot index {type(container).__name__} by {token.key!r}")
     try:
         return container[token.key]
@@ -126,7 +130,7 @@ def _get_one(container: Any, token: Token) -> Any:
         raise PathNotFound(str(token.key)) from exc
 
 
-def get_at_path(doc: Any, dotted: str) -> Any:
+def get_at_path(doc: object, dotted: str) -> object:
     """Resolve ``dotted`` against ``doc`` and return the leaf value.
 
     Raises :class:`PathNotFound` (a ``KeyError`` subclass) when any
@@ -134,18 +138,21 @@ def get_at_path(doc: Any, dotted: str) -> Any:
     """
 
     tokens = parse_dotted_key(dotted)
-    node: Any = doc
+    node: object = doc
     for token in tokens:
         node = _get_one(node, token)
     return node
 
 
-def _ensure_table(container: Any, key: str) -> Any:
+def _ensure_table(container: object, key: str) -> object:
     """Return the sub-table at ``key``, creating it if missing.
 
-    Works on both ``dict`` and ``tomlkit`` ``Table`` / ``TOMLDocument``.
+    Works on both ``dict`` and ``tomlkit`` ``Table`` / ``TOMLDocument``
+    (both register as ``MutableMapping``).
     """
 
+    if not isinstance(container, MutableMapping):
+        raise PathNotFound(f"cannot create table on {type(container).__name__}")
     if key not in container:
         # tomlkit tables and plain dicts both accept dict assignment;
         # tomlkit will lift a bare dict to an inline table.
@@ -153,7 +160,7 @@ def _ensure_table(container: Any, key: str) -> Any:
     return container[key]
 
 
-def set_at_path(doc: Any, dotted: str, value: Any) -> None:
+def set_at_path(doc: object, dotted: str, value: object) -> None:
     """Assign ``value`` to ``doc`` at ``dotted``.
 
     Intermediate tables are auto-created when missing; intermediate
@@ -165,7 +172,7 @@ def set_at_path(doc: Any, dotted: str, value: Any) -> None:
     if not tokens:
         raise ValueError("set_at_path requires at least one token")
 
-    node: Any = doc
+    node: object = doc
     for token in tokens[:-1]:
         # Auto-create intermediate tables for key tokens; list indices
         # MUST already exist (auto-growing a list has too many semantics).
@@ -179,8 +186,10 @@ def set_at_path(doc: Any, dotted: str, value: Any) -> None:
         if idx < 0 or idx >= len(node):
             raise PathNotFound(f"index {idx} out of range for set_at_path")
         node[idx] = value
-    else:
+    elif isinstance(node, MutableMapping):
         node[last.key] = value
+    else:
+        raise PathNotFound(f"cannot assign key {last.key!r} on {type(node).__name__}")
 
 
 # ── Pydantic-aware coercion ──────────────────────────────────────────────
@@ -199,7 +208,7 @@ def _coerce_bool(raw: str) -> bool:
     raise ValueError(f"cannot coerce {raw!r} to bool")
 
 
-def _unwrap_optional(annotation: Any) -> Any:
+def _unwrap_optional(annotation: object) -> object:
     """If ``annotation`` is ``X | None`` / ``Optional[X]``, return ``X``."""
 
     origin = get_origin(annotation)
@@ -210,7 +219,7 @@ def _unwrap_optional(annotation: Any) -> Any:
     return annotation
 
 
-def coerce_for_field(value: str, field_info: FieldInfo | None) -> Any:
+def coerce_for_field(value: str, field_info: FieldInfo | None) -> object:
     """Convert ``value`` (str from the CLI) to the type ``field_info`` declares.
 
     Resolution:
@@ -256,7 +265,7 @@ def coerce_for_field(value: str, field_info: FieldInfo | None) -> Any:
     return _maybe_json(value)
 
 
-def _maybe_json(value: str) -> Any:
+def _maybe_json(value: str) -> object:
     """Parse JSON when the string clearly looks like a JSON literal."""
 
     stripped = value.strip()
