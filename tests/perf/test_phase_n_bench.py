@@ -286,7 +286,7 @@ def _build_hybrid_retriever(
             pairs = [(cid, vecs_arr[i]) for i, cid in enumerate(chunk_ids)]
             backend.write_embeddings(embedder_id, pairs)
 
-    reranker: Any | None
+    reranker: CrossEncoderReranker | None
     try:
         reranker = CrossEncoderReranker(device="cpu", batch_size=16)
         reranker._get_model()  # type: ignore[attr-defined]  # bench-only access
@@ -669,7 +669,7 @@ def _strip_per_query(metrics: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in metrics.items() if k != "per_query"}
 
 
-def _json_default(obj: Any) -> Any:
+def _json_default(obj: object) -> object:
     if hasattr(obj, "__dict__"):
         return obj.__dict__
     raise TypeError(f"non-serializable: {type(obj)!r}")
