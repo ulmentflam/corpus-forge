@@ -39,7 +39,6 @@ import re
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -199,7 +198,7 @@ def _list_in_process_server_tools(writes_enabled: bool) -> set[str]:
         def __init__(self) -> None:
             self.backend = backend
 
-        def search(self, query: str, options: Any) -> list:
+        def search(self, query: str, options: object) -> list:
             return []
 
     retriever = _StubRetriever()

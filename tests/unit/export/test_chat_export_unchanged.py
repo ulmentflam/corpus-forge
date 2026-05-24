@@ -35,7 +35,6 @@ import json
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -76,23 +75,23 @@ def _now_iso(offset_seconds: int = 0) -> str:
     return (datetime.now(UTC) + timedelta(seconds=offset_seconds)).isoformat()
 
 
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+def _read_jsonl(path: Path) -> list[dict[str, object]]:
     lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
     return [json.loads(ln) for ln in lines]
 
 
-def _normalise_row(row: dict[str, Any]) -> dict[str, Any]:
+def _normalise_row(row: dict[str, object]) -> dict[str, object]:
     """Replace timestamps with a fixed sentinel so rows are comparison-stable."""
     serialised = json.dumps(row, ensure_ascii=False, default=str)
     normalised = _TS_PATTERN.sub(_TS_SENTINEL, serialised)
     return json.loads(normalised)
 
 
-def _normalise_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _normalise_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
     return [_normalise_row(r) for r in rows]
 
 
-def _seed_chat_corpus(backend: SQLiteBackend) -> dict[str, Any]:
+def _seed_chat_corpus(backend: SQLiteBackend) -> dict[str, object]:
     """Seed a minimal, deterministic corpus for golden export tests."""
     with backend._get_connection() as conn:
         ds_id = conn.execute(
@@ -125,7 +124,7 @@ def _seed_chat_corpus(backend: SQLiteBackend) -> dict[str, Any]:
     return {"dataset_id": ds_id, "dataset_name": "golden-ds", "conv_id": conv_id}
 
 
-def _seed_feedback_corpus(backend: SQLiteBackend) -> dict[str, Any]:
+def _seed_feedback_corpus(backend: SQLiteBackend) -> dict[str, object]:
     """Seed conversation + feedback_session + 2 events for feedback export golden tests."""
     ids = _seed_chat_corpus(backend)
 
@@ -200,7 +199,7 @@ def _generate_feedback_baseline(out_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def pytest_configure(config: Any) -> None:
+def pytest_configure(config: pytest.Config) -> None:
     """Generate baseline fixtures when they don't exist yet."""
     if not _CHAT_BASELINE.exists():
         _generate_chat_baseline(_CHAT_BASELINE)

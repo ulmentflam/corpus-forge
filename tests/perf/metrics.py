@@ -63,7 +63,6 @@ minimal venv.
 from __future__ import annotations
 
 import math
-from typing import Any
 
 _MIN_OVERLAP_BYTES = 32
 
@@ -144,7 +143,7 @@ def hit_matches_ground_truth(
     hit_file: str,
     hit_start: int,
     hit_end: int,
-    truth_entries: list[dict[str, Any]],
+    truth_entries: list[dict[str, object]],
     *,
     min_overlap_bytes: int = _MIN_OVERLAP_BYTES,
 ) -> bool:
@@ -159,7 +158,7 @@ def hit_matches_ground_truth(
         return False
     norm_hit = _normalise_path(hit_file)
     for t in truth_entries:
-        if _normalise_path(t["file"]) != norm_hit:
+        if _normalise_path(str(t["file"])) != norm_hit:
             continue
         ts = int(t["byte_start"])
         te = int(t["byte_end"])
@@ -180,12 +179,12 @@ def _normalise_path(path: str) -> str:
 
 
 def compute_metrics(
-    hits_by_query: dict[str, dict[str, Any]],
-    ground_truth: dict[str, list[dict[str, Any]]],
+    hits_by_query: dict[str, dict[str, object]],
+    ground_truth: dict[str, list[dict[str, object]]],
     *,
     k_mrr: int = 10,
     k_recall: int = 5,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Aggregate metrics over a bench run.
 
     Args:
@@ -230,7 +229,7 @@ def compute_metrics(
     mrr_key = f"mrr_at_{k_mrr}"
     rec_key = f"recall_at_{k_recall}"
 
-    per_query: list[dict[str, Any]] = []
+    per_query: list[dict[str, object]] = []
     latencies: list[float] = []
 
     # Iterate over the *union* of ids so missing-hit queries still
@@ -278,7 +277,7 @@ def compute_metrics(
     }
 
 
-def _hit_is_relevant(hit: Any, truth: list[dict[str, Any]]) -> bool:
+def _hit_is_relevant(hit: object, truth: list[dict[str, object]]) -> bool:
     meta = getattr(hit, "metadata", None) or {}
     fp = meta.get("file_path")
     bs = meta.get("byte_start")

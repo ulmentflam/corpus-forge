@@ -18,7 +18,6 @@ Run command:
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -105,7 +104,7 @@ def _list_tool_names(server) -> set[str]:
     return {t.name for t in root.tools}
 
 
-def _call_tool_result(server, name: str, arguments: dict[str, Any]):
+def _call_tool_result(server, name: str, arguments: dict[str, object]):
     handler = server.request_handlers[mcp_types.CallToolRequest]
     request = mcp_types.CallToolRequest(
         method="tools/call",
@@ -121,7 +120,7 @@ class _FakeRetriever:
         self.backend.get_chunk.return_value = None
         self.backend.list_datasets.return_value = []
 
-    def search(self, query: str, options: Any):
+    def search(self, query: str, options: object):
         return []
 
 
