@@ -23,18 +23,24 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 import pytest
 
 mcp = pytest.importorskip("mcp")
 from mcp import types as mcp_types  # noqa: E402
+from mcp.server import Server  # noqa: E402
 
 from corpus_forge.backends.sqlite import SQLiteBackend  # noqa: E402
 from corpus_forge.chunkers.base import TextChunk  # noqa: E402
 from corpus_forge.identity import chunk_content_hash  # noqa: E402
 from corpus_forge.mcp.server import build_server  # noqa: E402
+from corpus_forge.retrieval.types import SearchOptions, SearchResponse  # noqa: E402
 from corpus_forge.sources.base import RawDocument  # noqa: E402
+
+if TYPE_CHECKING:
+    from corpus_forge.retrieval.types import Hit
 
 pytestmark = pytest.mark.integration
 
@@ -44,7 +50,7 @@ pytestmark = pytest.mark.integration
 # ─────────────────────────────────────────────────────────────────────────
 
 
-def _call(server: Any, name: str, arguments: dict) -> dict | None:
+def _call(server: Server[object], name: str, arguments: dict) -> dict | None:
     async def _run() -> dict | None:
         handler = server.request_handlers.get(mcp_types.CallToolRequest)
         assert handler is not None
@@ -57,8 +63,9 @@ def _call(server: Any, name: str, arguments: dict) -> dict | None:
         if getattr(root, "isError", False):
             text = "".join(getattr(b, "text", "") for b in getattr(root, "content", []))
             raise AssertionError(f"MCP tool {name!r} returned isError=True: {text}")
-        if getattr(root, "structuredContent", None) is not None:
-            return dict(root.structuredContent)
+        structured = getattr(root, "structuredContent", None)
+        if structured is not None:
+            return dict(structured)
         text_blocks = [getattr(b, "text", "") for b in getattr(root, "content", [])]
         return json.loads("".join(text_blocks)) if text_blocks else None
 
@@ -143,8 +150,15 @@ class _Retriever:
     def __init__(self, backend: SQLiteBackend) -> None:
         self.backend = backend
 
-    def search(self, query: str, options: Any) -> list:
-        return []
+    def search(self, query: str, options: SearchOptions) -> SearchResponse:
+        results: list[Hit] = []
+        return SearchResponse(
+            query_id="",
+            results=results,
+            query=query,
+            dataset_id=None,
+            started_at=datetime.now(UTC),
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────
