@@ -19,9 +19,11 @@ row.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from datetime import UTC
-from typing import Any
+from datetime import UTC, datetime
+from typing import Protocol
 
 # ---------------------------------------------------------------------------
 # WriteContext — carrier for MCP caller identity
@@ -43,6 +45,159 @@ class WriteContext:
 
 
 # ---------------------------------------------------------------------------
+# Structural Protocols for the duck-typed backend / context arguments.
+# ---------------------------------------------------------------------------
+
+
+class _MCPContext(Protocol):
+    """Structural type for the caller-identity object passed as ``ctx``.
+
+    Matches :class:`WriteContext` and any dataclass test fixture with the
+    same three attributes — dispatchers only ever read these.
+    """
+
+    host: str
+    client: str | None
+    session_id: str | None
+
+
+class _WriteBackend(Protocol):
+    """Structural type for the storage backend's MCP-write surface.
+
+    Mirrors the subset of methods used by this module so we don't tie
+    callers to a single concrete backend class (both ``SQLiteBackend``
+    and ``PostgresBackend`` satisfy it).  Implementations may carry
+    extra methods — Protocol matching is structural and width-tolerant.
+    """
+
+    # --- audit + session linkage --------------------------------------------
+    def audit_event(
+        self,
+        host: str,
+        client: str | None,
+        session_id: str | None,
+        tool: str,
+        entity_type: str,
+        entity_id: int,
+        before: object,
+        after: object,
+        dry_run: bool,
+    ) -> int: ...
+
+    def upsert_feedback_session(
+        self,
+        client: str,
+        session_id: str,
+        host: str,
+        started_at: datetime | str,
+    ) -> int: ...
+
+    def append_feedback_event(
+        self,
+        feedback_session_id: int,
+        *,
+        audit_id: int | None = ...,
+        feedback_id: int | None = ...,
+        entity_type: str,
+        entity_id: int,
+    ) -> int: ...
+
+    def get_feedback_session_by_key(self, client: str, session_id: str) -> dict | None: ...
+
+    # --- entity read helpers ------------------------------------------------
+    def get_chunk(self, chunk_id: int) -> dict | None: ...
+
+    def get_entity_metadata(self, entity_type: str, entity_id: int) -> dict: ...
+
+    def get_entity_description(self, entity_type: str, entity_id: int) -> str | None: ...
+
+    def count_messages(self, conversation_id: int) -> int: ...
+
+    # --- label + metadata writes -------------------------------------------
+    def apply_label(
+        self,
+        entity_type: str,
+        entity_id: int,
+        namespace: str,
+        value: str,
+        *,
+        confidence: float | None = ...,
+        source: str = ...,
+    ) -> tuple[int, bool]: ...
+
+    def revoke_label(
+        self,
+        entity_type: str,
+        entity_id: int,
+        namespace: str,
+        value: str,
+    ) -> bool: ...
+
+    def patch_metadata(
+        self,
+        entity_type: str,
+        entity_id: int,
+        key: str,
+        value: object,
+    ) -> tuple[dict, dict]: ...
+
+    def set_description(
+        self,
+        entity_type: str,
+        entity_id: int,
+        text: str | None,
+    ) -> tuple[str | None, str | None]: ...
+
+    def list_labels(
+        self,
+        *,
+        entity_type: str | None = ...,
+        namespace: str | None = ...,
+    ) -> dict: ...
+
+    # --- conversation / message / feedback writes --------------------------
+    def find_dataset_id_by_name(self, name: str) -> int | None: ...
+
+    def append_conversation(
+        self,
+        dataset_id: int,
+        title: str,
+        started_at: datetime | None,
+        messages: list[dict],
+        metadata: dict | None = ...,
+        labels: list[tuple[str, str]] | None = ...,
+    ) -> tuple[int, int]: ...
+
+    def append_message(
+        self,
+        conversation_id: int,
+        role: str,
+        content: str,
+        *,
+        tool_calls: list | None = ...,
+        tool_results: list | None = ...,
+        ts: datetime | None = ...,
+        metadata: dict | None = ...,
+    ) -> tuple[int, int]: ...
+
+    def add_feedback(
+        self,
+        entity_type: str,
+        entity_id: int,
+        kind: str,
+        *,
+        rating: int | None = ...,
+        text: str | None = ...,
+        metadata: dict | None = ...,
+    ) -> int: ...
+
+    # --- raw execute / connection (rate_search_result + sdft capture) ------
+    def _execute(self, query: str, params: Sequence[object] = ...) -> list[dict]: ...
+
+    def _get_connection(self) -> AbstractContextManager[object]: ...
+
+
+# ---------------------------------------------------------------------------
 # Valid entity-type sets (mirror the backend constants to avoid coupling)
 # ---------------------------------------------------------------------------
 
@@ -55,8 +210,8 @@ _FEEDBACK_ENTITY_TYPES: frozenset[str] = frozenset({"chunk", "document", "conver
 
 
 def _link_to_session(
-    backend: Any,
-    ctx: Any,
+    backend: _WriteBackend,
+    ctx: _MCPContext,
     *,
     audit_id: int,
     entity_type: str,
@@ -66,7 +221,6 @@ def _link_to_session(
     """If ctx.session_id is set, upsert feedback_sessions + append feedback_events."""
     if ctx.session_id is None:
         return
-    from datetime import datetime  # noqa: PLC0415
 
     started_at = datetime.now(UTC).isoformat()
     feedback_session_id = backend.upsert_feedback_session(
@@ -84,7 +238,7 @@ def _link_to_session(
     )
 
 
-def _read_metadata(backend: Any, entity_type: str, entity_id: int) -> dict:
+def _read_metadata(backend: _WriteBackend, entity_type: str, entity_id: int) -> dict:
     """Read the current metadata dict for an entity without mutating it.
 
     Delegates to backend.patch_metadata's internal read logic by fetching
@@ -112,7 +266,7 @@ def _read_metadata(backend: Any, entity_type: str, entity_id: int) -> dict:
     return backend.get_entity_metadata(entity_type, entity_id)
 
 
-def _read_description(backend: Any, entity_type: str, entity_id: int) -> str | None:
+def _read_description(backend: _WriteBackend, entity_type: str, entity_id: int) -> str | None:
     """Read the current description for an entity without mutating it.
 
     Delegates to each backend's native execute path so psycopg gets %s and
@@ -127,7 +281,7 @@ def _read_description(backend: Any, entity_type: str, entity_id: int) -> str | N
     return backend.get_entity_description(entity_type, entity_id)
 
 
-def _count_messages(backend: Any, conversation_id: int) -> int:
+def _count_messages(backend: _WriteBackend, conversation_id: int) -> int:
     """Return the current message count for a conversation."""
     return backend.count_messages(conversation_id)
 
@@ -138,8 +292,8 @@ def _count_messages(backend: Any, conversation_id: int) -> int:
 
 
 def add_label(
-    backend: Any,
-    ctx: Any,
+    backend: _WriteBackend,
+    ctx: _MCPContext,
     entity_type: str,
     entity_id: int,
     namespace: str,
@@ -210,8 +364,8 @@ def add_label(
 
 
 def remove_label(
-    backend: Any,
-    ctx: Any,
+    backend: _WriteBackend,
+    ctx: _MCPContext,
     entity_type: str,
     entity_id: int,
     namespace: str,
@@ -272,12 +426,12 @@ def remove_label(
 
 
 def set_metadata(
-    backend: Any,
-    ctx: Any,
+    backend: _WriteBackend,
+    ctx: _MCPContext,
     entity_type: str,
     entity_id: int,
     key: str,
-    value: Any,
+    value: object,
     *,
     dry_run: bool = False,
 ) -> dict:
@@ -334,8 +488,8 @@ def set_metadata(
 
 
 def set_description(
-    backend: Any,
-    ctx: Any,
+    backend: _WriteBackend,
+    ctx: _MCPContext,
     entity_type: str,
     entity_id: int,
     text: str | None,
@@ -394,8 +548,8 @@ def set_description(
 
 
 def list_labels(
-    backend: Any,
-    ctx: Any,  # noqa: ARG001 — ctx accepted for API symmetry; not used (no audit)
+    backend: _WriteBackend,
+    ctx: _MCPContext,
     entity_type: str | None = None,
     namespace: str | None = None,
 ) -> dict:
@@ -403,7 +557,11 @@ def list_labels(
 
     Returns ``{"labels": [{"entity_type": str, "namespace": str, "value": str,
     "count": int}, ...]}``.  No audit row is emitted (read tool).
+
+    ``ctx`` is accepted for API symmetry with the audit-emitting tools in
+    this module; the read-only list_labels path doesn't write audit rows.
     """
+    _ = ctx
     return backend.list_labels(entity_type=entity_type, namespace=namespace)
 
 
@@ -413,8 +571,8 @@ def list_labels(
 
 
 def append_conversation(
-    backend: Any,
-    ctx: Any,
+    backend: _WriteBackend,
+    ctx: _MCPContext,
     dataset: str,
     title: str,
     messages: list[dict],
@@ -460,8 +618,6 @@ def append_conversation(
     # Parse started_at string into datetime if provided.
     started_at_dt = None
     if started_at is not None:
-        from datetime import datetime  # noqa: PLC0415
-
         started_at_dt = datetime.fromisoformat(started_at.rstrip("Z"))
 
     conv_id, msg_count = backend.append_conversation(
@@ -494,8 +650,8 @@ def append_conversation(
 
 
 def append_message(
-    backend: Any,
-    ctx: Any,
+    backend: _WriteBackend,
+    ctx: _MCPContext,
     conversation_id: int,
     role: str,
     content: str,
@@ -547,8 +703,6 @@ def append_message(
     # Parse ts string into datetime if provided.
     ts_dt = None
     if ts is not None:
-        from datetime import datetime  # noqa: PLC0415
-
         ts_dt = datetime.fromisoformat(ts.rstrip("Z"))
 
     message_id, turn_index = backend.append_message(
@@ -584,8 +738,8 @@ def append_message(
 
 
 def add_feedback(
-    backend: Any,
-    ctx: Any,
+    backend: _WriteBackend,
+    ctx: _MCPContext,
     entity_type: str,
     entity_id: int,
     kind: str,
@@ -666,8 +820,8 @@ def add_feedback(
 
 
 def register_session(
-    backend: Any,
-    ctx: Any,
+    backend: _WriteBackend,
+    ctx: _MCPContext,
     client: str,
     session_id: str,
     *,
@@ -678,7 +832,6 @@ def register_session(
     Returns ``{"feedback_session_id": int, "created": bool}``.
     """
     effective_host = host if host is not None else ctx.host
-    from datetime import datetime  # noqa: PLC0415
 
     started_at = datetime.now(UTC).isoformat()
     before = backend.get_feedback_session_by_key(client, session_id)
@@ -697,7 +850,7 @@ def register_session(
 # ---------------------------------------------------------------------------
 
 
-def _q(backend: Any, sql: str) -> str:
+def _q(backend: _WriteBackend, sql: str) -> str:
     """Translate ``?`` placeholders to ``%s`` for Postgres backends.
 
     SQLiteBackend uses ``?``; PostgresBackend's psycopg cursor requires
@@ -710,8 +863,8 @@ def _q(backend: Any, sql: str) -> str:
 
 
 def rate_search_result(
-    backend: Any,
-    ctx: Any,
+    backend: _WriteBackend,
+    ctx: _MCPContext,
     query_id: str,
     chunk_id: int,
     signal: str,
@@ -811,8 +964,8 @@ def rate_search_result(
 
 
 def record_demonstration(
-    backend: Any,
-    ctx: Any,
+    backend: _WriteBackend,
+    ctx: _MCPContext,
     query: str,
     student_messages: list[dict],
     teacher_messages: list[dict],
