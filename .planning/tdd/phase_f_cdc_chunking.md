@@ -49,7 +49,7 @@ Not applicable — FastCDC is a pure-Python algorithm, no model. The principle r
 - [x] `corpus-forge rechunk` is idempotent — text-equality + chunker-signature-presence dual check (small docs where positional and CDC happen to produce the same chunks no longer false-skip)
 - [x] Phase C chunk-reuse path still works (re-chunk with same content → embeddings reused via `replace_document_chunks`)
 - [x] `make ci` exit 0 at ≥ 90% coverage (actual: 90.53%)
-- [ ] Integration test against fixture corpus shows ≥ 70% chunk reuse after a small append edit — P2 follow-up (the wave's E2E test verifies the rechunk plumbing + idempotency; the % chunk-reuse metric is a separate landing test)
+- [x] Integration test against fixture corpus shows ≥ 70% chunk reuse after a small append edit — `tests/integration/test_chunk_reuse_fixture_corpus.py` (4-doc × 5-section fixture corpus, one ~1-chunk append → asserts ≥ 70 % reuse)
 
 ## Out of scope (P2 / later)
 

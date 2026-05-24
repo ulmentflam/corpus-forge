@@ -67,6 +67,16 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   on denial, opening System Settings → Full Disk Access with the
   recovery instruction printed to stderr.
 
+### Tests
+
+- New integration test `tests/integration/test_chunk_reuse_fixture_corpus.py`
+  exercises the **aggregate** chunk-reuse metric across a 4-doc × 5-section
+  markdown fixture corpus: ingest all docs, append a single ~1-chunk
+  section to doc 2, re-ingest the whole corpus, assert ≥ 70 % of the
+  post-edit chunks were reused (matched by `content_hash`). Discharges
+  the last unchecked item in
+  `.planning/tdd/phase_f_cdc_chunking.md`.
+
 ## [0.1.0b9] - 2026-05-22
 
 ### Fixed
