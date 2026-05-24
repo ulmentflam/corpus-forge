@@ -67,6 +67,10 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   on denial, opening System Settings → Full Disk Access with the
   recovery instruction printed to stderr.
 
+### Changed
+
+- chore(tests): tighten 9 → 0 Any usages in tests/perf/test_phase_n_wave3_gate.py. Ideate-fallback proposal #19.
+
 ## [0.1.0b9] - 2026-05-22
 
 ### Fixed

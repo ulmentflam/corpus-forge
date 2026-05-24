@@ -59,10 +59,46 @@ import json
 import os
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from corpus_forge.backends.sqlite import SQLiteBackend
+    from corpus_forge.embedders.base import Embedder
+    from corpus_forge.retrieval.rerank.cross_encoder import CrossEncoderReranker
+    from corpus_forge.retrieval.retriever import HybridRetriever
+    from corpus_forge.retrieval.types import SearchResponse
+
+
+class _Harness(TypedDict):
+    """Lazy-imported references to the Wave 0/1/2 bench harness internals."""
+
+    iter_current: Callable[[], Iterator[Path]]
+    iter_vendored: Callable[[], Iterator[Path]]
+    classify: Callable[[dict[str, object]], str]
+    normalise_hits: Callable[[SearchResponse, dict[int, dict[str, object]]], list[object]]
+    aggregate: Callable[[dict[str, dict[str, object]]], dict[str, object]]
+    strip_per_query: Callable[[dict[str, object]], dict[str, object]]
+    json_default: Callable[[object], object]
+    vendored_snapshot: Path
+
+
+class _ArmOptions(TypedDict, total=False):
+    """Subset of ``SearchOptions`` knobs used to parametrise each arm."""
+
+    k: int
+    fusion: Literal["rrf", "alpha"]
+    alpha: float
+    rerank: bool
+    rerank_top_n: int
+    fast_tier_mode: Literal["skip", "shortcut", "only"]
+    fast_tier_top_n: int
+
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("CF_PHASE_N_GATE") != "1",
@@ -100,20 +136,20 @@ _ONLY_P50_CEILING_MS = 30.0
 # ── shared harness imports (lazy so the unit suite never pulls these) ──────
 
 
-def _import_bench_harness() -> dict[str, Any]:
+def _import_bench_harness() -> _Harness:
     """Import the Wave 0/1/2 bench harness internals lazily."""
     from tests.perf import test_phase_n_bench as bench
 
-    return {
-        "iter_current": bench._iter_current_corpus_files,
-        "iter_vendored": bench._iter_vendored_corpus_files,
-        "classify": bench._classify_corpus,
-        "normalise_hits": bench._normalise_hybrid_hits,
-        "aggregate": bench._aggregate,
-        "strip_per_query": bench._strip_per_query,
-        "json_default": bench._json_default,
-        "vendored_snapshot": bench._VENDORED_SNAPSHOT,
-    }
+    return _Harness(
+        iter_current=bench._iter_current_corpus_files,
+        iter_vendored=bench._iter_vendored_corpus_files,
+        classify=bench._classify_corpus,
+        normalise_hits=bench._normalise_hybrid_hits,
+        aggregate=bench._aggregate,
+        strip_per_query=bench._strip_per_query,
+        json_default=bench._json_default,
+        vendored_snapshot=bench._VENDORED_SNAPSHOT,
+    )
 
 
 # ── code-aware index builder with a fast tier ──────────────────────────────
@@ -124,7 +160,15 @@ def _build_indexed_backend_with_fast_tier(
     *,
     file_to_rel: dict[Path, str],
     corpus_name: str,
-) -> tuple[Any, Any, int, Any, int, Any, dict[int, dict[str, Any]]]:
+) -> tuple[
+    SQLiteBackend,
+    Embedder,
+    int,
+    Embedder,
+    int,
+    CrossEncoderReranker | None,
+    dict[int, dict[str, object]],
+]:
     """Build a SQLite backend with BOTH main and fast-tier embedders.
 
     Returns: ``(backend, main_embedder, main_id, fast_embedder,
@@ -180,7 +224,7 @@ def _build_indexed_backend_with_fast_tier(
 
     md_chunker = MarkdownChunker(max_chars=1500, overlap=200)
     code_chunker = CodeChunker(max_chars=1500, min_chars=100, overlap=100)
-    chunk_index: dict[int, dict[str, Any]] = {}
+    chunk_index: dict[int, dict[str, object]] = {}
 
     for path in files:
         try:
@@ -254,7 +298,7 @@ def _build_indexed_backend_with_fast_tier(
         fast_vecs = np.asarray(fast_embedder.encode(chunk_texts), dtype=np.float32)
         backend.write_embeddings(fast_id, [(cid, fast_vecs[i]) for i, cid in enumerate(chunk_ids)])
 
-    reranker: Any | None
+    reranker: CrossEncoderReranker | None
     try:
         reranker = CrossEncoderReranker(device="cpu", batch_size=16)
         reranker._get_model()  # type: ignore[attr-defined]
@@ -278,14 +322,14 @@ def _build_indexed_backend_with_fast_tier(
 
 def _build_retriever(
     *,
-    backend: Any,
-    main_embedder: Any,
+    backend: SQLiteBackend,
+    main_embedder: Embedder,
     main_id: int,
-    fast_embedder: Any | None,
+    fast_embedder: Embedder | None,
     fast_id: int | None,
-    reranker: Any | None,
+    reranker: CrossEncoderReranker | None,
     enable_wave1_wave2: bool,
-) -> Any:
+) -> HybridRetriever:
     """Construct a HybridRetriever optionally wired with a fast embedder."""
     from corpus_forge.config import RetrievalConfig
     from corpus_forge.retrieval.retriever import HybridRetriever
@@ -316,39 +360,43 @@ def _build_retriever(
 def _run_arm(
     arm_name: str,
     corpus_name: str,
-    queries: list[dict[str, Any]],
+    queries: list[dict[str, object]],
     *,
-    retriever: Any,
-    chunk_index: dict[int, dict[str, Any]],
-    harness: dict[str, Any],
-    options_kwargs: dict[str, Any],
-) -> dict[str, Any]:
+    retriever: HybridRetriever,
+    chunk_index: dict[int, dict[str, object]],
+    harness: _Harness,
+    options_kwargs: _ArmOptions,
+) -> dict[str, object]:
     """Run ``queries`` through ``retriever`` and score per-category."""
     from corpus_forge.retrieval.types import SearchOptions
     from tests.perf.metrics import compute_metrics
 
-    runs: dict[str, dict[str, Any]] = {}
+    runs: dict[str, dict[str, object]] = {}
     for i, q in enumerate(queries):
         qid = f"{corpus_name}_q{i + 1:03d}"
         opts = SearchOptions(**options_kwargs)
         t_q = time.perf_counter()
-        hits = retriever.search(q["query"], opts)
+        hits = retriever.search(str(q["query"]), opts)
         latency_ms = (time.perf_counter() - t_q) * 1000.0
         runs[qid] = {
             "hits": harness["normalise_hits"](hits, chunk_index),
             "latency_ms": latency_ms,
         }
 
-    ground_truth: dict[str, list[dict[str, Any]]] = {}
+    ground_truth: dict[str, list[dict[str, object]]] = {}
     by_cat: dict[str, list[str]] = {}
     for i, q in enumerate(queries):
         qid = f"{corpus_name}_q{i + 1:03d}"
-        ground_truth[qid] = q["ground_truth_chunks"]
-        by_cat.setdefault(q["category"], []).append(qid)
+        gt = q["ground_truth_chunks"]
+        assert isinstance(gt, list)
+        ground_truth[qid] = gt
+        cat = q["category"]
+        assert isinstance(cat, str)
+        by_cat.setdefault(cat, []).append(qid)
 
     overall = compute_metrics(runs, ground_truth)
 
-    per_cat: dict[str, dict[str, Any]] = {}
+    per_cat: dict[str, dict[str, object]] = {}
     for cat, qids in by_cat.items():
         sub_gt = {qid: ground_truth[qid] for qid in qids}
         sub_runs = {qid: runs[qid] for qid in qids if qid in runs}
@@ -369,21 +417,25 @@ def _run_arm(
 # ── Pareto helpers (mirror Wave 1 / 2) ─────────────────────────────────────
 
 
-def _category_metric(payload: dict[str, Any], category: str, metric: str) -> float | None:
+def _category_metric(payload: dict[str, object], category: str, metric: str) -> float | None:
     agg = payload.get("aggregated", {})
+    if not isinstance(agg, dict):
+        return None
     by_cat = agg.get("by_category", {})
+    if not isinstance(by_cat, dict):
+        return None
     block = by_cat.get(category)
-    if block is None:
+    if not isinstance(block, dict):
         return None
     val = block.get(metric)
-    if val is None:
+    if not isinstance(val, (int, float)):
         return None
     return float(val)
 
 
 def _pareto_violation(
-    head: dict[str, Any],
-    base: dict[str, Any],
+    head: dict[str, object],
+    base: dict[str, object],
     category: str,
     metric: str,
     max_drop: float,
@@ -420,8 +472,8 @@ def test_phase_n_wave3_gate() -> None:
         )
 
     with _QUERIES_PATH.open() as f:
-        queries = [json.loads(line) for line in f if line.strip()]
-    queries_by_corpus: dict[str, list[dict[str, Any]]] = {"current": [], "vendored": []}
+        queries: list[dict[str, object]] = [json.loads(line) for line in f if line.strip()]
+    queries_by_corpus: dict[str, list[dict[str, object]]] = {"current": [], "vendored": []}
     for q in queries:
         queries_by_corpus[harness["classify"](q)].append(q)
 
@@ -430,11 +482,11 @@ def test_phase_n_wave3_gate() -> None:
     current_rel = {p: (p.relative_to(_REPO_ROOT).as_posix()) for p in current_files}
     vendored_rel = {p: (p.relative_to(_REPO_ROOT).as_posix()) for p in vendored_files}
 
-    control_by_corpus: dict[str, dict[str, Any]] = {}
-    shortcut_by_corpus: dict[str, dict[str, Any]] = {}
-    only_by_corpus: dict[str, dict[str, Any]] = {}
+    control_by_corpus: dict[str, dict[str, object]] = {}
+    shortcut_by_corpus: dict[str, dict[str, object]] = {}
+    only_by_corpus: dict[str, dict[str, object]] = {}
     build_seconds: dict[str, float] = {}
-    reranker_info: dict[str, Any] | None = None
+    reranker_info: dict[str, object] | None = None
 
     for corpus_name, files, rel_map in (
         ("current", current_files, current_rel),
@@ -483,7 +535,7 @@ def test_phase_n_wave3_gate() -> None:
             enable_wave1_wave2=False,  # only-mode skips lexical + rerank anyway
         )
 
-        control_options = {
+        control_options: _ArmOptions = {
             "k": 10,
             "fusion": "alpha",
             "alpha": 0.7,
@@ -491,7 +543,7 @@ def test_phase_n_wave3_gate() -> None:
             "rerank_top_n": 50,
             "fast_tier_mode": "skip",
         }
-        shortcut_options = {
+        shortcut_options: _ArmOptions = {
             "k": 10,
             "fusion": "alpha",
             "alpha": 0.7,
@@ -500,7 +552,7 @@ def test_phase_n_wave3_gate() -> None:
             "fast_tier_mode": "shortcut",
             "fast_tier_top_n": 200,
         }
-        only_options = {
+        only_options: _ArmOptions = {
             "k": 10,
             "fusion": "alpha",
             "alpha": 0.7,
@@ -543,16 +595,25 @@ def test_phase_n_wave3_gate() -> None:
     shortcut_agg = harness["aggregate"](shortcut_by_corpus)
     only_agg = harness["aggregate"](only_by_corpus)
 
-    control_payload = {"by_corpus": control_by_corpus, "aggregated": control_agg}
-    shortcut_payload = {"by_corpus": shortcut_by_corpus, "aggregated": shortcut_agg}
-    only_payload = {"by_corpus": only_by_corpus, "aggregated": only_agg}
+    control_payload: dict[str, object] = {
+        "by_corpus": control_by_corpus,
+        "aggregated": control_agg,
+    }
+    shortcut_payload: dict[str, object] = {
+        "by_corpus": shortcut_by_corpus,
+        "aggregated": shortcut_agg,
+    }
+    only_payload: dict[str, object] = {
+        "by_corpus": only_by_corpus,
+        "aggregated": only_agg,
+    }
 
     # ── persist for audit ──────────────────────────────────────────────
     _OUT_DIR.mkdir(parents=True, exist_ok=True)
     iso = _dt.datetime.now(_dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     out_path = _OUT_DIR / f"phase_n_wave3_{iso}.json"
 
-    payload: dict[str, Any] = {
+    payload: dict[str, object] = {
         "schema_version": 1,
         "phase": "N",
         "wave": 3,
@@ -637,8 +698,15 @@ def test_phase_n_wave3_gate() -> None:
     # Aggregate Recall@5 invariant — the shortcut filter must not drop
     # chunks the control would have surfaced.  Allow tiny epsilon for
     # small-N flips (one chunk in 50 queries = 0.02).
-    sc_rec = float(shortcut_payload["aggregated"].get("recall_at_5", 0.0))
-    ctrl_rec = float(control_payload["aggregated"].get("recall_at_5", 0.0))
+    sc_agg = shortcut_payload["aggregated"]
+    ctrl_agg = control_payload["aggregated"]
+    assert isinstance(sc_agg, dict) and isinstance(ctrl_agg, dict)
+    sc_rec_raw = sc_agg.get("recall_at_5", 0.0)
+    ctrl_rec_raw = ctrl_agg.get("recall_at_5", 0.0)
+    assert isinstance(sc_rec_raw, (int, float))
+    assert isinstance(ctrl_rec_raw, (int, float))
+    sc_rec = float(sc_rec_raw)
+    ctrl_rec = float(ctrl_rec_raw)
     if sc_rec < ctrl_rec - 0.02:
         violations.append(
             f"[shortcut] aggregated.recall_at_5={sc_rec:.4f} < control={ctrl_rec:.4f} - 0.02 floor"
