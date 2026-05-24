@@ -191,6 +191,7 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   circuit the work, but local servers that ignore the field
   (Ollama, some llama.cpp builds) get the right shape back via the
   client-side truncate + L2 renormalise path.
+- chore(tests): tighten 2 → 0 Any usages in tests/unit/test_analyze_language.py. Ideate-fallback #63.
 
 ### Added
 

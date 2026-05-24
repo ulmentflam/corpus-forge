@@ -32,7 +32,6 @@ from __future__ import annotations
 import importlib
 import sys
 import types
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -62,7 +61,7 @@ def _make_fake_langdetect_module() -> types.ModuleType:
     """Construct a minimal fake langdetect module for dispatch-isolation tests."""
     mod = types.ModuleType("langdetect")
 
-    def detect_langs(text: str) -> list[Any]:
+    def detect_langs(text: str) -> list[MagicMock]:
         # Returns a list of language objects with .lang and .prob attributes
         result = MagicMock()
         result.lang = "en"
@@ -452,13 +451,20 @@ def test_fasttext_missing_raises_runtime_error() -> None:
         sys.modules.pop(name, None)
 
     import builtins
+    from collections.abc import Mapping, Sequence
 
     original = builtins.__import__
 
-    def blocking_import(name: str, *args: Any, **kwargs: Any) -> Any:
+    def blocking_import(
+        name: str,
+        globals: Mapping[str, object] | None = None,
+        locals: Mapping[str, object] | None = None,
+        fromlist: Sequence[str] = (),
+        level: int = 0,
+    ) -> types.ModuleType:
         if name in ("fasttext", "fasttext_langdetect"):
             raise ImportError(f"No module named '{name}'")
-        return original(name, *args, **kwargs)
+        return original(name, globals, locals, fromlist, level)
 
     # Re-evict language module so it re-imports cleanly inside the patch
     _evict_language_module()
