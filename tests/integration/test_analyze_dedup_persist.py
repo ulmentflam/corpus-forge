@@ -34,9 +34,24 @@ from __future__ import annotations
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict
 
 import pytest
+
+if TYPE_CHECKING:
+    import psycopg
+
+
+class _NDCRow(TypedDict):
+    """Shape of a near_duplicate_clusters row fetched by the helpers below."""
+
+    id: int
+    cluster_id: str
+    chunk_id: int
+    similarity: float
+    method: str
+    computed_at: str | None
+
 
 pytestmark = [pytest.mark.integration]
 
@@ -67,7 +82,7 @@ def _alembic_upgrade_sqlite(db_path: Path, target: str) -> None:
     command.upgrade(cfg, target)
 
 
-def _sqlite_row_count(conn: sqlite3.Connection, table: str, **where: Any) -> int:
+def _sqlite_row_count(conn: sqlite3.Connection, table: str, **where: object) -> int:
     """Return the row count from *table* filtered by the keyword args."""
     clauses = " AND ".join(f"{col} = ?" for col in where)
     sql = f"SELECT COUNT(*) FROM {table}"
@@ -76,7 +91,7 @@ def _sqlite_row_count(conn: sqlite3.Connection, table: str, **where: Any) -> int
     return conn.execute(sql, tuple(where.values())).fetchone()[0]
 
 
-def _sqlite_ndc_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def _sqlite_ndc_rows(conn: sqlite3.Connection) -> list[_NDCRow]:
     """Fetch all near_duplicate_clusters rows as a list of dicts."""
     rows = conn.execute(
         "SELECT id, cluster_id, chunk_id, similarity, method, computed_at "
@@ -541,7 +556,7 @@ def _reset_pg_schema(dsn: str) -> None:
         cur.execute("CREATE SCHEMA IF NOT EXISTS corpus")
 
 
-def _pg_ndc_rows(conn: Any) -> list[dict[str, Any]]:
+def _pg_ndc_rows(conn: psycopg.Connection) -> list[_NDCRow]:
     """Fetch all near_duplicate_clusters rows from Postgres."""
     with conn.cursor() as cur:
         cur.execute(
@@ -562,7 +577,7 @@ def _pg_ndc_rows(conn: Any) -> list[dict[str, Any]]:
     ]
 
 
-def _pg_seed_chunks(conn: Any, chunk_ids: list[int]) -> None:
+def _pg_seed_chunks(conn: psycopg.Connection, chunk_ids: list[int]) -> None:
     """Insert minimal chunks rows into corpus.chunks for FK satisfaction (Postgres).
 
     chunks.chunks_check enforces exactly one of (document_id, conversation_id)
@@ -590,11 +605,15 @@ def _pg_seed_chunks(conn: Any, chunk_ids: list[int]) -> None:
     conn.commit()
 
 
-def _pg_row_count(conn: Any, table: str) -> int:
+def _pg_row_count(conn: psycopg.Connection, table: str) -> int:
     """Return the total row count for a table in the corpus schema (Postgres)."""
+    from psycopg import sql
+
     with conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) FROM corpus.{table}")
-        return cur.fetchone()[0]
+        cur.execute(sql.SQL("SELECT COUNT(*) FROM corpus.{}").format(sql.Identifier(table)))
+        row = cur.fetchone()
+        assert row is not None
+        return int(row[0])
 
 
 @pytest.mark.requires_docker

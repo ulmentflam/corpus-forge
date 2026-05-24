@@ -174,6 +174,10 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   dropped advances. The global bar now reaches 100% even when
   some files fail.
 
+### Chore
+
+- chore(tests): tighten 4 → 0 Any usages in tests/integration/test_analyze_dedup_persist.py. Ideate-fallback proposal #34.
+
 ### Changed
 
 - chore(tests): tighten 6 → 0 Any usages in tests/integration/test_alembic_0007_chat_templates.py. Ideate-fallback proposal #27.
