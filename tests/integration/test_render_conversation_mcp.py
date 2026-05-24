@@ -20,12 +20,17 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from typing import Any
+import sqlite3
+from typing import TYPE_CHECKING
 
 import pytest
 
 from corpus_forge.backends.sqlite import SQLiteBackend
 from corpus_forge.mcp.server import build_server
+from corpus_forge.retrieval.types import Hit, SearchOptions
+
+if TYPE_CHECKING:
+    from mcp.server import Server
 
 pytestmark = pytest.mark.integration
 
@@ -50,12 +55,12 @@ class _LexicalRetriever:
     def __init__(self, backend: SQLiteBackend) -> None:
         self.backend = backend
 
-    def search(self, query: str, options: Any) -> list[Any]:
+    def search(self, query: str, options: SearchOptions) -> list[Hit]:
         k = getattr(options, "k", 10)
         return self.backend.search_lexical(query, k=k)
 
 
-def _build_server(backend: SQLiteBackend) -> Any:
+def _build_server(backend: SQLiteBackend) -> Server[object]:
     retriever = _LexicalRetriever(backend)
     return build_server(retriever_builder=lambda: retriever, writes_enabled=True)
 
@@ -65,7 +70,7 @@ def _build_server(backend: SQLiteBackend) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _call_tool(server: Any, name: str, arguments: dict) -> dict:
+def _call_tool(server: Server[object], name: str, arguments: dict) -> dict:
     """Invoke an MCP tool synchronously; returns structured payload or raises."""
 
     async def _run() -> dict:
@@ -83,23 +88,29 @@ def _call_tool(server: Any, name: str, arguments: dict) -> dict:
         if getattr(root, "isError", False):
             text = "".join(getattr(b, "text", "") for b in getattr(root, "content", []))
             raise AssertionError(f"MCP tool {name!r} returned isError=True: {text}")
-        if getattr(root, "structuredContent", None) is not None:
-            return dict(root.structuredContent)
+        structured: dict[str, object] | None = getattr(root, "structuredContent", None)
+        if structured is not None:
+            return dict(structured)
         text_blocks = [getattr(b, "text", "") for b in getattr(root, "content", [])]
         return json.loads("".join(text_blocks))
 
     return asyncio.run(_run())
 
 
-def _list_tools(server: Any) -> list[str]:
+def _list_tools(server: Server[object]) -> list[str]:
     async def _run() -> list[str]:
         from mcp.types import ListToolsRequest
 
         handler = server.request_handlers.get(ListToolsRequest)
+        assert handler is not None, "No ListToolsRequest handler registered on server"
         request = ListToolsRequest(method="tools/list")
         result = await handler(request)
         root = result.root if hasattr(result, "root") else result
-        return [t.name for t in root.tools]
+        # ``ListToolsRequest`` always dispatches to a ``ListToolsResult`` —
+        # the union-typed ``ServerResult`` hides that from the type checker.
+        tools = getattr(root, "tools", None)
+        assert tools is not None, "Expected ListToolsResult with `tools` attribute"
+        return [t.name for t in tools]
 
     return asyncio.run(_run())
 
@@ -137,7 +148,7 @@ def _seed_conversation(
     return {"dataset_id": ds_id, "conversation_id": conv_id}
 
 
-def _get_audit_rows(backend: SQLiteBackend) -> list[Any]:
+def _get_audit_rows(backend: SQLiteBackend) -> list[sqlite3.Row]:
     with backend._get_connection() as conn:
         return conn.execute("SELECT * FROM mcp_audit ORDER BY id").fetchall()
 
@@ -226,6 +237,7 @@ class TestRenderConversationEndToEnd:
             backend = _make_backend()
             server = _build_server(backend)
             handler = server.request_handlers.get(CallToolRequest)
+            assert handler is not None, "No CallToolRequest handler registered on server"
             request = CallToolRequest(
                 method="tools/call",
                 params=CallToolRequestParams(
