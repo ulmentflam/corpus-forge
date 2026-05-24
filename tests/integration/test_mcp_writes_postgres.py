@@ -24,12 +24,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import TYPE_CHECKING
 
 import pytest
 
 from corpus_forge.backends.postgres import PostgresBackend
 from corpus_forge.mcp.server import build_server
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from mcp.server import Server
 
 pytestmark = pytest.mark.integration
 
@@ -47,7 +50,7 @@ class _PgLexicalRetriever:
     def __init__(self, backend: PostgresBackend) -> None:
         self.backend = backend
 
-    def search(self, query: str, options: Any) -> list[Any]:
+    def search(self, query: str, options: object) -> list[object]:
         k = getattr(options, "k", 10)
         return self.backend.search_lexical(query, k=k)
 
@@ -58,7 +61,7 @@ def _make_pg_backend(pg_dsn: str) -> PostgresBackend:
     return b
 
 
-def _seed_pg(backend: PostgresBackend) -> dict[str, Any]:
+def _seed_pg(backend: PostgresBackend) -> dict[str, object]:
     """Insert one dataset, document, chunk, and conversation in PG.  Returns ids."""
     import psycopg
     from psycopg.rows import dict_row
@@ -133,13 +136,13 @@ def _seed_pg(backend: PostgresBackend) -> dict[str, Any]:
     }
 
 
-def _build_pg_server(backend: PostgresBackend, writes_enabled: bool = True) -> Any:
+def _build_pg_server(backend: PostgresBackend, writes_enabled: bool = True) -> Server:
     retriever = _PgLexicalRetriever(backend)
     return build_server(retriever_builder=lambda: retriever, writes_enabled=writes_enabled)
 
 
-def _call_tool(server: Any, name: str, arguments: dict) -> dict:
-    async def _run() -> dict:
+def _call_tool(server: Server, name: str, arguments: dict[str, object]) -> dict[str, object]:
+    async def _run() -> dict[str, object]:
         from mcp.types import CallToolRequest, CallToolRequestParams
 
         handler = server.request_handlers.get(CallToolRequest)
@@ -177,12 +180,12 @@ def pg_backend(pg_dsn: str) -> PostgresBackend:
 
 
 @pytest.fixture
-def seeded(pg_backend: PostgresBackend) -> dict[str, Any]:
+def seeded(pg_backend: PostgresBackend) -> dict[str, object]:
     return _seed_pg(pg_backend)
 
 
 @pytest.fixture
-def server(pg_backend: PostgresBackend, seeded: dict) -> Any:
+def server(pg_backend: PostgresBackend, seeded: dict[str, object]) -> Server:
     return _build_pg_server(pg_backend, writes_enabled=True)
 
 
@@ -191,7 +194,9 @@ def server(pg_backend: PostgresBackend, seeded: dict) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def test_add_label_round_trip_pg(pg_backend: PostgresBackend, seeded: dict, server: Any) -> None:
+def test_add_label_round_trip_pg(
+    pg_backend: PostgresBackend, seeded: dict[str, object], server: Server
+) -> None:
     """add_label on a chunk is visible in subsequent list_labels and search hits."""
     result = _call_tool(
         server,
@@ -219,7 +224,7 @@ def test_add_label_round_trip_pg(pg_backend: PostgresBackend, seeded: dict, serv
 
 
 def test_set_description_round_trip_pg(
-    pg_backend: PostgresBackend, seeded: dict, server: Any
+    pg_backend: PostgresBackend, seeded: dict[str, object], server: Server
 ) -> None:
     """set_description on a chunk is reflected in get_chunk response."""
     result = _call_tool(
@@ -246,7 +251,9 @@ def test_set_description_round_trip_pg(
 # ---------------------------------------------------------------------------
 
 
-def test_set_metadata_round_trip_pg(pg_backend: PostgresBackend, seeded: dict, server: Any) -> None:
+def test_set_metadata_round_trip_pg(
+    pg_backend: PostgresBackend, seeded: dict[str, object], server: Server
+) -> None:
     """set_metadata merges a key into the chunk's JSONB metadata column."""
     result = _call_tool(
         server,
@@ -269,7 +276,9 @@ def test_set_metadata_round_trip_pg(pg_backend: PostgresBackend, seeded: dict, s
 # ---------------------------------------------------------------------------
 
 
-def test_remove_label_pg(pg_backend: PostgresBackend, seeded: dict, server: Any) -> None:
+def test_remove_label_pg(
+    pg_backend: PostgresBackend, seeded: dict[str, object], server: Server
+) -> None:
     """add then remove; search hit no longer carries the label."""
     _call_tool(
         server,
@@ -306,7 +315,7 @@ def test_remove_label_pg(pg_backend: PostgresBackend, seeded: dict, server: Any)
 
 
 def test_list_labels_aggregates_across_entity_types_pg(
-    pg_backend: PostgresBackend, seeded: dict, server: Any
+    pg_backend: PostgresBackend, seeded: dict[str, object], server: Server
 ) -> None:
     """Labels applied to chunk, document, and conversation all appear in list_labels."""
     _call_tool(
@@ -352,7 +361,9 @@ def test_list_labels_aggregates_across_entity_types_pg(
 # ---------------------------------------------------------------------------
 
 
-def test_append_conversation_pg(pg_backend: PostgresBackend, seeded: dict, server: Any) -> None:
+def test_append_conversation_pg(
+    pg_backend: PostgresBackend, seeded: dict[str, object], server: Server
+) -> None:
     """append_conversation creates a conversation + messages; message_count is correct."""
     messages = [
         {"role": "user", "content": "Hello from PG test"},
@@ -388,7 +399,7 @@ def test_append_conversation_pg(pg_backend: PostgresBackend, seeded: dict, serve
 
 
 def test_append_message_extends_existing_pg(
-    pg_backend: PostgresBackend, seeded: dict, server: Any
+    pg_backend: PostgresBackend, seeded: dict[str, object], server: Server
 ) -> None:
     """append_conversation then 2x append_message; turn indices go 0,1,2,3,4."""
     messages = [
@@ -434,7 +445,9 @@ def test_append_message_extends_existing_pg(
 # ---------------------------------------------------------------------------
 
 
-def test_add_feedback_pg(pg_backend: PostgresBackend, seeded: dict, server: Any) -> None:
+def test_add_feedback_pg(
+    pg_backend: PostgresBackend, seeded: dict[str, object], server: Server
+) -> None:
     """add_feedback with rating + text appears in subsequent search hit recent_feedback."""
     result = _call_tool(
         server,
@@ -464,7 +477,7 @@ def test_add_feedback_pg(pg_backend: PostgresBackend, seeded: dict, server: Any)
 
 
 def test_audit_event_emitted_for_every_write_pg(
-    pg_backend: PostgresBackend, seeded: dict, server: Any
+    pg_backend: PostgresBackend, seeded: dict[str, object], server: Server
 ) -> None:
     """Each write call (including dry_run) emits exactly one mcp_audit row."""
     # Baseline audit count
@@ -546,7 +559,7 @@ def test_audit_event_emitted_for_every_write_pg(
 
 
 def test_dry_run_does_not_persist_pg(
-    pg_backend: PostgresBackend, seeded: dict, server: Any
+    pg_backend: PostgresBackend, seeded: dict[str, object], server: Server
 ) -> None:
     """dry_run=True on each write tool produces NO entity state mutation in PG."""
     # add_label dry_run — no junction row
