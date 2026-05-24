@@ -44,7 +44,7 @@ class _NullRetriever:
     The selector delegates to ``.search(query)`` on cache misses.
     """
 
-    def search(self, query: str, *args: Any, **kwargs: Any) -> list[Any]:  # noqa: ARG002
+    def search(self, query: str, *args: object, **kwargs: object) -> list[object]:  # noqa: ARG002
         return []
 
 

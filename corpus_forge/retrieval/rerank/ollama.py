@@ -29,9 +29,12 @@ pull `openai` at package-import time.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING
 
 from corpus_forge.retrieval.types import Hit
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from openai import OpenAI
 
 DEFAULT_BASE_URL = "http://localhost:11434/v1"
 DEFAULT_NAME = "ollama-reranker"
@@ -104,11 +107,11 @@ class OllamaReranker:
         self.api_key = api_key or "ollama-no-auth"
         self.name = name
         # Memoised OpenAI client; instantiated lazily.
-        self._client: Any | None = None
+        self._client: OpenAI | None = None
 
     # ── lazy client ────────────────────────────────────────────────────────
 
-    def _get_client(self) -> Any:
+    def _get_client(self) -> OpenAI:
         """Construct (and cache) the OpenAI-compat client pointed at Ollama."""
         if self._client is not None:
             return self._client

@@ -69,7 +69,7 @@ def _pretty_print_yaml(raw: str) -> str:
     return yaml.safe_dump(data, sort_keys=False, default_flow_style=False).rstrip("\n")
 
 
-def _stable_repr(value: Any, indent: int = 0) -> str:
+def _stable_repr(value: object, indent: int = 0) -> str:
     """Tiny TOML-ish pretty-printer used when tomllib parses cleanly but
     we have no dumper. Produces ``key = value`` lines and ``[section]``
     headers. Good enough for retrieval; not a TOML round-trip."""

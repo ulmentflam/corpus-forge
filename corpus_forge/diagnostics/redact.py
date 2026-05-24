@@ -131,7 +131,7 @@ def redact_toml_dict(doc: TOMLDocument | Table | InlineTable | AoT) -> tuple[Any
     return doc, count
 
 
-def _walk_toml(node: Any) -> int:
+def _walk_toml(node: object) -> int:
     """Recursive helper for :func:`redact_toml_dict`."""
 
     total = 0
