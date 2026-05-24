@@ -35,9 +35,13 @@ import importlib
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    import psycopg
+    from testcontainers.postgres import PostgresContainer
 
 pytestmark = pytest.mark.integration
 
@@ -64,7 +68,7 @@ _ALEMBIC_INI = _REPO_ROOT / "alembic.ini"
 # ---------------------------------------------------------------------------
 
 
-def _dsn_from_container(c: Any) -> str:
+def _dsn_from_container(c: PostgresContainer) -> str:
     """Build a bare postgresql:// DSN from a testcontainers Postgres container."""
     return (
         f"postgresql://{c.username}:{c.password}"
@@ -123,7 +127,7 @@ def _reset_schema(dsn: str) -> None:
 
 
 def _column_info_pg(
-    conn: Any,
+    conn: psycopg.Connection,
     table_schema: str,
     table_name: str,
 ) -> dict[str, dict[str, str | None]]:
@@ -157,7 +161,7 @@ def _column_info_pg(
 
 
 def _unique_constraints_pg(
-    conn: Any,
+    conn: psycopg.Connection,
     schema_name: str,
     table_name: str,
 ) -> list[frozenset[str]]:
@@ -188,7 +192,7 @@ def _unique_constraints_pg(
 
 
 def _index_names_pg(
-    conn: Any,
+    conn: psycopg.Connection,
     schema_name: str,
     table_name: str,
 ) -> dict[str, str]:
@@ -213,7 +217,7 @@ def _index_names_pg(
 
 
 @_skip_no_tc
-def test_feedback_sessions_table_shape_pg(postgres_container: Any) -> None:  # type: ignore[return]
+def test_feedback_sessions_table_shape_pg(postgres_container: PostgresContainer) -> None:  # type: ignore[return]
     """corpus.feedback_sessions exists with correct columns after 0008_feedback_sessions upgrade.
 
     Expected columns:
@@ -341,7 +345,7 @@ def test_feedback_sessions_table_shape_pg(postgres_container: Any) -> None:  # t
 
 
 @_skip_no_tc
-def test_feedback_events_table_shape_pg(postgres_container: Any) -> None:  # type: ignore[return]
+def test_feedback_events_table_shape_pg(postgres_container: PostgresContainer) -> None:  # type: ignore[return]
     """corpus.feedback_events exists with correct columns after 0008_feedback_sessions upgrade.
 
     Expected columns:
