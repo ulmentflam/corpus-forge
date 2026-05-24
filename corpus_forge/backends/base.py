@@ -7,7 +7,9 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     import numpy as np
 
+    from corpus_forge.classifiers.base import ClassifiableDocument
     from corpus_forge.embedders.base import Embedder
+    from corpus_forge.enrichers.base import CodeChunkEnrichment
     from corpus_forge.retrieval.types import Hit
     from corpus_forge.sources.base import RawConversation, RawDocument
 
@@ -278,13 +280,18 @@ class StorageBackend(Protocol):
     def update_chunk_enrichment(
         self,
         chunk_id: int,
-        enrichment: Any,
+        enrichment: "CodeChunkEnrichment | dict",
     ) -> None:
         """Merge ``enrichment.to_metadata()`` into ``chunks.metadata.enrichment``.
 
         Preserves existing chunk-metadata fields (``kind``, ``name``,
         ``byte_range``, ``cdc_fingerprint``) by writing only the
         ``enrichment`` sub-key — other keys are left untouched.
+
+        Accepts either a :class:`CodeChunkEnrichment` (preferred — the
+        backend calls ``to_metadata()``) or a raw ``dict`` already in
+        the on-disk shape; both backends use ``hasattr(..., "to_metadata")``
+        to dispatch.
         """
         ...
 
@@ -293,7 +300,7 @@ class StorageBackend(Protocol):
         dataset_id: "int | None" = None,
         *,
         include_classified: bool = False,
-    ) -> "Iterator[Any]":
+    ) -> "Iterator[ClassifiableDocument]":
         """Yield :class:`ClassifiableDocument` rows for the classifier chain.
 
         Read-only iterator joining ``documents`` to

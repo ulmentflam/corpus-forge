@@ -38,9 +38,13 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    # pyrefly: ignore[missing-import]  # optional dep, install via [fast-tier] extra
+    from model2vec import StaticModel
 
 try:
     # pyrefly: ignore[missing-import]  # optional dep, install via [fast-tier] extra
@@ -58,7 +62,7 @@ from .base import BaseEmbedder
 loader_logger = logging.getLogger("corpus_forge.embedders.loader")
 
 
-def _load_static_model(model_id: str) -> Any:
+def _load_static_model(model_id: str) -> StaticModel:
     """Import ``model2vec`` lazily and return ``StaticModel.from_pretrained``.
 
     Hoisted into a module-level function (rather than inlined into
@@ -128,7 +132,7 @@ class Model2VecEmbedder(BaseEmbedder):
         # tier (``batch_size`` / ``device`` / ``api_key_env`` etc.).
         # We intentionally ignore them — static embedders are
         # CPU-fixed and require no auth.
-        self._model: Any | None = None
+        self._model: StaticModel | None = None
 
     # ── lazy load ─────────────────────────────────────────────────────
 

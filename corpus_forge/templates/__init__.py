@@ -2,14 +2,29 @@
 
 from __future__ import annotations
 
-from typing import Any
+from types import ModuleType
+from typing import Any, Protocol
 
 from jinja2 import Template
 
 from . import hf as _hf
 from .builtins import alpaca, chatml, gemma, llama3, qwen, vicuna
 
-_BUILTINS: dict[str, Any] = {
+
+class _TemplateBackend(Protocol):
+    """Minimal slice of ``StorageBackend`` used by :func:`resolve_template`.
+
+    Inlined here rather than importing :class:`StorageBackend` because
+    ``get_chat_template_by_name`` is not part of the core backend
+    Protocol (only the two concrete backends carry it). Keeping the
+    structural type local avoids widening the core Protocol just for
+    the template resolver.
+    """
+
+    def get_chat_template_by_name(self, name: str) -> dict | None: ...
+
+
+_BUILTINS: dict[str, ModuleType] = {
     "chatml": chatml,
     "llama3": llama3,
     "alpaca": alpaca,
@@ -27,7 +42,7 @@ def list_builtins() -> list[str]:
 def resolve_template(
     template_name: str,
     *,
-    backend: Any = None,
+    backend: _TemplateBackend | None = None,
     model_id: str | None = None,
     custom_jinja: str | None = None,
 ) -> tuple[str | None, str | None]:
