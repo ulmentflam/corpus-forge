@@ -31,9 +31,13 @@ import importlib
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    import psycopg
+    from testcontainers.postgres import PostgresContainer
 
 pytestmark = pytest.mark.integration
 
@@ -60,7 +64,7 @@ _ALEMBIC_INI = _REPO_ROOT / "alembic.ini"
 # ---------------------------------------------------------------------------
 
 
-def _dsn_from_container(c: Any) -> str:
+def _dsn_from_container(c: PostgresContainer) -> str:
     """Build a bare postgresql:// DSN from a testcontainers Postgres container."""
     return (
         f"postgresql://{c.username}:{c.password}"
@@ -119,7 +123,7 @@ def _reset_schema(dsn: str) -> None:
 
 
 def _column_info_pg(
-    conn: Any,
+    conn: psycopg.Connection,
     table_schema: str,
     table_name: str,
 ) -> dict[str, dict[str, str | None]]:
@@ -153,7 +157,7 @@ def _column_info_pg(
 
 
 def _unique_constraints_pg(
-    conn: Any,
+    conn: psycopg.Connection,
     schema_name: str,
     table_name: str,
 ) -> set[str]:
@@ -183,7 +187,7 @@ def _unique_constraints_pg(
 
 
 @_skip_no_tc
-def test_chat_templates_table_shape_pg(postgres_container: Any) -> None:  # type: ignore[return]
+def test_chat_templates_table_shape_pg(postgres_container: PostgresContainer) -> None:  # type: ignore[return]
     """corpus.chat_templates exists with correct columns after 0007_chat_templates upgrade.
 
     Expected columns:

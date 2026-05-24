@@ -176,6 +176,7 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ### Changed
 
+- chore(tests): tighten 6 → 0 Any usages in tests/integration/test_alembic_0007_chat_templates.py. Ideate-fallback proposal #27.
 - `openai>=1.30` is now a base dependency rather than an opt-in
   `[openai]` extra. `provider = "openai"` in `[[embedders]]` (and
   elsewhere) refers to the OpenAI REST *protocol* — every local
