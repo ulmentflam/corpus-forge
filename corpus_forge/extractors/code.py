@@ -148,6 +148,48 @@ def _download_grammar(language: str) -> int:
     return pack.download([language])
 
 
+def _pack_can_download(language: str) -> bool:
+    """Return True iff the pack manifest lists ``language`` as fetchable.
+
+    The pack exposes three overlapping language lists with different
+    semantics — we MUST use the one that means "fetchable from remote":
+
+    * ``available_languages()`` — languages already on disk (alias of
+      ``downloaded_languages()`` in 1.8.x). Returns ``[]`` on a fresh wheel
+      before any ``pack.download(...)`` call; using this for the gate
+      below means we'd never attempt the first fetch.
+    * ``manifest_languages()`` — every language the remote manifest can
+      serve. This is the right check for "should we try to download?".
+    * ``has_language(name)`` — same as "is it currently downloaded".
+
+    A language is fetchable when it is either:
+
+    * already in ``available_languages()`` (already on disk, no-op
+      download will succeed), OR
+    * still listed in ``manifest_languages()`` (a fresh fetch is allowed).
+
+    Tests that want to simulate "unsupported language" must filter the
+    name out of BOTH lists via monkeypatch; filtering only
+    ``available_languages`` is not enough now that we honour the
+    manifest as the source of truth.
+    """
+    try:
+        import tree_sitter_language_pack as pack  # noqa: PLC0415
+    except ImportError:  # pragma: no cover — only when [code] missing
+        return False
+
+    try:
+        if language in pack.available_languages():
+            return True
+    except Exception:  # pragma: no cover — defensive
+        pass
+
+    try:
+        return language in pack.manifest_languages()
+    except Exception:  # pragma: no cover — defensive
+        return False
+
+
 def _ensure_grammar(language: str) -> None:
     """Best-effort: make sure ``language``'s grammar is downloaded locally.
 
@@ -155,24 +197,15 @@ def _ensure_grammar(language: str) -> None:
     language is a no-op. On failure (network down, grammar missing) we
     log a WARNING and move on — CodeChunker has a byte-line fallback.
 
-    Note: ``pack.available_languages()`` lists every language the pack
-    *knows how to download*, not what is currently cached locally. So we
-    must actually call ``pack.download(...)`` (idempotent — fast no-op on
-    repeat) rather than treating "in available_languages" as "ready".
-    Otherwise on platforms where the wheel doesn't pre-bundle the grammar
-    (Linux), ``pack.process`` returns items with ``kind=None``/``name=None``.
+    Uses :func:`_pack_can_download` to gate the network call — see that
+    helper for why we deliberately do NOT use ``available_languages()``
+    (it returns ``[]`` on a fresh wheel and would suppress the first
+    fetch).
     """
     if language in _GRAMMAR_FETCH_CACHE:
         return
 
-    import tree_sitter_language_pack as pack  # noqa: PLC0415
-
-    try:
-        supported = language in pack.available_languages()
-    except Exception:  # pragma: no cover — defensive
-        supported = False
-
-    if not supported:
+    if not _pack_can_download(language):
         # Not a language the pack can produce a grammar for; skip the
         # download attempt entirely so we don't waste a network round-trip.
         _GRAMMAR_FETCH_CACHE[language] = False

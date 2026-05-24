@@ -106,13 +106,26 @@ class CodeChunker(Chunker):
 
     @staticmethod
     def _ast_supported(language: str) -> bool:
-        """Return True iff the named language has a downloaded grammar."""
+        """Return True iff the named language has a grammar (downloaded or
+        fetchable from the pack manifest).
+
+        ``available_languages()`` only reports grammars already on disk —
+        on a fresh wheel that's ``[]``, which would force every first
+        invocation to fall back to byte-line chunking even for languages
+        the pack KNOWS how to fetch. We also consult
+        ``manifest_languages()`` so a lazy fetch can run on the AST path.
+        """
         try:
             import tree_sitter_language_pack as pack  # noqa: PLC0415
         except ImportError:  # pragma: no cover — only when [code] missing
             return False
         try:
-            return language in pack.available_languages()
+            if language in pack.available_languages():
+                return True
+        except Exception:  # pragma: no cover — defensive
+            pass
+        try:
+            return language in pack.manifest_languages()
         except Exception:  # pragma: no cover — defensive
             return False
 
@@ -443,7 +456,14 @@ _CHUNKER_FETCH_CACHE: dict[str, bool] = {}
 
 
 def _ensure_grammar_for_chunker(language: str) -> None:
-    """Idempotent grammar download — see ``extractors.code._ensure_grammar``."""
+    """Idempotent grammar download — see ``extractors.code._ensure_grammar``.
+
+    Mirrors the extractor's gate: a language is fetchable when it is
+    either already in ``available_languages()`` OR still listed in
+    ``manifest_languages()``. Using ``available_languages()`` alone
+    suppresses the very first download on a fresh wheel (the set is
+    empty until ``pack.download(...)`` populates it).
+    """
     if language in _CHUNKER_FETCH_CACHE:
         return
     try:
@@ -452,10 +472,16 @@ def _ensure_grammar_for_chunker(language: str) -> None:
         _CHUNKER_FETCH_CACHE[language] = False
         return
 
+    supported = False
     try:
         supported = language in pack.available_languages()
     except Exception:  # pragma: no cover — defensive
         supported = False
+    if not supported:
+        try:
+            supported = language in pack.manifest_languages()
+        except Exception:  # pragma: no cover — defensive
+            supported = False
 
     if not supported:
         _CHUNKER_FETCH_CACHE[language] = False

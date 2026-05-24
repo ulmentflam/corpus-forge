@@ -226,14 +226,22 @@ def test_extract_unsupported_language_skips_download(tmp_path: Path, monkeypatch
 
     import corpus_forge.extractors.code as code_module
 
-    # Force ``zig`` out of the supported set so we exercise the "not
-    # downloadable" path without depending on what the pack actually has.
+    # Force ``zig`` out of BOTH the downloaded set AND the manifest so
+    # ``_pack_can_download`` returns False. We must patch both lists —
+    # ``available_languages()`` returns the locally-downloaded set while
+    # ``manifest_languages()`` returns the remote-fetchable set; either
+    # one matching is enough for the extractor to attempt a download.
     real_available = pack.available_languages
+    real_manifest = pack.manifest_languages
 
     def filtered_available() -> set[str]:
         return {lang for lang in real_available() if lang != "zig"}
 
+    def filtered_manifest() -> list[str]:
+        return [lang for lang in real_manifest() if lang != "zig"]
+
     monkeypatch.setattr(pack, "available_languages", filtered_available)
+    monkeypatch.setattr(pack, "manifest_languages", filtered_manifest)
     code_module._GRAMMAR_FETCH_CACHE.pop("zig", None)
 
     called = {"n": 0}
