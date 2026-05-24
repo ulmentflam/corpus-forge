@@ -33,7 +33,7 @@ from typing import Any
 # Populated on first use; never evicted (process lifetime).
 # ---------------------------------------------------------------------------
 
-_MODEL_CACHE: dict[str, Any] = {}
+_MODEL_CACHE: dict[str, object] = {}
 
 # ---------------------------------------------------------------------------
 # Heuristic constants
@@ -57,12 +57,12 @@ _META_RICHNESS_THRESHOLD: int = 3
 # ---------------------------------------------------------------------------
 
 
-def _count_nontrivial_metadata_fields(metadata: dict[str, Any]) -> int:
+def _count_nontrivial_metadata_fields(metadata: dict[str, object]) -> int:
     """Return count of metadata fields with non-empty, non-None values."""
     return sum(1 for v in metadata.values() if v is not None and str(v).strip() != "")
 
 
-def _heuristic_score(chunk: dict[str, Any]) -> float:
+def _heuristic_score(chunk: dict[str, object]) -> float:
     """Compute a heuristic quality score in [0.0, 1.0].
 
     Sub-scores:
@@ -70,7 +70,8 @@ def _heuristic_score(chunk: dict[str, Any]) -> float:
     - label presence (0.20 weight): 1.0 if ``classifier_label`` key present, else 0.0.
     - metadata richness (0.20 weight): fraction of richness threshold satisfied.
     """
-    text: str = chunk.get("text", "") or ""
+    raw_text = chunk.get("text", "") or ""
+    text: str = raw_text if isinstance(raw_text, str) else str(raw_text)
 
     # Empty / whitespace-only text → hard zero.
     if not text.strip():
@@ -95,7 +96,8 @@ def _heuristic_score(chunk: dict[str, Any]) -> float:
     label_score = 1.0 if chunk.get("classifier_label") else 0.0
 
     # Metadata richness sub-score.
-    metadata: dict[str, Any] = chunk.get("metadata") or {}
+    raw_metadata = chunk.get("metadata") or {}
+    metadata: dict[str, object] = raw_metadata if isinstance(raw_metadata, dict) else {}
     nontrivial = _count_nontrivial_metadata_fields(metadata)
     meta_score = min(1.0, nontrivial / _META_RICHNESS_THRESHOLD)
 
@@ -141,7 +143,7 @@ def _load_trained_model(model_path: Path) -> Any | None:
 
 
 def score_chunk_quality(
-    chunk: dict[str, Any],
+    chunk: dict[str, object],
     *,
     model_path: Path | None = None,
 ) -> float:
@@ -163,8 +165,12 @@ def score_chunk_quality(
         model = _load_trained_model(model_path)
         if model is not None:
             # Build a minimal feature vector from the chunk.
-            text = chunk.get("text", "") or ""
-            token_count = int(chunk.get("token_count") or 0)
+            raw_text = chunk.get("text", "") or ""
+            text = raw_text if isinstance(raw_text, str) else str(raw_text)
+            raw_token_count = chunk.get("token_count") or 0
+            token_count = (
+                int(raw_token_count) if isinstance(raw_token_count, int | float | str) else 0
+            )
             features = [[len(text), token_count]]
             proba = model.predict_proba(features)
             # predict_proba returns shape (n_samples, n_classes).
@@ -182,7 +188,7 @@ def score_chunk_quality(
 
 
 def score_chunks_batch(
-    chunks: list[dict[str, Any]],
+    chunks: list[dict[str, object]],
     *,
     model_path: Path | None = None,
 ) -> list[float]:

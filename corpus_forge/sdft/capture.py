@@ -13,7 +13,7 @@ import json
 from typing import Any
 
 
-def _canonical_json(value: Any) -> str:
+def _canonical_json(value: object) -> str:
     """Produce a canonical, deterministic JSON string for hashing."""
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 

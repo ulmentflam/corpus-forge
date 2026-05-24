@@ -33,10 +33,23 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Protocol
 
 _DEFAULT_TEMPLATE = "default"
 _DEFAULT_ROOT: Path | None = None
+
+
+class _SearchableRetriever(Protocol):
+    """Minimal duck-typed retriever shape — anything with ``.search(query)``.
+
+    Narrower than :class:`corpus_forge.retrieval.retriever.Retriever` (which
+    requires a ``SearchOptions`` argument); the selector calls only the
+    single-arg form, so we accept any object that satisfies that.  Return type
+    is intentionally ``object`` — the selector forwards the value verbatim to
+    its caller and never inspects it.
+    """
+
+    def search(self, query: str) -> object: ...
 
 
 def _derive_key(query: str, dataset: str, template: str = _DEFAULT_TEMPLATE) -> str:
@@ -68,9 +81,9 @@ def select(
     query: str,
     dataset: str,
     *,
-    retriever: Any,
+    retriever: _SearchableRetriever,
     root: Path | None = None,
-) -> tuple[str, Any]:
+) -> tuple[str, object]:
     """Route *query* to cache or retriever.
 
     Parameters
@@ -96,7 +109,7 @@ def select(
     """
     cache_file = _resolve_cache_file(query, dataset, root)
     if cache_file is not None:
-        payload: dict[str, Any] = json.loads(cache_file.read_text())
+        payload: dict[str, object] = json.loads(cache_file.read_text())
         return ("cache", payload)
     result = retriever.search(query)
     return ("rag", result)
@@ -116,10 +129,10 @@ class HybridCagSelector:
         Cache root directory.  ``None`` means no cache lookup (always misses).
     """
 
-    def __init__(self, retriever: Any, *, root: Path | None = None) -> None:
+    def __init__(self, retriever: _SearchableRetriever, *, root: Path | None = None) -> None:
         self._retriever = retriever
         self._root = root
 
-    def select(self, query: str, dataset: str) -> tuple[str, Any]:
+    def select(self, query: str, dataset: str) -> tuple[str, object]:
         """Delegate to the module-level :func:`select`."""
         return select(query, dataset, retriever=self._retriever, root=self._root)
