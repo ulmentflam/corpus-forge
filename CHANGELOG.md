@@ -8,6 +8,36 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Fixed
+
+- `OpenAIEmbedder.encode` now **bisects on failure** instead of
+  giving up on the whole batch. On any 5xx or NaN-laced response,
+  the batch is recursively halved until the offending chunk is
+  isolated, logged at WARNING with `orig_idx` / `chars` / `sha256`
+  (no chunk text — see PII note below), and skipped. The remaining
+  good rows still flow through. `OpenAI(max_retries=0)` disables
+  the SDK's exponential backoff so failures fast-fail.
+  Skipped `chunk_ids` stay in `chunks_missing_embedding` for the
+  next pass; callers (`ingest_one`, `embed.backfill_embedder`)
+  read `embedder.last_failed_indices` after each `encode` and
+  filter their `write_embeddings` pair list accordingly.
+  - Non-recoverable 4xx errors (auth, missing model, 400/422) are
+    re-raised immediately instead of being bisected — bisection
+    can't fix a wrong config, so we surface the real cause.
+  - Provider-side row-count mismatches (response returns fewer / more
+    rows than the input batch) are also treated as failure for the
+    bisection.
+  - `embed.backfill_embedder` exits its inner loop on an all-skipped
+    batch instead of refetching the same `chunks_missing_embedding`
+    rows forever.
+  - WARNING log intentionally omits the chunk text preview to avoid
+    leaking PII from personal vault content; `sha256` is enough to
+    look up the chunk in `corpus.chunks` and reproduce out-of-band.
+  Regression coverage: `tests/unit/test_openai_embedder_bisection.py`
+  (happy path, single-chunk NaN/5xx, multi-chunk bisection,
+  recoverable-vs-non-recoverable triage, row-count mismatch,
+  all-skipped loop exit).
+
 ### Added
 
 - New `embedder_drift` doctor check + `corpus-forge embedder gc`

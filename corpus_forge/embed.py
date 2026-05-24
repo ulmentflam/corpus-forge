@@ -200,8 +200,45 @@ def backfill_embedder(
             embeddings = embedder.encode(texts)
             _encode_elapsed = _time.perf_counter() - _t0
 
+            # Same bisection-recovery contract as ingest.py: skip
+            # chunk_ids whose corresponding text was bisected out by
+            # the embedder. The skipped chunks stay pending so the
+            # next ``corpus-forge embed`` pass retries them after the
+            # model recovers.
+            failed_indices: set[int] = set(getattr(embedder, "last_failed_indices", []))
+            if failed_indices:
+                chunk_ids = [cid for i, cid in enumerate(chunk_ids) if i not in failed_indices]
+                logger.warning(
+                    "Embedder %s skipped %d/%d chunks in this batch (NaN-shaped "
+                    "response or 5xx); they stay pending for retry.",
+                    embedder.name,
+                    len(failed_indices),
+                    len(texts),
+                )
+
             # Write embeddings
             pairs = list(zip(chunk_ids, embeddings, strict=True))
+
+            # Hang-guard: if every chunk in this fetch got bisected
+            # out (e.g. the active embedder is wedged across the whole
+            # backlog), ``pairs`` is empty AND the same chunk_ids
+            # would come back on the next ``chunks_missing_embedding``
+            # call — infinite loop. Break and let the operator
+            # re-run ``corpus-forge embed`` once the embedder
+            # recovers. The chunks stay in
+            # ``chunks_missing_embedding`` so no work is lost.
+            if not pairs:
+                logger.warning(
+                    "Embedder %s skipped every chunk in this batch (%d failed); "
+                    "exiting the embed loop to avoid an infinite retry cycle. "
+                    "Re-run `corpus-forge embed -e %s` after the embedder "
+                    "recovers; the skipped chunks stay pending.",
+                    embedder.name,
+                    len(failed_indices),
+                    embedder.name,
+                )
+                break
+
             _t1 = _time.perf_counter()
             backend.write_embeddings(embedder_id, pairs)
             _write_elapsed = _time.perf_counter() - _t1
