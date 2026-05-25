@@ -43,6 +43,7 @@ sweep.
 
 from __future__ import annotations
 
+import importlib
 import logging
 import math
 from collections import Counter
@@ -163,12 +164,10 @@ def _minhash_available() -> bool:
     """
 
     try:
-        from corpus_forge.quality.minhash import (  # noqa: F401
-            jaccard_neighbor_distance,
-        )
+        mod = importlib.import_module("corpus_forge.quality.minhash")
     except ImportError:
         return False
-    return True
+    return hasattr(mod, "jaccard_neighbor_distance")
 
 
 def _duplicate_density(
@@ -509,9 +508,7 @@ def prune_dataset(
     # Resolve optional sub-score data sources ONCE for the whole pool.
     minhash_module: Any | None
     if _minhash_available():
-        from corpus_forge.quality import minhash as _mh
-
-        minhash_module = _mh
+        minhash_module = importlib.import_module("corpus_forge.quality.minhash")
     else:
         minhash_module = None
     duplicate_density_available = minhash_module is not None
