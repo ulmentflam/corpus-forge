@@ -101,6 +101,26 @@ Existing callers that import ``SCORE_WEIGHTS`` continue to see the 4-weight
 dict unchanged. Phase O3 introduces ``_SCORE_WEIGHTS_5`` for the per-chunk
 mode switch in ``_build_target``."""
 
+
+_PRUNE_WEIGHTS: dict[str, float] = {
+    "confidence_deficit": 0.20,
+    "missing_metadata": 0.20,
+    "freshness_inverted": 0.15,
+    "duplicate_density": 0.25,
+    "feedback_drag": 0.20,
+}
+"""Prune-tuned weight scheme. Inverse polarity from curation: low score = keep,
+high score = prune. Sum: 1.0. See rfc-corpus-growth-controls.md."""
+
+
+PRUNE_WEIGHTS: dict[str, float] = _PRUNE_WEIGHTS
+"""Public alias for ``_PRUNE_WEIGHTS`` — preserved for callers that want to
+read or copy the default rubric without reaching into private."""
+
+_PRUNE_WEIGHT_SUM_TOLERANCE: float = 1e-6
+"""Float-comparison tolerance for the weight-sum invariant. Anything tighter
+than ``1e-6`` would surface harmless ``0.20 * 5 != 1.0`` rounding noise."""
+
 # Freshness decay parameters — see :func:`_compute_freshness`.
 _FRESHNESS_PLATEAU_DAYS: int = 7
 _FRESHNESS_FLOOR_DAYS: int = 180
@@ -545,6 +565,73 @@ def _selection_reason(
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Prune scoring — public function used by corpus_forge.admin.prune
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def score_for_pruning(
+    candidate: _Candidate,
+    *,
+    sub_scores: dict[str, float],
+    weights: dict[str, float] | None = None,
+) -> tuple[float, dict[str, float]]:
+    """Combine pre-computed prune sub-scores into a single ``[0, 1]`` score.
+
+    Args:
+        candidate: The :class:`_Candidate` for context (currently used only
+            for return-shape parity with the curation path; future weight
+            schemes could read candidate fields like ``embedding``).
+        sub_scores: Dict of sub-score floats keyed by weight name. Every
+            key in ``weights`` must appear in ``sub_scores``.
+        weights: Optional override for the default :data:`_PRUNE_WEIGHTS`.
+            Must sum to within ``1e-6`` of ``1.0`` and contain exactly the
+            keys the default has.
+
+    Returns:
+        ``(final_score, sub_scores_copy)`` where ``final_score`` is the
+        weighted sum clamped to ``[0, 1]`` and ``sub_scores_copy`` is a
+        defensive copy of the input (returned for downstream convenience
+        — callers often want both in one trip).
+
+    Raises:
+        ValueError: when ``weights`` doesn't sum to ``1.0``, includes
+            unknown keys, omits required keys, or when ``sub_scores`` is
+            missing a required key.
+    """
+    # ``candidate`` is reserved for future weight schemes that could read
+    # candidate fields (e.g. ``candidate.embedding`` for similarity-aware
+    # weight tuning). Reference it once so the unused-parameter linter
+    # rule passes without a suppression comment.
+    _ = candidate
+
+    w = _PRUNE_WEIGHTS if weights is None else weights
+
+    expected_keys = set(_PRUNE_WEIGHTS)
+    got_keys = set(w)
+    if got_keys != expected_keys:
+        extra = got_keys - expected_keys
+        missing = expected_keys - got_keys
+        parts: list[str] = []
+        if extra:
+            parts.append(f"unknown keys: {sorted(extra)}")
+        if missing:
+            parts.append(f"missing keys: {sorted(missing)}")
+        raise ValueError(f"prune weights mismatch — {'; '.join(parts)}")
+
+    total = sum(w.values())
+    if abs(total - 1.0) > _PRUNE_WEIGHT_SUM_TOLERANCE:
+        raise ValueError(f"prune weights must sum to 1.0, got {total:.6f}")
+
+    missing_sub = expected_keys - set(sub_scores)
+    if missing_sub:
+        raise ValueError(f"sub_scores missing required keys: {sorted(missing_sub)}")
+
+    weighted = sum(sub_scores[k] * w[k] for k in expected_keys)
+    final = max(0.0, min(1.0, weighted))
+    return final, dict(sub_scores)
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Public entry points
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -811,10 +898,12 @@ def next_curation_batch(
 
 __all__ = [
     "MISSING_METADATA_FIELDS",
+    "PRUNE_WEIGHTS",
     "SCORE_WEIGHTS",
     "CurationBatch",
     "CurationTarget",
     "ScoreBreakdown",
     "next_curation_batch",
     "next_curation_target",
+    "score_for_pruning",
 ]
