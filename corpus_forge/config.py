@@ -27,7 +27,14 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator  # noqa: E402
+from pydantic import (  # noqa: E402
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 from pydantic.functional_validators import AfterValidator  # noqa: E402
 
 
@@ -739,6 +746,121 @@ class AnalyzeConfig(BaseModel):
         return self
 
 
+# Maps the IEC-style human-readable suffix to its byte multiplier. Lowercased
+# match — both `10G` and `10g` are accepted by `GrowthConfig.sync_cap_bytes`.
+# IEC convention (1024-based) chosen over SI (1000-based) because the values
+# are aimed at disk-footprint budgeting and dataset eviction, where the
+# operator's mental model is page/block boundaries, not network throughput.
+_BYTES_SUFFIX_MULTIPLIERS: dict[str, int] = {
+    "": 1,
+    "b": 1,
+    "k": 1024,
+    "kb": 1024,
+    "m": 1024**2,
+    "mb": 1024**2,
+    "g": 1024**3,
+    "gb": 1024**3,
+    "t": 1024**4,
+    "tb": 1024**4,
+}
+
+
+def _parse_bytes(value: int | str) -> int:
+    """Parse a human-readable byte size into an integer.
+
+    Accepts plain integers (``1024``), bare numeric strings (``"1024"``),
+    and IEC-suffixed strings (``"10G"``, ``"500M"``, ``"1.5T"``). Suffix
+    match is case-insensitive and trailing ``B`` (as in ``"10GB"``) is
+    optional. Returns the resolved integer byte count.
+
+    Raises:
+        ValueError: when the input shape is not recognised or the numeric
+            portion is non-positive (zero/negative caps are nonsensical
+            and almost certainly a user typo).
+    """
+    if isinstance(value, int):
+        if value <= 0:
+            raise ValueError(f"byte size must be positive, got {value}")
+        return value
+    if not isinstance(value, str):
+        raise TypeError(f"byte size must be int or str, got {type(value).__name__}")
+
+    raw = value.strip().lower()
+    if not raw:
+        raise ValueError("byte size string is empty")
+
+    # Split numeric prefix from suffix.
+    # `raw` example shapes: "10g", "100mb", "1.5t", "1024", "1024b".
+    i = 0
+    while i < len(raw) and (raw[i].isdigit() or raw[i] in "._"):
+        i += 1
+    num_part = raw[:i].replace("_", "")
+    suffix = raw[i:].strip()
+
+    if not num_part:
+        raise ValueError(f"byte size {value!r} has no numeric prefix")
+    try:
+        magnitude = float(num_part)
+    except ValueError as exc:
+        raise ValueError(f"byte size {value!r} has non-numeric prefix {num_part!r}") from exc
+    if magnitude <= 0:
+        raise ValueError(f"byte size {value!r} must be positive")
+    if suffix not in _BYTES_SUFFIX_MULTIPLIERS:
+        raise ValueError(
+            f"byte size {value!r} has unknown suffix {suffix!r}; "
+            f"accepted: B/K/KB/M/MB/G/GB/T/TB (case-insensitive)"
+        )
+
+    return int(magnitude * _BYTES_SUFFIX_MULTIPLIERS[suffix])
+
+
+class GrowthConfig(BaseModel):
+    """RFC ``rfc-corpus-growth-controls`` — bounds on corpus growth.
+
+    Drives the ``corpus-forge prune`` admin verb, the per-source row/byte
+    caps enforced inside ``ingest_once``, and the ``corpus-forge estimate
+    sync`` pre-flight gate.
+
+    All fields default to values that effectively disable enforcement
+    (``sync_cap_bytes = None``, ``per_source_cap_default_rows = 0``)
+    so adding the block doesn't change behaviour for existing configs.
+    The user opts in by setting the cap explicitly in ``config.toml``.
+
+    Fields:
+
+    - ``prune_percentile_default``: integer 0-100. The default
+      ``--percentile`` for ``corpus-forge prune`` when the CLI flag
+      isn't given. Default ``10`` matches the RFC's "Goals" section.
+    - ``sync_cap_bytes``: human-readable byte cap on the projected
+      ``estimate sync`` delta (``"10G"``, ``"500M"``, etc.). When set,
+      ``corpus-forge estimate sync`` exits non-zero if the predicted
+      delta exceeds this. ``None`` means no cap. Parsed via
+      :func:`_parse_bytes` — accepts B/K/KB/M/MB/G/GB/T/TB suffixes,
+      case-insensitive. Stored internally as an ``int`` (resolved
+      bytes).
+    - ``per_source_cap_default_rows``: integer ``>= 0`` row cap
+      applied to a ``DatasetSourceConfig`` that doesn't declare its
+      own ``max_rows``. ``0`` (the default) disables the implicit
+      cap. The per-source ``max_rows`` field (added by the same
+      RFC's ``DatasetSourceConfig`` task) overrides this for that
+      one source.
+    """
+
+    prune_percentile_default: int = Field(default=10, ge=0, le=100)
+    sync_cap_bytes: int | None = None
+    per_source_cap_default_rows: int = Field(default=0, ge=0)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("sync_cap_bytes", mode="before")
+    @classmethod
+    def _resolve_sync_cap_bytes(cls, value: int | str | None) -> int | None:
+        """Accept ``None``, an int, or a human-readable string like ``"10G"``."""
+        if value is None:
+            return None
+        return _parse_bytes(value)
+
+
 class Config(BaseModel):
     """Main configuration for corpus-forge."""
 
@@ -780,6 +902,12 @@ class Config(BaseModel):
     # imported inside ``corpus_forge.analyze`` function bodies and are
     # never pulled in by config parsing alone.
     analyze: AnalyzeConfig = Field(default_factory=AnalyzeConfig)
+    # RFC ``rfc-corpus-growth-controls`` — prune percentile, sync cap, and
+    # per-source row caps. Defaults to no-enforcement values
+    # (``sync_cap_bytes=None``, ``per_source_cap_default_rows=0``) so
+    # existing configs without a ``[growth]`` block continue to validate
+    # and behave identically.
+    growth: GrowthConfig = Field(default_factory=GrowthConfig)
 
     model_config = ConfigDict(
         str_strip_whitespace=True,

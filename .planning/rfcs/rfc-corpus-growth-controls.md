@@ -142,7 +142,13 @@ Validate via Pydantic `GrowthConfig` in `corpus_forge/config.py`.
       insert, evict as needed.
 - [ ] Extend `corpus_forge/estimate.py` with `predict_sync_delta`.
 - [ ] `corpus-forge estimate sync` CLI verb.
-- [ ] New `GrowthConfig` block in `corpus_forge/config.py`.
+- [x] New `GrowthConfig` block in `corpus_forge/config.py`. Three
+      fields: `prune_percentile_default` (int 0-100, default 10),
+      `sync_cap_bytes` (int | None, accepts human-readable strings
+      like `"10G"` via a `_parse_bytes` helper), and
+      `per_source_cap_default_rows` (int ≥ 0, default 0 = disabled).
+      Wired onto `Config` with no-enforcement defaults. 35 unit
+      tests in `tests/unit/test_growth_config.py`.
 - [ ] Tests:
   - [ ] `tests/unit/test_prune_scorer.py` — score ordering invariants.
   - [ ] `tests/unit/test_source_caps.py` — `max_rows` triggers eviction.
