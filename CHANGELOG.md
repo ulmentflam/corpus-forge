@@ -397,6 +397,13 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   `chunk_quality.py`, and `regression.py` which marshal their
   results through this envelope so downstream dashboards see one
   consistent shape.
+- `corpus-forge logs tail --level <name>` — minimum-severity filter
+  for the rotating-log viewer. Accepts `debug` / `info` / `warn` /
+  `warning` / `error` / `critical` (case-insensitive). Lines below
+  the named severity are dropped in both single-shot and `--follow`
+  modes; unparseable lines (tracebacks, `print()` output) are also
+  dropped when a level filter is active. Closes the `logs tail` /
+  `--level` checkbox of RFC `rfc-developer-ux-verbs` (P3).
 
 ## [0.1.0b7] - 2026-05-20
 
