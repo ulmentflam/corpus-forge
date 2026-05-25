@@ -137,7 +137,11 @@ Validate via Pydantic `GrowthConfig` in `corpus_forge/config.py`.
       `score_for_pruning(chunk, ...)` that exposes the same weighted
       stack with prune-tuned weights.
 - [ ] `corpus_forge/cli.py`: register `corpus-forge prune` verb.
-- [ ] Extend `DatasetSourceConfig` with `max_rows` / `max_bytes`.
+- [x] Extend `DatasetSourceConfig` with `max_rows` / `max_bytes`.
+      Both `int | None`, default `None` (uncapped), validated `> 0`
+      when set. Storage-only this PR — the eviction runtime is the
+      next checkbox (`ingest_once` enforcement). 17 unit tests in
+      `tests/unit/test_dataset_source_caps.py`.
 - [ ] `corpus_forge/ingest.py::ingest_once`: enforce caps after each
       insert, evict as needed.
 - [ ] Extend `corpus_forge/estimate.py` with `predict_sync_delta`.

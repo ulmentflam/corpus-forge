@@ -25,9 +25,17 @@ Surface map:
 from __future__ import annotations
 
 from corpus_forge.admin.prune import PruneCandidate, PruneReport, prune_dataset
+from corpus_forge.admin.source_caps import (
+    CapEnforcementReport,
+    derive_source_uri_prefix,
+    enforce_source_caps,
+)
 
 __all__: list[str] = [
+    "CapEnforcementReport",
     "PruneCandidate",
     "PruneReport",
+    "derive_source_uri_prefix",
+    "enforce_source_caps",
     "prune_dataset",
 ]
