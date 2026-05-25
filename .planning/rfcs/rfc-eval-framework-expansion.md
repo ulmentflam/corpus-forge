@@ -116,7 +116,12 @@ share it.
 
 ## Tasks
 
-- [ ] `corpus_forge/eval/_schema.py` — shared output envelope.
+- [x] `corpus_forge/eval/_schema.py` — shared output envelope.
+      `EvalOutput` (Pydantic v2) with `eval_kind` Literal (classifier
+      / quality / retrieval / regression), `dataset`, `git_commit`,
+      `ts` (auto-populated ISO 8601 Z), `metrics` (free-form dict),
+      `config` (free-form dict). `extra='forbid'` keeps the envelope
+      tight. 15 unit tests in `tests/unit/test_eval_schema.py`.
 - [ ] `corpus_forge/eval/classifier_accuracy.py` —
       precision/recall/F1, confusion matrix, gold loader.
 - [ ] `corpus_forge/eval/chunk_quality.py` — rubric loader, scoring,
