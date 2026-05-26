@@ -614,24 +614,27 @@ class TestWedgeCircuitBreaker:
         assert emb._wedge_consecutive_failures == n
 
     def test_at_threshold_raises_embedder_wedged_per_chunk_granularity(self) -> None:
-        """``threshold`` consecutive failed chunks must raise — and
-        critically, this must fire DURING bisection (per-chunk
-        granularity), not at the outer mini-batch boundary.
+        """A single all-failed mini-batch larger than
+        ``_WEDGE_THRESHOLD_CONSECUTIVE_FAILURES`` must raise
+        ``EmbedderWedged`` with the embedder name and model_id in the
+        message.
 
-        Regression for 2026-05-26: with the old mini-batch-level
-        counter, a single ``batch_size=256`` mini-batch failing 100%
-        wouldn't trip the breaker for the entire ~10-minute bisection
-        run, because the counter only updated AFTER the mini-batch
-        completed. The breaker has to check at each single-chunk
-        base-case skip to be useful in practice.
+        Accounting is enforced at the mini-batch boundary (in
+        ``encode``, AFTER ``_encode_with_bisection`` returns) — *not*
+        per-chunk during bisection. The historic name of this test
+        retains the ``per_chunk_granularity`` label for git-blame
+        continuity; the actual check below is "does a single
+        oversized all-failed mini-batch trip the breaker?", which is
+        the right invariant under the current mini-batch-level
+        design (and was also satisfied by the prior per-chunk design,
+        so the test itself remains green across both).
         """
 
         n = _WEDGE_THRESHOLD_CONSECUTIVE_FAILURES
-        # Use a SINGLE mini-batch that's bigger than the threshold —
-        # if the counter only incremented at mini-batch boundaries,
-        # this test wouldn't trip (because the mini-batch wouldn't
-        # have completed yet when we cross the threshold). With
-        # per-chunk granularity, it trips during bisection.
+        # Single mini-batch sized larger than threshold — when the
+        # bisection of this batch completes with zero successes, the
+        # counter jumps by ``len(batch_texts)`` which is already past
+        # the threshold, so the breaker fires after this one batch.
         emb = _make_embedder(batch_size=n + 100)
         client = MagicMock()
         client.embeddings.create.side_effect = _FakeStatusError(500, "internal")
