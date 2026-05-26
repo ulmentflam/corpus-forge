@@ -75,7 +75,11 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from corpus_forge.embedders.openai import OpenAIEmbedder
+from corpus_forge.embedders.openai import (
+    _WEDGE_THRESHOLD_CONSECUTIVE_FAILURES,
+    EmbedderWedged,
+    OpenAIEmbedder,
+)
 
 # ─────────────────────────────────────────────────────────────────────
 # Helpers / fixtures
@@ -555,3 +559,197 @@ class TestRowCountMismatch:
         result = emb.encode(["alone"])
         assert result.shape == (0, 4)
         assert emb.last_failed_indices == [0]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Circuit-breaker: EmbedderWedged after sustained 100%-failed batches
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestWedgeCircuitBreaker:
+    """The 2026-05-26 fix for the maintainer's "11 minutes, 0 chunks
+    embedded, 800 sequential WARNINGs" failure mode.
+
+    The bisection-with-skip recovery is right for *occasional* failures
+    (a few NaN-laced chunks in a batch). When the upstream is fully
+    wedged, bisection isolates every chunk one-at-a-time and the ingest
+    grinds at ~1 chunk/sec writing zero embeddings. The circuit breaker
+    raises :class:`EmbedderWedged` once the count of consecutive failed
+    chunks crosses ``_WEDGE_THRESHOLD_CONSECUTIVE_FAILURES`` so the
+    ingest loop can abort with a clear message instead.
+
+    The threshold and reset semantics are pinned here so a regression
+    (e.g. someone making bisection cheaper and accidentally tripping the
+    breaker on a small bad-chunk burst) is caught immediately.
+    """
+
+    def test_threshold_constant_is_at_least_30(self) -> None:
+        """Threshold sized to absorb realistic bad-chunk bursts.
+
+        At ~3% NaN rate on 1000-chunk files (the maintainer's vault),
+        we expect ~30 sporadic skips per file. The threshold must be
+        comfortably above that so steady-state ingest doesn't trip.
+        """
+
+        assert _WEDGE_THRESHOLD_CONSECUTIVE_FAILURES >= 30
+
+    def test_below_threshold_does_not_raise(self) -> None:
+        """All-failed encode of ``threshold - 1`` chunks must NOT raise.
+
+        Pins the off-by-one boundary so future tweaks (decrementing the
+        threshold, changing the comparison operator) don't accidentally
+        trip on the same chunk-count the previous version tolerated.
+        """
+
+        n = _WEDGE_THRESHOLD_CONSECUTIVE_FAILURES - 1
+        emb = _make_embedder(batch_size=n + 10)  # fit everything in one mini-batch
+        client = MagicMock()
+        client.embeddings.create.side_effect = _FakeStatusError(500, "internal")
+        emb._client = client
+
+        result = emb.encode([f"chunk-{i}" for i in range(n)])
+        assert result.shape == (0, 4)
+        assert set(emb.last_failed_indices) == set(range(n))
+        # Counter is at n (< threshold) — next call could trip.
+        assert emb._wedge_consecutive_failures == n
+
+    def test_at_threshold_raises_embedder_wedged(self) -> None:
+        """``threshold`` consecutive failed chunks must raise."""
+
+        n = _WEDGE_THRESHOLD_CONSECUTIVE_FAILURES
+        emb = _make_embedder(batch_size=n + 10)
+        client = MagicMock()
+        client.embeddings.create.side_effect = _FakeStatusError(500, "internal")
+        emb._client = client
+
+        with pytest.raises(EmbedderWedged) as excinfo:
+            emb.encode([f"chunk-{i}" for i in range(n)])
+
+        msg = str(excinfo.value)
+        assert "wedged" in msg.lower() or "consecutive" in msg.lower()
+        # Message must name the embedder so multi-embedder configs make sense.
+        assert emb.name in msg
+        # Message must mention the model id for operator triage.
+        assert emb.model_id in msg
+
+    def test_counter_resets_on_any_success(self) -> None:
+        """A single successful chunk in a mini-batch wipes the counter
+        for that mini-batch — the upstream is alive and producing real
+        embeddings, even if many other chunks are bad. The circuit
+        breaker exists to detect *sustained* wedge, not transient
+        turbulence.
+
+        Granularity note: the counter is updated per *mini-batch*, not
+        per chunk. A mini-batch with any successful chunk resets to 0,
+        even if other chunks in that same mini-batch failed. That's
+        intentional — the goal is "is the upstream wedged?", and a
+        mini-batch with mixed outcomes proves it isn't.
+        """
+
+        emb = _make_embedder(batch_size=10)
+        client = MagicMock()
+
+        # Use the actual chunk text "chunk-N" to decide good/NaN so
+        # the fake is robust to bisection sub-calls (the bisection
+        # recursion would otherwise scramble any call-counter-based
+        # decision logic).
+        good_vec = [1.0, 0.0, 0.0, 0.0]
+        nan_vec = [float("nan")] * 4
+
+        def fake_create(*, model, input, encoding_format, dimensions):  # type: ignore[no-untyped-def]
+            rows = []
+            for text in input:
+                idx = int(text.split("-")[1])
+                rows.append(good_vec if idx == 30 else nan_vec)
+            return _embeddings_response(rows)
+
+        client.embeddings.create.side_effect = fake_create
+        emb._client = client
+
+        result = emb.encode([f"chunk-{i}" for i in range(60)])
+        # 59 of 60 chunks failed; 1 succeeded. The success in
+        # mini-batch 30-39 wiped the cumulative counter (which was at
+        # 30 from the three previous 100%-failed mini-batches) so we
+        # did NOT raise — instead we returned the partial result.
+        assert result.shape == (1, 4)
+        assert len(emb.last_failed_indices) == 59
+        # Final counter reflects the two trailing all-failed
+        # mini-batches (40-49 and 50-59) — chunk count 20, well below
+        # threshold (50), so subsequent calls have headroom.
+        assert emb._wedge_consecutive_failures == 20
+
+    def test_counter_persists_across_encode_calls(self) -> None:
+        """Two back-to-back encode() calls with all-failed chunks must
+        accumulate into one tripping event. Without persistence, a
+        wedged upstream could keep going forever if the caller breaks
+        the chunks into many small encode() calls (which is exactly
+        what ``_write_embeddings_for_chunks`` does — one call per file).
+        """
+
+        emb = _make_embedder(batch_size=200)
+        client = MagicMock()
+        client.embeddings.create.side_effect = _FakeStatusError(500, "internal")
+        emb._client = client
+
+        # Call 1: 30 failures — under threshold.
+        n1 = _WEDGE_THRESHOLD_CONSECUTIVE_FAILURES - 20
+        result1 = emb.encode([f"a-{i}" for i in range(n1)])
+        assert result1.shape == (0, 4)
+        assert emb._wedge_consecutive_failures == n1
+
+        # Call 2: another 25 failures — cumulative > threshold → raise.
+        n2 = 25  # n1 + n2 > threshold
+        with pytest.raises(EmbedderWedged):
+            emb.encode([f"b-{i}" for i in range(n2)])
+
+    def test_partial_failure_rate_doesnt_trip(self) -> None:
+        """50% failure rate sustained across many batches must NOT raise.
+
+        This is the bisection-recovery's correct operating point: half
+        the chunks succeed, half are bad. Tripping here would mean the
+        breaker is too aggressive and we'd lose recoverable workloads.
+        """
+
+        emb = _make_embedder(batch_size=10)
+        client = MagicMock()
+
+        good_vec = [1.0, 0.0, 0.0, 0.0]
+        nan_vec = [float("nan")] * 4
+
+        def fake_create(*, model, input, encoding_format, dimensions):  # type: ignore[no-untyped-def]
+            # Decide per-text by parsing the index from the chunk name —
+            # robust to bisection sub-calls that re-encode subsets.
+            rows = []
+            for text in input:
+                idx = int(text.split("-")[1])
+                rows.append(good_vec if idx % 2 == 0 else nan_vec)
+            return _embeddings_response(rows)
+
+        client.embeddings.create.side_effect = fake_create
+        emb._client = client
+
+        # 4x threshold worth of chunks at 50% failure — must not raise.
+        n = _WEDGE_THRESHOLD_CONSECUTIVE_FAILURES * 4
+        result = emb.encode([f"c-{i}" for i in range(n)])
+        assert result.shape == (n // 2, 4)
+
+    def test_wedge_message_includes_recovery_hint(self) -> None:
+        """The exception message must guide the operator. Without a
+        recovery hint, a tripped breaker looks like a hard crash with
+        no obvious next step.
+        """
+
+        n = _WEDGE_THRESHOLD_CONSECUTIVE_FAILURES
+        emb = _make_embedder(batch_size=n + 10)
+        client = MagicMock()
+        client.embeddings.create.side_effect = _FakeStatusError(500, "internal")
+        emb._client = client
+
+        with pytest.raises(EmbedderWedged) as excinfo:
+            emb.encode([f"chunk-{i}" for i in range(n)])
+
+        msg = str(excinfo.value)
+        # Must mention the recovery (chunks stay pending so re-running
+        # picks up where we left off). Any of these phrasings is fine
+        # as long as the operator understands rerunning is safe.
+        assert "chunks_missing_embedding" in msg or "re-run" in msg.lower()

@@ -11,6 +11,7 @@ from .backends.base import StorageBackend
 from .chunkers.base import Chunker, PassthroughChunker, TextChunk
 from .config import Config
 from .embedders.base import Embedder
+from .embedders.openai import EmbedderWedged
 from .embedders.registry import registry
 from .logging_config import init_logging
 from .sources.base import RawConversation, RawDocument, Source
@@ -795,6 +796,16 @@ def ingest_once(config: Config) -> None:
                         docs_chunked += 1
                         if docs_chunked % 100 == 0:
                             chunk_logger.info("Chunked %d documents so far", docs_chunked)
+                    except EmbedderWedged:
+                        # Systemic failure, not a per-file one. The
+                        # bisection-with-skip recovery tripped its
+                        # circuit-breaker — every chunk is failing
+                        # which means the upstream model is wedged.
+                        # Re-raise so the outer ``ingest_once`` handler
+                        # surfaces a clean error + recovery hint
+                        # instead of catching it here and continuing
+                        # to fail every subsequent file the same way.
+                        raise
                     except Exception as e:
                         # Per-file failures are recoverable. Categorise
                         # the message so users can tell extractor
@@ -1116,7 +1127,18 @@ def main(once: bool = False) -> None:
     init_logging("ingest", verbose=False, quiet=False)
 
     if once:
-        ingest_once(config)
+        try:
+            ingest_once(config)
+        except EmbedderWedged as exc:
+            # Translate the circuit-breaker exception into a clean
+            # ERROR log line before re-raising. Without this, the CLI
+            # would dump a full traceback for what is really a clear
+            # operational message — and the message itself already
+            # carries the recovery hint ("re-run once the upstream
+            # recovers"). Re-raise so the process exit code reflects
+            # the failure.
+            logger.error("Embedder circuit-breaker tripped: %s", exc)
+            raise
     else:
         # Run daemon mode (would use asyncio/watchdog in real implementation)
         logger.info("Daemon mode not fully implemented in this scaffold")

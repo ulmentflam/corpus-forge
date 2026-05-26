@@ -78,6 +78,40 @@ def _is_recoverable_exception(exc: BaseException) -> bool:
     )
 
 
+class EmbedderWedged(Exception):
+    """Raised when the embedder has produced zero successful embeddings
+    across a long run of consecutive chunks — strong evidence the
+    upstream model is fully wedged (Ollama NaN cascade, network
+    outage, wrong model name silently 5xxing, etc.).
+
+    The bisection-with-skip recovery in :meth:`OpenAIEmbedder.encode`
+    is the right tool for *occasional* failures (a few bad chunks in
+    a batch). When bisection isolates every chunk in batch after
+    batch, soldiering on just produces hours of WARNING logs with no
+    real work done — the maintainer hit this on a 357k-chunk vault
+    where 800 consecutive chunks were skipped over 10 minutes with
+    zero embeddings written.
+
+    Surfacing a dedicated exception lets the ingest loop abort with a
+    clear message + recovery hint instead of grinding indefinitely.
+    Skipped chunks stay in ``chunks_missing_embedding`` so re-running
+    ``corpus-forge ingest`` after the upstream recovers picks up
+    where we left off.
+    """
+
+
+# Circuit-breaker threshold. After this many *consecutive* skipped
+# chunks (across mini-batches and across ``encode`` calls), we
+# conclude the embedder is wedged and raise. Sized to absorb a small
+# burst of legitimately bad chunks (e.g. ~3% NaN rate on 1000 chunks
+# = 30 sporadic skips, well below 50) while still tripping quickly
+# when the upstream is fully broken (50 chunks ≈ 1-2 minutes at the
+# bisection-heavy rate the maintainer observed). Not yet configurable
+# via ``config.toml`` — promote to a config field if a real-world
+# vault needs a different setpoint.
+_WEDGE_THRESHOLD_CONSECUTIVE_FAILURES = 50
+
+
 class OpenAIEmbedder(BaseEmbedder):
     """OpenAI / OpenAI-compatible HTTP embedder."""
 
@@ -112,6 +146,14 @@ class OpenAIEmbedder(BaseEmbedder):
         # the failed chunks stay in ``chunks_missing_embedding`` for
         # the next ingest pass instead of being permanently dead-marked.
         self.last_failed_indices: list[int] = []
+        # Circuit-breaker state. Counts the chunks in consecutive
+        # 100%-failed mini-batches; resets to 0 the moment any chunk
+        # succeeds. When the count crosses
+        # ``_WEDGE_THRESHOLD_CONSECUTIVE_FAILURES`` we raise
+        # :class:`EmbedderWedged` from :meth:`encode` so the ingest
+        # loop can abort with a clear message instead of skipping
+        # every chunk in silence against a wedged upstream.
+        self._wedge_consecutive_failures: int = 0
 
     def _get_client(self):
         """Get the OpenAI client, initializing on first call.
@@ -223,6 +265,34 @@ class OpenAIEmbedder(BaseEmbedder):
             rows, failures = self._encode_with_bisection(client, batch_texts, batch_orig_indices)
             good_rows.extend(rows)
             failed_indices.extend(failures)
+
+            # Circuit-breaker bookkeeping. Any successful row in this
+            # mini-batch is enough to reset the consecutive-failure
+            # counter — a 50% failure rate is still useful work and
+            # should NOT trip the breaker. Only sustained 100%-failed
+            # mini-batches accumulate.
+            if rows:
+                self._wedge_consecutive_failures = 0
+            else:
+                self._wedge_consecutive_failures += len(batch_texts)
+
+            if self._wedge_consecutive_failures >= _WEDGE_THRESHOLD_CONSECUTIVE_FAILURES:
+                # Persist what we've collected so far so the caller's
+                # ``last_failed_indices`` reflects everything we
+                # actually tried (good telemetry — operators can see
+                # how far we got before tripping).
+                self.last_failed_indices = failed_indices
+                raise EmbedderWedged(
+                    f"Embedder {self.name!r} produced zero successful embeddings "
+                    f"across {self._wedge_consecutive_failures} consecutive chunks. "
+                    f"The bisection recovery is isolating every chunk one-at-a-time "
+                    f"without any succeeding — strong evidence the upstream "
+                    f"({self.base_url or 'OpenAI'} / model {self.model_id!r}) "
+                    f"is wedged (NaN cascade, wrong model, network outage). "
+                    f"Aborting this ingest pass; the skipped chunks stay in "
+                    f"chunks_missing_embedding so re-running once the upstream "
+                    f"recovers will pick up where we left off."
+                )
 
         self.last_failed_indices = failed_indices
 

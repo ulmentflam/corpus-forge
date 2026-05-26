@@ -8,6 +8,43 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Fixed
+
+- `OpenAIEmbedder.encode` now has a **circuit breaker** that raises
+  the new `EmbedderWedged` exception after
+  `_WEDGE_THRESHOLD_CONSECUTIVE_FAILURES` (50) chunks of consecutive
+  100%-failed mini-batches. Surfaced 2026-05-26 on the maintainer's
+  357k-chunk vault: with Ollama-served `qwen3-embedding:8b` returning
+  NaN for *every* chunk, the bisection-with-skip recovery (b10
+  hardening) turned into a silent ~1.3 chunks/sec no-op — 800
+  sequential WARNINGs over 11 minutes with zero embeddings written
+  (counter stuck at `0/357186`). The breaker now trips after ~50
+  chunks (~1-2 minutes) so the operator sees a clear failure with a
+  recovery hint instead of grinding indefinitely. Behavior:
+  - Counter increments by `len(batch_texts)` for every mini-batch
+    where zero chunks succeeded; resets to 0 the moment any chunk
+    in a mini-batch succeeds (partial failure is the bisection's
+    correct operating point and must not trip).
+  - Persists across `encode()` calls so multi-file ingest accumulates
+    the count (`_write_embeddings_for_chunks` calls `encode()` once
+    per file).
+  - On trip, `last_failed_indices` is populated with everything
+    attempted so far so callers' write-stage telemetry is accurate.
+  - `ingest.ingest_one`'s per-file `except Exception` re-raises
+    `EmbedderWedged` instead of catching it (systemic, not per-file)
+    so the breaker actually breaks out of the file loop.
+  - `ingest.main()` catches `EmbedderWedged` at the CLI boundary,
+    logs a clean ERROR line, and re-raises so the exit code reflects
+    the failure.
+  Regression coverage in
+  `tests/unit/test_openai_embedder_bisection.py::TestWedgeCircuitBreaker`
+  (7 new tests): threshold constant ≥ 30 (absorbs realistic
+  bad-chunk bursts), below-threshold doesn't trip, at-threshold
+  raises with embedder name + model_id in the message, success
+  resets the counter, counter persists across calls, 50% failure
+  rate sustained over 4× threshold doesn't trip, recovery hint
+  present in the message.
+
 ## [0.1.0b10] - 2026-05-26
 
 ### Added
