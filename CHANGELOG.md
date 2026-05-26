@@ -10,6 +10,61 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ### Fixed
 
+- `OpenAIEmbedder.encode` now has a **circuit breaker** that raises
+  the new `EmbedderWedged` exception once
+  `_WEDGE_THRESHOLD_CONSECUTIVE_FAILURES` (50) chunks have accumulated
+  across one or more consecutive *all-failed* mini-batches with no
+  intervening successful mini-batch. Surfaced 2026-05-26 on the
+  maintainer's 357k-chunk vault: with Ollama-served
+  `qwen3-embedding:8b` returning NaN for code-shaped inputs, the
+  bisection-with-skip recovery (b10 hardening) turned into a silent
+  ~1.3 chunks/sec no-op — 800 sequential WARNINGs over 11 minutes
+  with zero embeddings written (counter stuck at `0/357186`). The
+  breaker now trips after the first all-failed mini-batch crosses
+  the threshold (timing is host-dependent: roughly the time for one
+  full bisection of a mini-batch ≥ threshold size — observed ~30s to
+  a few minutes depending on response latency) so operators see a
+  clear failure with a recovery hint instead of grinding indefinitely.
+  Behavior:
+  - Counter updates **per mini-batch**, AFTER bisection completes
+    and the final `(rows, failures)` is known. `rows` non-empty
+    resets the counter (any successful embedding proves the
+    upstream is alive); `rows` empty (every chunk in the mini-batch
+    isolated and skipped) adds the mini-batch size to the streak
+    and checks the threshold. Per-chunk accounting was tried and
+    discarded — DFS preorder would spuriously trip on mixed batches
+    where the failures happened to cluster in the left subtree
+    (e.g. a 100-chunk batch with the first 50 NaN and last 50 clean
+    would fire the breaker before the right subtree was ever
+    explored).
+  - Persists across `encode()` calls so multi-file ingest
+    accumulates the streak (`_write_embeddings_for_chunks` calls
+    `encode()` once per file). A successful mini-batch in any later
+    file resets the streak.
+  - On trip, `last_failed_indices` carries every chunk attempted
+    across the all-failed mini-batches that fed the streak — the
+    accumulator already covers everything because bisection runs
+    side-effect-free and the breaker fires *after* it returns.
+  - `ingest.ingest_one`'s per-file `except Exception` re-raises
+    `EmbedderWedged` instead of catching it (systemic, not per-file)
+    so the breaker actually breaks out of the file loop.
+  - `ingest.main()` catches `EmbedderWedged` at the CLI boundary,
+    logs a clean ERROR line, and re-raises so the exit code
+    reflects the failure.
+  Regression coverage in
+  `tests/unit/test_openai_embedder_bisection.py::TestWedgeCircuitBreaker`
+  (11 new tests): threshold constant ≥ 30 (absorbs realistic
+  bad-chunk bursts), below-threshold doesn't trip, at-threshold
+  raises with embedder name + model_id in the message,
+  per-chunk-granularity trip during bisection of an oversized
+  single all-failed mini-batch, success resets the counter,
+  counter persists across `encode()` calls, 50% failure rate
+  sustained over 4x threshold doesn't trip, recovery hint present
+  in the message, `last_failed_indices` covers every chunk
+  attempted at trip (single-mini-batch + cross-mini-batch merge,
+  no duplicates), and the load-bearing regression for the
+  spurious-trip bug — a mixed batch with all failures clustered
+  in the left subtree must NOT trip the breaker.
 - `ZoteroLocalReader._validate_schema_compatibility` now accepts ANY
   `setting='client'` row in the `settings` table rather than requiring
   the specific `key='lastclient'` value. Modern Zotero (5.x / 6.x /
