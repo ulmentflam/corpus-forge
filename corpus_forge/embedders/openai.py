@@ -154,6 +154,17 @@ class OpenAIEmbedder(BaseEmbedder):
         # loop can abort with a clear message instead of skipping
         # every chunk in silence against a wedged upstream.
         self._wedge_consecutive_failures: int = 0
+        # Per-mini-batch sidecar of base-case-skipped ``orig_indices``.
+        # Reset at the start of every mini-batch iteration in
+        # :meth:`encode` and appended to by the base case in
+        # :meth:`_encode_with_bisection`. Survives the abandoned
+        # recursion frames when ``EmbedderWedged`` raises mid-bisection,
+        # so the outer handler can recover the chunks that had already
+        # been isolated and skipped before the trip (otherwise those
+        # ``orig_indices`` are stuck in returned-but-never-collected
+        # ``left_failed`` / ``right_failed`` accumulators that get
+        # discarded when the exception unwinds the stack).
+        self._wedge_in_progress_failed: list[int] = []
 
     def _get_client(self):
         """Get the OpenAI client, initializing on first call.
@@ -271,16 +282,31 @@ class OpenAIEmbedder(BaseEmbedder):
             # sec per bisected chunk can take 10+ minutes for the
             # default 256-chunk batch size — the failure mode the
             # maintainer hit on 2026-05-26).
+            #
+            # Reset the in-progress sidecar so it captures only THIS
+            # mini-batch's base-case skips. Read by the wedged-path
+            # handler below to recover failures that were isolated
+            # mid-bisection (those return-path accumulators are lost
+            # when the base case raises and the recursion unwinds).
+            self._wedge_in_progress_failed = []
             try:
                 rows, failures = self._encode_with_bisection(
                     client, batch_texts, batch_orig_indices
                 )
             except EmbedderWedged:
-                # Persist what we've collected so far so the caller's
-                # ``last_failed_indices`` reflects everything we
-                # actually tried (good telemetry — operators can see
-                # how far we got before tripping).
-                self.last_failed_indices = failed_indices
+                # Persist BOTH the cross-mini-batch accumulator (which
+                # captures failures from mini-batches that returned
+                # normally) AND the in-progress sidecar (which captures
+                # failures isolated by the current mini-batch's
+                # bisection before the trip — these would otherwise be
+                # lost from the recursive return path). Together they
+                # form the complete set of chunks attempted before the
+                # wedge tripped — what ``ingest_one`` reads via
+                # ``last_failed_indices`` to filter ``write_embeddings``
+                # pair lists, and what operators need in the post-mortem.
+                self.last_failed_indices = list(failed_indices) + list(
+                    self._wedge_in_progress_failed
+                )
                 raise
             good_rows.extend(rows)
             failed_indices.extend(failures)
@@ -446,6 +472,17 @@ class OpenAIEmbedder(BaseEmbedder):
             # the maintainer's 2026-05-26 ingest) means a 256-chunk
             # mini-batch takes ~10 minutes to bisect — far too slow
             # for a circuit breaker to be useful.
+            #
+            # Also append to the per-mini-batch sidecar BEFORE the
+            # threshold check. This way the chunk that trips the
+            # breaker (and every previously-isolated chunk from this
+            # mini-batch) is preserved on ``self._wedge_in_progress_failed``
+            # for ``encode``'s wedged-path handler to merge into
+            # ``last_failed_indices``. Without this, the chunks
+            # isolated mid-bisection are stuck in returned-but-never-
+            # collected ``left_failed`` / ``right_failed`` accumulators
+            # that the exception unwind discards.
+            self._wedge_in_progress_failed.append(orig_indices[0])
             self._wedge_consecutive_failures += 1
             if self._wedge_consecutive_failures >= _WEDGE_THRESHOLD_CONSECUTIVE_FAILURES:
                 raise EmbedderWedged(
