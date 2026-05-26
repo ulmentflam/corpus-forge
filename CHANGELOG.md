@@ -13,37 +13,67 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 - `OpenAIEmbedder.encode` now has a **circuit breaker** that raises
   the new `EmbedderWedged` exception after
   `_WEDGE_THRESHOLD_CONSECUTIVE_FAILURES` (50) chunks of consecutive
-  100%-failed mini-batches. Surfaced 2026-05-26 on the maintainer's
-  357k-chunk vault: with Ollama-served `qwen3-embedding:8b` returning
-  NaN for *every* chunk, the bisection-with-skip recovery (b10
-  hardening) turned into a silent ~1.3 chunks/sec no-op — 800
-  sequential WARNINGs over 11 minutes with zero embeddings written
-  (counter stuck at `0/357186`). The breaker now trips after ~50
-  chunks (~1-2 minutes) so the operator sees a clear failure with a
+  base-case-skipped chunks with no intervening clean encode.
+  Surfaced 2026-05-26 on the maintainer's 357k-chunk vault: with
+  Ollama-served `qwen3-embedding:8b` returning NaN for code-shaped
+  inputs, the bisection-with-skip recovery (b10 hardening) turned
+  into a silent ~1.3 chunks/sec no-op — 800 sequential WARNINGs over
+  11 minutes with zero embeddings written (counter stuck at
+  `0/357186`). The breaker now trips after ~50 chunks (~30 seconds
+  at the wedge rate) so the operator sees a clear failure with a
   recovery hint instead of grinding indefinitely. Behavior:
-  - Counter increments by `len(batch_texts)` for every mini-batch
-    where zero chunks succeeded; resets to 0 the moment any chunk
-    in a mini-batch succeeds (partial failure is the bisection's
-    correct operating point and must not trip).
-  - Persists across `encode()` calls so multi-file ingest accumulates
-    the count (`_write_embeddings_for_chunks` calls `encode()` once
-    per file).
-  - On trip, `last_failed_indices` is populated with everything
-    attempted so far so callers' write-stage telemetry is accurate.
+  - Counter increments by 1 at each single-chunk base-case skip
+    inside `_encode_with_bisection`; resets to 0 the moment any
+    clean encode succeeds at any sub-batch size. Per-chunk
+    granularity is essential: with the default `batch_size=256`,
+    a mini-batch-level counter wouldn't update for ~10 minutes
+    while the bisection ran — too slow to be useful.
+  - Persists across `encode()` calls so multi-file ingest
+    accumulates the count (`_write_embeddings_for_chunks` calls
+    `encode()` once per file).
+  - On trip, `last_failed_indices` carries BOTH the cross-mini-batch
+    accumulator AND a per-mini-batch sidecar
+    (`_wedge_in_progress_failed`) that survives the abandoned
+    recursion frames. Without the sidecar the chunks isolated
+    mid-bisection would be lost from the discarded return-path
+    accumulators when the exception unwinds — leaving operators
+    with `last_failed_indices: 0` even after 50 chunks had been
+    isolated.
   - `ingest.ingest_one`'s per-file `except Exception` re-raises
     `EmbedderWedged` instead of catching it (systemic, not per-file)
     so the breaker actually breaks out of the file loop.
   - `ingest.main()` catches `EmbedderWedged` at the CLI boundary,
-    logs a clean ERROR line, and re-raises so the exit code reflects
-    the failure.
+    logs a clean ERROR line, and re-raises so the exit code
+    reflects the failure.
   Regression coverage in
   `tests/unit/test_openai_embedder_bisection.py::TestWedgeCircuitBreaker`
-  (7 new tests): threshold constant ≥ 30 (absorbs realistic
+  (10 new tests): threshold constant ≥ 30 (absorbs realistic
   bad-chunk bursts), below-threshold doesn't trip, at-threshold
-  raises with embedder name + model_id in the message, success
-  resets the counter, counter persists across calls, 50% failure
-  rate sustained over 4× threshold doesn't trip, recovery hint
-  present in the message.
+  raises with embedder name + model_id in the message,
+  per-chunk-granularity trip during bisection of an oversized
+  single mini-batch, success resets the counter, counter persists
+  across calls, 50% failure rate sustained over 4x threshold
+  doesn't trip, recovery hint present in the message, and two
+  regressions pinning `last_failed_indices` content after a
+  mid-bisection trip (single-mini-batch + cross-mini-batch merge).
+- `ZoteroLocalReader._validate_schema_compatibility` now accepts ANY
+  `setting='client'` row in the `settings` table rather than requiring
+  the specific `key='lastclient'` value. Modern Zotero (5.x / 6.x /
+  7.x) writes `client.lastVersion` and `client.lastCompatibleVersion`
+  on every startup — but never `client.lastclient` — so the previous
+  check false-negatived against every real Zotero 7 library, raising
+  `ZoteroSchemaUnsupported` even when the DB was perfectly valid.
+  Surfaced 2026-05-22 on the maintainer's vault: the eager planner
+  walk in `_plan_ingest` propagated the exception and aborted the
+  entire ingest before any filesystem source ran. The synthetic test
+  fixture under `tests/fixtures/zotero/build_fixture.py` has also been
+  updated to write what real Zotero writes (`lastVersion` /
+  `lastCompatibleVersion`) and the fixture sqlite regenerated. New
+  regression tests in `tests/unit/test_zotero_local.py::TestSchemaProbe`
+  pin: empty `settings` table raises, `settings` rows without a
+  `client` row raise (with a helpful message), and all three known
+  client-row key names (`lastVersion`, `lastCompatibleVersion`,
+  `lastclient`) pass the probe.
 
 ## [0.1.0b10] - 2026-05-26
 
