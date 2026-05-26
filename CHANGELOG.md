@@ -8,6 +8,8 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+## [0.1.0b10] - 2026-05-26
+
 ### Added
 
 - `corpus-forge ingest` now enforces `DatasetSourceConfig.max_rows` /
@@ -18,39 +20,80 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   plugins whose scheme isn't uniquely owned (e.g. `zotero` without a
   `library_id`, unknown plugins) are silently skipped with a one-line
   WARNING. Fourth RFC item of `rfc-corpus-growth-controls`.
-
-### Fixed
-
-- `OpenAIEmbedder.encode` now **bisects on failure** instead of
-  giving up on the whole batch. On any 5xx or NaN-laced response,
-  the batch is recursively halved until the offending chunk is
-  isolated, logged at WARNING with `orig_idx` / `chars` / `sha256`
-  (no chunk text — see PII note below), and skipped. The remaining
-  good rows still flow through. `OpenAI(max_retries=0)` disables
-  the SDK's exponential backoff so failures fast-fail.
-  Skipped `chunk_ids` stay in `chunks_missing_embedding` for the
-  next pass; callers (`ingest_one`, `embed.backfill_embedder`)
-  read `embedder.last_failed_indices` after each `encode` and
-  filter their `write_embeddings` pair list accordingly.
-  - Non-recoverable 4xx errors (auth, missing model, 400/422) are
-    re-raised immediately instead of being bisected — bisection
-    can't fix a wrong config, so we surface the real cause.
-  - Provider-side row-count mismatches (response returns fewer / more
-    rows than the input batch) are also treated as failure for the
-    bisection.
-  - `embed.backfill_embedder` exits its inner loop on an all-skipped
-    batch instead of refetching the same `chunks_missing_embedding`
-    rows forever.
-  - WARNING log intentionally omits the chunk text preview to avoid
-    leaking PII from personal vault content; `sha256` is enough to
-    look up the chunk in `corpus.chunks` and reproduce out-of-band.
-  Regression coverage: `tests/unit/test_openai_embedder_bisection.py`
-  (happy path, single-chunk NaN/5xx, multi-chunk bisection,
-  recoverable-vs-non-recoverable triage, row-count mismatch,
-  all-skipped loop exit).
-
-### Added
-
+- New `corpus-forge prune --dataset NAME [--percentile N] [--apply]
+  [--dry-run-json PATH]` verb — dry-run-default deletion of the
+  bottom-percentile chunks under
+  `corpus_forge.admin.prune.prune_dataset()`. Third RFC item of
+  `rfc-corpus-growth-controls`.
+- New `prune_dataset()` module + scoring rubric
+  (`corpus_forge/admin/prune.py`) — first step of
+  `rfc-corpus-growth-controls`. Postgres / SQLite dispatch goes
+  through a small `_is_postgres_like` capability probe
+  (`_paramstyle == "pyformat"` first, class-name `"postgres"`
+  substring as fallback) so we don't lean on a single brittle name
+  check; SQLite branch chunks the IN-list at `_SQLITE_BATCH_SIZE =
+  500` ids. `PruneReport.duplicate_density_available` exposes
+  whether the MinHash quality signal ran (promoted off the head
+  candidate's `sub_scores` so every element of `selected` is now
+  shape-uniform). Named-but-unknown datasets raise `ValueError`
+  before any candidate walk — critical safety guard under
+  `apply=True` so a typo'd name can never delete from the wrong
+  scope. 22 unit tests in `tests/unit/test_prune_scorer.py` lock
+  the rubric, the dispatch heuristics, both delete paths, and the
+  unknown-dataset refusal.
+- Public `score_for_pruning(candidate, *, sub_scores, weights=None)`
+  exported from `corpus_forge.curation.selector` — extracted from
+  `corpus_forge.admin.prune` so the rubric lives next to the
+  curation selector. Default weights exposed as `PRUNE_WEIGHTS`.
+- `[growth]` config block — first foundation task of RFC
+  `rfc-corpus-growth-controls` (P1). `corpus_forge.config.GrowthConfig`
+  exposes three fields: `prune_percentile_default` (int 0-100,
+  default 10), `sync_cap_bytes` (int | None — accepts human-readable
+  strings like `"10G"`, `"500M"`, `"1.5T"` via the new private
+  `_parse_bytes` helper; IEC 1024-based, case-insensitive,
+  optional `B` suffix), and `per_source_cap_default_rows`
+  (int ≥ 0, default 0 = disabled). All fields default to
+  no-enforcement values so existing configs without a `[growth]`
+  block continue to validate and behave identically.
+- `DatasetSourceConfig.max_rows` / `DatasetSourceConfig.max_bytes`
+  — per-source growth caps (RFC `rfc-corpus-growth-controls`). Both
+  `int | None`, default `None` (uncapped), validated `> 0` when set.
+  Storage-only — the runtime eviction loop landed alongside in this
+  release.
+- `corpus_forge.eval._schema.EvalOutput` — shared output envelope
+  for every `corpus-forge eval *` subcommand. Pydantic v2 model with
+  six top-level keys (`eval_kind` ∈ {classifier, quality, retrieval,
+  regression}, `dataset`, `git_commit`, `ts`, `metrics`, `config`).
+  `extra='forbid'` so future evaluators can't accidentally widen the
+  envelope. Foundation task of RFC `rfc-eval-framework-expansion`
+  (P1); subsequent PRs add `classifier_accuracy.py`,
+  `chunk_quality.py`, and `regression.py` which marshal their
+  results through this envelope so downstream dashboards see one
+  consistent shape.
+- `[eval_regression]` config block —
+  `corpus_forge.config.EvalRegressionConfig` drives the future
+  `corpus-forge eval regression --baseline` verb's tolerance gating.
+  Three fields: `enabled` (default `True`), `default_tolerance`
+  (float `[0, 1]`, default `0.02`), `per_metric` (dict of
+  metric-name → tolerance, each bounded `[0, 1]`). Convenience
+  `tolerance_for(name)` helper. Foundation task of RFC
+  `rfc-eval-framework-expansion` (P1).
+- `corpus_forge.quality.HeuristicQualityEnricher` — pure-Python,
+  dependency-free composite quality scorer (token-rate,
+  punctuation-balance, repetition-ratio, shouting-ratio → weighted
+  geometric mean on `[0, 1]`). First foundation task of RFC
+  `rfc-nlp-data-quality-signals` (P1); subsequent PRs add language
+  detection, MinHash dedup, and boilerplate pattern-matching, plus
+  the curation-selector hookup. Distinct from the Phase H
+  `corpus_forge.enrichers` (code-enricher) pipeline — code lives in
+  the new `corpus_forge.quality` package.
+- `corpus-forge logs tail --level <name>` — minimum-severity filter
+  for the rotating-log viewer. Accepts `debug` / `info` / `warn` /
+  `warning` / `error` / `critical` (case-insensitive). Lines below
+  the named severity are dropped in both single-shot and `--follow`
+  modes; unparseable lines (tracebacks, `print()` output) are also
+  dropped when a level filter is active. Closes the `logs tail` /
+  `--level` checkbox of RFC `rfc-developer-ux-verbs` (P3).
 - New `embedder_drift` doctor check + `corpus-forge embedder gc`
   CLI command. Catches the silent embedder-rename bug surfaced on
   2026-05-22: renaming an embedder in `config.toml` (e.g.
@@ -130,6 +173,36 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   requirement up-front by probing the configured iCloud roots and,
   on denial, opening System Settings → Full Disk Access with the
   recovery instruction printed to stderr.
+
+### Fixed
+
+- `OpenAIEmbedder.encode` now **bisects on failure** instead of
+  giving up on the whole batch. On any 5xx or NaN-laced response,
+  the batch is recursively halved until the offending chunk is
+  isolated, logged at WARNING with `orig_idx` / `chars` / `sha256`
+  (no chunk text — see PII note below), and skipped. The remaining
+  good rows still flow through. `OpenAI(max_retries=0)` disables
+  the SDK's exponential backoff so failures fast-fail.
+  Skipped `chunk_ids` stay in `chunks_missing_embedding` for the
+  next pass; callers (`ingest_one`, `embed.backfill_embedder`)
+  read `embedder.last_failed_indices` after each `encode` and
+  filter their `write_embeddings` pair list accordingly.
+  - Non-recoverable 4xx errors (auth, missing model, 400/422) are
+    re-raised immediately instead of being bisected — bisection
+    can't fix a wrong config, so we surface the real cause.
+  - Provider-side row-count mismatches (response returns fewer / more
+    rows than the input batch) are also treated as failure for the
+    bisection.
+  - `embed.backfill_embedder` exits its inner loop on an all-skipped
+    batch instead of refetching the same `chunks_missing_embedding`
+    rows forever.
+  - WARNING log intentionally omits the chunk text preview to avoid
+    leaking PII from personal vault content; `sha256` is enough to
+    look up the chunk in `corpus.chunks` and reproduce out-of-band.
+  Regression coverage: `tests/unit/test_openai_embedder_bisection.py`
+  (happy path, single-chunk NaN/5xx, multi-chunk bisection,
+  recoverable-vs-non-recoverable triage, row-count mismatch,
+  all-skipped loop exit).
 
 ## [0.1.0b9] - 2026-05-22
 
@@ -245,9 +318,6 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ### Added
 
-- feat(cli): new `corpus-forge prune --dataset NAME [--percentile N] [--apply] [--dry-run-json PATH]` verb — dry-run-default deletion of the bottom-percentile chunks under `corpus_forge.admin.prune.prune_dataset()`. Third RFC item of `rfc-corpus-growth-controls`.
-- feat(admin): new `prune_dataset()` module + scoring rubric (`corpus_forge/admin/prune.py`) — first step of `rfc-corpus-growth-controls`. CLI verb + GrowthConfig block land in follow-up RFC tasks. Postgres / SQLite dispatch goes through a small `_is_postgres_like` capability probe (`_paramstyle == "pyformat"` first, class-name `"postgres"` substring as fallback) so we don't lean on a single brittle name check; SQLite branch chunks the IN-list at `_SQLITE_BATCH_SIZE = 500` ids. `PruneReport.duplicate_density_available` exposes whether the MinHash quality signal ran (promoted off the head candidate's `sub_scores` so every element of `selected` is now shape-uniform). Named-but-unknown datasets raise `ValueError` before any candidate walk — critical safety guard under `apply=True` so a typo'd name can never delete from the wrong scope. 22 unit tests in `tests/unit/test_prune_scorer.py` (up from 17 in the initial round) lock the rubric, the dispatch heuristics, both delete paths, and the unknown-dataset refusal.
-- feat(curation): public `score_for_pruning(candidate, *, sub_scores, weights=None)` exported from `corpus_forge.curation.selector` — extracted from `corpus_forge.admin.prune` so the rubric lives next to the curation selector. Default weights exposed as `PRUNE_WEIGHTS`.
 - `tests/unit/test_cli_human_friendly.py` — first two tests against
   the human-friendly CLI testable properties: (1) doctor's
   `_check_config_present` pins the `corpus-forge setup` recovery
@@ -389,58 +459,6 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   previous unbounded spinner. The previous `_log_ingest_eta`
   helper was renamed to `_plan_ingest` and now returns a
   per-source file-count map alongside emitting the startup ETA.
-- `[growth]` config block — first foundation task of RFC
-  `rfc-corpus-growth-controls` (P1). `corpus_forge.config.GrowthConfig`
-  exposes three fields: `prune_percentile_default` (int 0-100,
-  default 10), `sync_cap_bytes` (int | None — accepts human-readable
-  strings like `"10G"`, `"500M"`, `"1.5T"` via the new private
-  `_parse_bytes` helper; IEC 1024-based, case-insensitive,
-  optional `B` suffix), and `per_source_cap_default_rows`
-  (int ≥ 0, default 0 = disabled). All fields default to
-  no-enforcement values so existing configs without a `[growth]`
-  block continue to validate and behave identically. Foundation
-  for the `prune` / `estimate sync` / per-source cap verbs landing
-  in subsequent RFC PRs.
-- `corpus_forge.eval._schema.EvalOutput` — shared output envelope
-  for every `corpus-forge eval *` subcommand. Pydantic v2 model with
-  six top-level keys (`eval_kind` ∈ {classifier, quality, retrieval,
-  regression}, `dataset`, `git_commit`, `ts`, `metrics`, `config`).
-  `extra='forbid'` so future evaluators can't accidentally widen the
-  envelope. Foundation task of RFC `rfc-eval-framework-expansion`
-  (P1); subsequent PRs add `classifier_accuracy.py`,
-  `chunk_quality.py`, and `regression.py` which marshal their
-  results through this envelope so downstream dashboards see one
-  consistent shape.
-- `corpus-forge logs tail --level <name>` — minimum-severity filter
-  for the rotating-log viewer. Accepts `debug` / `info` / `warn` /
-  `warning` / `error` / `critical` (case-insensitive). Lines below
-  the named severity are dropped in both single-shot and `--follow`
-  modes; unparseable lines (tracebacks, `print()` output) are also
-  dropped when a level filter is active. Closes the `logs tail` /
-  `--level` checkbox of RFC `rfc-developer-ux-verbs` (P3).
-- `corpus_forge.quality.HeuristicQualityEnricher` — pure-Python,
-  dependency-free composite quality scorer (token-rate, punctuation-
-  balance, repetition-ratio, shouting-ratio → weighted geometric mean
-  on `[0, 1]`). First foundation task of RFC
-  `rfc-nlp-data-quality-signals` (P1); subsequent PRs add language
-  detection, MinHash dedup, and boilerplate pattern-matching, plus
-  the curation-selector hookup. Distinct from the Phase H
-  `corpus_forge.enrichers` (code-enricher) pipeline — code lives in
-  the new `corpus_forge.quality` package.
-- `[eval_regression]` config block — `corpus_forge.config.EvalRegressionConfig`
-  drives the future `corpus-forge eval regression --baseline` verb's
-  tolerance gating. Three fields: `enabled` (default `True`),
-  `default_tolerance` (float `[0, 1]`, default `0.02`),
-  `per_metric` (dict of metric-name → tolerance, each bounded
-  `[0, 1]`). Convenience `tolerance_for(name)` helper. Foundation
-  task of RFC `rfc-eval-framework-expansion` (P1); subsequent PR
-  adds the runner that consumes this block.
-- `DatasetSourceConfig.max_rows` / `DatasetSourceConfig.max_bytes`
-  — per-source growth caps (RFC `rfc-corpus-growth-controls`). Both
-  `int | None`, default `None` (uncapped), validated `> 0` when set.
-  Storage-only — the runtime eviction loop in `ingest_once` lands
-  in a follow-up PR. Existing configs without these fields continue
-  to validate identically.
 
 ## [0.1.0b7] - 2026-05-20
 
