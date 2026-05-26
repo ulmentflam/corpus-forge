@@ -8,6 +8,27 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Fixed
+
+- `ZoteroLocalReader._validate_schema_compatibility` now accepts ANY
+  `setting='client'` row in the `settings` table rather than requiring
+  the specific `key='lastclient'` value. Modern Zotero (5.x / 6.x /
+  7.x) writes `client.lastVersion` and `client.lastCompatibleVersion`
+  on every startup — but never `client.lastclient` — so the previous
+  check false-negatived against every real Zotero 7 library, raising
+  `ZoteroSchemaUnsupported` even when the DB was perfectly valid.
+  Surfaced 2026-05-22 on the maintainer's vault: the eager planner
+  walk in `_plan_ingest` propagated the exception and aborted the
+  entire ingest before any filesystem source ran. The synthetic test
+  fixture under `tests/fixtures/zotero/build_fixture.py` has also been
+  updated to write what real Zotero writes (`lastVersion` /
+  `lastCompatibleVersion`) and the fixture sqlite regenerated. New
+  regression tests in `tests/unit/test_zotero_local.py::TestSchemaProbe`
+  pin: empty `settings` table raises, `settings` rows without a
+  `client` row raise (with a helpful message), and all three known
+  client-row key names (`lastVersion`, `lastCompatibleVersion`,
+  `lastclient`) pass the probe.
+
 ## [0.1.0b10] - 2026-05-26
 
 ### Added

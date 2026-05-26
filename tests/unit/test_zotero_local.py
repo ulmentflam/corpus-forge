@@ -153,10 +153,18 @@ class TestReadOnlyOpen:
 
 
 class TestSchemaProbe:
-    def test_missing_lastclient_raises(self, tmp_path: Path) -> None:
-        # Build a sqlite that LOOKS like Zotero (has settings table) but is
-        # missing the `lastclient` row. Reader should refuse with the
-        # dedicated exception class.
+    """The schema probe distinguishes a real Zotero DB from an unrelated
+    SQLite file by looking for any ``setting='client'`` row in the
+    ``settings`` table — that's what Zotero writes on every startup,
+    regardless of which specific ``key`` (``lastVersion`` /
+    ``lastCompatibleVersion`` on modern Zotero, ``lastclient`` on older
+    fixtures) it stores under.
+    """
+
+    def test_empty_settings_raises(self, tmp_path: Path) -> None:
+        # Settings table exists but is empty — refuse with the dedicated
+        # exception class so callers see a clear "this isn't a Zotero DB"
+        # message rather than wrong joins against an unknown schema.
         db_path = tmp_path / "fake.sqlite"
         conn = sqlite3.connect(str(db_path))
         try:
@@ -169,6 +177,69 @@ class TestSchemaProbe:
             conn.close()
         reader = ZoteroLocalReader(db_path, library_id="local")
         with pytest.raises(ZoteroSchemaUnsupported):
+            list(reader.iter_items())
+
+    def test_settings_without_client_row_raises(self, tmp_path: Path) -> None:
+        # Settings table has rows, but none with setting='client'. A DB
+        # full of non-Zotero settings is NOT a Zotero library.
+        db_path = tmp_path / "fake.sqlite"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "CREATE TABLE settings (setting TEXT, key TEXT, value TEXT, "
+                "PRIMARY KEY (setting, key))"
+            )
+            conn.execute(
+                "INSERT INTO settings (setting, key, value) VALUES ('account', 'userID', '12345')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        reader = ZoteroLocalReader(db_path, library_id="local")
+        with pytest.raises(ZoteroSchemaUnsupported, match="setting='client'"):
+            list(reader.iter_items())
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "lastVersion",  # Modern Zotero 5/6/7 — primary marker.
+            "lastCompatibleVersion",  # Modern Zotero 5/6/7 — sibling marker.
+            "lastclient",  # Legacy / synthetic-fixture variant.
+        ],
+    )
+    def test_any_client_row_passes_probe(self, tmp_path: Path, key: str) -> None:
+        """Pre-2026-05-26 regression — the old check pinned ``key='lastclient'``
+        and false-negative'd against real Zotero 7 libraries (which write
+        ``lastVersion`` / ``lastCompatibleVersion`` but not ``lastclient``).
+        The new check accepts ANY ``setting='client'`` row so all three
+        of these key names are valid.
+
+        We don't expect ``iter_items`` to return rows here — the DB has
+        no items / itemTypes / etc. — only that the schema probe passes
+        and the call doesn't raise ``ZoteroSchemaUnsupported``. The
+        downstream SQL will raise ``sqlite3.OperationalError`` for the
+        missing tables, which is a different (acceptable) failure mode.
+        """
+
+        db_path = tmp_path / "fake.sqlite"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "CREATE TABLE settings (setting TEXT, key TEXT, value TEXT, "
+                "PRIMARY KEY (setting, key))"
+            )
+            conn.execute(
+                "INSERT INTO settings (setting, key, value) VALUES ('client', ?, '7.0.5')",
+                (key,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        reader = ZoteroLocalReader(db_path, library_id="local")
+        # Probe must NOT raise ZoteroSchemaUnsupported. A later
+        # OperationalError (missing items table) is fine; we're pinning
+        # the probe-passes behavior, not the full iteration.
+        with pytest.raises(sqlite3.OperationalError):
             list(reader.iter_items())
 
 

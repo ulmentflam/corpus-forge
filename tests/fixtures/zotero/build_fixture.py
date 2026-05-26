@@ -23,7 +23,9 @@ actually joins against):
 - ``collectionItems``      — link rows (collection, item).
 - ``itemAttachments``      — attachment metadata (``parentItemID``, ``path``,
                               ``contentType``, ``linkMode``).
-- ``settings``             — key/value config; we set ``lastclient`` so the
+- ``settings``             — key/value config; we set ``client.lastVersion``
+                              and ``client.lastCompatibleVersion`` (matching
+                              what real Zotero 7 writes on startup) so the
                               reader's schema-compatibility probe succeeds.
 
 The fixture builds five items:
@@ -196,9 +198,16 @@ def _seed_vocab(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
         )
         creator_type_ids[name] = i
 
-    # Schema-version probe value.
+    # Schema-version probe values — match what real Zotero 7 writes on
+    # every startup. The schema check accepts any setting='client' row;
+    # we insert both keys to mirror what a real install looks like and
+    # so we're robust against future tightening that pins a specific key.
     cur.execute(
-        "INSERT INTO settings (setting, key, value) VALUES ('client', 'lastclient', '7.0.5')"
+        "INSERT INTO settings (setting, key, value) VALUES ('client', 'lastVersion', '7.0.5')"
+    )
+    cur.execute(
+        "INSERT INTO settings (setting, key, value) VALUES "
+        "('client', 'lastCompatibleVersion', '7.0.5')"
     )
     conn.commit()
 
@@ -514,7 +523,7 @@ def smoke() -> int:
         n_items = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM itemAttachments")
         n_att = cur.fetchone()[0]
-        cur.execute("SELECT value FROM settings WHERE setting='client' AND key='lastclient'")
+        cur.execute("SELECT value FROM settings WHERE setting='client' AND key='lastVersion'")
         client = cur.fetchone()
         cur.execute(
             "SELECT i.key, idv.value FROM items i "
@@ -524,7 +533,7 @@ def smoke() -> int:
             "WHERE fd.fieldName='title' ORDER BY i.key"
         )
         titles = cur.fetchall()
-        print(f"items={n_items} attachments={n_att} lastclient={client}")
+        print(f"items={n_items} attachments={n_att} lastVersion={client}")
         print("titles:")
         for k, t in titles:
             print(f"  {k} -> {t}")

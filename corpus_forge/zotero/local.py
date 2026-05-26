@@ -32,8 +32,11 @@ class ZoteroSchemaUnsupported(Exception):
 
     Surfaces as a clear error message rather than producing wrong joins
     against an unknown schema. The reader probes the ``settings`` table
-    for a ``lastclient`` row (Zotero writes this on startup); when it's
-    missing, we refuse rather than risk emitting garbage.
+    for any row with ``setting = 'client'`` — Zotero writes
+    ``client.lastVersion`` / ``client.lastCompatibleVersion`` on every
+    startup (and historically wrote ``client.lastclient`` on older
+    versions); when **no** ``client`` row is present we refuse rather
+    than risk emitting garbage.
     """
 
 
@@ -103,25 +106,35 @@ class ZoteroLocalReader:
     def _validate_schema_compatibility(self, conn: sqlite3.Connection) -> None:
         """Refuse to proceed against an alien schema.
 
-        Probes for the ``settings`` row Zotero writes on startup. When
-        absent we raise :class:`ZoteroSchemaUnsupported` rather than
-        return empty or wrong joins.
+        Probes for the ``settings`` row Zotero writes on startup. The
+        specific ``key`` Zotero writes has changed across versions:
+
+        - Modern Zotero (5.x / 6.x / 7.x): ``setting='client'`` rows
+          with ``key='lastVersion'`` and ``key='lastCompatibleVersion'``.
+        - Older / synthetic fixtures: ``setting='client'`` with
+          ``key='lastclient'``.
+
+        We accept **any** ``setting='client'`` row as a positive
+        identification rather than pinning a specific ``key`` name —
+        the presence of *any* ``client`` row in ``settings`` is what
+        actually distinguishes a real Zotero DB from an unrelated
+        SQLite file. When no ``client`` row is present we raise
+        :class:`ZoteroSchemaUnsupported`. This was the cause of a
+        2026-05-22 false-negative against a real Zotero 7 library
+        whose settings table had ``lastVersion`` / ``lastCompatibleVersion``
+        but no ``lastclient`` row.
         """
         try:
-            cur = conn.execute(
-                "SELECT value FROM settings "
-                "WHERE setting IN ('client', 'sync') AND key = 'lastclient' "
-                "LIMIT 1"
-            )
+            cur = conn.execute("SELECT 1 FROM settings WHERE setting = 'client' LIMIT 1")
             row = cur.fetchone()
         except sqlite3.OperationalError as exc:
             raise ZoteroSchemaUnsupported(
-                f"Cannot read settings.lastclient from {self.library_path}: {exc}. "
+                f"Cannot read settings table from {self.library_path}: {exc}. "
                 "This does not look like a Zotero library — refusing to proceed."
             ) from exc
         if row is None:
             raise ZoteroSchemaUnsupported(
-                f"settings.lastclient missing in {self.library_path}; "
+                f"No settings row with setting='client' in {self.library_path}; "
                 "this does not look like a Zotero library — refusing to proceed."
             )
 
