@@ -613,8 +613,46 @@ class TestWedgeCircuitBreaker:
         # Counter is at n (< threshold) — next call could trip.
         assert emb._wedge_consecutive_failures == n
 
+    def test_at_threshold_raises_embedder_wedged_per_chunk_granularity(self) -> None:
+        """``threshold`` consecutive failed chunks must raise — and
+        critically, this must fire DURING bisection (per-chunk
+        granularity), not at the outer mini-batch boundary.
+
+        Regression for 2026-05-26: with the old mini-batch-level
+        counter, a single ``batch_size=256`` mini-batch failing 100%
+        wouldn't trip the breaker for the entire ~10-minute bisection
+        run, because the counter only updated AFTER the mini-batch
+        completed. The breaker has to check at each single-chunk
+        base-case skip to be useful in practice.
+        """
+
+        n = _WEDGE_THRESHOLD_CONSECUTIVE_FAILURES
+        # Use a SINGLE mini-batch that's bigger than the threshold —
+        # if the counter only incremented at mini-batch boundaries,
+        # this test wouldn't trip (because the mini-batch wouldn't
+        # have completed yet when we cross the threshold). With
+        # per-chunk granularity, it trips during bisection.
+        emb = _make_embedder(batch_size=n + 100)
+        client = MagicMock()
+        client.embeddings.create.side_effect = _FakeStatusError(500, "internal")
+        emb._client = client
+
+        with pytest.raises(EmbedderWedged) as excinfo:
+            emb.encode([f"chunk-{i}" for i in range(n + 50)])  # MORE than threshold
+
+        msg = str(excinfo.value)
+        assert "wedged" in msg.lower() or "consecutive" in msg.lower()
+        # Message must name the embedder so multi-embedder configs make sense.
+        assert emb.name in msg
+        # Message must mention the model id for operator triage.
+        assert emb.model_id in msg
+
     def test_at_threshold_raises_embedder_wedged(self) -> None:
-        """``threshold`` consecutive failed chunks must raise."""
+        """Exact-threshold raise — same as the per-chunk-granularity
+        test, but using a smaller mini-batch sized exactly at the
+        threshold so the test is also valid against the mini-batch
+        boundary check (defensive overlap).
+        """
 
         n = _WEDGE_THRESHOLD_CONSECUTIVE_FAILURES
         emb = _make_embedder(batch_size=n + 10)
@@ -627,23 +665,21 @@ class TestWedgeCircuitBreaker:
 
         msg = str(excinfo.value)
         assert "wedged" in msg.lower() or "consecutive" in msg.lower()
-        # Message must name the embedder so multi-embedder configs make sense.
         assert emb.name in msg
-        # Message must mention the model id for operator triage.
         assert emb.model_id in msg
 
-    def test_counter_resets_on_any_success(self) -> None:
-        """A single successful chunk in a mini-batch wipes the counter
-        for that mini-batch — the upstream is alive and producing real
-        embeddings, even if many other chunks are bad. The circuit
-        breaker exists to detect *sustained* wedge, not transient
-        turbulence.
+    def test_counter_resets_on_any_clean_encode(self) -> None:
+        """A single clean encode anywhere resets the counter — the
+        upstream is alive and producing real embeddings, even if
+        many other chunks are bad. The circuit breaker exists to
+        detect *sustained* wedge, not transient turbulence.
 
-        Granularity note: the counter is updated per *mini-batch*, not
-        per chunk. A mini-batch with any successful chunk resets to 0,
-        even if other chunks in that same mini-batch failed. That's
-        intentional — the goal is "is the upstream wedged?", and a
-        mini-batch with mixed outcomes proves it isn't.
+        Granularity note: the counter is updated per *chunk* via
+        the bisection base case. A clean encode at any sub-batch
+        size resets to 0; each single-chunk base-case skip
+        increments by 1. This is finer-grained than the original
+        per-mini-batch design and means the breaker trips during
+        bisection at large batch sizes.
         """
 
         emb = _make_embedder(batch_size=10)
@@ -667,16 +703,18 @@ class TestWedgeCircuitBreaker:
         emb._client = client
 
         result = emb.encode([f"chunk-{i}" for i in range(60)])
-        # 59 of 60 chunks failed; 1 succeeded. The success in
-        # mini-batch 30-39 wiped the cumulative counter (which was at
-        # 30 from the three previous 100%-failed mini-batches) so we
-        # did NOT raise — instead we returned the partial result.
+        # 59 of 60 chunks failed; chunk 30 succeeded. The success
+        # during bisection of mini-batch 30-39 reset the counter
+        # (which was at ~30 from earlier mini-batches). Trailing
+        # mini-batches 40-49 and 50-59 then bisected to 20 base-case
+        # skips. Below threshold (50), so no raise.
         assert result.shape == (1, 4)
         assert len(emb.last_failed_indices) == 59
-        # Final counter reflects the two trailing all-failed
-        # mini-batches (40-49 and 50-59) — chunk count 20, well below
-        # threshold (50), so subsequent calls have headroom.
-        assert emb._wedge_consecutive_failures == 20
+        # Final counter is the trailing run of single-chunk skips
+        # since the last clean encode (chunk 30 at idx 30). Trailing
+        # 29 chunks (31-59) each hit base-case-skip → counter = 29.
+        # (Below threshold 50, so no raise — that's the test's point.)
+        assert emb._wedge_consecutive_failures == 29
 
     def test_counter_persists_across_encode_calls(self) -> None:
         """Two back-to-back encode() calls with all-failed chunks must

@@ -262,37 +262,28 @@ class OpenAIEmbedder(BaseEmbedder):
             batch_texts = texts_list[batch_start:batch_end]
             batch_orig_indices = list(range(batch_start, batch_end))
 
-            rows, failures = self._encode_with_bisection(client, batch_texts, batch_orig_indices)
-            good_rows.extend(rows)
-            failed_indices.extend(failures)
-
-            # Circuit-breaker bookkeeping. Any successful row in this
-            # mini-batch is enough to reset the consecutive-failure
-            # counter — a 50% failure rate is still useful work and
-            # should NOT trip the breaker. Only sustained 100%-failed
-            # mini-batches accumulate.
-            if rows:
-                self._wedge_consecutive_failures = 0
-            else:
-                self._wedge_consecutive_failures += len(batch_texts)
-
-            if self._wedge_consecutive_failures >= _WEDGE_THRESHOLD_CONSECUTIVE_FAILURES:
+            # Circuit-breaker bookkeeping happens INSIDE
+            # ``_encode_with_bisection`` at chunk-level granularity —
+            # any clean encode resets the counter, any base-case skip
+            # increments it. That way the breaker can trip *during* a
+            # mini-batch's bisection rather than waiting for the full
+            # mini-batch to complete (which at the wedged-rate of ~2.3
+            # sec per bisected chunk can take 10+ minutes for the
+            # default 256-chunk batch size — the failure mode the
+            # maintainer hit on 2026-05-26).
+            try:
+                rows, failures = self._encode_with_bisection(
+                    client, batch_texts, batch_orig_indices
+                )
+            except EmbedderWedged:
                 # Persist what we've collected so far so the caller's
                 # ``last_failed_indices`` reflects everything we
                 # actually tried (good telemetry — operators can see
                 # how far we got before tripping).
                 self.last_failed_indices = failed_indices
-                raise EmbedderWedged(
-                    f"Embedder {self.name!r} produced zero successful embeddings "
-                    f"across {self._wedge_consecutive_failures} consecutive chunks. "
-                    f"The bisection recovery is isolating every chunk one-at-a-time "
-                    f"without any succeeding — strong evidence the upstream "
-                    f"({self.base_url or 'OpenAI'} / model {self.model_id!r}) "
-                    f"is wedged (NaN cascade, wrong model, network outage). "
-                    f"Aborting this ingest pass; the skipped chunks stay in "
-                    f"chunks_missing_embedding so re-running once the upstream "
-                    f"recovers will pick up where we left off."
-                )
+                raise
+            good_rows.extend(rows)
+            failed_indices.extend(failures)
 
         self.last_failed_indices = failed_indices
 
@@ -378,9 +369,13 @@ class OpenAIEmbedder(BaseEmbedder):
                     len(texts),
                     len(row_vecs),
                 )
-                if len(texts) == 1:
-                    return [], list(orig_indices)
                 # Fall through to bisection — drop the partial response.
+                # For ``len(texts) == 1`` this hits the unified base-case
+                # path below, which increments the circuit-breaker counter
+                # AND logs the chunk-level WARNING (orig_idx / sha256 /
+                # chars) — both important. The previous early-return at
+                # this point bypassed the counter and made the row-count
+                # failure mode invisible to the wedge breaker.
             else:
                 # Local NaN check — Ollama in particular sometimes
                 # returns 2xx with NaN-laced floats; the SDK happily
@@ -390,6 +385,10 @@ class OpenAIEmbedder(BaseEmbedder):
                     i for i, vec in enumerate(row_vecs) if any(math.isnan(x) for x in vec)
                 ]
                 if not nan_row_idx_within_batch:
+                    # Clean response — reset the circuit-breaker
+                    # counter. Even one healthy embedding proves the
+                    # upstream isn't wedged.
+                    self._wedge_consecutive_failures = 0
                     return row_vecs, []
                 logger.debug(
                     "Embed batch (size=%d) returned %d NaN rows; bisecting to isolate",
@@ -438,6 +437,28 @@ class OpenAIEmbedder(BaseEmbedder):
                 len(single_text),
                 sha,
             )
+            # Base-case skip — chunk failed at minimum batch size.
+            # Increment the circuit-breaker counter and raise if we've
+            # hit a sustained run of single-chunk failures with no
+            # intervening clean encode. The check has to happen here
+            # (per-chunk) rather than at the outer mini-batch boundary
+            # because the wedge-rate (~2.3 sec per bisected chunk on
+            # the maintainer's 2026-05-26 ingest) means a 256-chunk
+            # mini-batch takes ~10 minutes to bisect — far too slow
+            # for a circuit breaker to be useful.
+            self._wedge_consecutive_failures += 1
+            if self._wedge_consecutive_failures >= _WEDGE_THRESHOLD_CONSECUTIVE_FAILURES:
+                raise EmbedderWedged(
+                    f"Embedder {self.name!r} produced zero successful embeddings "
+                    f"across {self._wedge_consecutive_failures} consecutive chunks. "
+                    f"The bisection recovery is isolating every chunk one-at-a-time "
+                    f"without any succeeding — strong evidence the upstream "
+                    f"({self.base_url or 'OpenAI'} / model {self.model_id!r}) "
+                    f"is wedged (NaN cascade, wrong model, network outage). "
+                    f"Aborting this ingest pass; the skipped chunks stay in "
+                    f"chunks_missing_embedding so re-running once the upstream "
+                    f"recovers will pick up where we left off."
+                )
             return [], [orig_indices[0]]
 
         mid = len(texts) // 2
