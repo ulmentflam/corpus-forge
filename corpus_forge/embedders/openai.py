@@ -165,8 +165,8 @@ class OpenAIEmbedder(BaseEmbedder):
         ``max_retries=0``) OR a NaN value detected in the returned
         vectors, the batch is recursively bisected to isolate the
         offending chunk(s). At ``len(batch) == 1`` the bad chunk is
-        logged at WARNING with its length, sha256, and first/last 80
-        characters, then skipped — the rest of the batch's good rows
+        logged at WARNING with non-PII metadata (orig_idx, chars,
+        sha256 prefix), then skipped — the rest of the batch's good rows
         still flow through. The original-text-list positions of
         skipped chunks are stored on :attr:`last_failed_indices` so
         the ingest caller can avoid writing the corresponding
