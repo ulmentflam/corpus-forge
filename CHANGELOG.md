@@ -11,30 +11,32 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 ### Fixed
 
 - `OpenAIEmbedder.encode` now **bisects on failure** instead of
-  giving up on the whole batch. When a chunk triggers either a
-  transport exception (5xx after the SDK's now-zero retries) OR a
-  NaN value in the response, the batch is recursively halved until
-  the offending chunk is isolated, logged at WARNING (length,
-  sha256, first-80 and last-80 chars), and skipped. The remaining
-  good rows in the batch still flow through. The OpenAI SDK's
-  built-in retry policy is also disabled (``max_retries=0``) so the
-  failures fast-fail rather than burning ~8 minutes per file in
-  exponential backoff. Surfaced on 2026-05-22: Ollama-served
-  ``qwen3-embedding:8b`` intermittently returns NaN-laced 500s for
-  ~3% of chunks in episodes of 1-3 sequential batches; previously
-  this stalled the entire ingest 8 min/file with no diagnostic
-  output. The skipped chunk_ids stay in
-  ``chunks_missing_embedding`` so a future ingest pass retries them
-  once the model recovers. Callers (``ingest_one``,
-  ``embed.backfill_embedder``) read ``embedder.last_failed_indices``
-  after each ``encode`` call and filter the corresponding chunk_ids
-  out of the ``write_embeddings`` pair list. Regression tests at
-  ``tests/unit/test_openai_embedder_bisection.py`` (14 tests pin
-  the happy path, single-chunk NaN, single-chunk 5xx, single bad
-  chunk in a 4-batch, two bad chunks in a 6-batch, transport
-  exception bisection, multi-batch isolation, ``last_failed_indices``
-  reset semantics, all-fail batch, and the ``max_retries=0``
-  constructor kwarg).
+  giving up on the whole batch. On any 5xx or NaN-laced response,
+  the batch is recursively halved until the offending chunk is
+  isolated, logged at WARNING with `orig_idx` / `chars` / `sha256`
+  (no chunk text — see PII note below), and skipped. The remaining
+  good rows still flow through. `OpenAI(max_retries=0)` disables
+  the SDK's exponential backoff so failures fast-fail.
+  Skipped `chunk_ids` stay in `chunks_missing_embedding` for the
+  next pass; callers (`ingest_one`, `embed.backfill_embedder`)
+  read `embedder.last_failed_indices` after each `encode` and
+  filter their `write_embeddings` pair list accordingly.
+  - Non-recoverable 4xx errors (auth, missing model, 400/422) are
+    re-raised immediately instead of being bisected — bisection
+    can't fix a wrong config, so we surface the real cause.
+  - Provider-side row-count mismatches (response returns fewer / more
+    rows than the input batch) are also treated as failure for the
+    bisection.
+  - `embed.backfill_embedder` exits its inner loop on an all-skipped
+    batch instead of refetching the same `chunks_missing_embedding`
+    rows forever.
+  - WARNING log intentionally omits the chunk text preview to avoid
+    leaking PII from personal vault content; `sha256` is enough to
+    look up the chunk in `corpus.chunks` and reproduce out-of-band.
+  Regression coverage: `tests/unit/test_openai_embedder_bisection.py`
+  (happy path, single-chunk NaN/5xx, multi-chunk bisection,
+  recoverable-vs-non-recoverable triage, row-count mismatch,
+  all-skipped loop exit).
 
 ### Added
 
