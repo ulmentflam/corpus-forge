@@ -100,15 +100,32 @@ class EmbedderWedged(Exception):
     """
 
 
-# Circuit-breaker threshold. After this many *consecutive* skipped
-# chunks (across mini-batches and across ``encode`` calls), we
-# conclude the embedder is wedged and raise. Sized to absorb a small
-# burst of legitimately bad chunks (e.g. ~3% NaN rate on 1000 chunks
-# = 30 sporadic skips, well below 50) while still tripping quickly
-# when the upstream is fully broken (50 chunks ≈ 1-2 minutes at the
-# bisection-heavy rate the maintainer observed). Not yet configurable
-# via ``config.toml`` — promote to a config field if a real-world
-# vault needs a different setpoint.
+# Circuit-breaker threshold. After this many chunks across consecutive
+# *all-failed* mini-batches (no chunk in any of them succeeded), we
+# conclude the embedder is wedged and raise. Counter accumulates
+# across both mini-batches within an ``encode`` call AND across
+# ``encode`` calls; resets the moment any mini-batch produces at
+# least one successful embedding.
+#
+# Sized to absorb a small burst of legitimately bad chunks (e.g. ~3%
+# NaN rate on 1000 chunks = 30 sporadic skips, well below 50) while
+# still tripping quickly when the upstream is fully broken. With
+# default ``batch_size=256`` the breaker trips after the first
+# all-failed mini-batch (~3-8 min depending on response speed) since
+# 256 > 50; with smaller batch sizes it takes proportionally more
+# all-failed batches.
+#
+# Why mini-batch-level (not per-chunk):
+# Per-chunk accounting would spuriously trip on mixed batches where
+# the failures happen to cluster in the left subtree of bisection
+# (DFS preorder visits the entire left subtree before any right-
+# subtree chunk, so the counter would race past threshold before
+# discovering that the right half is clean). Mini-batch-level
+# accounting waits for the WHOLE bisection to return before deciding
+# — by then we know the real "any successes?" signal.
+#
+# Not yet configurable via ``config.toml`` — promote to a config
+# field if a real-world vault needs a different setpoint.
 _WEDGE_THRESHOLD_CONSECUTIVE_FAILURES = 50
 
 
@@ -147,24 +164,17 @@ class OpenAIEmbedder(BaseEmbedder):
         # the next ingest pass instead of being permanently dead-marked.
         self.last_failed_indices: list[int] = []
         # Circuit-breaker state. Counts the chunks in consecutive
-        # 100%-failed mini-batches; resets to 0 the moment any chunk
-        # succeeds. When the count crosses
-        # ``_WEDGE_THRESHOLD_CONSECUTIVE_FAILURES`` we raise
+        # all-failed mini-batches; resets to 0 the moment a mini-batch
+        # produces at least one successful embedding. When the count
+        # crosses ``_WEDGE_THRESHOLD_CONSECUTIVE_FAILURES`` we raise
         # :class:`EmbedderWedged` from :meth:`encode` so the ingest
         # loop can abort with a clear message instead of skipping
-        # every chunk in silence against a wedged upstream.
+        # every chunk in silence against a wedged upstream. Accounting
+        # is mini-batch-level (not per-chunk) so that DFS bisection
+        # order can't spuriously trip on mixed batches where failures
+        # cluster in the left subtree — see the comment in
+        # :meth:`encode`.
         self._wedge_consecutive_failures: int = 0
-        # Per-mini-batch sidecar of base-case-skipped ``orig_indices``.
-        # Reset at the start of every mini-batch iteration in
-        # :meth:`encode` and appended to by the base case in
-        # :meth:`_encode_with_bisection`. Survives the abandoned
-        # recursion frames when ``EmbedderWedged`` raises mid-bisection,
-        # so the outer handler can recover the chunks that had already
-        # been isolated and skipped before the trip (otherwise those
-        # ``orig_indices`` are stuck in returned-but-never-collected
-        # ``left_failed`` / ``right_failed`` accumulators that get
-        # discarded when the exception unwinds the stack).
-        self._wedge_in_progress_failed: list[int] = []
 
     def _get_client(self):
         """Get the OpenAI client, initializing on first call.
@@ -273,43 +283,61 @@ class OpenAIEmbedder(BaseEmbedder):
             batch_texts = texts_list[batch_start:batch_end]
             batch_orig_indices = list(range(batch_start, batch_end))
 
-            # Circuit-breaker bookkeeping happens INSIDE
-            # ``_encode_with_bisection`` at chunk-level granularity —
-            # any clean encode resets the counter, any base-case skip
-            # increments it. That way the breaker can trip *during* a
-            # mini-batch's bisection rather than waiting for the full
-            # mini-batch to complete (which at the wedged-rate of ~2.3
-            # sec per bisected chunk can take 10+ minutes for the
-            # default 256-chunk batch size — the failure mode the
-            # maintainer hit on 2026-05-26).
+            # Bisection runs side-effect-free now — it returns
+            # ``(rows, failures)`` and never touches the wedge counter.
+            # Circuit-breaker accounting happens HERE, AFTER the entire
+            # mini-batch's bisection has completed.
             #
-            # Reset the in-progress sidecar so it captures only THIS
-            # mini-batch's base-case skips. Read by the wedged-path
-            # handler below to recover failures that were isolated
-            # mid-bisection (those return-path accumulators are lost
-            # when the base case raises and the recursion unwinds).
-            self._wedge_in_progress_failed = []
-            try:
-                rows, failures = self._encode_with_bisection(
-                    client, batch_texts, batch_orig_indices
-                )
-            except EmbedderWedged:
-                # Persist BOTH the cross-mini-batch accumulator (which
-                # captures failures from mini-batches that returned
-                # normally) AND the in-progress sidecar (which captures
-                # failures isolated by the current mini-batch's
-                # bisection before the trip — these would otherwise be
-                # lost from the recursive return path). Together they
-                # form the complete set of chunks attempted before the
-                # wedge tripped — what ``ingest_one`` reads via
-                # ``last_failed_indices`` to filter ``write_embeddings``
-                # pair lists, and what operators need in the post-mortem.
-                self.last_failed_indices = list(failed_indices) + list(
-                    self._wedge_in_progress_failed
-                )
-                raise
+            # Why batch-level (not per-chunk):
+            # DFS preorder visits the left subtree fully before any of
+            # the right subtree. A 100-chunk mini-batch with chunks 0-49
+            # all-NaN and chunks 50-99 all-clean would spuriously trip
+            # under per-chunk accounting — the counter would hit
+            # threshold during the left subtree's 50 base-case skips
+            # before the right subtree had a chance to demonstrate that
+            # the embedder is alive. Only the final ``(rows, failures)``
+            # of the mini-batch reflects the real "any successes?"
+            # signal, so the counter must wait for that.
+            rows, failures = self._encode_with_bisection(client, batch_texts, batch_orig_indices)
             good_rows.extend(rows)
             failed_indices.extend(failures)
+
+            if rows:
+                # At least one chunk in this mini-batch succeeded —
+                # embedder is alive. Reset the streak counter so the
+                # next mini-batch starts from zero.
+                self._wedge_consecutive_failures = 0
+            else:
+                # Mini-batch produced zero successful embeddings — every
+                # chunk in it was isolated and skipped. Add this batch's
+                # chunk count to the streak; trip if we've crossed the
+                # threshold across one or more consecutive all-failed
+                # mini-batches.
+                self._wedge_consecutive_failures += len(batch_texts)
+                if self._wedge_consecutive_failures >= _WEDGE_THRESHOLD_CONSECUTIVE_FAILURES:
+                    # Persist what we tried so callers (operators,
+                    # ``_write_embeddings_for_chunks``) can see the full
+                    # failed-chunk list at trip time. ``failed_indices``
+                    # already covers everything attempted across mini-
+                    # batches up to and including this trip (we
+                    # ``extend(failures)`` before the threshold check).
+                    self.last_failed_indices = list(failed_indices)
+                    streak = self._wedge_consecutive_failures
+                    n_minibatches = streak // len(batch_texts)
+                    raise EmbedderWedged(
+                        f"Embedder {self.name!r} produced zero successful "
+                        f"embeddings across {streak} consecutive chunks "
+                        f"(threshold={_WEDGE_THRESHOLD_CONSECUTIVE_FAILURES}). "
+                        f"Every chunk in the last {n_minibatches} "
+                        f"mini-batch(es) was isolated and skipped — strong "
+                        f"evidence the upstream "
+                        f"({self.base_url or 'OpenAI'} / model "
+                        f"{self.model_id!r}) is wedged (NaN cascade, wrong "
+                        f"model, network outage). Aborting this ingest pass; "
+                        f"the skipped chunks stay in chunks_missing_embedding "
+                        f"so re-running once the upstream recovers will pick "
+                        f"up where we left off."
+                    )
 
         self.last_failed_indices = failed_indices
 
@@ -411,10 +439,6 @@ class OpenAIEmbedder(BaseEmbedder):
                     i for i, vec in enumerate(row_vecs) if any(math.isnan(x) for x in vec)
                 ]
                 if not nan_row_idx_within_batch:
-                    # Clean response — reset the circuit-breaker
-                    # counter. Even one healthy embedding proves the
-                    # upstream isn't wedged.
-                    self._wedge_consecutive_failures = 0
                     return row_vecs, []
                 logger.debug(
                     "Embed batch (size=%d) returned %d NaN rows; bisecting to isolate",
@@ -463,39 +487,14 @@ class OpenAIEmbedder(BaseEmbedder):
                 len(single_text),
                 sha,
             )
-            # Base-case skip — chunk failed at minimum batch size.
-            # Increment the circuit-breaker counter and raise if we've
-            # hit a sustained run of single-chunk failures with no
-            # intervening clean encode. The check has to happen here
-            # (per-chunk) rather than at the outer mini-batch boundary
-            # because the wedge-rate (~2.3 sec per bisected chunk on
-            # the maintainer's 2026-05-26 ingest) means a 256-chunk
-            # mini-batch takes ~10 minutes to bisect — far too slow
-            # for a circuit breaker to be useful.
-            #
-            # Also append to the per-mini-batch sidecar BEFORE the
-            # threshold check. This way the chunk that trips the
-            # breaker (and every previously-isolated chunk from this
-            # mini-batch) is preserved on ``self._wedge_in_progress_failed``
-            # for ``encode``'s wedged-path handler to merge into
-            # ``last_failed_indices``. Without this, the chunks
-            # isolated mid-bisection are stuck in returned-but-never-
-            # collected ``left_failed`` / ``right_failed`` accumulators
-            # that the exception unwind discards.
-            self._wedge_in_progress_failed.append(orig_indices[0])
-            self._wedge_consecutive_failures += 1
-            if self._wedge_consecutive_failures >= _WEDGE_THRESHOLD_CONSECUTIVE_FAILURES:
-                raise EmbedderWedged(
-                    f"Embedder {self.name!r} produced zero successful embeddings "
-                    f"across {self._wedge_consecutive_failures} consecutive chunks. "
-                    f"The bisection recovery is isolating every chunk one-at-a-time "
-                    f"without any succeeding — strong evidence the upstream "
-                    f"({self.base_url or 'OpenAI'} / model {self.model_id!r}) "
-                    f"is wedged (NaN cascade, wrong model, network outage). "
-                    f"Aborting this ingest pass; the skipped chunks stay in "
-                    f"chunks_missing_embedding so re-running once the upstream "
-                    f"recovers will pick up where we left off."
-                )
+            # Base-case skip. NO circuit-breaker state mutation here —
+            # the counter is updated only at the mini-batch boundary in
+            # ``encode`` after both subtrees have been explored. See the
+            # docstring on ``_WEDGE_THRESHOLD_CONSECUTIVE_FAILURES`` and
+            # the comment at the mini-batch accounting block in
+            # ``encode`` for the reasoning (DFS preorder would otherwise
+            # cause spurious trips on mixed batches where the failures
+            # happen to cluster in the left subtree).
             return [], [orig_indices[0]]
 
         mid = len(texts) // 2
