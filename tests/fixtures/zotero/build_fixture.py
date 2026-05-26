@@ -533,7 +533,7 @@ def smoke() -> int:
             "WHERE fd.fieldName='title' ORDER BY i.key"
         )
         titles = cur.fetchall()
-        print(f"items={n_items} attachments={n_att} lastclient={client}")
+        print(f"items={n_items} attachments={n_att} lastVersion={client}")
         print("titles:")
         for k, t in titles:
             print(f"  {k} -> {t}")

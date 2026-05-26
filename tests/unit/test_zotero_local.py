@@ -190,8 +190,7 @@ class TestSchemaProbe:
                 "PRIMARY KEY (setting, key))"
             )
             conn.execute(
-                "INSERT INTO settings (setting, key, value) "
-                "VALUES ('account', 'userID', '12345')"
+                "INSERT INTO settings (setting, key, value) VALUES ('account', 'userID', '12345')"
             )
             conn.commit()
         finally:

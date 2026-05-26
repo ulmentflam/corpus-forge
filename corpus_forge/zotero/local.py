@@ -125,9 +125,7 @@ class ZoteroLocalReader:
         but no ``lastclient`` row.
         """
         try:
-            cur = conn.execute(
-                "SELECT 1 FROM settings WHERE setting = 'client' LIMIT 1"
-            )
+            cur = conn.execute("SELECT 1 FROM settings WHERE setting = 'client' LIMIT 1")
             row = cur.fetchone()
         except sqlite3.OperationalError as exc:
             raise ZoteroSchemaUnsupported(
