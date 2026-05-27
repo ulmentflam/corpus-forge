@@ -1,0 +1,19 @@
+# Skycast configuration.
+# A single TOML file is the only configuration surface in the first
+# release (kickoff decision D-4). Environment variables are not read.
+
+[general]
+# Default temperature unit. One of "celsius" or "fahrenheit".
+default_unit = "celsius"
+
+[cache]
+# On-disk cache of recent readings. The TTL matches kickoff decision D-2.
+enabled = true
+ttl_seconds = 600
+path = "~/.cache/skycast/readings.db"
+
+[provider]
+# Upstream weather provider. Swappable behind a single client function.
+name = "example-weather"
+timeout_seconds = 5
+retries = 2

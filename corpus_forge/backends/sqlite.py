@@ -53,6 +53,8 @@ def _coerce_to_textchunk(item: Any) -> TextChunk:
 if TYPE_CHECKING:
     import numpy as np
 
+    from corpus_forge.classifiers.base import ClassifiableDocument
+
     from ..retrieval.types import Hit
     from ..sources.base import RawConversation
 
@@ -3278,7 +3280,7 @@ class SQLiteBackend:
         dataset_id: "int | None" = None,
         *,
         include_classified: bool = False,
-    ) -> "Iterator[Any]":
+    ) -> "Iterator[ClassifiableDocument]":
         """Yield :class:`ClassifiableDocument` rows for the classifier chain.
 
         Mirrors :meth:`PostgresBackend.iter_documents_for_classification`

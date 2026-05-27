@@ -53,6 +53,31 @@ CF_NON_INTERACTIVE=1 CF_BACKEND=sqlite CF_MCP=yes CF_HF=yes \
   curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh | sh
 ```
 
+### Install with Claude (copy-paste prompt)
+
+Already living in Claude Code, Claude Desktop, or another MCP client?
+Skip the manual steps — let the assistant do the whole install *and*
+the MCP wiring. Paste this prompt and answer the two questions it asks:
+
+```text
+Following this repo's CLAUDE.md end to end, do the full corpus-forge install + MCP wiring for me.
+1. Install corpus-forge, picking the right method for my platform.
+2. Run `corpus-forge setup`, then `corpus-forge migrate`.
+3. Wire it up as an MCP server in whatever client I'm running
+   right now — Claude Code (.mcp.json), Claude Desktop config, or the
+   Anthropic Agent SDK — using the exact server block from CLAUDE.md.
+4. Register the `corpus-forge-search` and `corpus-curate` skills.
+5. Run the first-run sanity sequence (migrate → doctor → estimate →
+   ingest → embed → search) on the small corpus path I give you.
+If you're not a Claude client, follow AGENTS.md instead.
+Ask me for my backend (postgres or sqlite) and my corpus path before
+you start if I haven't already told you.
+```
+
+`CLAUDE.md` is the canonical guide the assistant follows;
+[`AGENTS.md`](AGENTS.md) (any MCP client) and [`GEMINI.md`](GEMINI.md)
+(Gemini CLI / Code Assist) are the equivalents for non-Claude clients.
+
 ### Upgrade + diagnostics
 
 ```bash
@@ -175,6 +200,8 @@ corpus-forge migrate
 corpus-forge estimate ~/Notes
 
 # 5. Run a one-shot ingestion pass.
+#    No corpus of your own yet? Point a source at examples/sample-corpus/
+#    — a ready-made mini knowledge base — and follow its README.
 corpus-forge ingest --once
 
 # 6. Backfill embeddings for the active embedder(s).
@@ -242,6 +269,68 @@ corpus-forge export feedback-pairs --dataset claude-code \
 | Anywhere | sqlite-only, no GPU | `device = "cpu"` |
 
 Set `device = "auto"` to let sentence-transformers pick.
+
+## Embedding model recommendations
+
+corpus-forge is multi-embedder by design — declare several `[[embedders]]`
+blocks and backfill them independently. The picks below are the condensed
+headline of [`docs/embedding-models.md`](docs/embedding-models.md), which
+carries the full per-lane survey, tradeoffs, and sources. These rankings are
+literature-grounded (HF Hub + live MTEB/MMTEB/CoIR/ViDoRe); empirical
+on-machine rankings against *your* corpus are pending the
+`corpus-forge eval embedders` run, which should break any close tie.
+
+| Lane | Default (quality) | Fast / local | API |
+|---|---|---|---|
+| **English text** | Qwen3-Embedding-8B | Qwen3-Embedding-0.6B / BGE-large-en-v1.5 | OpenAI text-embedding-3-large |
+| **Code** | nomic-embed-code | potion-code-16M (static fast tier) | Voyage voyage-code-3 |
+| **Multilingual** | Qwen3-Embedding-8B | multilingual-e5-large-instruct | Cohere embed-multilingual-v3 |
+| **Multimodal** | SigLIP 2 (so400m) | nomic-embed-vision-v1.5 | Voyage voyage-multimodal-3 |
+
+The Qwen3 family (Apache-2.0) is the safe local default for prose, code, and
+100+ languages alike; `potion-code-16M` is a CPU-instant *fast tier* you wire
+in front of a dense embedder (`[retrieval].fast_tier_embedder_name`), not a
+standalone index. **Watch licensing:** `jinaai/jina-embeddings-v3` and
+`jinaai/jina-clip-v2` are **CC-BY-NC-4.0 (non-commercial)** — flag before
+shipping a product. Copy-paste blocks for the headline picks (field format
+matches [`config.example.toml`](config.example.toml)):
+
+```toml
+# English / multilingual quality default — needs a GPU (~16 GB+).
+[[embedders]]
+name      = "qwen3_8b"
+provider  = "sentence_transformers"
+model_id  = "Qwen/Qwen3-Embedding-8B"
+dimension = 4096
+normalize = true
+distance  = "cosine"
+active    = true
+
+# Static fast tier — CPU-instant, ~16 MB. Point
+# `[retrieval].fast_tier_embedder_name` at this name; not a sole index.
+[[embedders]]
+name      = "potion_code_16m"
+provider  = "model2vec"
+model_id  = "minishlab/potion-code-16M"
+dimension = 256
+normalize = true
+distance  = "cosine"
+active    = true
+
+# Managed API — set OPENAI_API_KEY (or `base_url` for any OpenAI-compatible host).
+[[embedders]]
+name        = "openai_3l"
+provider    = "openai"
+model_id    = "text-embedding-3-large"
+dimension   = 3072
+normalize   = true
+distance    = "cosine"
+active      = false
+api_key_env = "OPENAI_API_KEY"
+```
+
+Add a block, keep existing embedders `active`, then
+`corpus-forge embed --embedder <name>` encodes only the missing vectors.
 
 ## Optional extras
 

@@ -321,6 +321,10 @@ ignore = ["PLR0911", "PLR0912", "PLR0913", "PLR0915"]
 # cli.py uses intentional lazy imports inside command functions for startup speed
 # and idiomatic typer.Option(...) defaults that ruff flags as B008.
 "corpus_forge/cli.py" = ["PLC0415", "B008"]
+# backends/conn.py defers `import psycopg` inside open_conn() so the shared
+# DB-API factory stays importable on SQLite-only installs (same lazy contract
+# the two CLI subgroups carried before this body was deduplicated here).
+"corpus_forge/backends/conn.py" = ["PLC0415"]
 # mcp/server.py defers all mcp.* imports into build_server() so the module is
 # importable without the optional [mcp] extra (mirrors retrieval/rerank/*.py).
 "corpus_forge/mcp/server.py" = ["PLC0415"]
@@ -368,11 +372,24 @@ ignore = ["PLR0911", "PLR0912", "PLR0913", "PLR0915"]
 # CLI surface (tests pass --format jsonl) but only jsonl is implemented in this
 # wave; the parameter is retained for future formats.
 "corpus_forge/cli_feedback.py" = ["PLC0415", "ARG001"]
+# eval/embedder_ranking.py — the pure ranking core (rank_embedders,
+# load_candidates) must import on hosts without the ML/retrieval stack, so the
+# real-wiring evaluator defers torch + retrieval imports into the function body
+# (startup/optional-dep contract, same as the modules above).
+"corpus_forge/eval/embedder_ranking.py" = ["PLC0415"]
 # Phase P Wave 2: tester-authored test_reranker_learned.py has an I001 (import
 # order) violation in TestLearnedRerankerProtocol.test_satisfies_reranker_protocol
 # (``from learned import LearnedReranker`` before ``from rerank import Reranker``).
 # Suppressed here; tester should fix in a follow-up.  Coder cannot modify test files.
 "tests/unit/test_reranker_learned.py" = ["I001"]
+# scripts/build_fixture_corpus.py emits the multilingual prose fixture family
+# (prose/multilingual/*.md). The builder necessarily holds real Cyrillic / CJK /
+# Arabic string literals, which RUF001 flags as "ambiguous" against Latin
+# lookalikes. The emitted fixture tree is already lint-excluded (see
+# [tool.ruff].extend-exclude, "intentionally-trivial files in many languages");
+# this extends the same intent to the generator that produces it. RUF001 only —
+# every other rule still applies to the script.
+"scripts/build_fixture_corpus.py" = ["RUF001"]
 # Tests use magic values, lambda args, broad raises, composite assertions freely
 "tests/**/*.py" = [
     "PLR2004",  # magic-value-comparison

@@ -1,0 +1,9 @@
+day,lookups,cache_hits,cache_misses,unique_cities,avg_latency_ms
+Mon,142,118,24,37,212
+Tue,167,141,26,41,198
+Wed,153,129,24,39,205
+Thu,189,160,29,44,221
+Fri,204,172,32,48,233
+Sat,98,79,19,28,187
+Sun,87,71,16,25,179
+Total,1040,870,170,52,205

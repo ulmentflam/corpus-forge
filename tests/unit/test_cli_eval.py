@@ -68,6 +68,25 @@ class TestCommandPresence:
         text = result.output.lower()
         assert "training" in text or "chunking" in text or "corpus" in text
 
+    def test_embedders_subcommand_registered(self, runner: CliRunner):
+        """The embedder-ranking sweep is a registered `eval` subcommand."""
+        result = runner.invoke(app, ["eval", "--help"])
+        assert result.exit_code == 0
+        assert "embedders" in result.output.lower()
+
+    def test_eval_embedders_help(self, runner: CliRunner):
+        """`eval embedders --help` exits 0 and lists the key options.
+
+        A full invocation needs real models + a populated backend (the
+        evaluator embeds the corpus and scores retrieval), so we only pin
+        the help surface here — same boundary the embedder-ranking unit
+        suite draws between the pure core and the real-wiring path.
+        """
+        result = runner.invoke(app, ["eval", "embedders", "--help"])
+        assert result.exit_code == 0
+        for opt in ("--candidates", "--out"):
+            assert opt in result.output, f"--help missing {opt!r}"
+
 
 # ── retrieval subcommand: smoke against a mocked retriever ────────────────
 

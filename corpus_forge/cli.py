@@ -1718,6 +1718,185 @@ def eval_distill(
         print(_json.dumps(result, indent=2, sort_keys=True))
 
 
+# ── eval embedders subcommand (embedder-ranking harness) ──────────────────
+
+
+def _current_git_commit() -> str | None:
+    """Best-effort short HEAD commit for the run envelope (fail-closed).
+
+    Cheap ``git rev-parse`` probe — returns ``None`` when git is missing,
+    the cwd isn't a checkout, or the call errors out.  Mirrors the
+    fail-closed git probe in ``corpus_forge.update.channels``.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    commit = result.stdout.strip()
+    return commit if result.returncode == 0 and commit else None
+
+
+def _build_backend_for_eval(config):
+    """Instantiate + migrate the configured backend (shared eval plumbing).
+
+    Same backend-selection logic ``_build_retriever_for_eval`` uses,
+    factored out so the embedder-ranking sweep can build a corpus +
+    registry over the *same* backend without also wiring a retriever.
+    """
+    if config.backend.kind == "sqlite":
+        from corpus_forge.backends.sqlite import SQLiteBackend
+
+        backend = SQLiteBackend(path=config.backend.dsn, schema=config.backend.schema)
+    else:
+        from corpus_forge.backends.postgres import PostgresBackend
+
+        backend = PostgresBackend(dsn=config.backend.dsn, schema=config.backend.schema)
+    backend.migrate()
+    return backend
+
+
+@eval_app.command("embedders")
+def eval_embedders(
+    candidates: Path = typer.Option(..., "--candidates", help="TOML manifest of embedders to rank"),
+    gold: str = typer.Option(
+        "forge_self", help="Bundled gold-set name (e.g. forge_self) or path to a .jsonl"
+    ),
+    k: str = typer.Option("1,5,10", help="Comma-separated k cutoffs"),
+    out: Path = typer.Option(
+        None, "--out", "--json", help="Write the ranked leaderboard JSON here"
+    ),
+) -> None:
+    """Rank candidate embedders by retrieval quality on a shared gold set.
+
+    Sweeps every embedder in the ``--candidates`` TOML manifest, embeds the
+    *same* corpus + scores each against the *same* gold set, and emits a
+    ranked leaderboard envelope (sorted by NDCG@10, descending).  Use it to
+    pick the best embedder for a corpus before committing to a full ingest +
+    embed, or to pin embedder choice against a regression gold set.
+
+    The harness reuses the same backend + gold-set plumbing as
+    ``eval retrieval``: it loads your config, opens the configured backend,
+    assembles the ``(chunk_id, text)`` corpus already ingested there, and
+    resolves ``--gold`` exactly like ``eval retrieval --dataset`` does
+    (bundled name or path to a ``.jsonl``).  Each candidate is embedded with
+    a throwaway registry instance so the sweep doesn't poison the global one.
+
+    The leaderboard JSON goes to ``--out`` (or stdout when omitted); a short
+    human-readable ranked table is printed to stderr.  Requires real models +
+    a populated backend, so it is NOT exercised by the unit suite.
+    """
+    import json as _json
+
+    from corpus_forge.embedders.registry import EmbedderRegistry, register_from_config
+    from corpus_forge.eval.embedder_ranking import (
+        DEFAULT_PRIMARY_METRIC,
+        load_candidates,
+        make_default_evaluator,
+        rank_embedders,
+    )
+
+    # Parse k cutoffs up-front so a bad value fails before any DB/model work.
+    k_values = _parse_csv_ints(k)
+    # The leaderboard ranks on DEFAULT_PRIMARY_METRIC (e.g. "ndcg@10"); its
+    # cutoff must be among the computed k_values or the ranking metric is
+    # uncomputable.  Parse the integer after "@" and append it if missing
+    # (preserving the user's order).
+    if "@" in DEFAULT_PRIMARY_METRIC:
+        primary_cutoff = int(DEFAULT_PRIMARY_METRIC.split("@", 1)[1])
+        if primary_cutoff not in k_values:
+            k_values.append(primary_cutoff)
+
+    # Resolve the gold set the SAME way `eval retrieval`/`_do_eval` does:
+    # bundled name (forge_self) or a path to a .jsonl.
+    try:
+        gold_path = _resolve_dataset(gold)
+    except FileNotFoundError as exc:
+        ui_error(str(exc))
+        raise typer.Exit(code=2) from None
+
+    # Load the candidate manifest before touching the backend so a malformed
+    # manifest fails fast with a clear message.
+    try:
+        candidate_rows = load_candidates(candidates)
+    except (FileNotFoundError, ValueError) as exc:
+        ui_error(str(exc))
+        raise typer.Exit(code=2) from None
+
+    # Reuse the eval config + backend plumbing (`_load_eval_config` raises a
+    # typer.Exit on missing config; `_build_backend_for_eval` mirrors the
+    # backend selection in `_build_retriever_for_eval`).
+    config = _load_eval_config()
+    backend = _build_backend_for_eval(config)
+
+    # Assemble the fixed `(chunk_id, text)` corpus over the populated backend.
+    # We register the config's first active embedder as a *probe* purely to
+    # enumerate the already-ingested chunks (a freshly-registered embedder has
+    # no embeddings, so `chunks_missing_embedding` yields the full corpus).
+    embedders = list(config.embedders or [])
+    if not embedders:
+        raise typer.BadParameter(
+            "no embedders configured; add at least one [[embedders]] entry to config.toml"
+        )
+    probe_cfg = next((e for e in embedders if getattr(e, "active", True)), embedders[0])
+    probe_reg = EmbedderRegistry()
+    probe = register_from_config(probe_reg, probe_cfg)
+    probe_id = backend.register_embedder(probe)
+
+    total = int(backend.count_chunks_missing_embedding(probe_id))
+    if total <= 0:
+        ui_error(
+            "no chunks found in the configured backend; run `corpus-forge ingest` "
+            "(and `embed`) before ranking embedders."
+        )
+        raise typer.Exit(code=2)
+    corpus = list(backend.chunks_missing_embedding(probe_id, limit=total))
+
+    # Each candidate is embedded + scored via the real-wiring evaluator over a
+    # throwaway registry, so the global registry is never poisoned.
+    registry = EmbedderRegistry()
+    envelope = rank_embedders(
+        candidate_rows,
+        evaluate_fn=make_default_evaluator(
+            corpus,
+            gold_path,
+            backend,
+            registry,
+            k_values=k_values,
+        ),
+        primary_metric=DEFAULT_PRIMARY_METRIC,
+        dataset=gold,
+        git_commit=_current_git_commit(),
+    )
+
+    # Leaderboard JSON: data → stdout (or --out file). Human summary → stderr,
+    # so piping `--json` to a file (or stdout) stays machine-clean.
+    payload = _json.dumps(envelope, indent=2, sort_keys=True)
+    if out is not None:
+        out.write_text(payload + "\n", encoding="utf-8")
+        ui_info(f"Wrote embedder leaderboard -> {out}")
+    else:
+        print(payload)
+
+    # Short human-readable ranked table. ``ui_console`` is the singleton
+    # Console pinned to ``stderr=True`` (see ui/console.py), so this summary
+    # never collides with the leaderboard JSON on stdout.
+    ranking = envelope["metrics"]["ranking"]
+    primary = envelope["metrics"]["primary_metric"]
+    ui_console.print(f"Embedder ranking (by {primary}):", style="bold")
+    for rank, row in enumerate(ranking, start=1):
+        score = row["metrics"].get(primary)
+        score_str = "n/a" if score is None else f"{score:.4f}"
+        ui_console.print(f"  {rank}. {row['name']:<24} {primary}={score_str}")
+
+
 # ── mcp subcommand group (Phase R5) ───────────────────────────────────────
 
 

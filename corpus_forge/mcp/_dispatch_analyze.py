@@ -24,14 +24,27 @@ Cross-reference: ``.planning/tdd/phase_o_eda_cleaning.md`` § Wave O4.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeAlias
+
+if TYPE_CHECKING:
+    from mcp.types import CallToolResult
+
+    # Each dispatch coroutine returns either a JSON-serialisable result mapping
+    # or a ``CallToolResult(isError=True)`` produced by ``_error_result``.
+    DispatchResult: TypeAlias = dict[str, object] | CallToolResult
+
+# A resolved chunk is a heterogeneous JSON-ish record (id/text/embedding/
+# document_id/metadata/...).  Values are intentionally ``Any``: the schema
+# varies across backends and the analyze helpers downstream type their
+# ``chunks`` params the same way (``list[dict[str, Any]]``).
+Chunk: TypeAlias = dict[str, Any]
 
 # ---------------------------------------------------------------------------
 # Module-level helpers — must be at module level for monkeypatching.
 # ---------------------------------------------------------------------------
 
 
-def _fetch_chunks_for_dataset(backend: Any, dataset: str) -> list[dict[str, Any]]:
+def _fetch_chunks_for_dataset(backend: Any, dataset: str) -> list[Chunk]:
     """Fetch all chunks for *dataset* from *backend*.
 
     The backend is expected to expose a ``list_chunks`` or similar method.
@@ -54,7 +67,7 @@ def _fetch_chunks_for_dataset(backend: Any, dataset: str) -> list[dict[str, Any]
     return list(result)
 
 
-def _fetch_chunks_by_ids(backend: Any, chunk_ids: list[int]) -> list[dict[str, Any]]:
+def _fetch_chunks_by_ids(backend: Any, chunk_ids: list[int]) -> list[Chunk]:
     """Fetch a list of chunks by their primary-key IDs.
 
     In test fixtures the backend is a MagicMock and this function is
@@ -102,7 +115,7 @@ async def _dispatch_analyze_corpus(
     *,
     backend: Any,
     writes_enabled: bool,
-) -> Any:
+) -> DispatchResult:
     """analyze_corpus — token/length stats sweep over a dataset.
 
     Returns:
@@ -147,7 +160,7 @@ async def _dispatch_find_duplicates(
     *,
     backend: Any,
     writes_enabled: bool,
-) -> Any:
+) -> DispatchResult:
     """find_duplicates — exact + near-duplicate detection over a dataset.
 
     Returns:
@@ -187,7 +200,7 @@ async def _dispatch_cluster_topics(
     *,
     backend: Any,
     writes_enabled: bool,
-) -> Any:
+) -> DispatchResult:
     """cluster_topics — topic clustering over a dataset.
 
     Returns:
@@ -274,7 +287,7 @@ async def _dispatch_score_quality(
     *,
     backend: Any,
     writes_enabled: bool,
-) -> Any:
+) -> DispatchResult:
     """score_quality — per-chunk heuristic quality scoring.
 
     Accepts ``chunk_ids`` (list[int]) OR ``dataset`` (str) to define the
@@ -339,7 +352,13 @@ async def _dispatch_score_quality(
 
 
 def _json_safe(value: Any) -> Any:
-    """Cast numpy scalars / Python numbers to plain Python types."""
+    """Cast numpy scalars / Python numbers to plain Python types.
+
+    ``Any`` in/out is intentional: this normaliser accepts arbitrary
+    JSON-ish values (numpy scalars, ints, floats, str, nested containers)
+    and returns the plain-Python equivalent, so a narrower annotation
+    would not describe the contract.
+    """
     # Avoid importing numpy unless already present.
     import sys
 

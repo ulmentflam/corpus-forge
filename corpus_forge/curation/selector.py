@@ -48,7 +48,10 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from corpus_forge.retrieval.rerank.base import Reranker
 
 logger = logging.getLogger(__name__)
 
@@ -239,7 +242,7 @@ def _iter_curation_candidates(
     """
     hook = getattr(backend, "iter_curation_candidates", None)
     if callable(hook):
-        rows: Any = hook(dataset=dataset, limit=limit)
+        rows: Any = hook(dataset=dataset, limit=limit)  # duck-typed getattr hook result
         for row in rows:
             yield _row_to_candidate(row)
         return
@@ -685,7 +688,7 @@ def _ranker_elevation_scores(
     candidates: list[_Candidate],
     *,
     seed_query: str | None,
-    reranker: Any | None,
+    reranker: Reranker | None,
 ) -> tuple[list[float], bool]:
     """Compute the ranker_elevation sub-score for every candidate.
 
@@ -748,7 +751,7 @@ def next_curation_target(
     dataset: str | None = None,
     embedder: str | None = None,  # noqa: ARG001 — accepted for forward-compat
     seed_query: str | None = None,
-    reranker: Any | None = None,
+    reranker: Reranker | None = None,
     candidate_pool: int = 200,
     now: datetime | None = None,
 ) -> CurationTarget | None:
@@ -821,7 +824,7 @@ def next_curation_batch(
     dataset: str | None = None,
     embedder: str | None = None,  # noqa: ARG001 — accepted for forward-compat
     seed_query: str | None = None,
-    reranker: Any | None = None,
+    reranker: Reranker | None = None,
     candidate_pool: int = 200,
     limit: int = 10,
     now: datetime | None = None,

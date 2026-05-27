@@ -25,6 +25,7 @@ from ..identity import advisory_lock_key, chunk_content_hash
 from .base import StorageBackend
 
 if TYPE_CHECKING:
+    from corpus_forge.classifiers.base import ClassifiableDocument
     from corpus_forge.sources.base import RawConversation, RawDocument
 
     from ..retrieval.types import Hit
@@ -3108,7 +3109,7 @@ class PostgresBackend(StorageBackend):
         dataset_id: "int | None" = None,
         *,
         include_classified: bool = False,
-    ) -> "Iterator[Any]":
+    ) -> "Iterator[ClassifiableDocument]":
         """Yield :class:`ClassifiableDocument` rows for the classifier chain.
 
         See :meth:`StorageBackend.iter_documents_for_classification` for

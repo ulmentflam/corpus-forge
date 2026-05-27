@@ -51,12 +51,16 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from corpus_forge.backends.sqlite import SQLiteBackend
 from corpus_forge.mcp.server import build_server
+from corpus_forge.retrieval.types import SearchOptions
+
+if TYPE_CHECKING:
+    from mcp.server import Server
 
 mcp = pytest.importorskip("mcp")
 from mcp import types as mcp_types  # noqa: E402
@@ -66,12 +70,20 @@ from mcp import types as mcp_types  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
+# ``coro`` stays ``Any``: it bridges the request handler's declared
+# ``Awaitable[ServerResult]`` return into ``asyncio.run``, whose stub demands a
+# ``Coroutine`` — the two are statically incompatible, so neither concrete type
+# fits both sides.
 def _run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
-def _call_raw(server: Any, name: str, arguments: dict[str, Any]) -> Any:
+def _call_raw(
+    server: Server[object], name: str, arguments: dict[str, Any]
+) -> mcp_types.CallToolResult:
     """Return the raw CallToolResult root (do NOT raise on isError)."""
+    # ``arguments`` stays ``dict[str, Any]``: it is a heterogeneous JSON tool
+    # payload (strings, ints, None, nested dicts/lists).
     handler = server.request_handlers[mcp_types.CallToolRequest]
     request = mcp_types.CallToolRequest(
         method="tools/call",
@@ -81,16 +93,16 @@ def _call_raw(server: Any, name: str, arguments: dict[str, Any]) -> Any:
     return result.root if hasattr(result, "root") else result
 
 
-def _payload(root: Any) -> dict:
+def _payload(root: mcp_types.CallToolResult) -> dict:
     content = getattr(root, "content", [])
     return json.loads(content[0].text)
 
 
-def _is_error(root: Any) -> bool:
+def _is_error(root: mcp_types.CallToolResult) -> bool:
     return bool(getattr(root, "isError", False))
 
 
-def _error_text(root: Any) -> str:
+def _error_text(root: mcp_types.CallToolResult) -> str:
     content = getattr(root, "content", [])
     return "".join(getattr(b, "text", "") for b in content)
 
@@ -110,11 +122,13 @@ class _BackedRetriever:
     def __init__(self, backend: SQLiteBackend) -> None:
         self.backend = backend
 
-    def search(self, query: str, options: Any) -> list[Any]:
+    # Return stays ``list[Any]``: this stub yields an empty list rather than a
+    # real ``SearchResponse``, so the precise return type would be a lie.
+    def search(self, query: str, options: SearchOptions) -> list[Any]:
         return []
 
 
-def _build_server(backend: SQLiteBackend) -> Any:
+def _build_server(backend: SQLiteBackend) -> Server[object]:
     retriever = _BackedRetriever(backend)
     return build_server(retriever_builder=lambda: retriever, writes_enabled=True)
 
@@ -216,7 +230,7 @@ def corpus(backend: SQLiteBackend) -> dict[str, int]:
 
 
 @pytest.fixture
-def server(backend: SQLiteBackend, corpus: dict) -> Any:
+def server(backend: SQLiteBackend, corpus: dict) -> Server[object]:
     return _build_server(backend)
 
 
@@ -229,7 +243,7 @@ class TestCommitCurationSdftHook:
     """SDFT row is written when commit_curation changes the chunk description."""
 
     def test_description_change_writes_sdft_row(
-        self, backend: SQLiteBackend, corpus: dict, server: Any
+        self, backend: SQLiteBackend, corpus: dict, server: Server[object]
     ) -> None:
         """commit_curation with a new set_description writes one SDFT row."""
         before = _count_sdft_rows(backend)
@@ -257,7 +271,7 @@ class TestCommitCurationSdftHook:
         )
 
     def test_description_change_sdft_source_is_curation_commit(
-        self, backend: SQLiteBackend, corpus: dict, server: Any
+        self, backend: SQLiteBackend, corpus: dict, server: Server[object]
     ) -> None:
         """The written SDFT row must have source='curation_commit'."""
         _call_raw(
@@ -277,7 +291,7 @@ class TestCommitCurationSdftHook:
         )
 
     def test_description_change_sdft_target_is_new_description(
-        self, backend: SQLiteBackend, corpus: dict, server: Any
+        self, backend: SQLiteBackend, corpus: dict, server: Server[object]
     ) -> None:
         """The SDFT row's target must be the new description text."""
         new_desc = "Feynman diagrams encode QED perturbation theory as Wick contractions."
@@ -297,7 +311,7 @@ class TestCommitCurationSdftHook:
         )
 
     def test_description_change_sdft_student_messages_has_prior_description(
-        self, backend: SQLiteBackend, corpus: dict, server: Any
+        self, backend: SQLiteBackend, corpus: dict, server: Server[object]
     ) -> None:
         """student_messages must contain the prior chunk description as assistant content."""
         _call_raw(
@@ -330,7 +344,7 @@ class TestCommitCurationSdftHook:
         )
 
     def test_description_change_sdft_query_derived_from_chunk_text(
-        self, backend: SQLiteBackend, corpus: dict, server: Any
+        self, backend: SQLiteBackend, corpus: dict, server: Server[object]
     ) -> None:
         """SDFT row query must be derived from the chunk text (first 200 chars)."""
         _call_raw(
@@ -358,7 +372,7 @@ class TestCommitCurationSdftHook:
         )
 
     def test_label_only_commit_does_not_write_sdft_row(
-        self, backend: SQLiteBackend, corpus: dict, server: Any
+        self, backend: SQLiteBackend, corpus: dict, server: Server[object]
     ) -> None:
         """Pure label-only commit (no description change) must NOT write SDFT row."""
         before = _count_sdft_rows(backend)
@@ -380,7 +394,7 @@ class TestCommitCurationSdftHook:
         )
 
     def test_metadata_only_commit_does_not_write_sdft_row(
-        self, backend: SQLiteBackend, corpus: dict, server: Any
+        self, backend: SQLiteBackend, corpus: dict, server: Server[object]
     ) -> None:
         """Pure metadata-only commit (no description change) must NOT write SDFT row."""
         before = _count_sdft_rows(backend)
@@ -411,7 +425,7 @@ class TestRateSearchResultSdftHook:
     """SDFT row is written when rate_search_result records thumbs_down + replacement."""
 
     def test_thumbs_down_with_replacement_writes_sdft_row(
-        self, backend: SQLiteBackend, corpus: dict, server: Any
+        self, backend: SQLiteBackend, corpus: dict, server: Server[object]
     ) -> None:
         """thumbs_down + replacement_chunk_id writes one SDFT row with source='rate_search_result'."""  # noqa: E501
         before = _count_sdft_rows(backend)
@@ -437,7 +451,7 @@ class TestRateSearchResultSdftHook:
         )
 
     def test_thumbs_down_with_replacement_sdft_source(
-        self, backend: SQLiteBackend, corpus: dict, server: Any
+        self, backend: SQLiteBackend, corpus: dict, server: Server[object]
     ) -> None:
         """SDFT row source must be 'rate_search_result'."""
         _seed_search_session(backend, "q-sdft-src", corpus["dataset_id"])
@@ -460,7 +474,7 @@ class TestRateSearchResultSdftHook:
         )
 
     def test_thumbs_down_with_replacement_sdft_target_is_replacement_text(
-        self, backend: SQLiteBackend, corpus: dict, server: Any
+        self, backend: SQLiteBackend, corpus: dict, server: Server[object]
     ) -> None:
         """SDFT row target must be the text of the replacement chunk."""
         _seed_search_session(backend, "q-sdft-target", corpus["dataset_id"])
@@ -489,7 +503,7 @@ class TestRateSearchResultSdftHook:
         )
 
     def test_thumbs_down_without_replacement_does_not_write_sdft_row(
-        self, backend: SQLiteBackend, corpus: dict, server: Any
+        self, backend: SQLiteBackend, corpus: dict, server: Server[object]
     ) -> None:
         """thumbs_down without replacement_chunk_id must NOT write SDFT row."""
         before = _count_sdft_rows(backend)
@@ -515,7 +529,7 @@ class TestRateSearchResultSdftHook:
         )
 
     def test_thumbs_up_with_replacement_does_not_write_sdft_row(
-        self, backend: SQLiteBackend, corpus: dict, server: Any
+        self, backend: SQLiteBackend, corpus: dict, server: Server[object]
     ) -> None:
         """thumbs_up signal (even with replacement_chunk_id) must NOT write SDFT row.
 

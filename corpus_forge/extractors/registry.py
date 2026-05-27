@@ -25,12 +25,29 @@ from typing import TYPE_CHECKING
 from .base import Extractor
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
     from corpus_forge.vlm.base import VLMBackend
     from corpus_forge.whisper.base import WhisperBackend
 
 logger = logging.getLogger(__name__)
+
+# No-arg extractors registered by :func:`register_default_extractors`,
+# split into the two contiguous runs that flank the PDF special case so
+# registration order is byte-for-byte identical to the hand-written form.
+# Each tuple is ``(enable-flag, submodule, class_name)``.
+_SIMPLE_EXTRACTORS_PRE_PDF: tuple[tuple[str, str, str], ...] = (
+    ("enable_markdown", "passthrough", "PassthroughMarkdownExtractor"),
+    ("enable_plaintext", "plaintext", "PlainTextExtractor"),
+    ("enable_structured", "structured", "StructuredDataExtractor"),
+    ("enable_subtitle", "subtitle", "SubtitleExtractor"),
+)
+_SIMPLE_EXTRACTORS_POST_PDF: tuple[tuple[str, str, str], ...] = (
+    ("enable_html", "html", "HtmlExtractor"),
+    ("enable_epub", "epub", "EpubExtractor"),
+    ("enable_office", "office", "OfficeExtractor"),
+    ("enable_notebook", "notebook", "NotebookExtractor"),
+)
 
 
 def _try_load(submodule: str, class_name: str) -> type | None:
@@ -163,28 +180,18 @@ def register_default_extractors(
             return default
         return bool(getattr(config, name, default))
 
+    def _register_simple(specs: Iterable[tuple[str, str, str]]) -> None:
+        """Register each no-arg extractor in ``specs`` honouring its flag."""
+        for flag, submodule, class_name in specs:
+            if _flag(flag):
+                cls = _try_load(submodule, class_name)
+                if cls is not None:
+                    reg.register(cls())
+
     reg = ExtractorRegistry()
 
     # ── Wave 0 stdlib leaves (D-03, D-04) — landed in this milestone ──
-    if _flag("enable_markdown"):
-        cls = _try_load("passthrough", "PassthroughMarkdownExtractor")
-        if cls is not None:
-            reg.register(cls())
-
-    if _flag("enable_plaintext"):
-        cls = _try_load("plaintext", "PlainTextExtractor")
-        if cls is not None:
-            reg.register(cls())
-
-    if _flag("enable_structured"):
-        cls = _try_load("structured", "StructuredDataExtractor")
-        if cls is not None:
-            reg.register(cls())
-
-    if _flag("enable_subtitle"):
-        cls = _try_load("subtitle", "SubtitleExtractor")
-        if cls is not None:
-            reg.register(cls())
+    _register_simple(_SIMPLE_EXTRACTORS_PRE_PDF)
 
     # ── Wave 1 heavy extractors (gated by feature flags) ──
     # When disabled, NEVER import the module — that's the whole point of
@@ -193,90 +200,106 @@ def register_default_extractors(
     # registry remains usable. ``_try_load`` returns ``None`` on
     # ``ImportError`` so missing submodules are silently skipped.
     if _flag("enable_pdf"):
-        cls = _try_load("pdf", "PdfDigitalExtractor")
-        if cls is not None:
-            # E-05 (Wave 5): inject the VLM + OCR knobs so the Tier 2
-            # escalation path is available when configured. When
-            # ``vlm is None`` the extractor still works (D-07 contract
-            # preserved — Tier 1 only).
-            ocr_kwargs: dict = {}
-            if config is not None:
-                ocr_enabled_cfg = getattr(config, "ocr_enabled", None)
-                if ocr_enabled_cfg is not None:
-                    ocr_kwargs["ocr_enabled"] = bool(ocr_enabled_cfg)
-                min_chars = getattr(config, "ocr_min_chars_per_page", None)
-                if min_chars is not None:
-                    ocr_kwargs["min_chars_per_page"] = int(min_chars)
-                dpi = getattr(config, "ocr_dpi", None)
-                if dpi is not None:
-                    ocr_kwargs["ocr_dpi"] = int(dpi)
-            reg.register(cls(vlm=vlm, **ocr_kwargs))
+        _register_pdf(reg, config, vlm)
 
-    if _flag("enable_html"):
-        cls = _try_load("html", "HtmlExtractor")
-        if cls is not None:
-            reg.register(cls())
-
-    if _flag("enable_epub"):
-        cls = _try_load("epub", "EpubExtractor")
-        if cls is not None:
-            reg.register(cls())
-
-    if _flag("enable_office"):
-        cls = _try_load("office", "OfficeExtractor")
-        if cls is not None:
-            reg.register(cls())
-
-    if _flag("enable_notebook"):
-        cls = _try_load("notebook", "NotebookExtractor")
-        if cls is not None:
-            reg.register(cls())
+    _register_simple(_SIMPLE_EXTRACTORS_POST_PDF)
 
     if _flag("enable_csv"):
-        cls = _try_load("csv", "CsvExtractor")
-        if cls is not None:
-            csv_max_rows = getattr(config, "csv_max_rows", None) if config is not None else None
-            if csv_max_rows is not None:
-                reg.register(cls(max_rows=csv_max_rows))
-            else:
-                reg.register(cls())
+        _register_csv(reg, config)
 
     if _flag("enable_code"):
-        cls = _try_load("code", "CodeExtractor")
-        if cls is not None:
-            code_chunker_config = (
-                getattr(config, "code_chunker_config", None) if config is not None else None
-            )
-            if code_chunker_config is not None:
-                reg.register(cls(code_chunker_config=code_chunker_config))
-            else:
-                reg.register(cls())
+        _register_code(reg, config)
 
     # ── Wave 5 (E-06) — VLM-backed image extractor (gated) ──
-    # Registered only when (a) a real VLM is wired in (NoopVLM is treated
-    # as "no VLM configured" so users who installed [multi-format] but
-    # didn't configure a VLM aren't surprised by image files becoming
-    # ingest-eligible), (b) ``ocr_enabled`` is True, and (c)
-    # ``enable_image`` is True.
-    if vlm is not None and _flag("enable_image") and _flag("ocr_enabled") and not _is_noop_vlm(vlm):
+    _maybe_register_image(reg, vlm, _flag)
+
+    # ── Phase G (G-05/G-06) — Whisper-backed audio + video extractors ──
+    _maybe_register_whisper(reg, whisper)
+
+    return reg
+
+
+def _register_pdf(reg: ExtractorRegistry, config: object | None, vlm: VLMBackend | None) -> None:
+    """Register the PDF extractor (D-07/E-05) with VLM + OCR knobs injected."""
+    cls = _try_load("pdf", "PdfDigitalExtractor")
+    if cls is not None:
+        # E-05 (Wave 5): inject the VLM + OCR knobs so the Tier 2
+        # escalation path is available when configured. When
+        # ``vlm is None`` the extractor still works (D-07 contract
+        # preserved — Tier 1 only).
+        ocr_kwargs: dict = {}
+        if config is not None:
+            ocr_enabled_cfg = getattr(config, "ocr_enabled", None)
+            if ocr_enabled_cfg is not None:
+                ocr_kwargs["ocr_enabled"] = bool(ocr_enabled_cfg)
+            min_chars = getattr(config, "ocr_min_chars_per_page", None)
+            if min_chars is not None:
+                ocr_kwargs["min_chars_per_page"] = int(min_chars)
+            dpi = getattr(config, "ocr_dpi", None)
+            if dpi is not None:
+                ocr_kwargs["ocr_dpi"] = int(dpi)
+        reg.register(cls(vlm=vlm, **ocr_kwargs))
+
+
+def _register_csv(reg: ExtractorRegistry, config: object | None) -> None:
+    """Register the CSV extractor (D-11) with the configured ``max_rows`` cap."""
+    cls = _try_load("csv", "CsvExtractor")
+    if cls is not None:
+        csv_max_rows = getattr(config, "csv_max_rows", None) if config is not None else None
+        if csv_max_rows is not None:
+            reg.register(cls(max_rows=csv_max_rows))
+        else:
+            reg.register(cls())
+
+
+def _register_code(reg: ExtractorRegistry, config: object | None) -> None:
+    """Register the code extractor (D-13) with the configured chunker config."""
+    cls = _try_load("code", "CodeExtractor")
+    if cls is not None:
+        code_chunker_config = (
+            getattr(config, "code_chunker_config", None) if config is not None else None
+        )
+        if code_chunker_config is not None:
+            reg.register(cls(code_chunker_config=code_chunker_config))
+        else:
+            reg.register(cls())
+
+
+def _maybe_register_image(
+    reg: ExtractorRegistry,
+    vlm: VLMBackend | None,
+    flag: Callable[[str], bool],
+) -> None:
+    """Register the VLM-backed image extractor (E-06) when gated on.
+
+    Registered only when (a) a real VLM is wired in (NoopVLM is treated
+    as "no VLM configured" so users who installed [multi-format] but
+    didn't configure a VLM aren't surprised by image files becoming
+    ingest-eligible), (b) ``ocr_enabled`` is True, and (c)
+    ``enable_image`` is True.
+    """
+    if vlm is not None and flag("enable_image") and flag("ocr_enabled") and not _is_noop_vlm(vlm):
         cls = _try_load("image", "ImageExtractor")
         if cls is not None:
             reg.register(cls(vlm=vlm))
 
-    # ── Phase G (G-05/G-06) — Whisper-backed audio + video extractors ──
-    # Registered only when a real (non-Noop) Whisper backend is wired
-    # in. NoopWhisper is treated as "no transcription configured" so
-    # users who haven't opted in to the ``[whisper]`` extra aren't
-    # surprised by audio/video files becoming ingest-eligible.
-    if whisper is not None and not _is_noop_whisper(whisper):
-        audio_cls = _try_load("audio", "AudioExtractor")
-        if audio_cls is not None:
-            reg.register(audio_cls(whisper=whisper))
-        video_cls = _try_load("video", "VideoExtractor")
-        if video_cls is not None:
-            reg.register(video_cls(whisper=whisper))
 
-    return reg
+def _maybe_register_whisper(reg: ExtractorRegistry, whisper: WhisperBackend | None) -> None:
+    """Register the audio + video extractors (G-05/G-06) when gated on.
+
+    Registered only when a real (non-Noop) Whisper backend is wired in.
+    NoopWhisper is treated as "no transcription configured" so users who
+    haven't opted in to the ``[whisper]`` extra aren't surprised by
+    audio/video files becoming ingest-eligible.
+    """
+    if whisper is None or _is_noop_whisper(whisper):
+        return
+    audio_cls = _try_load("audio", "AudioExtractor")
+    if audio_cls is not None:
+        reg.register(audio_cls(whisper=whisper))
+    video_cls = _try_load("video", "VideoExtractor")
+    if video_cls is not None:
+        reg.register(video_cls(whisper=whisper))
 
 
 def _is_noop_vlm(vlm: object) -> bool:

@@ -646,3 +646,137 @@ def test_report_dir_flag_overrides_env(
         f"flag_dir contents: {list(flag_dir.rglob('*'))}\n"
         f"env_dir contents: {list(env_dir.rglob('*'))}"
     )
+
+
+# ---------------------------------------------------------------------------
+# _load_chunks_for_dataset — non-SQLite (Postgres-shaped) cursor path
+#
+# The SQLite branch is exercised by every command test above; the
+# non-sqlite branch (generic DB-API `cursor()` + `%s` placeholders) is driven
+# here with a fake cursor-based connection returning real list rows, so the
+# Postgres dialect + row-mapping path is covered without a live Postgres.
+# ---------------------------------------------------------------------------
+
+
+class _FakeCursor:
+    def __init__(self, rows: list) -> None:
+        self._rows = rows
+        self.executed: list[tuple] = []
+
+    def execute(self, sql: str, params: tuple) -> None:
+        self.executed.append((sql, params))
+
+    def fetchall(self) -> list:
+        return self._rows
+
+
+class _FakePgConn:
+    """Non-sqlite connection (a real class, not a MagicMock) with a cursor."""
+
+    def __init__(self, rows: list) -> None:
+        self._rows = rows
+        self.last_cursor: _FakeCursor | None = None
+
+    def cursor(self) -> _FakeCursor:
+        self.last_cursor = _FakeCursor(self._rows)
+        return self.last_cursor
+
+
+def test_load_chunks_for_dataset_non_sqlite_path() -> None:
+    from corpus_forge.cli_analyze import _load_chunks_for_dataset
+
+    rows = [
+        (1, "alpha", 10, "hash-a", "topic_x", '{"language": "en"}'),
+        (2, "beta", 7, "hash-b", None, None),
+    ]
+    conn = _FakePgConn(rows)
+    out = _load_chunks_for_dataset(conn, "demo")
+    assert out == [
+        {
+            "id": 1,
+            "text": "alpha",
+            "token_count": 10,
+            "content_hash": "hash-a",
+            "classifier_label": "topic_x",
+            "metadata": '{"language": "en"}',
+        },
+        {
+            "id": 2,
+            "text": "beta",
+            "token_count": 7,
+            "content_hash": "hash-b",
+            "classifier_label": None,
+            "metadata": None,
+        },
+    ]
+    # `%s` Postgres placeholders + dataset bound through.
+    assert conn.last_cursor is not None
+    sql, params = conn.last_cursor.executed[0]
+    assert "%s" in sql and params == ("demo",)
+
+
+def test_load_chunks_for_dataset_non_sqlite_with_limit() -> None:
+    from corpus_forge.cli_analyze import _load_chunks_for_dataset
+
+    conn = _FakePgConn([(1, "alpha", 10, "hash-a", None, None)])
+    out = _load_chunks_for_dataset(conn, "demo", limit=5)
+    assert out is not None
+    assert len(out) == 1
+    sql, params = conn.last_cursor.executed[0]
+    assert "LIMIT %s" in sql and params == ("demo", 5)
+
+
+def test_load_chunks_for_dataset_magicmock_cursor_raises_returns_empty() -> None:
+    """A MagicMock conn whose `.cursor()` raises → treated as 'no data' ([])."""
+    from corpus_forge.cli_analyze import _load_chunks_for_dataset
+
+    conn = MagicMock()
+    conn.cursor.side_effect = RuntimeError("no cursor")
+    assert _load_chunks_for_dataset(conn, "demo") == []
+
+
+def test_load_chunks_for_dataset_magicmock_execute_raises_returns_empty() -> None:
+    """A MagicMock conn whose cursor `.execute()` raises → treated as [].
+
+    Drives the inner try/except guard (the MagicMock-shaped 'no data' path);
+    real driver errors on a non-mock conn still propagate.
+    """
+    from corpus_forge.cli_analyze import _load_chunks_for_dataset
+
+    conn = MagicMock()
+    cur = MagicMock()
+    cur.execute.side_effect = RuntimeError("execute boom")
+    conn.cursor.return_value = cur
+    assert _load_chunks_for_dataset(conn, "demo") == []
+
+
+def test_load_chunks_for_dataset_real_conn_cursor_error_propagates() -> None:
+    """A non-MagicMock conn whose `.cursor()` raises must re-raise (line 135).
+
+    Operators must see real driver errors — only the MagicMock test path is
+    swallowed as 'no data'.
+    """
+    from corpus_forge.cli_analyze import _load_chunks_for_dataset
+
+    class _BoomConn:
+        def cursor(self):
+            raise RuntimeError("driver down")
+
+    with pytest.raises(RuntimeError, match="driver down"):
+        _load_chunks_for_dataset(_BoomConn(), "demo")
+
+
+def test_load_chunks_for_dataset_real_conn_execute_error_propagates() -> None:
+    """A non-MagicMock conn whose `.execute()` raises must re-raise (line 171)."""
+    from corpus_forge.cli_analyze import _load_chunks_for_dataset
+
+    class _BoomCursor:
+        def execute(self, *a, **k):
+            raise RuntimeError("query down")
+
+    class _BoomExecConn:
+        def cursor(self):
+            return _BoomCursor()
+
+    with pytest.raises(RuntimeError, match="query down"):
+        _load_chunks_for_dataset(_BoomExecConn(), "demo")

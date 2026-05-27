@@ -1,0 +1,33 @@
+# Sample embedder-ranking candidate manifest.
+#
+# Parsed by ``corpus_forge.eval.embedder_ranking.load_candidates`` into a
+# list of ``EmbedderCandidate`` rows.  Each ``[[candidates]]`` table is one
+# embedder to sweep on the retrieval gold set.
+#
+# Required keys:  name, provider, model_id, dimension
+# Optional keys:  normalize (true), distance ("cosine"), batch_size (32),
+#                 device ("auto")
+#
+# Providers mirror ``corpus_forge.config.EmbedderConfig.provider``:
+#   sentence_transformers | openai | model2vec
+
+# Qwen3 small embedder — asymmetric instruction-tuned, dim 1024.
+[[candidates]]
+name = "qwen3-0.6b"
+provider = "sentence_transformers"
+model_id = "Qwen/Qwen3-Embedding-0.6B"
+dimension = 1024
+
+# BAAI bge-large — strong English baseline, dim 1024.
+[[candidates]]
+name = "bge-large-en"
+provider = "sentence_transformers"
+model_id = "BAAI/bge-large-en-v1.5"
+dimension = 1024
+
+# potion-code-16M — static model2vec fast tier (CPU-only), dim 256.
+[[candidates]]
+name = "potion-code-16m"
+provider = "model2vec"
+model_id = "minishlab/potion-code-16M"
+dimension = 256
