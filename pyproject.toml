@@ -368,6 +368,11 @@ ignore = ["PLR0911", "PLR0912", "PLR0913", "PLR0915"]
 # CLI surface (tests pass --format jsonl) but only jsonl is implemented in this
 # wave; the parameter is retained for future formats.
 "corpus_forge/cli_feedback.py" = ["PLC0415", "ARG001"]
+# eval/embedder_ranking.py — the pure ranking core (rank_embedders,
+# load_candidates) must import on hosts without the ML/retrieval stack, so the
+# real-wiring evaluator defers torch + retrieval imports into the function body
+# (startup/optional-dep contract, same as the modules above).
+"corpus_forge/eval/embedder_ranking.py" = ["PLC0415"]
 # Phase P Wave 2: tester-authored test_reranker_learned.py has an I001 (import
 # order) violation in TestLearnedRerankerProtocol.test_satisfies_reranker_protocol
 # (``from learned import LearnedReranker`` before ``from rerank import Reranker``).
