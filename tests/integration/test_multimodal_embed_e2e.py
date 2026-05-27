@@ -19,6 +19,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.requires_clip_local]
 
 _FIXTURE_ROOT = Path(__file__).resolve().parent.parent / "fixtures" / "multi_format_corpus"
 _SCREENSHOT = _FIXTURE_ROOT / "images" / "screenshot.png"
+_SCENE = _FIXTURE_ROOT / "images" / "scene-landscape.png"
+_BLOCKS = _FIXTURE_ROOT / "images" / "abstract-blocks.png"
 
 
 @pytest.mark.timeout(120)
@@ -70,3 +72,34 @@ def test_cross_modal_cosine_similarity_above_random() -> None:
     sim = _cos(text_vec, img_vec)
     # CLIP normalised cosine on related pairs is typically ~0.2-0.3.
     assert sim > 0.15, f"Cross-modal cosine {sim:.3f} below the random-baseline floor (0.15)"
+
+
+@pytest.mark.timeout(180)
+def test_distinct_clip_images_embed_distinctly() -> None:
+    """The two text-free CLIP-lane fixtures embed to *different* vectors.
+
+    ``scene-landscape.png`` (gradient landscape) and
+    ``abstract-blocks.png`` (colour-block grid) are visually unrelated,
+    so their CLIP image embeddings must not be near-identical — cosine
+    well below 1.0 confirms CLIP separates them (and that the builder
+    didn't accidentally emit the same picture twice).
+    """
+    import numpy as np
+
+    from corpus_forge.embedders.clip_local import ClipLocalEmbedder
+
+    assert _SCENE.is_file(), f"Fixture missing: {_SCENE}"
+    assert _BLOCKS.is_file(), f"Fixture missing: {_BLOCKS}"
+
+    e = ClipLocalEmbedder(device="cpu")
+    scene_vec = np.asarray(e.encode_image([_SCENE.read_bytes()])[0])
+    blocks_vec = np.asarray(e.encode_image([_BLOCKS.read_bytes()])[0])
+
+    def _cos(a: np.ndarray, b: np.ndarray) -> float:
+        return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+    sim = _cos(scene_vec, blocks_vec)
+    assert sim < 0.99, (
+        f"The two CLIP-lane fixtures embed near-identically (cosine {sim:.3f}); "
+        "they should be visually distinct."
+    )

@@ -152,6 +152,96 @@ maps to chunker_hint = "passthrough". Equation: $E = mc^2$.
     )
 
 
+# ── Multilingual prose family (one markdown doc per language) ──────────────
+
+
+def build_multilingual_prose() -> None:
+    """Emit one short markdown doc per language under ``prose/multilingual/``.
+
+    Six languages spanning four scripts (Latin, Cyrillic, CJK, Arabic) so
+    the fixture corpus can exercise multilingual ingest and (later)
+    multilingual embedder ranking. Every document is **original,
+    project-authored synthetic prose dedicated to the public domain under
+    CC0-1.0** — natural, evergreen wording about libraries and reading,
+    written for this fixture, not copied from any source.
+
+    Determinism contract: no numbers, dates, UUIDs, or randomness. Each
+    file is byte-identical across runs because the content is a literal
+    string routed through :func:`_write_text` (LF-normalised, UTF-8,
+    trailing newline, pinned mtime).
+    """
+    # Spanish (Latin script)
+    _write_text(
+        "prose/multilingual/es.md",
+        """# La biblioteca del barrio
+
+La biblioteca del barrio abre sus puertas cada mañana y recibe a
+lectores de todas las edades. En sus estanterías conviven novelas,
+poemas y libros de historia que invitan a la curiosidad. Quien busca
+silencio encuentra un rincón tranquilo junto a la ventana, y quien
+busca compañía encuentra a otros amantes de la lectura.
+""",
+    )
+    # French (Latin script)
+    _write_text(
+        "prose/multilingual/fr.md",
+        """# La bibliothèque du quartier
+
+La bibliothèque du quartier ouvre ses portes chaque matin et accueille
+des lecteurs de tout âge. Sur ses étagères se côtoient des romans, des
+poèmes et des livres d'histoire qui éveillent la curiosité. Celui qui
+cherche le calme trouve un coin paisible près de la fenêtre, et celui
+qui cherche la compagnie rencontre d'autres amoureux de la lecture.
+""",
+    )
+    # German (Latin script)
+    _write_text(
+        "prose/multilingual/de.md",
+        """# Die Bibliothek im Viertel
+
+Die Bibliothek im Viertel öffnet jeden Morgen ihre Türen und empfängt
+Leser jeden Alters. In ihren Regalen stehen Romane, Gedichte und
+Geschichtsbücher nebeneinander und wecken die Neugier. Wer Ruhe sucht,
+findet eine stille Ecke am Fenster, und wer Gesellschaft sucht, trifft
+andere Freunde des Lesens.
+""",
+    )
+    # Russian (Cyrillic script)
+    _write_text(
+        "prose/multilingual/ru.md",
+        """# Библиотека в нашем районе
+
+Библиотека в нашем районе открывает свои двери каждое утро и
+встречает читателей всех возрастов. На её полках рядом стоят романы,
+сборники стихов и книги по истории, которые пробуждают любопытство.
+Тот, кто ищет тишину, находит спокойный уголок у окна, а тот, кто
+ищет общество, встречает других любителей чтения.
+""",
+    )
+    # Japanese (CJK script)
+    _write_text(
+        "prose/multilingual/ja.md",
+        """# 町の図書館
+
+町の図書館は毎朝そっと扉を開け、あらゆる年齢の読者を迎え入れます。
+その棚には小説や詩集や歴史の本が並び、訪れる人の好奇心をやさしく
+誘います。静けさを求める人は窓辺の落ち着いた一隅を見つけ、人との
+ふれあいを求める人は同じように本を愛する仲間と出会うのです。
+""",
+    )
+    # Arabic (Arabic script, right-to-left)
+    _write_text(
+        "prose/multilingual/ar.md",
+        """# مكتبة الحي
+
+تفتح مكتبة الحي أبوابها كل صباح وتستقبل القراء من جميع الأعمار. على
+رفوفها تتجاور الروايات ودواوين الشعر وكتب التاريخ التي توقظ الفضول في
+نفوس الزائرين. من يبحث عن الهدوء يجد ركنا ساكنا بجوار النافذة، ومن
+يبحث عن الأنس يلتقي بمحبين آخرين للقراءة.
+""",
+    )
+
+
 # ── PDF family (digital-only; OCR is P1) ───────────────────────────────────
 
 
@@ -1019,6 +1109,337 @@ end_of_line = lf
     )
 
 
+# ── Realistic code family (richer, idiomatic, multi-construct modules) ──
+
+
+def build_realistic_code() -> None:
+    """Emit one idiomatic, multi-construct module per primary code lane.
+
+    The trivial stubs in :func:`build_code` are hello-world sized
+    (35-230 bytes) -- too thin to rank a code embedder on. These four
+    modules are self-authored, deterministic (static strings only -- no
+    timestamps, UUIDs, or per-run randomness), and share a single theme:
+    a small in-memory inventory of items with quantities. Keeping the
+    four parallel makes them useful for cross-language retrieval
+    comparison.
+
+    Each file is routed through :func:`_write_text` (LF-normalised, UTF-8,
+    epoch mtime) and is syntactically valid in its language. All four
+    extensions (``.py`` / ``.ts`` / ``.go`` / ``.rs``) are handled by the
+    ``CodeExtractor``, so the e2e document count stays balanced.
+    """
+    # ── Python ──────────────────────────────────────────────────────────
+    _write_text(
+        "code/realistic/python/inventory.py",
+        '''"""A small in-memory inventory ledger.
+
+Tracks items by name with integer quantities, supporting restock,
+withdrawal (with an out-of-stock guard), and aggregate reporting. Used
+as a richer, idiomatic Python fixture for the code-embedder lane.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+
+
+class OutOfStockError(Exception):
+    """Raised when a withdrawal exceeds the quantity on hand."""
+
+
+@dataclass
+class Item:
+    """A single inventory line: a name and the quantity in stock."""
+
+    name: str
+    quantity: int = 0
+
+    def is_empty(self) -> bool:
+        """Return True when no units remain."""
+        return self.quantity <= 0
+
+
+@dataclass
+class Inventory:
+    """An ordered collection of :class:`Item` keyed by name."""
+
+    items: dict[str, Item] = field(default_factory=dict)
+
+    def restock(self, name: str, amount: int) -> None:
+        """Add ``amount`` units of ``name``, creating the item if needed."""
+        if amount < 0:
+            raise ValueError("amount must be non-negative")
+        item = self.items.get(name)
+        if item is None:
+            self.items[name] = Item(name=name, quantity=amount)
+        else:
+            item.quantity += amount
+
+    def withdraw(self, name: str, amount: int) -> int:
+        """Remove ``amount`` units of ``name`` and return the new quantity.
+
+        Raises :class:`OutOfStockError` if fewer units are available, and
+        :class:`KeyError` if the item is unknown.
+        """
+        item = self.items[name]
+        if item.quantity < amount:
+            raise OutOfStockError(f"{name}: have {item.quantity}, need {amount}")
+        item.quantity -= amount
+        return item.quantity
+
+    def total_units(self) -> int:
+        """Return the sum of all quantities across every item."""
+        return sum(item.quantity for item in self.items.values())
+
+
+def build_inventory(pairs: Iterable[tuple[str, int]]) -> Inventory:
+    """Build an :class:`Inventory` from ``(name, quantity)`` pairs.
+
+    Bad pairs (negative quantities) are skipped with a logged note rather
+    than aborting the whole batch.
+    """
+    inv = Inventory()
+    for name, quantity in pairs:
+        try:
+            inv.restock(name, quantity)
+        except ValueError:
+            # Skip malformed rows but keep ingesting the rest.
+            continue
+    return inv
+''',
+    )
+
+    # ── TypeScript ──────────────────────────────────────────────────────
+    _write_text(
+        "code/realistic/typescript/inventory.ts",
+        """/**
+ * A small in-memory inventory ledger.
+ *
+ * Mirrors the Python / Go / Rust fixtures: items keyed by name with
+ * integer quantities, restock + withdrawal (guarded), and aggregate
+ * reporting. Richer, idiomatic TypeScript for the code-embedder lane.
+ */
+
+/** A single inventory line: a name and the quantity in stock. */
+export interface Item {
+  name: string;
+  quantity: number;
+}
+
+/** Either a successful new quantity or a typed failure reason. */
+export type WithdrawResult =
+  | { ok: true; remaining: number }
+  | { ok: false; reason: "unknown" | "out-of-stock" };
+
+/** An ordered collection of items keyed by name. */
+export class Inventory {
+  private readonly items = new Map<string, Item>();
+
+  /** Add `amount` units of `name`, creating the item if needed. */
+  restock(name: string, amount: number): void {
+    if (amount < 0) {
+      throw new Error("amount must be non-negative");
+    }
+    const existing = this.items.get(name);
+    if (existing === undefined) {
+      this.items.set(name, { name, quantity: amount });
+    } else {
+      existing.quantity += amount;
+    }
+  }
+
+  /** Remove `amount` units, returning a typed result rather than throwing. */
+  withdraw(name: string, amount: number): WithdrawResult {
+    const item = this.items.get(name);
+    if (item === undefined) {
+      return { ok: false, reason: "unknown" };
+    }
+    if (item.quantity < amount) {
+      return { ok: false, reason: "out-of-stock" };
+    }
+    item.quantity -= amount;
+    return { ok: true, remaining: item.quantity };
+  }
+
+  /** Sum of all quantities across every item. */
+  totalUnits(): number {
+    let total = 0;
+    for (const item of this.items.values()) {
+      total += item.quantity;
+    }
+    return total;
+  }
+}
+
+/** Build an Inventory from `[name, quantity]` pairs, skipping bad rows. */
+export function buildInventory(pairs: ReadonlyArray<[string, number]>): Inventory {
+  const inv = new Inventory();
+  for (const [name, quantity] of pairs) {
+    try {
+      inv.restock(name, quantity);
+    } catch {
+      // Skip malformed rows but keep ingesting the rest.
+      continue;
+    }
+  }
+  return inv;
+}
+""",
+    )
+
+    # ── Go ──────────────────────────────────────────────────────────────
+    _write_text(
+        "code/realistic/go/inventory.go",
+        """// Package inventory implements a small in-memory inventory ledger.
+//
+// It mirrors the Python / TypeScript / Rust fixtures: items keyed by
+// name with integer quantities, restock + guarded withdrawal, and
+// aggregate reporting. Idiomatic Go for the code-embedder lane.
+package inventory
+
+import (
+	"errors"
+	"fmt"
+)
+
+// ErrOutOfStock is returned when a withdrawal exceeds the quantity on hand.
+var ErrOutOfStock = errors.New("out of stock")
+
+// Item is a single inventory line: a name and the quantity in stock.
+type Item struct {
+	Name     string
+	Quantity int
+}
+
+// Inventory is a collection of items keyed by name.
+type Inventory struct {
+	items map[string]*Item
+}
+
+// New returns an empty, ready-to-use Inventory.
+func New() *Inventory {
+	return &Inventory{items: make(map[string]*Item)}
+}
+
+// Restock adds amount units of name, creating the item if needed.
+func (inv *Inventory) Restock(name string, amount int) error {
+	if amount < 0 {
+		return errors.New("amount must be non-negative")
+	}
+	if item, ok := inv.items[name]; ok {
+		item.Quantity += amount
+		return nil
+	}
+	inv.items[name] = &Item{Name: name, Quantity: amount}
+	return nil
+}
+
+// Withdraw removes amount units of name and returns the new quantity.
+//
+// It returns a wrapped ErrOutOfStock if too few units are available.
+func (inv *Inventory) Withdraw(name string, amount int) (int, error) {
+	item, ok := inv.items[name]
+	if !ok {
+		return 0, fmt.Errorf("unknown item %q", name)
+	}
+	if item.Quantity < amount {
+		return 0, fmt.Errorf("%s: %w", name, ErrOutOfStock)
+	}
+	item.Quantity -= amount
+	return item.Quantity, nil
+}
+
+// TotalUnits returns the sum of all quantities across every item.
+func (inv *Inventory) TotalUnits() int {
+	total := 0
+	for _, item := range inv.items {
+		total += item.Quantity
+	}
+	return total
+}
+""",
+    )
+
+    # ── Rust ────────────────────────────────────────────────────────────
+    _write_text(
+        "code/realistic/rust/inventory.rs",
+        """//! A small in-memory inventory ledger.
+//!
+//! Mirrors the Python / TypeScript / Go fixtures: items keyed by name
+//! with integer quantities, restock + guarded withdrawal, and aggregate
+//! reporting. Idiomatic Rust for the code-embedder lane.
+
+use std::collections::HashMap;
+
+/// Why a withdrawal failed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum WithdrawError {
+    /// No item is registered under the requested name.
+    Unknown,
+    /// The item exists but does not have enough units on hand.
+    OutOfStock { have: u32, need: u32 },
+}
+
+/// A single inventory line: a name and the quantity in stock.
+#[derive(Debug, Clone)]
+pub struct Item {
+    pub name: String,
+    pub quantity: u32,
+}
+
+/// A collection of items keyed by name.
+#[derive(Debug, Default)]
+pub struct Inventory {
+    items: HashMap<String, Item>,
+}
+
+impl Inventory {
+    /// Create an empty inventory.
+    pub fn new() -> Self {
+        Inventory {
+            items: HashMap::new(),
+        }
+    }
+
+    /// Add `amount` units of `name`, creating the item if needed.
+    pub fn restock(&mut self, name: &str, amount: u32) {
+        match self.items.get_mut(name) {
+            Some(item) => item.quantity += amount,
+            None => {
+                self.items.insert(
+                    name.to_string(),
+                    Item {
+                        name: name.to_string(),
+                        quantity: amount,
+                    },
+                );
+            }
+        }
+    }
+
+    /// Remove `amount` units of `name`, returning the new quantity.
+    pub fn withdraw(&mut self, name: &str, amount: u32) -> Result<u32, WithdrawError> {
+        let item = self.items.get_mut(name).ok_or(WithdrawError::Unknown)?;
+        if item.quantity < amount {
+            return Err(WithdrawError::OutOfStock {
+                have: item.quantity,
+                need: amount,
+            });
+        }
+        item.quantity -= amount;
+        Ok(item.quantity)
+    }
+
+    /// Sum of all quantities across every item.
+    pub fn total_units(&self) -> u32 {
+        self.items.values().map(|item| item.quantity).sum()
+    }
+}
+""",
+    )
+
+
 # ── README ─────────────────────────────────────────────────────────────
 
 
@@ -1048,6 +1469,7 @@ A clean `git diff` after a regen run is the determinism contract.
 ```
 multi_format_corpus/
 ├── prose/      Markdown / plain-text / LaTeX (PassthroughMarkdownExtractor + PlainTextExtractor)
+│   └── multilingual/  One markdown doc per language (es/fr/de/ru/ja/ar) across 4 scripts
 ├── pdf/        Digital PDFs (PdfDigitalExtractor)
 ├── html/       Articles with and without nav/ads noise (HtmlExtractor)
 ├── epub/       Tiny EPUB (EpubExtractor)
@@ -1055,11 +1477,25 @@ multi_format_corpus/
 ├── notebook/   Jupyter notebook (NotebookExtractor)
 ├── data/       CSV / TOML / JSON / SRT (CsvExtractor / StructuredDataExtractor / SubtitleExtractor)
 └── code/       Source files for ~20 languages + Makefile / Dockerfile / dotfiles (CodeExtractor)
+    └── realistic/   Richer idiomatic inventory modules (python / typescript / go / rust)
 ```
 
 ## Notes
 
+* `prose/multilingual/` holds one markdown doc per language — `es.md`
+  (Spanish), `fr.md` (French), `de.md` (German), `ru.md` (Russian),
+  `ja.md` (Japanese), `ar.md` (Arabic) — spanning the Latin, Cyrillic,
+  CJK, and Arabic (RTL) scripts. The prose is original, project-authored
+  CC0 text (see `ATTRIBUTION.md`) so multilingual ingest and embedder
+  ranking have non-English coverage.
 * No timestamps, UUIDs, or per-run randomness in any file content.
+* The `code/realistic/` family holds richer, idiomatic, multi-construct
+  modules (one each for python / typescript / go / rust) that all model
+  the same theme — a small in-memory inventory of items with quantities
+  — so they're parallel and useful for cross-language retrieval
+  comparison. They give the code-embedder lane something heavier than
+  the hello-world `code/<lang>/` stubs to rank against. Self-authored,
+  synthetic, released CC0 (public domain) like the rest of the tree.
 * Office and EPUB files are repacked zip containers with sorted entries
   and pinned epoch mtimes, so the bytes are stable across machines.
 * PDFs have their `/CreationDate` and `/ModDate` stripped to the same
@@ -1233,6 +1669,140 @@ def build_p1_images() -> None:
     os.utime(diagram_path, (_EPOCH.timestamp(), _EPOCH.timestamp()))
 
 
+def _render_scene_image():  # type: ignore[no-untyped-def]
+    """Render a deterministic, text-free "landscape scene" on a 320x320 canvas.
+
+    A vertical sky→ground gradient with a sun disc and three overlapping
+    hill arcs. No glyphs anywhere — this is a *natural* image for the
+    CLIP/multimodal lane (contrast with the OCR text-bearing fixtures).
+
+    Determinism: every coordinate and colour is an integer constant; the
+    gradient is computed row-by-row with integer arithmetic, so two
+    regens produce byte-identical pixels.
+    """
+    from PIL import Image, ImageDraw  # noqa: PLC0415
+
+    width, height = 320, 320
+    img = Image.new("RGB", (width, height), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+
+    # Sky→ground vertical gradient. Sky (light blue) at the top fades to a
+    # green ground band over the lower third.
+    horizon = 210
+    sky_top = (135, 206, 235)
+    sky_bottom = (200, 230, 245)
+    for y in range(horizon):
+        t = y / max(horizon - 1, 1)
+        r = int(sky_top[0] + (sky_bottom[0] - sky_top[0]) * t)
+        g = int(sky_top[1] + (sky_bottom[1] - sky_top[1]) * t)
+        b = int(sky_top[2] + (sky_bottom[2] - sky_top[2]) * t)
+        draw.line([(0, y), (width, y)], fill=(r, g, b))
+    ground_top = (90, 160, 70)
+    ground_bottom = (50, 110, 40)
+    for y in range(horizon, height):
+        t = (y - horizon) / max(height - horizon - 1, 1)
+        r = int(ground_top[0] + (ground_bottom[0] - ground_top[0]) * t)
+        g = int(ground_top[1] + (ground_bottom[1] - ground_top[1]) * t)
+        b = int(ground_top[2] + (ground_bottom[2] - ground_top[2]) * t)
+        draw.line([(0, y), (width, y)], fill=(r, g, b))
+
+    # Sun disc, upper-right.
+    draw.ellipse([(230, 30), (290, 90)], fill=(255, 220, 80))
+
+    # Three hill arcs straddling the horizon, drawn back-to-front.
+    draw.ellipse([(-60, 150), (140, 320)], fill=(70, 140, 60))
+    draw.ellipse([(120, 170), (340, 360)], fill=(60, 130, 55))
+    draw.ellipse([(40, 190), (240, 380)], fill=(80, 150, 65))
+
+    return img
+
+
+def _render_blocks_image():  # type: ignore[no-untyped-def]
+    """Render a deterministic 4x4 grid of distinct solid colour blocks.
+
+    A 320x320 canvas divided into sixteen 80x80 cells, each a different
+    saturated colour. No text. Visually very different from the gradient
+    scene above so CLIP embeds the two distinctly.
+
+    Determinism: the palette is a fixed list and the cell geometry is
+    integer-derived, so the pixels are byte-stable across regens.
+    """
+    from PIL import Image, ImageDraw  # noqa: PLC0415
+
+    width, height = 320, 320
+    cols, rows = 4, 4
+    cell_w = width // cols
+    cell_h = height // rows
+    palette = [
+        (228, 26, 28),
+        (55, 126, 184),
+        (77, 175, 74),
+        (152, 78, 163),
+        (255, 127, 0),
+        (255, 255, 51),
+        (166, 86, 40),
+        (247, 129, 191),
+        (153, 153, 153),
+        (102, 194, 165),
+        (252, 141, 98),
+        (141, 160, 203),
+        (231, 138, 195),
+        (166, 216, 84),
+        (255, 217, 47),
+        (229, 196, 148),
+    ]
+    img = Image.new("RGB", (width, height), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    for idx, colour in enumerate(palette):
+        row, col = divmod(idx, cols)
+        x0 = col * cell_w
+        y0 = row * cell_h
+        # Inclusive coordinates so adjacent cells abut without a seam.
+        draw.rectangle([(x0, y0), (x0 + cell_w - 1, y0 + cell_h - 1)], fill=colour)
+    return img
+
+
+def build_clip_images() -> None:
+    """Generate two deterministic, text-free images for the CLIP lane.
+
+    Unlike the P1 OCR fixtures (which embed readable text for the VLM to
+    transcribe), these are *natural* / *abstract* images with no glyphs,
+    feeding the CLIP/multimodal end-to-end tests under
+    ``tests/integration/test_multimodal_embed_e2e.py``:
+
+    - ``images/scene-landscape.png`` — a sky→ground gradient landscape
+      with a sun disc and hills.
+    - ``images/abstract-blocks.png`` — a 4x4 grid of distinct solid
+      colour blocks.
+
+    Both are RGB, saved PNG with ``optimize=True, compress_level=9`` and
+    an mtime pinned to the fixture epoch, so two consecutive runs produce
+    byte-identical files. The two images are visually distinct so CLIP
+    embeds them with cosine well below 1.0.
+    """
+    scene = _render_scene_image()
+    scene_path = _ROOT / "images" / "scene-landscape.png"
+    scene_path.parent.mkdir(parents=True, exist_ok=True)
+    scene.save(
+        scene_path,
+        format="PNG",
+        optimize=True,
+        compress_level=9,
+    )
+    os.utime(scene_path, (_EPOCH.timestamp(), _EPOCH.timestamp()))
+
+    blocks = _render_blocks_image()
+    blocks_path = _ROOT / "images" / "abstract-blocks.png"
+    blocks_path.parent.mkdir(parents=True, exist_ok=True)
+    blocks.save(
+        blocks_path,
+        format="PNG",
+        optimize=True,
+        compress_level=9,
+    )
+    os.utime(blocks_path, (_EPOCH.timestamp(), _EPOCH.timestamp()))
+
+
 def build_p1_scanned_pdf() -> None:
     """Generate a 1-page image-only PDF (no text layer) for OCR escalation.
 
@@ -1315,6 +1885,7 @@ def main() -> None:
 
     build_readme()
     build_prose()
+    build_multilingual_prose()
     build_pdfs()
     build_html()
     build_epub()
@@ -1322,7 +1893,9 @@ def main() -> None:
     build_notebook()
     build_data()
     build_code()
+    build_realistic_code()
     build_p1_ocr_fixtures()
+    build_clip_images()
     _clean_p1_only_subtrees()
 
 

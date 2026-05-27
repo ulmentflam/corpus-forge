@@ -59,15 +59,19 @@ _FIXTURE_ROOT = Path(__file__).resolve().parent.parent / "fixtures" / "multi_for
 # Wave 6 / P1 added an ``images/`` subdirectory (screenshot.png,
 # photo-of-receipt.jpg, diagram.webp) that's intentionally only ingested
 # when a VLM is configured (``ocr_enabled=True`` + non-Noop backend).
-# This P0 e2e test uses the default ``ExtractionConfig()`` which has no
-# VLM, so ``ImageExtractor`` is never registered and those three files
-# are silently skipped — they must therefore be excluded from the
-# expected document count.
+# The CLIP lane later added two text-free natural/abstract images
+# (scene-landscape.png, abstract-blocks.png) for the multimodal embed
+# tests. This P0 e2e test uses the default ``ExtractionConfig()`` which
+# has no VLM, so ``ImageExtractor`` is never registered and all of these
+# image files are silently skipped — they must therefore be excluded from
+# the expected document count.
 _UNINGESTABLE: frozenset[Path] = frozenset(
     {
         Path("images/screenshot.png"),
         Path("images/photo-of-receipt.jpg"),
         Path("images/diagram.webp"),
+        Path("images/scene-landscape.png"),
+        Path("images/abstract-blocks.png"),
     }
 )
 

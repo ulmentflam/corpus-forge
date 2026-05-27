@@ -121,6 +121,12 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   embeddings written so the new `_flush_all_pending_embeddings`
   helper can loop until it returns 0 (drain-until-empty) without
   the extra `count_chunks_missing_embedding` round-trip.
+- The raw DB-API 2.0 connection factory that `corpus-forge analyze` and
+  `corpus-forge feedback` each carried as a byte-identical
+  `_get_backend_conn` is now defined once in
+  `corpus_forge/backends/conn.py` as `open_conn`. Both CLI modules keep a
+  thin `_get_backend_conn` wrapper that delegates to it, preserving the
+  module-level monkeypatch seam tests rely on. Behavior is unchanged.
 
 ### Fixed
 
@@ -508,6 +514,47 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ### Added
 
+- Richer, realistic code-sample fixtures for the code-embedder lane:
+  `tests/fixtures/multi_format_corpus/code/realistic/<lang>/inventory.*`
+  adds idiomatic, multi-construct modules (python / typescript / go /
+  rust) that all model the same theme — a small in-memory inventory of
+  items with quantities — so they're parallel and useful for
+  cross-language retrieval comparison. Emitted deterministically by a
+  new `build_realistic_code()` in `scripts/build_fixture_corpus.py` and
+  guarded by `tests/unit/test_realistic_code_fixtures.py` (pure
+  filesystem: each file exists, is > 400 bytes, decodes UTF-8, and
+  carries its language's signature construct). Self-authored, synthetic,
+  CC0.
+- `corpus_forge/eval/embedder_ranking.py` — embedder-ranking eval
+  harness. Sweeps candidate embedders from a TOML manifest, scores each
+  on the same retrieval gold set, records embed throughput / device /
+  peak GPU memory, and emits a ranked leaderboard envelope
+  (`eval_kind: "embedder_ranking"`, `primary_metric` default `ndcg@10`).
+  The ranking core (`rank_embedders`) takes an injectable `evaluate_fn`
+  so it is unit-testable with no model download or DB; the real-wiring
+  evaluator (`make_default_evaluator`) and the on-machine run + CLI verb
+  are separate RFC boxes.
+- `corpus-forge eval embedders --candidates <manifest.toml>` — CLI verb
+  wiring the embedder-ranking harness. Reuses the same backend + gold-set
+  plumbing as `eval retrieval` (`--gold` resolves a bundled name or
+  `.jsonl` path; `--k` sets the retrieval cutoffs), assembles the
+  already-ingested `(chunk_id, text)` corpus from the configured backend,
+  ranks every candidate in the manifest, and writes the leaderboard
+  envelope to `--out`/`--json` (or stdout) with a short ranked table on
+  stderr. Requires real models + a populated backend, so the unit suite
+  only pins the help surface.
+- `docs/embedding-models.md` — per-lane embedding-model
+  recommendations: a grounded (HF MCP + live MTEB/MMTEB/CoIR/ViDoRe
+  leaderboard) survey of best-in-class embedders across four lanes
+  (English text retrieval, code, multilingual, multimodal), each with
+  a default / fast-local / API pick mapped onto corpus-forge's
+  `sentence_transformers` / `openai` / `model2vec` / CLIP providers.
+- `README.md` — brief `## Embedding model recommendations` section: a
+  four-lane default / fast-local / API pick table condensed from
+  `docs/embedding-models.md`, a non-commercial-license caveat for the
+  jina models, and three copy-paste `[[embedders]]` blocks (Qwen3-8B,
+  potion-code-16M static fast tier, OpenAI text-embedding-3-large)
+  matching `config.example.toml`'s field format.
 - `tests/unit/test_cli_human_friendly.py` — first two tests against
   the human-friendly CLI testable properties: (1) doctor's
   `_check_config_present` pins the `corpus-forge setup` recovery
@@ -649,6 +696,59 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   previous unbounded spinner. The previous `_log_ingest_eta`
   helper was renamed to `_plan_ingest` and now returns a
   per-source file-count map alongside emitting the startup ETA.
+- Multilingual prose fixture family under
+  `tests/fixtures/multi_format_corpus/prose/multilingual/` — one
+  markdown doc per language (`es`/`fr`/`de`/`ru`/`ja`/`ar`) spanning
+  the Latin, Cyrillic, CJK, and Arabic (RTL) scripts, so the synthetic
+  fixture corpus has non-English coverage for multilingual ingest and
+  (later) multilingual embedder ranking. All six docs are original,
+  project-authored CC0-1.0 text emitted by the new
+  `build_multilingual_prose()` builder in
+  `scripts/build_fixture_corpus.py` (deterministic — no timestamps,
+  numbers, or randomness). New `tests/fixtures/multi_format_corpus/ATTRIBUTION.md`
+  records the public-domain provenance; `tests/unit/test_multilingual_fixtures.py`
+  is a pure-filesystem regression test asserting the six files exist,
+  decode as UTF-8, and carry real Cyrillic / CJK / Arabic codepoints.
+- Two deterministic, **text-free** synthetic images for the CLIP /
+  multimodal lane — `images/scene-landscape.png` (gradient landscape
+  with sun + hills) and `images/abstract-blocks.png` (4×4 colour-block
+  grid) — generated by `build_clip_images()` in
+  `scripts/build_fixture_corpus.py` (drawn via `PIL.ImageDraw`, no
+  network fetch, byte-stable across regens). Covered by a new
+  pure-filesystem unit test (`tests/unit/test_clip_image_fixtures.py`)
+  and a CLIP-gated e2e assertion that the two embed distinctly
+  (`tests/integration/test_multimodal_embed_e2e.py`). The P0
+  multi-format ingest test's `_UNINGESTABLE` set excludes both, since
+  the default `ExtractionConfig` registers no image extractor.
+- `examples/sample-corpus/` — a small, self-authored (CC0) mini
+  knowledge base for the fictional "Skycast" weather CLI (markdown
+  notes, FAQ, CSV metrics, a TOML config, and a ruff-clean Python
+  module). Gives new users a ready-made corpus to point corpus-forge
+  at while following the README Quickstart. Guarded by
+  `tests/smoke/test_sample_corpus_present.py`.
+
+### Docs
+
+- README `## Install` now has an **Install with Claude (copy-paste
+  prompt)** subsection — a short provider-neutral prompt you can paste
+  into Claude Code / Desktop / an Agent-SDK client to have the
+  assistant do the whole install + MCP wiring + skill registration +
+  first-run sanity by following `CLAUDE.md` (and `AGENTS.md` /
+  `GEMINI.md` for non-Claude clients).
+
+### Changed
+
+- Refactored `register_default_extractors` in
+  `corpus_forge/extractors/registry.py` to drop its cyclomatic
+  complexity below the lint gate (C901 36 → ≤10, PLR0912 35 → ≤12,
+  PLR0915 78 → ≤50). The eight identical no-arg branches (markdown,
+  plaintext, structured, subtitle, html, epub, office, notebook)
+  collapse into a `_SIMPLE_EXTRACTORS_PRE_PDF` / `_SIMPLE_EXTRACTORS_POST_PDF`
+  data table driven by a single loop, and each special case (pdf, csv,
+  code, image, audio/video) moves verbatim into a dedicated
+  `_register_*` helper. Behavior-preserving: same extractors registered
+  under the same flags, in the same order, with the same skip-on-
+  `ImportError` semantics — proven by identical before/after test counts.
 
 ## [0.1.0b7] - 2026-05-20
 

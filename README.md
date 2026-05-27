@@ -175,6 +175,8 @@ corpus-forge migrate
 corpus-forge estimate ~/Notes
 
 # 5. Run a one-shot ingestion pass.
+#    No corpus of your own yet? Point a source at examples/sample-corpus/
+#    — a ready-made mini knowledge base — and follow its README.
 corpus-forge ingest --once
 
 # 6. Backfill embeddings for the active embedder(s).

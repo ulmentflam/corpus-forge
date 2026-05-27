@@ -373,6 +373,14 @@ ignore = ["PLR0911", "PLR0912", "PLR0913", "PLR0915"]
 # (``from learned import LearnedReranker`` before ``from rerank import Reranker``).
 # Suppressed here; tester should fix in a follow-up.  Coder cannot modify test files.
 "tests/unit/test_reranker_learned.py" = ["I001"]
+# scripts/build_fixture_corpus.py emits the multilingual prose fixture family
+# (prose/multilingual/*.md). The builder necessarily holds real Cyrillic / CJK /
+# Arabic string literals, which RUF001 flags as "ambiguous" against Latin
+# lookalikes. The emitted fixture tree is already lint-excluded (see
+# [tool.ruff].extend-exclude, "intentionally-trivial files in many languages");
+# this extends the same intent to the generator that produces it. RUF001 only —
+# every other rule still applies to the script.
+"scripts/build_fixture_corpus.py" = ["RUF001"]
 # Tests use magic values, lambda args, broad raises, composite assertions freely
 "tests/**/*.py" = [
     "PLR2004",  # magic-value-comparison
