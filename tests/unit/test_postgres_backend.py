@@ -252,15 +252,24 @@ class TestUpsertDocument:
             assert backend._execute.call_count >= 3
 
     def test_upsert_document_chunks_include_content_hash_column(self):
+        """The chunk INSERT must include the ``content_hash`` column.
+
+        Updated 2026-05-27 for the batched-INSERT path: ``upsert_document``
+        now issues ONE multi-row INSERT covering all chunks rather than
+        N per-chunk INSERTs. The test was previously asserting on the
+        per-chunk call count; we now assert on the single batched call
+        and check that it still references ``content_hash``.
+        """
 
         with patch.object(PostgresBackend, "__init__", lambda self, dsn, schema="corpus": None):
             backend = PostgresBackend.__new__(PostgresBackend)
             backend._execute = MagicMock(
                 side_effect=[
-                    [],
-                    [{"id": 5}],
-                    [],
-                    [],
+                    [],  # SELECT existing document (none)
+                    [{"id": 5}],  # INSERT documents RETURNING id
+                    # Batched chunk INSERT: returns one row per chunk in
+                    # the same order as the input list.
+                    [{"id": 10, "content_hash": "hashA"}, {"id": 11, "content_hash": "hashB"}],
                 ]
             )
 
@@ -280,12 +289,28 @@ class TestUpsertDocument:
                 for call in backend._execute.call_args_list
                 if "INSERT INTO corpus.chunks" in str(call[0][0])
             ]
-            assert len(chunk_calls) == 2, f"Expected 2 chunk INSERT calls, got {len(chunk_calls)}"
-
-            for sql, _ in chunk_calls:
-                assert "content_hash" in sql, f"content_hash missing from chunk INSERT: {sql}"
+            # Single batched INSERT (was 2 per-chunk INSERTs before the
+            # 2026-05-27 batching refactor).
+            assert len(chunk_calls) == 1, (
+                f"Expected 1 batched chunk INSERT call, got {len(chunk_calls)}"
+            )
+            sql = chunk_calls[0][0]
+            assert "content_hash" in sql, f"content_hash missing from chunk INSERT: {sql}"
+            # Both chunk parameter sets are crammed into one VALUES
+            # clause — two row-placeholder groups in the rendered SQL.
+            assert sql.count("(%s, %s, %s, %s, %s, %s, %s, %s)") == 2, (
+                f"Expected two VALUES tuples in the batched INSERT: {sql}"
+            )
 
     def test_upsert_document_chunks_have_correct_content_hash_value(self):
+        """The batched chunk INSERT must include the right hash per chunk.
+
+        Updated 2026-05-27 for the batched-INSERT path: ``upsert_document``
+        now bundles all chunk hashes into one multi-row INSERT's flat
+        param list. We pull the params for the batched call and confirm
+        each chunk's expected hash appears in the flat sequence.
+        """
+
         from corpus_forge.identity import chunk_content_hash
 
         with patch.object(PostgresBackend, "__init__", lambda self, dsn, schema="corpus": None):
@@ -294,8 +319,7 @@ class TestUpsertDocument:
                 side_effect=[
                     [],
                     [{"id": 5}],
-                    [],
-                    [],
+                    [{"id": 10, "content_hash": "hashA"}, {"id": 11, "content_hash": "hashB"}],
                 ]
             )
 
@@ -317,14 +341,17 @@ class TestUpsertDocument:
                 for call in backend._execute.call_args_list
                 if "INSERT INTO corpus.chunks" in str(call[0][0])
             ]
-            assert len(chunk_calls) == 2
-
-            for (_sql, params), (_, text) in zip(chunk_calls, chunks_input, strict=False):
+            assert len(chunk_calls) == 1, f"Expected 1 batched chunk INSERT, got {len(chunk_calls)}"
+            _sql, params = chunk_calls[0]
+            params_list = (
+                list(params) if isinstance(params, (tuple, list)) else list(params.values())
+            )
+            # Each chunk's expected hash must appear in the flat
+            # batched-INSERT param list.
+            for _, text in chunks_input:
                 expected_hash = chunk_content_hash(text)
-                # params could be a tuple (positional) or dict (keyword)
-                params_list = params if isinstance(params, (tuple, list)) else list(params.values())
-                assert any(isinstance(p, str) and p == expected_hash for p in params_list), (
-                    f"Expected hash {expected_hash} for text {text!r} not in params {params}"
+                assert expected_hash in params_list, (
+                    f"Expected hash {expected_hash} for text {text!r} not in {params_list}"
                 )
 
 
