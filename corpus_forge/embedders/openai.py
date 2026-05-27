@@ -30,6 +30,52 @@ _HTTP_SERVER_ERROR_FLOOR = 500
 _HTTP_RATE_LIMITED = 429
 
 
+#: Substrings (case-insensitive) that mark a 400 as
+#: context-length-exceeded (the input was too long for the model's
+#: max-tokens window). Ollama returns 400 with one of these
+#: messages; OpenAI's wording is similar. The bisection path treats
+#: these as recoverable (eventually isolates the offending chunk to
+#: a single-chunk base case) and the base case rescues those chunks
+#: via :meth:`OpenAIEmbedder._embed_oversized_chunk` (sub-chunk +
+#: mean-pool) so we don't lose any of the user's content. Surfaced
+#: 2026-05-27 on the maintainer's ``nomic-embed-text`` (8k context)
+#: ingest of a code-heavy vault.
+_RECOVERABLE_400_MESSAGE_FRAGMENTS: tuple[str, ...] = (
+    "context length",
+    "exceeds the context",
+    "maximum context",
+    "input is too long",
+    "token limit",
+)
+
+
+def _is_context_length_error(exc: BaseException) -> bool:
+    """Return ``True`` when ``exc`` is a 400 whose message indicates
+    the input exceeded the model's context window.
+
+    Lifted out of :func:`_is_recoverable_exception` so the
+    bisection base case can use the SAME classification to decide
+    "this chunk is too long" → sub-chunk and mean-pool. Without a
+    shared helper the carve-out logic could drift between the two
+    call sites and we'd start skipping chunks the bisection had
+    intended to rescue (or vice versa).
+    """
+
+    if getattr(exc, "status_code", None) != _HTTP_CLIENT_ERROR_FLOOR:
+        return False
+    message = str(exc).lower()
+    return any(frag in message for frag in _RECOVERABLE_400_MESSAGE_FRAGMENTS)
+
+
+#: Max recursive sub-chunking depth in
+#: :meth:`OpenAIEmbedder._embed_oversized_chunk`. ``2^8 = 256``
+#: pieces upper bound — a single chunk would have to be > 256x the
+#: model's context window to hit this. Bounded so a pathological
+#: input (e.g. a single 10 MB minified JS line that never splits)
+#: doesn't recurse indefinitely; we log+skip instead.
+_MAX_OVERSIZED_SPLIT_DEPTH = 8
+
+
 def _is_recoverable_exception(exc: BaseException) -> bool:
     """Return ``True`` when bisecting / retrying ``exc`` might help.
 
@@ -38,9 +84,10 @@ def _is_recoverable_exception(exc: BaseException) -> bool:
     glitches (5xx, rate-limit, connection blip). It's the wrong tool
     for **deterministic** failures: a wrong model name (404), a bad
     API key (401), a forbidden endpoint (403), or a request-shape
-    mismatch (400/422) won't change between attempts, and bisecting
-    them just wastes O(N) requests per batch on the same error. For
-    those, we re-raise immediately so the caller sees the real cause.
+    mismatch (400/422 from a malformed payload) won't change between
+    attempts, and bisecting them just wastes O(N) requests per batch
+    on the same error. For those, we re-raise immediately so the
+    caller sees the real cause.
 
     Policy:
 
@@ -49,12 +96,15 @@ def _is_recoverable_exception(exc: BaseException) -> bool:
     - ``openai.APIConnectionError`` / ``openai.APITimeoutError``
       (transport-level failures with no ``status_code``) → recoverable.
     - **Any other** ``status_code``-less exception → non-recoverable.
-      We used to treat all status-less exceptions as recoverable,
-      but a programming bug that raised (say) ``KeyError`` from our
-      own response-parsing code would then be bisected through
-      O(N) pointless retries before the operator ever saw it. Narrow
-      to known transport exception types so unexpected errors
-      surface immediately.
+    - **Carve-out for 400 + context-length messages** → recoverable.
+      Ollama (and some OpenAI-compatible servers) return 400 when an
+      input chunk exceeds the model's max-tokens context window.
+      That's content-specific — different chunk, different outcome
+      — so bisection IS the right recovery: eventually isolate the
+      too-long chunk to a single-chunk batch and skip it at the
+      base case (same pattern as NaN handling). Match is on a
+      conservative substring list to keep "real" request-shape 400s
+      (missing fields, bad enums) still re-raising.
 
     The HTTP-status check is duck-typed on a ``.status_code``
     attribute so it works against the OpenAI SDK's
@@ -72,10 +122,20 @@ def _is_recoverable_exception(exc: BaseException) -> bool:
         status_int = int(status)
     except (TypeError, ValueError):
         return True
-    return not (
+    is_client_error = (
         _HTTP_CLIENT_ERROR_FLOOR <= status_int < _HTTP_SERVER_ERROR_FLOOR
         and status_int != _HTTP_RATE_LIMITED
     )
+    if not is_client_error:
+        # 5xx, 429, or anything outside the 4xx range → recoverable.
+        return True
+    # 4xx-except-429: deterministic in general, EXCEPT for the narrow
+    # carve-out: 400 + a context-length message means "this specific
+    # chunk doesn't fit". Bisection drives toward isolating the
+    # offender; the base case then sub-chunks + mean-pools instead
+    # of skipping (see ``_embed_oversized_chunk``). Other 400s (bad
+    # fields, wrong enums) stay non-recoverable.
+    return _is_context_length_error(exc)
 
 
 class EmbedderWedged(Exception):
@@ -402,6 +462,13 @@ class OpenAIEmbedder(BaseEmbedder):
         out-of-band.
         """
 
+        # Tracks whether the most recent failure was specifically a
+        # context-length-exceeded 400. Set in the except block below
+        # and read at the single-chunk base case so we can route
+        # too-long chunks through the sub-chunk + mean-pool rescue
+        # path instead of skipping them.
+        oversized_failure = False
+
         try:
             response = client.embeddings.create(
                 model=self.model_id,
@@ -460,6 +527,12 @@ class OpenAIEmbedder(BaseEmbedder):
                     str(exc)[:200],
                 )
                 raise
+            # Tag context-length 400s so the base case knows to try
+            # the sub-chunk rescue rather than skip. Other recoverable
+            # failures (5xx, 429, transport blips, NaN) stay on the
+            # skip path at the base case.
+            if _is_context_length_error(exc):
+                oversized_failure = True
             logger.debug(
                 "Embed batch (size=%d) raised %s: %s — bisecting to isolate",
                 len(texts),
@@ -471,6 +544,19 @@ class OpenAIEmbedder(BaseEmbedder):
         if len(texts) == 1:
             single_text = texts[0]
             sha = hashlib.sha256(single_text.encode("utf-8", errors="replace")).hexdigest()[:12]
+            # Rescue path for context-length 400s: instead of skipping
+            # the chunk, split it in half, embed each piece, and
+            # mean-pool the sub-embeddings into one vector. Recurses
+            # if a piece is still too long. Returns ``None`` only
+            # when every sub-piece failed or the depth limit was
+            # exceeded; in that case we fall through to the skip
+            # path below as before.
+            if oversized_failure:
+                pooled = self._embed_oversized_chunk(client, single_text, orig_indices[0])
+                if pooled is not None:
+                    return [pooled], []
+                # ``_embed_oversized_chunk`` already logged the
+                # giving-up reason; fall through to the skip path.
             # NOTE: we intentionally do NOT log chunk text here — even
             # short previews leak PII for users ingesting personal
             # vaults / chat history. ``sha256`` is enough to reproduce
@@ -505,3 +591,119 @@ class OpenAIEmbedder(BaseEmbedder):
             client, texts[mid:], orig_indices[mid:]
         )
         return left_rows + right_rows, left_failed + right_failed
+
+    def _embed_oversized_chunk(
+        self,
+        client,
+        text: str,
+        orig_idx: int,
+        depth: int = 0,
+    ) -> list[float] | None:
+        """Rescue a single chunk that exceeds the embedder's context
+        window by splitting it in half, embedding each piece, and
+        mean-pooling the resulting vectors into one representative
+        embedding for the original chunk.
+
+        Recursive: a half that's still too long splits again, bounded
+        by :data:`_MAX_OVERSIZED_SPLIT_DEPTH` so pathological input
+        (a single 10 MB minified line, etc.) eventually gives up
+        instead of looping forever.
+
+        Returns the mean-pooled vector when at least one piece
+        embedded cleanly. Returns ``None`` when every piece failed
+        (each piece NaN'd, hit a different recoverable error, or
+        recursion depth exhausted) — the caller treats that as a
+        skip, matching the pre-fix behavior for content the
+        embedder genuinely cannot represent.
+
+        Why mean-pool: it's the standard approach for representing
+        long-document semantics with a fixed-size embedder. Each
+        piece carries the local semantics of its slice; the mean
+        smooths across the document. The outer :meth:`encode`
+        already re-normalizes (when ``self.normalized``) so a
+        non-unit mean vector becomes unit-length on the way out.
+
+        Why split by character count: precise tokenization requires
+        the model's tokenizer, which we don't ship with the
+        embedder. Character splits are close enough — the first
+        attempt at the original chunk already established the
+        chunk is too long, so we're decisively cutting it down by
+        half regardless of where token boundaries fall. If a
+        character split happens to drop bytes in the middle of a
+        multi-byte UTF-8 codepoint or a markdown token, the model
+        still produces a sensible embedding for the resulting
+        text (embedders are forgiving of malformed prefixes/
+        suffixes at the chunk edges).
+        """
+
+        if depth > _MAX_OVERSIZED_SPLIT_DEPTH:
+            logger.warning(
+                "Oversized chunk (orig_idx=%d, chars=%d) still too long after "
+                "%d splits — giving up. The chunk will fall through to the "
+                "base-case skip path.",
+                orig_idx,
+                len(text),
+                _MAX_OVERSIZED_SPLIT_DEPTH,
+            )
+            return None
+
+        mid = len(text) // 2
+        if mid == 0:
+            # Pathological: empty or single-char text marked oversized
+            # by the server. Can't split further.
+            return None
+
+        pieces = (text[:mid], text[mid:])
+        sub_vectors: list[list[float]] = []
+        for piece in pieces:
+            try:
+                response = client.embeddings.create(
+                    model=self.model_id,
+                    input=[piece],
+                    encoding_format="float",
+                    dimensions=self.dimension,
+                )
+                row_vecs = [item.embedding for item in response.data]
+                if len(row_vecs) != 1:
+                    # Provider returned the wrong row count for a
+                    # single-input request — skip this piece, others
+                    # may still embed cleanly.
+                    continue
+                vec = row_vecs[0]
+                if any(math.isnan(x) for x in vec):
+                    # NaN content from this piece — skip.
+                    continue
+                sub_vectors.append(vec)
+            except Exception as exc:
+                if not _is_recoverable_exception(exc):
+                    raise
+                if _is_context_length_error(exc):
+                    # Still too long after one split — recurse.
+                    sub_vec = self._embed_oversized_chunk(client, piece, orig_idx, depth + 1)
+                    if sub_vec is not None:
+                        sub_vectors.append(sub_vec)
+                # Other recoverable failures (NaN-laced 500, 429, transient
+                # 5xx, transport blip): the bisection couldn't isolate
+                # this within the rescue path. Skip this piece — others
+                # may still succeed.
+
+        if not sub_vectors:
+            logger.warning(
+                "Oversized chunk (orig_idx=%d, chars=%d): every sub-piece "
+                "failed to embed — falling back to skip.",
+                orig_idx,
+                len(text),
+            )
+            return None
+
+        arr = np.array(sub_vectors, dtype=np.float32)
+        pooled = arr.mean(axis=0).tolist()
+        logger.info(
+            "Embedded oversized chunk (orig_idx=%d, chars=%d) via %d "
+            "sub-pieces (depth=%d, mean-pooled).",
+            orig_idx,
+            len(text),
+            len(sub_vectors),
+            depth,
+        )
+        return pooled

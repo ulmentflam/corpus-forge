@@ -8,6 +8,71 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Added
+
+- `OpenAIEmbedder._embed_oversized_chunk` rescues chunks too long
+  for the embedder's context window via recursive split-in-half +
+  per-piece embed + mean-pool, returning ONE representative vector
+  instead of skipping the chunk. Surfaced 2026-05-27 when restarting
+  ingest after switching to `nomic-embed-text` (8k context): some
+  code chunks in the maintainer's vault exceeded the window and were
+  being skipped by the bisection's base-case path. The rescue
+  recursion is bounded by `_MAX_OVERSIZED_SPLIT_DEPTH = 8` (256
+  pieces upper-bound) so pathological inputs eventually fall through
+  to skip rather than loop forever. The outer `encode` re-normalises
+  the pooled vector when `self.normalized`, so the returned
+  embedding is still unit-length. New helper
+  `_is_context_length_error(exc)` lifted out of
+  `_is_recoverable_exception` so both the bisection classifier and
+  the base-case rescue path share one source of truth. Regression
+  coverage in
+  `tests/unit/test_openai_embedder_bisection.py::Test400ContextLengthCarveOut`:
+  rescue-then-skip on pathological-input (every sub-piece still
+  400s); successful rescue via single split; recursive split when
+  the first half is still too long; depth-limit fallback to skip;
+  mixed batch with one oversized + one normal chunk (both land,
+  zero skipped).
+
+### Changed
+
+- `PostgresBackend` now uses a `psycopg_pool.ConnectionPool` instead
+  of opening a fresh TCP+TLS+auth handshake on every backend call
+  (the previous `# For now, we'll create a new connection each time`
+  TODO). Profiled 2026-05-27 against the maintainer's vault over
+  Tailscale: cold connect was ~45ms per call; pooled drops to
+  ~14ms. With 5-7 backend calls per file × 51k files, this saves
+  ~2 hours of pure connection overhead on a full ingest. New
+  `pool_min_size` / `pool_max_size` kwargs (default 0 / 8 — lazy
+  pool, max 8 concurrent connections); the pool's `close()` is
+  reachable via `backend.close()` so tests + the daemon can dispose
+  of a backend cleanly. Schema `search_path` is set once per pooled
+  connection via the pool's `configure` callback, so the existing
+  unqualified-table-name DDL semantics survive.
+- `ingest_once`'s per-source iteration now lives inside an outer
+  `try/finally`; the `finally` clause runs the end-of-source
+  `_flush_all_pending_embeddings` call. Previously the flush sat
+  after the `for raw in raw_items:` loop, so an iterator failure
+  (filesystem read crash mid-walk, `EmbedderWedged` propagating
+  out of the inner per-file `except`, etc.) skipped the flush and
+  left the trailing files' chunks un-embedded until the next
+  ingest pass. The finally also wraps the flush call in its own
+  try/except so a flush failure during error-unwind doesn't mask
+  the original exception.
+- `ingest_once` now batches the embedding flush across files instead
+  of flushing after every file. The per-file path was paying ~209ms
+  for the `chunks_missing_embedding` LEFT-JOIN-anti-join (called
+  once per file). Now the flush runs every
+  `_FLUSH_EMBEDDINGS_EVERY_N_FILES = 32` files plus once at the
+  end of each source — a **97% reduction** in query cost (32 calls
+  → 1 call per window) and ~56 minutes saved on the 51k-file
+  baseline. `ingest_one` gains a `flush_embeddings: bool = True`
+  kwarg; external callers (the live `ingest_one` API) keep the
+  per-file flush by default, only `ingest_once` opts in to batched.
+  `_write_embeddings_for_chunks` now returns the count of
+  embeddings written so the new `_flush_all_pending_embeddings`
+  helper can loop until it returns 0 (drain-until-empty) without
+  the extra `count_chunks_missing_embedding` round-trip.
+
 ### Fixed
 
 - `OpenAIEmbedder.encode` now has a **circuit breaker** that raises
