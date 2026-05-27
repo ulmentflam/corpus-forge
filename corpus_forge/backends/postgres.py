@@ -36,6 +36,19 @@ if TYPE_CHECKING:
 # readable without a ruff ``PLR2004`` magic-number flag.
 _LEGACY_CHUNK_TUPLE_LEN = 2
 
+#: Postgres protocol bind-parameter cap. PG limits the parameter
+#: count per statement to a 16-bit unsigned integer (65,535).
+#: Multi-row ``INSERT ... VALUES (?, ?), (?, ?), ...`` statements
+#: can exceed this on pathological inputs (a single file with
+#: 8k+ chunks for the 8-param chunk INSERT, 32k+ pairs for the
+#: 2-param reuse-copy). We split the batch into sub-batches that
+#: stay under the cap so the bulk-insert refactor doesn't blow up
+#: on edge cases. Caller-side helpers
+#: (``_insert_chunks_batch`` / ``_copy_reusable_embeddings_batch``)
+#: divide their inputs by the per-row param count.
+_PG_MAX_BIND_PARAMS = 65535
+
+
 # pgvector index-building limits (8 KB Postgres page constraint).
 # Source: pgvector README §"Vector Type" / §"Half Vector Type".
 #
@@ -796,35 +809,47 @@ class PostgresBackend(StorageBackend):
         per-row checks.
         """
 
-        n = len(chunks)
-        placeholders = ", ".join(["(%s, %s, %s, %s, %s, %s, %s, %s)"] * n)
-        params: list[Any] = []
-        for i, chunk in enumerate(chunks):
-            chunk_hash = chunk_content_hash(chunk.text)
-            meta = psycopg.types.json.Json(chunk.metadata or {})
-            params.extend(
-                (
-                    doc_id,
-                    i,
-                    chunk.heading,
-                    chunk.text,
-                    meta,
-                    chunk.role,
-                    chunk.token_count,
-                    chunk_hash,
+        # Split into sub-batches that stay under the Postgres
+        # bind-parameter cap (65,535 / 8 params per chunk = 8,191
+        # chunks per statement). Files with more chunks than that are
+        # rare but would otherwise fail with a confusing PG protocol
+        # error. ``chunk_index`` keeps incrementing across sub-batches
+        # via ``batch_start + i`` so the returned ordering matches
+        # the caller's expectations.
+        _PARAMS_PER_CHUNK = 8
+        max_chunks_per_batch = _PG_MAX_BIND_PARAMS // _PARAMS_PER_CHUNK
+        result: list[tuple[int, str]] = []
+        for batch_start in range(0, len(chunks), max_chunks_per_batch):
+            sub_chunks = chunks[batch_start : batch_start + max_chunks_per_batch]
+            placeholders = ", ".join(["(%s, %s, %s, %s, %s, %s, %s, %s)"] * len(sub_chunks))
+            params: list[Any] = []
+            for offset, chunk in enumerate(sub_chunks):
+                chunk_hash = chunk_content_hash(chunk.text)
+                meta = psycopg.types.json.Json(chunk.metadata or {})
+                params.extend(
+                    (
+                        doc_id,
+                        batch_start + offset,
+                        chunk.heading,
+                        chunk.text,
+                        meta,
+                        chunk.role,
+                        chunk.token_count,
+                        chunk_hash,
+                    )
                 )
+            rows = self._execute(
+                f"""
+                INSERT INTO corpus.chunks
+                (document_id, chunk_index, heading, text, metadata,
+                 role, token_count, content_hash)
+                VALUES {placeholders}
+                RETURNING id, content_hash
+                """,
+                tuple(params),
             )
-        rows = self._execute(
-            f"""
-            INSERT INTO corpus.chunks
-            (document_id, chunk_index, heading, text, metadata,
-             role, token_count, content_hash)
-            VALUES {placeholders}
-            RETURNING id, content_hash
-            """,
-            tuple(params),
-        )
-        return [(r["id"], r["content_hash"]) for r in rows]
+            result.extend((r["id"], r["content_hash"]) for r in rows)
+        return result
 
     def _copy_reusable_embeddings_batch(
         self,
@@ -913,18 +938,27 @@ class PostgresBackend(StorageBackend):
             if not copy_pairs:
                 continue
 
-            # 1 RTT: bulk-copy embeddings via VALUES + JOIN.
-            values_placeholders = ", ".join(["(%s, %s)"] * len(copy_pairs))
-            flat_pairs = [v for pair in copy_pairs for v in pair]
-            self._execute(
-                f"""
-                INSERT INTO {embedder_table} (chunk_id, embedder_id, embedding)
-                SELECT t.new_id, e.embedder_id, e.embedding
-                FROM (VALUES {values_placeholders}) AS t(new_id, prior_id)
-                JOIN {embedder_table} e ON e.chunk_id = t.prior_id
-                """,
-                tuple(flat_pairs),
-            )
+            # Bulk-copy embeddings via VALUES + JOIN, sub-batched to
+            # stay under the Postgres bind-parameter cap (65,535 / 2
+            # params per pair = 32,767 pairs per statement). Each
+            # sub-batch is one round-trip; the loop only kicks in for
+            # files with >32k unique chunks, which is rare in practice
+            # but real on pathological inputs.
+            _PARAMS_PER_PAIR = 2
+            max_pairs_per_batch = _PG_MAX_BIND_PARAMS // _PARAMS_PER_PAIR
+            for batch_start in range(0, len(copy_pairs), max_pairs_per_batch):
+                sub_pairs = copy_pairs[batch_start : batch_start + max_pairs_per_batch]
+                values_placeholders = ", ".join(["(%s, %s)"] * len(sub_pairs))
+                flat_pairs = [v for pair in sub_pairs for v in pair]
+                self._execute(
+                    f"""
+                    INSERT INTO {embedder_table} (chunk_id, embedder_id, embedding)
+                    SELECT t.new_id, e.embedder_id, e.embedding
+                    FROM (VALUES {values_placeholders}) AS t(new_id, prior_id)
+                    JOIN {embedder_table} e ON e.chunk_id = t.prior_id
+                    """,
+                    tuple(flat_pairs),
+                )
 
     def _apply_document_labels(self, doc_id: int, doc: "RawDocument") -> None:
         """Persist ``doc.labels`` against the ``corpus.document_labels`` junction.

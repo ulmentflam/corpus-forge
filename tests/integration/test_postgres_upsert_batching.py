@@ -69,14 +69,38 @@ def backend(pg_dsn: str) -> PostgresBackend:
 # Match the embedder shape ``register_embedder`` expects (provider,
 # model_id, dimension, normalized, distance, name, plus the active
 # attribute it falls back to via getattr).
-class _FakeEmbedder:
-    name = "test-emb"
-    provider = "test"
-    model_id = "test-model"
-    dimension = 4
-    normalized = False
-    distance = "cosine"
-    active = True
+#
+# Important: each test should call :func:`_new_embedder` rather than
+# instantiating ``_FakeEmbedder()`` directly. ``register_embedder`` is
+# process-lifetime cached by name, so two tests using the same name
+# (even across distinct backend instances) interact via the persisted
+# Postgres row state. ``pg_dsn`` resets the schema between tests, but
+# making each embedder name unique adds belt-and-suspenders isolation
+# and matches the cache-test convention already used elsewhere in
+# this file.
+_EMBEDDER_COUNTER = [0]
+
+
+def _new_embedder(*, name: str | None = None, dimension: int = 4):
+    """Return a fresh embedder-shape object with a unique name unless
+    a name is explicitly supplied (for tests that need same-name
+    semantics, e.g. cache-hit tests)."""
+
+    _EMBEDDER_COUNTER[0] += 1
+    chosen = name if name is not None else f"test-emb-{_EMBEDDER_COUNTER[0]}"
+
+    class _FakeEmbedder:
+        pass
+
+    fake = _FakeEmbedder()
+    fake.name = chosen
+    fake.provider = "test"
+    fake.model_id = "test-model"
+    fake.dimension = dimension
+    fake.normalized = False
+    fake.distance = "cosine"
+    fake.active = True
+    return fake
 
 
 def _make_doc(source_uri: str, text: str, content_hash: str = "h0") -> RawDocument:
@@ -190,7 +214,11 @@ class TestRegisterEmbedderCache:
         confirm the second call is round-trip-free.
         """
 
-        embedder = _FakeEmbedder()
+        # Same-name semantics are load-bearing for this test — we're
+        # verifying that the SECOND call with the SAME embedder name
+        # hits the cache. ``_new_embedder(name=...)`` keeps the
+        # explicit-name semantics while making this opt-in obvious.
+        embedder = _new_embedder(name="cache-hit-emb")
         first_id = backend.register_embedder(embedder)
         assert isinstance(first_id, int) and first_id > 0
 
@@ -208,19 +236,16 @@ class TestRegisterEmbedderCache:
         own cache entry; neither call interferes with the other.
         """
 
-        class _A(_FakeEmbedder):
-            name = "test-A"
+        emb_a = _new_embedder(name="distinct-A")
+        emb_b = _new_embedder(name="distinct-B")
 
-        class _B(_FakeEmbedder):
-            name = "test-B"
-
-        id_a = backend.register_embedder(_A())
-        id_b = backend.register_embedder(_B())
+        id_a = backend.register_embedder(emb_a)
+        id_b = backend.register_embedder(emb_b)
         assert id_a != id_b
         # Re-register both — both should hit the cache.
         with patch.object(backend, "_execute") as spy:
-            assert backend.register_embedder(_A()) == id_a
-            assert backend.register_embedder(_B()) == id_b
+            assert backend.register_embedder(emb_a) == id_a
+            assert backend.register_embedder(emb_b) == id_b
         assert spy.call_count == 0
 
 
@@ -245,7 +270,7 @@ class TestCopyReusableEmbeddingsBatch:
         re-encoding, no precision loss).
         """
 
-        embedder = _FakeEmbedder()
+        embedder = _new_embedder()
         embedder_id = backend.register_embedder(embedder)
         dataset_id = backend.get_or_create_dataset(name="d", kind="text", description="")
 
@@ -313,7 +338,7 @@ class TestCopyReusableEmbeddingsBatch:
         INSERTs. Don't crash, don't write garbage rows.
         """
 
-        embedder = _FakeEmbedder()
+        embedder = _new_embedder()
         embedder_id = backend.register_embedder(embedder)
         dataset_id = backend.get_or_create_dataset(name="d", kind="text", description="")
 
@@ -349,7 +374,7 @@ class TestEndToEnd:
         somehow corrupts the chunk-ordering or skips writes.
         """
 
-        embedder = _FakeEmbedder()
+        embedder = _new_embedder()
         embedder_id = backend.register_embedder(embedder)
         dataset_id = backend.get_or_create_dataset(name="d", kind="text", description="")
 

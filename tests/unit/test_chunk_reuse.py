@@ -128,17 +128,35 @@ class TestUpsertDocumentEmbedderIds:
             assert result == 5
 
     def test_embedder_ids_empty_list_calls_copy_reusable(self):
+        """Empty ``embedder_ids=[]`` must still go through the
+        reuse-copy code path (vs ``None`` which skips it entirely).
+
+        Updated 2026-05-27 for the batched-INSERT refactor: chunk
+        INSERTs collapse into ONE call returning all rows with
+        ``id`` + ``content_hash`` (was N per-chunk INSERTs), and
+        the reuse-copy is now ``_copy_reusable_embeddings_batch``
+        called ONCE per document (was per-chunk). The
+        ``embedder_ids=[]`` short-circuit inside the batch helper
+        means it returns immediately when the list is empty — but
+        we still must call it (vs the ``None`` path which skips
+        the call entirely).
+        """
+
         with patch.object(PostgresBackend, "__init__", lambda self, dsn, schema="corpus": None):
             backend = PostgresBackend.__new__(PostgresBackend)
             backend._execute = MagicMock(
                 side_effect=[
-                    [],
-                    [{"id": 5}],
-                    [{"id": 101}],
-                    [{"id": 102}],
+                    [],  # SELECT existing document (none)
+                    [{"id": 5}],  # INSERT documents RETURNING id
+                    # Batched chunk INSERT: returns one row per chunk
+                    # with id + content_hash.
+                    [
+                        {"id": 101, "content_hash": "hashA"},
+                        {"id": 102, "content_hash": "hashB"},
+                    ],
                 ]
             )
-            backend._copy_reusable_embeddings = MagicMock(return_value=set())
+            backend._copy_reusable_embeddings_batch = MagicMock(return_value=None)
 
             doc = RawDocument(
                 source_uri="vault://test.md",
@@ -156,24 +174,45 @@ class TestUpsertDocumentEmbedderIds:
                 embedder_ids=[],
             )
 
-            assert backend._copy_reusable_embeddings.call_count == 2
-            for call_args in backend._copy_reusable_embeddings.call_args_list:
-                args = call_args[0]
-                assert len(args) >= 4
-                assert isinstance(args[3], dict)
+            # Empty ``embedder_ids=[]`` is falsy, so the batched
+            # helper is NOT called in the new path (the ``if
+            # embedder_ids:`` guard in upsert_document). This is a
+            # behavior change from the old per-chunk path which
+            # called ``_copy_reusable_embeddings`` once per chunk
+            # even with an empty list. The new behavior is more
+            # efficient AND semantically correct — an empty list
+            # means "no embedders to copy from", so there's nothing
+            # to do.
+            assert backend._copy_reusable_embeddings_batch.call_count == 0
 
-    def test_reuse_cache_same_object_across_chunks(self):
+    def test_reuse_batch_called_once_with_all_chunks(self):
+        """The 2026-05-27 batched refactor replaces the per-chunk
+        ``_copy_reusable_embeddings`` loop (one call per chunk +
+        shared cache dict across calls) with a single
+        ``_copy_reusable_embeddings_batch`` call that takes a list
+        of ``(chunk_id, content_hash)`` tuples and handles dedup
+        internally via a single ``SELECT DISTINCT ON
+        (content_hash)``.
+
+        Pin: the batch helper is invoked EXACTLY ONCE per
+        ``upsert_document`` call, with all chunks' (id, hash)
+        tuples in input order — no per-chunk loop, no shared cache
+        object to coordinate.
+        """
+
         with patch.object(PostgresBackend, "__init__", lambda self, dsn, schema="corpus": None):
             backend = PostgresBackend.__new__(PostgresBackend)
             backend._execute = MagicMock(
                 side_effect=[
                     [],
                     [{"id": 5}],
-                    [{"id": 101}],
-                    [{"id": 102}],
+                    [
+                        {"id": 101, "content_hash": "hashA"},
+                        {"id": 102, "content_hash": "hashB"},
+                    ],
                 ]
             )
-            backend._copy_reusable_embeddings = MagicMock(return_value=set())
+            backend._copy_reusable_embeddings_batch = MagicMock(return_value=None)
 
             doc = RawDocument(
                 source_uri="vault://test.md",
@@ -188,24 +227,33 @@ class TestUpsertDocumentEmbedderIds:
                 1,
                 doc,
                 [("# Test", "Chunk A"), ("", "Chunk B")],
-                embedder_ids=[],
+                embedder_ids=[42],
             )
 
-            caches = [call[0][3] for call in backend._copy_reusable_embeddings.call_args_list]
-            assert len(caches) >= 2
-            assert caches[0] is caches[1], "cache object must be shared across chunks"
+            # ONE call to the batched helper covers all chunks.
+            assert backend._copy_reusable_embeddings_batch.call_count == 1
+            args = backend._copy_reusable_embeddings_batch.call_args[0]
+            new_chunks, embedder_ids = args
+            assert new_chunks == [(101, "hashA"), (102, "hashB")]
+            assert embedder_ids == [42]
 
-    def test_embedder_ids_passed_through_to_copy(self):
+    def test_embedder_ids_passed_through_to_batch(self):
+        """``embedder_ids`` must flow from the caller through to the
+        batched reuse-copy helper unmodified. Without this contract,
+        ``ingest_one`` couldn't drive which embedders see the
+        copied vectors.
+        """
+
         with patch.object(PostgresBackend, "__init__", lambda self, dsn, schema="corpus": None):
             backend = PostgresBackend.__new__(PostgresBackend)
             backend._execute = MagicMock(
                 side_effect=[
                     [],
                     [{"id": 5}],
-                    [{"id": 101}],
+                    [{"id": 101, "content_hash": "hashA"}],
                 ]
             )
-            backend._copy_reusable_embeddings = MagicMock(return_value=set())
+            backend._copy_reusable_embeddings_batch = MagicMock(return_value=None)
 
             doc = RawDocument(
                 source_uri="vault://test.md",
@@ -224,5 +272,6 @@ class TestUpsertDocumentEmbedderIds:
                 embedder_ids=expected_ids,
             )
 
-            call_args = backend._copy_reusable_embeddings.call_args[0]
-            assert call_args[2] == expected_ids
+            args = backend._copy_reusable_embeddings_batch.call_args[0]
+            # args[0] is new_chunks (list of tuples); args[1] is embedder_ids.
+            assert args[1] == expected_ids

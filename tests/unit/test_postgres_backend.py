@@ -297,9 +297,19 @@ class TestUpsertDocument:
             sql = chunk_calls[0][0]
             assert "content_hash" in sql, f"content_hash missing from chunk INSERT: {sql}"
             # Both chunk parameter sets are crammed into one VALUES
-            # clause — two row-placeholder groups in the rendered SQL.
-            assert sql.count("(%s, %s, %s, %s, %s, %s, %s, %s)") == 2, (
-                f"Expected two VALUES tuples in the batched INSERT: {sql}"
+            # clause — count the tuples robustly via the gaps between
+            # ``)`` and ``(`` rather than matching an exact placeholder
+            # string (the latter breaks under harmless formatting
+            # changes like extra whitespace, casts, or psycopg version
+            # bumps that subtly retokenize the literal).
+            import re
+
+            values_clause = sql.split("VALUES", 1)[1] if "VALUES" in sql else ""
+            tuple_gaps = re.findall(r"\)\s*,\s*\(", values_clause)
+            # N tuples in a VALUES list have N-1 separators between them.
+            tuple_count = len(tuple_gaps) + 1 if values_clause else 0
+            assert tuple_count == 2, (
+                f"Expected 2 VALUES tuples in the batched INSERT, found {tuple_count}: {sql}"
             )
 
     def test_upsert_document_chunks_have_correct_content_hash_value(self):
