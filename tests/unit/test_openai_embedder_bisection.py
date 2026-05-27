@@ -514,6 +514,84 @@ class TestExceptionTriage:
         assert client.embeddings.create.call_count == 1
 
 
+class Test400ContextLengthCarveOut:
+    """Ollama returns 400 when an input chunk exceeds the model's
+    context window (e.g. nomic-embed-text's 8k tokens). That's
+    content-specific — bisection isolates the too-long chunk and
+    the base case logs+skips it (same pattern as NaN).
+
+    Without the carve-out, the previous 4xx-except-429
+    non-recoverable policy treated this as a hard re-raise, which
+    blocked every flush on the maintainer's 2026-05-27 ingest
+    because one too-long chunk in the backlog poisoned every
+    subsequent batch.
+    """
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Error code: 400 - the input length exceeds the context length",
+            "input is too long for the model",
+            "Maximum context window exceeded",
+            "token limit reached",
+        ],
+    )
+    def test_400_context_length_messages_bisect_then_skip(self, message: str) -> None:
+        """All known context-length-exceeded message variants must
+        route through bisection (recoverable) so the offending chunk
+        is isolated and skipped — not re-raised on the first call."""
+
+        emb = _make_embedder(batch_size=4)
+        client = MagicMock()
+        client.embeddings.create.side_effect = _FakeStatusError(400, message)
+        emb._client = client
+
+        # 4 chunks all 400 → bisection isolates each → each hits the
+        # base-case skip path. Returns (0, dim) with all 4 in
+        # last_failed_indices.
+        result = emb.encode(["a", "b", "c", "d"])
+        assert result.shape == (0, 4)
+        assert set(emb.last_failed_indices) == {0, 1, 2, 3}
+        # SDK was called many times (top + 2 halves + 4 leaves = 7) —
+        # bisection ran, didn't short-circuit.
+        assert client.embeddings.create.call_count >= 7
+
+    @pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+    def test_other_4xx_still_non_recoverable(self, status: int) -> None:
+        """Non-context-length 4xx codes must still re-raise immediately
+        — we don't want to bisect through O(N) calls on a wrong-model
+        or bad-API-key error."""
+
+        emb = _make_embedder(batch_size=4)
+        client = MagicMock()
+        # Generic 4xx message — NOT one of the context-length carve-outs.
+        client.embeddings.create.side_effect = _FakeStatusError(
+            status, f"{status} bad request: invalid model name"
+        )
+        emb._client = client
+
+        with pytest.raises(_FakeStatusError):
+            emb.encode(["a", "b", "c", "d"])
+        # No bisection: SDK called once.
+        assert client.embeddings.create.call_count == 1
+
+    def test_400_with_generic_bad_request_does_not_match_carve_out(self) -> None:
+        """A 400 with a generic 'invalid request' message (no
+        context-length-style fragment) must NOT match the carve-out —
+        it stays non-recoverable so misconfiguration surfaces fast."""
+
+        emb = _make_embedder(batch_size=4)
+        client = MagicMock()
+        client.embeddings.create.side_effect = _FakeStatusError(
+            400, "missing required field 'model'"
+        )
+        emb._client = client
+
+        with pytest.raises(_FakeStatusError):
+            emb.encode(["a", "b", "c", "d"])
+        assert client.embeddings.create.call_count == 1
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Row-count mismatch
 # ─────────────────────────────────────────────────────────────────────

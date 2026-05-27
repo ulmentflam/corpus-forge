@@ -30,6 +30,24 @@ _HTTP_SERVER_ERROR_FLOOR = 500
 _HTTP_RATE_LIMITED = 429
 
 
+#: Substrings (case-insensitive) that mark a 400 as "per-chunk
+#: recoverable via bisection-and-skip" rather than a deterministic
+#: request-shape error. Ollama returns 400 for inputs exceeding the
+#: model's context window — that's a *content* problem (one too-long
+#: chunk in the batch), and bisecting eventually isolates the
+#: offender so the base case can log + skip it. Without this carve-
+#: out, one oversized chunk in the backlog blocks every subsequent
+#: flush. Surfaced 2026-05-27 on the maintainer's ``nomic-embed-text``
+#: (8k context) ingest of a code-heavy vault.
+_RECOVERABLE_400_MESSAGE_FRAGMENTS: tuple[str, ...] = (
+    "context length",
+    "exceeds the context",
+    "maximum context",
+    "input is too long",
+    "token limit",
+)
+
+
 def _is_recoverable_exception(exc: BaseException) -> bool:
     """Return ``True`` when bisecting / retrying ``exc`` might help.
 
@@ -38,9 +56,10 @@ def _is_recoverable_exception(exc: BaseException) -> bool:
     glitches (5xx, rate-limit, connection blip). It's the wrong tool
     for **deterministic** failures: a wrong model name (404), a bad
     API key (401), a forbidden endpoint (403), or a request-shape
-    mismatch (400/422) won't change between attempts, and bisecting
-    them just wastes O(N) requests per batch on the same error. For
-    those, we re-raise immediately so the caller sees the real cause.
+    mismatch (400/422 from a malformed payload) won't change between
+    attempts, and bisecting them just wastes O(N) requests per batch
+    on the same error. For those, we re-raise immediately so the
+    caller sees the real cause.
 
     Policy:
 
@@ -49,12 +68,15 @@ def _is_recoverable_exception(exc: BaseException) -> bool:
     - ``openai.APIConnectionError`` / ``openai.APITimeoutError``
       (transport-level failures with no ``status_code``) → recoverable.
     - **Any other** ``status_code``-less exception → non-recoverable.
-      We used to treat all status-less exceptions as recoverable,
-      but a programming bug that raised (say) ``KeyError`` from our
-      own response-parsing code would then be bisected through
-      O(N) pointless retries before the operator ever saw it. Narrow
-      to known transport exception types so unexpected errors
-      surface immediately.
+    - **Carve-out for 400 + context-length messages** → recoverable.
+      Ollama (and some OpenAI-compatible servers) return 400 when an
+      input chunk exceeds the model's max-tokens context window.
+      That's content-specific — different chunk, different outcome
+      — so bisection IS the right recovery: eventually isolate the
+      too-long chunk to a single-chunk batch and skip it at the
+      base case (same pattern as NaN handling). Match is on a
+      conservative substring list to keep "real" request-shape 400s
+      (missing fields, bad enums) still re-raising.
 
     The HTTP-status check is duck-typed on a ``.status_code``
     attribute so it works against the OpenAI SDK's
@@ -72,10 +94,23 @@ def _is_recoverable_exception(exc: BaseException) -> bool:
         status_int = int(status)
     except (TypeError, ValueError):
         return True
-    return not (
+    is_client_error = (
         _HTTP_CLIENT_ERROR_FLOOR <= status_int < _HTTP_SERVER_ERROR_FLOOR
         and status_int != _HTTP_RATE_LIMITED
     )
+    if not is_client_error:
+        # 5xx, 429, or anything outside the 4xx range → recoverable.
+        return True
+    # 4xx-except-429: deterministic in general, EXCEPT for the
+    # narrow carve-out: 400 + a context-length message means "this
+    # specific chunk doesn't fit", which bisection-and-skip handles
+    # correctly. Other 400s (bad fields, wrong enums) stay
+    # non-recoverable.
+    if status_int == _HTTP_CLIENT_ERROR_FLOOR:  # 400
+        message = str(exc).lower()
+        if any(frag in message for frag in _RECOVERABLE_400_MESSAGE_FRAGMENTS):
+            return True
+    return False
 
 
 class EmbedderWedged(Exception):

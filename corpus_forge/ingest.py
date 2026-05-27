@@ -871,8 +871,26 @@ def ingest_once(config: Config) -> None:
                         # that cost while keeping the embed batches
                         # well-matched to the embedder's internal
                         # ``batch_size=256``.
+                        #
+                        # The flush has its OWN try/except so its
+                        # failures don't get misattributed to the
+                        # current ``raw`` file by the outer per-file
+                        # handler. ``EmbedderWedged`` still propagates
+                        # (systemic — abort); other exceptions log
+                        # and continue (the next flush will retry the
+                        # same backlog plus any new chunks).
                         if docs_chunked % _FLUSH_EMBEDDINGS_EVERY_N_FILES == 0:
-                            _flush_all_pending_embeddings(backend, embedders)
+                            try:
+                                _flush_all_pending_embeddings(backend, embedders)
+                            except EmbedderWedged:
+                                raise
+                            except Exception as flush_exc:
+                                logger.warning(
+                                    "Embed flush failed at file %d: %r — "
+                                    "next flush will retry the backlog",
+                                    docs_chunked,
+                                    flush_exc,
+                                )
                     except EmbedderWedged:
                         # Systemic failure, not a per-file one. The
                         # bisection-with-skip recovery tripped its
