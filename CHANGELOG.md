@@ -8,6 +8,31 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Added
+
+- `OpenAIEmbedder._embed_oversized_chunk` rescues chunks too long
+  for the embedder's context window via recursive split-in-half +
+  per-piece embed + mean-pool, returning ONE representative vector
+  instead of skipping the chunk. Surfaced 2026-05-27 when restarting
+  ingest after switching to `nomic-embed-text` (8k context): some
+  code chunks in the maintainer's vault exceeded the window and were
+  being skipped by the bisection's base-case path. The rescue
+  recursion is bounded by `_MAX_OVERSIZED_SPLIT_DEPTH = 8` (256
+  pieces upper-bound) so pathological inputs eventually fall through
+  to skip rather than loop forever. The outer `encode` re-normalises
+  the pooled vector when `self.normalized`, so the returned
+  embedding is still unit-length. New helper
+  `_is_context_length_error(exc)` lifted out of
+  `_is_recoverable_exception` so both the bisection classifier and
+  the base-case rescue path share one source of truth. Regression
+  coverage in
+  `tests/unit/test_openai_embedder_bisection.py::Test400ContextLengthCarveOut`:
+  rescue-then-skip on pathological-input (every sub-piece still
+  400s); successful rescue via single split; recursive split when
+  the first half is still too long; depth-limit fallback to skip;
+  mixed batch with one oversized + one normal chunk (both land,
+  zero skipped).
+
 ### Changed
 
 - `PostgresBackend` now uses a `psycopg_pool.ConnectionPool` instead
@@ -23,6 +48,16 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   of a backend cleanly. Schema `search_path` is set once per pooled
   connection via the pool's `configure` callback, so the existing
   unqualified-table-name DDL semantics survive.
+- `ingest_once`'s per-source iteration now lives inside an outer
+  `try/finally`; the `finally` clause runs the end-of-source
+  `_flush_all_pending_embeddings` call. Previously the flush sat
+  after the `for raw in raw_items:` loop, so an iterator failure
+  (filesystem read crash mid-walk, `EmbedderWedged` propagating
+  out of the inner per-file `except`, etc.) skipped the flush and
+  left the trailing files' chunks un-embedded until the next
+  ingest pass. The finally also wraps the flush call in its own
+  try/except so a flush failure during error-unwind doesn't mask
+  the original exception.
 - `ingest_once` now batches the embedding flush across files instead
   of flushing after every file. The per-file path was paying ~209ms
   for the `chunks_missing_embedding` LEFT-JOIN-anti-join (called

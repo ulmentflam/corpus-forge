@@ -518,11 +518,13 @@ class Test400ContextLengthCarveOut:
     """Ollama returns 400 when an input chunk exceeds the model's
     context window (e.g. nomic-embed-text's 8k tokens). That's
     content-specific — bisection isolates the too-long chunk and
-    the base case logs+skips it (same pattern as NaN).
+    the base case rescues it via
+    :meth:`OpenAIEmbedder._embed_oversized_chunk` (sub-chunk +
+    mean-pool) so the user's content stays in the corpus.
 
     Without the carve-out, the previous 4xx-except-429
-    non-recoverable policy treated this as a hard re-raise, which
-    blocked every flush on the maintainer's 2026-05-27 ingest
+    non-recoverable policy treated context-length as a hard re-raise,
+    which blocked every flush on the maintainer's 2026-05-27 ingest
     because one too-long chunk in the backlog poisoned every
     subsequent batch.
     """
@@ -536,25 +538,137 @@ class Test400ContextLengthCarveOut:
             "token limit reached",
         ],
     )
-    def test_400_context_length_messages_bisect_then_skip(self, message: str) -> None:
+    def test_400_context_length_messages_route_through_rescue(self, message: str) -> None:
         """All known context-length-exceeded message variants must
-        route through bisection (recoverable) so the offending chunk
-        is isolated and skipped — not re-raised on the first call."""
+        route through bisection (recoverable) AND then the rescue
+        path — neither re-raise immediately nor skip without trying.
+
+        When EVERY sub-call returns the same 400 (so the rescue can't
+        find a piece small enough to fit), the rescue gives up at
+        ``_MAX_OVERSIZED_SPLIT_DEPTH`` and falls through to the
+        base-case skip. That's the pathological-input safety net.
+        """
 
         emb = _make_embedder(batch_size=4)
         client = MagicMock()
         client.embeddings.create.side_effect = _FakeStatusError(400, message)
         emb._client = client
 
-        # 4 chunks all 400 → bisection isolates each → each hits the
-        # base-case skip path. Returns (0, dim) with all 4 in
-        # last_failed_indices.
-        result = emb.encode(["a", "b", "c", "d"])
+        # 4 chunks all 400 forever → bisection isolates each → each
+        # hits the rescue path → rescue recurses to depth limit →
+        # eventually falls through to skip.
+        result = emb.encode(["aaaa", "bbbb", "cccc", "dddd"])
         assert result.shape == (0, 4)
         assert set(emb.last_failed_indices) == {0, 1, 2, 3}
-        # SDK was called many times (top + 2 halves + 4 leaves = 7) —
-        # bisection ran, didn't short-circuit.
+        # SDK called many times: bisection (7+) + rescue sub-calls
+        # per chunk (2 pieces x max depth x 4 chunks). Just sanity-
+        # check it ran more than naive bisection alone.
         assert client.embeddings.create.call_count >= 7
+
+    def test_oversized_chunk_rescued_via_subchunking_and_mean_pool(self) -> None:
+        """The headline behavior: an oversized chunk gets sub-chunked
+        and mean-pooled into ONE embedding — no skip, no data loss.
+
+        The fake mimics a model with an 8-char "context limit":
+        inputs longer than 8 chars return 400 context-length;
+        shorter inputs return a clean unit vector. A 16-char chunk
+        therefore splits once into two 8-char pieces, each embeds
+        cleanly, and the resulting two vectors mean-pool into a
+        single vector returned to the caller.
+        """
+
+        emb = _make_embedder(batch_size=8, dimension=4)
+        client = MagicMock()
+        good_vec = [1.0, 0.0, 0.0, 0.0]
+
+        def fake_create(*, model, input, encoding_format, dimensions):  # type: ignore[no-untyped-def]
+            text = input[0]
+            if len(text) > 8:
+                raise _FakeStatusError(400, "Error: input length exceeds the context length")
+            return _embeddings_response([good_vec])
+
+        client.embeddings.create.side_effect = fake_create
+        emb._client = client
+
+        result = emb.encode(["x" * 16])
+        # Shape (1, 4): rescue produced ONE pooled vector for the
+        # oversized chunk. No failed indices.
+        assert result.shape == (1, 4)
+        assert emb.last_failed_indices == []
+        # The pooled vector should be close to ``good_vec`` (the
+        # mean of two unit vectors that are themselves ``good_vec``)
+        # before the normalization step. With ``normalized=False``
+        # (see _make_embedder default), the pooled vector should
+        # equal ``good_vec`` element-wise.
+        assert list(result[0]) == good_vec
+
+    def test_oversized_chunk_recursive_split(self) -> None:
+        """A chunk so long it needs MORE than one split. The fake
+        accepts inputs ≤ 4 chars; a 16-char chunk requires depth 2
+        (16 → 8+8 → 4+4+4+4). Each leaf embeds cleanly; the rescue
+        mean-pools across 4 pieces.
+        """
+
+        emb = _make_embedder(batch_size=8, dimension=4)
+        client = MagicMock()
+        good_vec = [1.0, 0.0, 0.0, 0.0]
+
+        def fake_create(*, model, input, encoding_format, dimensions):  # type: ignore[no-untyped-def]
+            text = input[0]
+            if len(text) > 4:
+                raise _FakeStatusError(400, "Error: input length exceeds the context length")
+            return _embeddings_response([good_vec])
+
+        client.embeddings.create.side_effect = fake_create
+        emb._client = client
+
+        result = emb.encode(["x" * 16])
+        assert result.shape == (1, 4)
+        assert emb.last_failed_indices == []
+
+    def test_oversized_rescue_depth_limit_skips_pathological_input(self) -> None:
+        """Pathological case: every sub-piece, no matter how small,
+        keeps returning context-length 400. The rescue MUST eventually
+        give up (at ``_MAX_OVERSIZED_SPLIT_DEPTH``) and fall through
+        to skip rather than infinitely recurse.
+        """
+
+        emb = _make_embedder(batch_size=8, dimension=4)
+        client = MagicMock()
+        # Every call returns 400 — even single-char pieces don't fit.
+        client.embeddings.create.side_effect = _FakeStatusError(400, "input is too long")
+        emb._client = client
+
+        result = emb.encode(["x" * 16])
+        # No vector returned, chunk skipped — but only after the
+        # rescue tried at least ``2 ^ MAX_DEPTH`` sub-calls.
+        assert result.shape == (0, 4)
+        assert emb.last_failed_indices == [0]
+
+    def test_oversized_rescue_with_mixed_normal_chunk(self) -> None:
+        """One oversized + one normal chunk in the same batch.
+        The bisection isolates them; the normal chunk embeds
+        directly; the oversized one rescues and mean-pools. Result:
+        2 embeddings, 0 skipped.
+        """
+
+        emb = _make_embedder(batch_size=8, dimension=4)
+        client = MagicMock()
+        good_vec = [0.5, 0.5, 0.5, 0.5]
+
+        def fake_create(*, model, input, encoding_format, dimensions):  # type: ignore[no-untyped-def]
+            # ANY input with >8 chars → 400.
+            if any(len(t) > 8 for t in input):
+                raise _FakeStatusError(400, "Error: exceeds the context length")
+            return _embeddings_response([good_vec] * len(input))
+
+        client.embeddings.create.side_effect = fake_create
+        emb._client = client
+
+        result = emb.encode(["short", "x" * 16])
+        # Both chunks land — one direct, one via rescue.
+        assert result.shape == (2, 4)
+        assert emb.last_failed_indices == []
 
     @pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
     def test_other_4xx_still_non_recoverable(self, status: int) -> None:

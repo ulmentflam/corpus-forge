@@ -850,85 +850,109 @@ def ingest_once(config: Config) -> None:
                 )
                 source_started = time.perf_counter()
 
-                for raw in raw_items:
+                # Outer try/finally guarantees the end-of-source embed
+                # flush runs even when the source iterator itself
+                # raises (a filesystem read crashing mid-walk, an
+                # embedder wedging in a per-file handler that
+                # propagates out of the inner loop, etc.). Without
+                # this, an iterator failure between the last
+                # mod-N flush boundary and the end of the source
+                # would silently leave the trailing files' chunks
+                # un-embedded — they'd stay in
+                # ``chunks_missing_embedding`` until the next
+                # ``ingest --once`` pass.
+                try:
+                    for raw in raw_items:
+                        try:
+                            ingest_one(
+                                backend,
+                                raw,
+                                chunker,
+                                embedders,
+                                dataset_id,
+                                flush_embeddings=False,
+                            )
+                            docs_chunked += 1
+                            if docs_chunked % 100 == 0:
+                                chunk_logger.info("Chunked %d documents so far", docs_chunked)
+                            # Batched embed flush. Without this, every file
+                            # triggered a ``chunks_missing_embedding`` query
+                            # (the LEFT-JOIN-anti-join), which was the
+                            # dominant cost in the 2026-05-27 ingest profile.
+                            # Flushing every N files (default 32) amortizes
+                            # that cost while keeping the embed batches
+                            # well-matched to the embedder's internal
+                            # ``batch_size=256``.
+                            #
+                            # The flush has its OWN try/except so its
+                            # failures don't get misattributed to the
+                            # current ``raw`` file by the outer per-file
+                            # handler. ``EmbedderWedged`` still propagates
+                            # (systemic — abort); other exceptions log
+                            # and continue (the next flush will retry the
+                            # same backlog plus any new chunks).
+                            if docs_chunked % _FLUSH_EMBEDDINGS_EVERY_N_FILES == 0:
+                                try:
+                                    _flush_all_pending_embeddings(backend, embedders)
+                                except EmbedderWedged:
+                                    raise
+                                except Exception as flush_exc:
+                                    logger.warning(
+                                        "Embed flush failed at file %d: %r — "
+                                        "next flush will retry the backlog",
+                                        docs_chunked,
+                                        flush_exc,
+                                    )
+                        except EmbedderWedged:
+                            # Systemic failure, not a per-file one. The
+                            # bisection-with-skip recovery tripped its
+                            # circuit-breaker — every chunk is failing
+                            # which means the upstream model is wedged.
+                            # Re-raise so the outer ``ingest_once`` handler
+                            # surfaces a clean error + recovery hint
+                            # instead of catching it here and continuing
+                            # to fail every subsequent file the same way.
+                            raise
+                        except Exception as e:
+                            # Per-file failures are recoverable. Categorise
+                            # the message so users can tell extractor
+                            # crashes apart from embedder/API failures —
+                            # the previous "Extractor failed on X" wording
+                            # mis-attributed Ollama 500s (NaN-in-response,
+                            # rate limits) to the extractor, which makes
+                            # the model-selection vs. file-content
+                            # question harder to answer.
+                            _classify_and_log_ingest_error(raw, e)
+                        finally:
+                            # Advance both bars on EVERY iteration, success
+                            # or failure. Planner totals come from
+                            # ``estimate_sync`` which counts every file
+                            # regardless of whether ingest will succeed —
+                            # skipping the advance on failures would leave
+                            # both bars permanently below 100% whenever any
+                            # file fails (e.g. one Ollama-NaN 5xx is enough
+                            # to strand the global bar forever).
+                            progress.update(source_task, advance=1)
+                            progress.update(global_task, advance=1)
+                finally:
+                    # End-of-source embed flush. Guaranteed by the outer
+                    # ``try`` so the trailing files (between the last
+                    # mod-N boundary and the end) get their chunks
+                    # embedded even when the source iterator raises or
+                    # ``EmbedderWedged`` is propagating out. Wedge still
+                    # propagates after the flush attempt; other flush
+                    # errors log and let the original exception (if any)
+                    # propagate.
                     try:
-                        ingest_one(
-                            backend,
-                            raw,
-                            chunker,
-                            embedders,
-                            dataset_id,
-                            flush_embeddings=False,
-                        )
-                        docs_chunked += 1
-                        if docs_chunked % 100 == 0:
-                            chunk_logger.info("Chunked %d documents so far", docs_chunked)
-                        # Batched embed flush. Without this, every file
-                        # triggered a ``chunks_missing_embedding`` query
-                        # (the LEFT-JOIN-anti-join), which was the
-                        # dominant cost in the 2026-05-27 ingest profile.
-                        # Flushing every N files (default 32) amortizes
-                        # that cost while keeping the embed batches
-                        # well-matched to the embedder's internal
-                        # ``batch_size=256``.
-                        #
-                        # The flush has its OWN try/except so its
-                        # failures don't get misattributed to the
-                        # current ``raw`` file by the outer per-file
-                        # handler. ``EmbedderWedged`` still propagates
-                        # (systemic — abort); other exceptions log
-                        # and continue (the next flush will retry the
-                        # same backlog plus any new chunks).
-                        if docs_chunked % _FLUSH_EMBEDDINGS_EVERY_N_FILES == 0:
-                            try:
-                                _flush_all_pending_embeddings(backend, embedders)
-                            except EmbedderWedged:
-                                raise
-                            except Exception as flush_exc:
-                                logger.warning(
-                                    "Embed flush failed at file %d: %r — "
-                                    "next flush will retry the backlog",
-                                    docs_chunked,
-                                    flush_exc,
-                                )
+                        _flush_all_pending_embeddings(backend, embedders)
                     except EmbedderWedged:
-                        # Systemic failure, not a per-file one. The
-                        # bisection-with-skip recovery tripped its
-                        # circuit-breaker — every chunk is failing
-                        # which means the upstream model is wedged.
-                        # Re-raise so the outer ``ingest_once`` handler
-                        # surfaces a clean error + recovery hint
-                        # instead of catching it here and continuing
-                        # to fail every subsequent file the same way.
                         raise
-                    except Exception as e:
-                        # Per-file failures are recoverable. Categorise
-                        # the message so users can tell extractor
-                        # crashes apart from embedder/API failures —
-                        # the previous "Extractor failed on X" wording
-                        # mis-attributed Ollama 500s (NaN-in-response,
-                        # rate limits) to the extractor, which makes
-                        # the model-selection vs. file-content
-                        # question harder to answer.
-                        _classify_and_log_ingest_error(raw, e)
-                    finally:
-                        # Advance both bars on EVERY iteration, success
-                        # or failure. Planner totals come from
-                        # ``estimate_sync`` which counts every file
-                        # regardless of whether ingest will succeed —
-                        # skipping the advance on failures would leave
-                        # both bars permanently below 100% whenever any
-                        # file fails (e.g. one Ollama-NaN 5xx is enough
-                        # to strand the global bar forever).
-                        progress.update(source_task, advance=1)
-                        progress.update(global_task, advance=1)
-
-                # End-of-source embed flush. The per-file loop only
-                # flushes on ``docs_chunked % N == 0`` boundaries, so
-                # the trailing files in this source (between the last
-                # boundary and the end) need an explicit flush to
-                # finish embedding. Cheap when nothing is pending.
-                _flush_all_pending_embeddings(backend, embedders)
+                    except Exception as flush_exc:
+                        logger.warning(
+                            "End-of-source flush failed: %r — "
+                            "trailing chunks stay pending for next ingest pass",
+                            flush_exc,
+                        )
 
                 elapsed = time.perf_counter() - source_started
                 rate = (docs_chunked / elapsed) if elapsed > 0 else 0.0
