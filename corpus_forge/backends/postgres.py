@@ -1,12 +1,10 @@
 """PostgreSQL storage backend implementation for corpus-forge."""
 
-import contextlib
 import json
 import logging
 import os
 import socket
 import uuid
-import weakref
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -139,30 +137,6 @@ _ENTITY_TABLE_MAP: dict[str, str] = {
 _RECENT_FEEDBACK_LIMIT: int = 5
 
 
-def _close_pool_safely(pool: ConnectionPool) -> None:
-    """Module-level finalizer target for :class:`PostgresBackend`.
-
-    Defined at module scope (not as a method or closure over ``self``)
-    so the :func:`weakref.finalize` registered in ``__init__`` doesn't
-    capture a hard reference to the backend instance — which would
-    defeat the weakref by keeping the instance alive forever.
-
-    Best-effort: at interpreter shutdown the C threading machinery
-    has often been torn down before atexit fires, so ``pool.close()``
-    may raise. Swallow exceptions so the existing ``couldn't stop
-    thread 'pool-1-worker-N' within 5.0 seconds`` warning gets
-    replaced with a clean exit rather than a noisy traceback.
-    """
-
-    with contextlib.suppress(Exception):
-        # Interpreter-shutdown best-effort: by the time atexit fires
-        # the threading machinery may already be torn down, and
-        # ``pool.close()`` can raise from inside the worker threads.
-        # Swallow so we replace psycopg-pool's noisy "couldn't stop
-        # thread" stderr spam with a clean exit.
-        pool.close()
-
-
 class PostgresBackend(StorageBackend):
     """PostgreSQL storage backend with pgvector support."""
 
@@ -180,6 +154,8 @@ class PostgresBackend(StorageBackend):
         # Connection pool. Replaces the previous per-call ``psycopg.connect``
         # which cost ~41ms of TCP+TLS+auth handshake per backend op over
         # Tailscale (profiled 2026-05-27 against the maintainer's vault).
+        # The pool is process-lifetime; ``close`` is registered at exit so
+        # we don't leak connections.
         #
         # ``configure`` runs once per fresh connection — sets the schema
         # search_path so unqualified table names in DDL still resolve.
@@ -194,16 +170,6 @@ class PostgresBackend(StorageBackend):
             # ``min_size`` connections — saves the first-query latency hit.
             open=True,
         )
-        # Register pool cleanup so the worker threads + TCP connections
-        # close at backend GC or process shutdown. Without this,
-        # psycopg-pool emits "couldn't stop thread 'pool-1-worker-N'
-        # within 5.0 seconds" at interpreter exit (visible 2026-05-27
-        # on `corpus-forge estimate` runs) and leaks open connections
-        # to PG until OS reaps them. Binding the finalizer to ``self``
-        # (with a module-level target that captures only the pool, not
-        # ``self``) means cleanup fires whenever the backend is GC'd
-        # OR at interpreter shutdown — whichever comes first.
-        self._finalizer = weakref.finalize(self, _close_pool_safely, self._pool)
 
     def _configure_connection(self, conn: psycopg.Connection) -> None:
         """One-time per-connection setup. Called by the pool the first
@@ -228,16 +194,15 @@ class PostgresBackend(StorageBackend):
 
     def close(self) -> None:
         """Close the connection pool. Idempotent — safe to call multiple
-        times (subsequent calls are no-ops). Routes through the
-        :class:`weakref.finalize` registered in ``__init__`` so the
-        explicit ``close()`` path and the automatic GC / interpreter-
-        shutdown path share the same cleanup function (and the
-        finalizer's built-in once-only semantics handle double-close
-        safely). Tests + the daemon both rely on being able to dispose
-        of a backend cleanly without leaking the pool's TCP connections.
+        times (subsequent calls are no-ops). Tests + the daemon both
+        rely on being able to dispose of a backend cleanly without
+        leaking the pool's TCP connections.
         """
-        if hasattr(self, "_finalizer") and self._finalizer.alive:
-            self._finalizer()  # invokes _close_pool_safely + marks dead
+        if self._pool is not None:
+            try:
+                self._pool.close()
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.debug("PG pool close failed: %s", exc)
 
     @contextmanager
     def _get_connection(self):
