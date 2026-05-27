@@ -817,6 +817,47 @@ def test_generic_walk_returns_none_when_backend_lacks_execute() -> None:
     assert next_curation_target(backend=_Bare(), now=_NOW) is None
 
 
+def _walk_row(chunk_id: int, dataset_id: int = 1) -> dict[str, Any]:
+    return {
+        "chunk_id": chunk_id,
+        "document_id": 7,
+        "text": f"chunk-{chunk_id}",
+        "heading": None,
+        "description": None,
+        "metadata": "{}",
+        "document_title": None,
+        "source_uri": None,
+        "modified_at": None,
+        "dataset_id": dataset_id,
+    }
+
+
+def test_generic_walk_respects_limit() -> None:
+    """`_generic_walk` stops after `limit` rows (the `yielded >= limit` break)."""
+    from corpus_forge.curation.selector import _generic_walk
+
+    rows = [_walk_row(i) for i in range(1, 6)]
+    backend = _ExecuteBackend(rows, {i: [] for i in range(1, 6)})
+    out = list(_generic_walk(backend, dataset_id=None, limit=2))
+    assert [c.chunk_id for c in out] == [1, 2]
+
+
+def test_generic_walk_handles_unparseable_confidence() -> None:
+    """A non-numeric `confidence` on a `class` label → classifier_confidence None.
+
+    Drives the `float(raw_conf)` TypeError/ValueError guard (lines 382-383).
+    """
+    from corpus_forge.curation.selector import _generic_walk
+
+    rows = [_walk_row(1)]
+    label_rows = {1: [{"namespace": "class", "value": "topic_a", "confidence": "not-a-number"}]}
+    backend = _ExecuteBackend(rows, label_rows)
+    out = list(_generic_walk(backend, dataset_id=None, limit=10))
+    assert len(out) == 1
+    assert out[0].classifier_label == "topic_a"
+    assert out[0].classifier_confidence is None
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Selector imports — proves no heavy ML side-effects
 # ─────────────────────────────────────────────────────────────────────────

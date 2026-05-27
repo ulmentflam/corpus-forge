@@ -60,10 +60,10 @@ Skip the manual steps — let the assistant do the whole install *and*
 the MCP wiring. Paste this prompt and answer the two questions it asks:
 
 ```
-Install corpus-forge for me by following this repo's CLAUDE.md end to end.
+Following this repo's CLAUDE.md end to end, do the full corpus-forge install + MCP wiring for me.
 1. Install corpus-forge, picking the right method for my platform.
 2. Run `corpus-forge setup`, then `corpus-forge migrate`.
-3. Wire corpus-forge as an MCP server in whatever client I'm running
+3. Wire it up as an MCP server in whatever client I'm running
    right now — Claude Code (.mcp.json), Claude Desktop config, or the
    Anthropic Agent SDK — using the exact server block from CLAUDE.md.
 4. Register the `corpus-forge-search` and `corpus-curate` skills.

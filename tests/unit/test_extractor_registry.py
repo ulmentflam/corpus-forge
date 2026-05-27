@@ -331,6 +331,40 @@ def test_registry_filename_fallback_returns_none_for_unknown(tmp_path: Path):
     assert reg.get_for(p) is None
 
 
+def test_try_load_returns_none_for_missing_submodule():
+    """`_try_load` swallows ImportError (returns None) for an absent submodule.
+
+    This is the guard that lets `register_default_extractors` skip not-yet-
+    landed / extra-gated extractor modules without blowing up the registry.
+    """
+    from corpus_forge.extractors.registry import _try_load
+
+    assert _try_load("definitely_not_a_real_submodule_xyz", "Whatever") is None
+
+
+def test_try_load_returns_none_for_missing_class_in_real_submodule():
+    """An existing submodule but a missing class name → None (getattr default)."""
+    from corpus_forge.extractors.registry import _try_load
+
+    assert _try_load("plaintext", "NoSuchExtractorClass") is None
+
+
+def test_registry_filename_last_write_wins(tmp_path: Path):
+    """Registering a second extractor for the same filename replaces the first.
+
+    Exercises the duplicate-filename replacement branch (the debug-logged
+    last-write-wins path for the filename table, mirroring the extension table).
+    """
+    reg = ExtractorRegistry()
+    first = _FilenameFakeExtractor(filenames=("Makefile",), hint="passthrough")
+    second = _FilenameFakeExtractor(filenames=("Makefile",), hint="code")
+    reg.register(first)
+    reg.register(second)  # same filename → replaces `first`
+    p = tmp_path / "Makefile"
+    p.write_text("all:\n\techo hi\n")
+    assert reg.get_for(p) is second
+
+
 def test_registry_filename_fallback_accepts_both_cases(tmp_path: Path):
     """Filename declarations must accept both ``Makefile`` and ``makefile``
     so cross-platform repos work — registry should match exactly what was

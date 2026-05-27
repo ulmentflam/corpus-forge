@@ -19,15 +19,21 @@ Covered:
 
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 from corpus_forge.eval.embedder_ranking import (
     EmbedderCandidate,
     EmbedderPerf,
+    _read_peak_gpu_mb,
+    _reset_peak_gpu_mem,
     build_envelope,
     load_candidates,
+    make_default_evaluator,
     rank_embedders,
 )
 from corpus_forge.retrieval.types import RetrievalMetrics
@@ -226,3 +232,261 @@ def test_load_candidates_rejects_bad_dimension(tmp_path: Path):
     )
     with pytest.raises(ValueError):
         load_candidates(p)
+
+
+def test_load_candidates_rejects_non_table_row(tmp_path: Path):
+    """A `[[candidates]]` entry that isn't a table → ValueError (line 302).
+
+    TOML can't put a scalar directly into an array-of-tables, so we build the
+    manifest dict shape `load_candidates` parses (`candidates` -> list) with a
+    bare string row to drive the `not isinstance(row, dict)` guard.
+    """
+    p = tmp_path / "scalar_row.toml"
+    # `candidates = ["nope"]` parses to {"candidates": ["nope"]} — a non-empty
+    # list whose single element is a str, not a table.
+    p.write_text('candidates = ["nope"]\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="must be a table"):
+        load_candidates(p)
+
+
+def test_load_candidates_rejects_missing_string_field(tmp_path: Path):
+    """A row missing a required string field → ValueError (line 313).
+
+    `dimension` is valid here so the int guard passes and the failure is
+    specifically the `_require_str` branch (missing/empty `model_id`).
+    """
+    p = tmp_path / "missing_model.toml"
+    p.write_text(
+        '[[candidates]]\nname = "x"\nprovider = "model2vec"\ndimension = 256\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="missing/empty string `model_id`"):
+        load_candidates(p)
+
+
+def test_load_candidates_rejects_empty_string_field(tmp_path: Path):
+    """An empty-string required field also trips `_require_str` (line 313)."""
+    p = tmp_path / "empty_name.toml"
+    p.write_text(
+        '[[candidates]]\nname = ""\nprovider = "model2vec"\nmodel_id = "fake/x"\ndimension = 256\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="missing/empty string `name`"):
+        load_candidates(p)
+
+
+# ── GPU-mem helpers: non-CUDA + import-guard early returns ────────────────────
+
+
+def test_read_peak_gpu_mb_returns_none_off_cuda():
+    """`_read_peak_gpu_mb` short-circuits to None on a non-CUDA device."""
+    assert _read_peak_gpu_mb("cpu") is None
+    assert _read_peak_gpu_mb("mps") is None
+
+
+def test_reset_peak_gpu_mem_noop_off_cuda():
+    """`_reset_peak_gpu_mem` is a no-op (returns None) off CUDA."""
+    assert _reset_peak_gpu_mem("cpu") is None
+    assert _reset_peak_gpu_mem("mps") is None
+
+
+def test_read_peak_gpu_mb_returns_none_when_torch_missing(monkeypatch: pytest.MonkeyPatch):
+    """When torch can't be imported, `_read_peak_gpu_mb('cuda')` returns None.
+
+    Simulate the import failure by inserting a sentinel into ``sys.modules``
+    that raises ``ImportError`` on attribute access — the lazy ``import torch``
+    inside the helper then fails and the guard returns None.
+    """
+
+    def _boom(name, *args, **kwargs):
+        if name == "torch":
+            raise ImportError("no torch")
+        return _real_import(name, *args, **kwargs)
+
+    import builtins
+
+    _real_import = builtins.__import__
+    monkeypatch.setattr(builtins, "__import__", _boom)
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    assert _read_peak_gpu_mb("cuda") is None
+
+
+def test_reset_peak_gpu_mem_returns_none_when_torch_missing(monkeypatch: pytest.MonkeyPatch):
+    """`_reset_peak_gpu_mem('cuda')` swallows a torch ImportError as a no-op."""
+    import builtins
+
+    _real_import = builtins.__import__
+
+    def _boom(name, *args, **kwargs):
+        if name == "torch":
+            raise ImportError("no torch")
+        return _real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _boom)
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    assert _reset_peak_gpu_mem("cuda") is None
+
+
+def test_read_peak_gpu_mb_returns_none_when_cuda_unavailable(monkeypatch: pytest.MonkeyPatch):
+    """With torch present but no CUDA device, the helper returns None.
+
+    A fake ``torch`` module whose ``cuda.is_available()`` is False drives the
+    `not torch.cuda.is_available()` branch without needing a real GPU.
+    """
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    assert _read_peak_gpu_mb("cuda") is None
+
+
+def test_read_peak_gpu_mb_reads_allocated_when_cuda_available(monkeypatch: pytest.MonkeyPatch):
+    """With a fake CUDA-available torch, the helper converts bytes → MiB.
+
+    ``max_memory_allocated`` returns 2 MiB worth of bytes; the helper must
+    divide by 1024*1024 and return 2.0.  This exercises the final return
+    statement without a real GPU.
+    """
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = types.SimpleNamespace(
+        is_available=lambda: True,
+        max_memory_allocated=lambda: 2 * 1024 * 1024,
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    assert _read_peak_gpu_mb("cuda") == pytest.approx(2.0)
+
+
+def test_reset_peak_gpu_mem_calls_torch_when_cuda_available(monkeypatch: pytest.MonkeyPatch):
+    """`_reset_peak_gpu_mem('cuda')` calls reset_peak_memory_stats once."""
+    reset = MagicMock()
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = types.SimpleNamespace(
+        is_available=lambda: True,
+        reset_peak_memory_stats=reset,
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    assert _reset_peak_gpu_mem("cuda") is None
+    reset.assert_called_once_with()
+
+
+def test_reset_peak_gpu_mem_skips_when_cuda_unavailable(monkeypatch: pytest.MonkeyPatch):
+    """torch present but CUDA unavailable → reset is NOT called."""
+    reset = MagicMock()
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = types.SimpleNamespace(
+        is_available=lambda: False,
+        reset_peak_memory_stats=reset,
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    assert _reset_peak_gpu_mem("cuda") is None
+    reset.assert_not_called()
+
+
+# ── make_default_evaluator: real-wiring closure, fully mocked ─────────────────
+
+
+def _patch_evaluator_deps(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    embedder,
+    fake_metrics: RetrievalMetrics,
+    device: str = "cpu",
+):
+    """Patch the lazy imports `make_default_evaluator` reaches for.
+
+    The factory imports `register_from_config`, `resolve_device`,
+    `evaluate_retriever`, and `HybridRetriever` *inside* the function body, so
+    they must be patched at their source modules (not at the embedder_ranking
+    namespace).  Returns the MagicMock standing in for `HybridRetriever` so the
+    caller can assert it was constructed.
+    """
+    monkeypatch.setattr(
+        "corpus_forge.embedders.registry.register_from_config",
+        lambda registry, candidate: embedder,
+    )
+    monkeypatch.setattr("corpus_forge._ml_device.resolve_device", lambda dev: device)
+    monkeypatch.setattr(
+        "corpus_forge.eval.runner.evaluate_retriever",
+        lambda retriever, gold, k_values: fake_metrics,
+    )
+    fake_retriever_cls = MagicMock(name="HybridRetriever")
+    monkeypatch.setattr("corpus_forge.retrieval.HybridRetriever", fake_retriever_cls)
+    return fake_retriever_cls
+
+
+def test_make_default_evaluator_runs_full_closure(monkeypatch: pytest.MonkeyPatch):
+    """`make_default_evaluator(...)` returns a working `_evaluate` closure.
+
+    Every real dependency (embedder build, device resolution, backend writes,
+    retriever construction, retrieval scoring) is mocked, so this exercises the
+    closure body (lines 415-443) end to end without models or a live backend.
+    """
+    corpus = [(1, "alpha text"), (2, "beta text")]
+
+    embedder = MagicMock(name="embedder")
+    embedder.encode.return_value = [[0.1, 0.2], [0.3, 0.4]]
+
+    backend = MagicMock(name="backend")
+    backend.register_embedder.return_value = 7  # embedder_id
+
+    registry = MagicMock(name="registry")
+
+    fake_metrics = RetrievalMetrics(
+        ndcg={1: 0.9, 5: 0.9, 10: 0.9},
+        mrr={1: 0.8, 5: 0.8, 10: 0.8},
+        recall={1: 0.7, 5: 0.7, 10: 0.7},
+    )
+
+    fake_retriever_cls = _patch_evaluator_deps(
+        monkeypatch, embedder=embedder, fake_metrics=fake_metrics, device="cpu"
+    )
+
+    evaluate_fn = make_default_evaluator(
+        corpus, "forge_self", backend, registry, k_values=(1, 5, 10)
+    )
+
+    candidate = _candidate("cand")
+    metrics, perf = evaluate_fn(candidate)
+
+    # Retrieval metrics flow straight through from the mocked evaluate_retriever.
+    assert metrics is fake_metrics
+    # Perf record: device echoed, chunks_per_sec computed from 2 texts / elapsed.
+    assert perf.device == "cpu"
+    assert perf.peak_gpu_mb is None  # cpu → no GPU reading
+    assert perf.chunks_per_sec > 0.0
+    assert perf.embed_seconds >= 0.0
+
+    # The closure registered + warmed the embedder, registered it with the
+    # backend, encoded the corpus texts, wrote embeddings, and built a retriever.
+    embedder.warmup.assert_called_once_with()
+    backend.register_embedder.assert_called_once_with(embedder)
+    embedder.encode.assert_called_once_with(
+        ["alpha text", "beta text"], batch_size=candidate.batch_size
+    )
+    assert backend.write_embeddings.call_count == 1
+    write_args = backend.write_embeddings.call_args
+    assert write_args.args[0] == 7  # embedder_id threaded through
+    fake_retriever_cls.assert_called_once()
+
+
+def test_make_default_evaluator_zero_elapsed_guards_div_by_zero(monkeypatch: pytest.MonkeyPatch):
+    """When the embed wall-clock is 0, chunks_per_sec falls back to 0.0.
+
+    Freeze `time.perf_counter` so `elapsed == 0` and confirm the closure takes
+    the `else 0.0` branch instead of dividing by zero (line 433 false arm).
+    """
+    corpus = [(1, "only text")]
+    embedder = MagicMock(name="embedder")
+    embedder.encode.return_value = [[0.5, 0.5]]
+    backend = MagicMock(name="backend")
+    backend.register_embedder.return_value = 1
+    registry = MagicMock(name="registry")
+    fake_metrics = RetrievalMetrics(ndcg={10: 1.0}, mrr={10: 1.0}, recall={10: 1.0})
+
+    _patch_evaluator_deps(monkeypatch, embedder=embedder, fake_metrics=fake_metrics, device="cpu")
+    # A constant clock makes elapsed == 0.
+    monkeypatch.setattr("corpus_forge.eval.embedder_ranking.time.perf_counter", lambda: 123.0)
+
+    evaluate_fn = make_default_evaluator(corpus, "forge_self", backend, registry)
+    _metrics, perf = evaluate_fn(_candidate("c"))
+    assert perf.embed_seconds == 0.0
+    assert perf.chunks_per_sec == 0.0

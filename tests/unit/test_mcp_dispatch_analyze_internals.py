@@ -407,6 +407,27 @@ def test_dispatch_score_quality_by_chunk_ids() -> None:
         assert 0.0 <= s <= 1.0
 
 
+def test_dispatch_score_quality_chunk_ids_lookup_failure_returns_error() -> None:
+    """A backend that raises while fetching chunk_ids → graceful error result.
+
+    Drives the `_fetch_chunks_by_ids` try/except in the chunk_ids branch
+    (the symmetric guard to the dataset-path failure already pinned below).
+    """
+
+    class _BoomBackend(_FakeBackend):
+        def get_chunk(self, cid: int):
+            raise RuntimeError("backend exploded")
+
+    out = _run(
+        _dispatch_score_quality(
+            {"chunk_ids": [1, 2]},
+            backend=_BoomBackend(),
+            writes_enabled=False,
+        )
+    )
+    assert "backend exploded" in _error_text(out)
+
+
 def test_dispatch_score_quality_by_dataset() -> None:
     backend = _FakeBackend(
         chunks_by_dataset={
