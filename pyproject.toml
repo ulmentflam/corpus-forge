@@ -42,6 +42,14 @@ classifiers = [
 ]
 dependencies = [
   "sentence-transformers>=3.0",
+  # `torch`/`torchvision` are pulled transitively by sentence-transformers
+  # (and torch is imported directly in `corpus_forge/eval/embedder_ranking.py`).
+  # Declared here so the `[tool.uv.sources]` CPU-index override below actually
+  # reaches them — uv only applies sources to *declared* dependencies, not to
+  # third-party transitive ones. Keeps the Linux install off the multi-GB CUDA
+  # stack. See the `[tool.uv.sources]` block at the bottom of this file.
+  "torch>=2.2",
+  "torchvision>=0.17",
   "psycopg[binary]>=3.1",
   # Connection pool for ``PostgresBackend``. Without it the backend opened
   # a fresh TCP+TLS+auth handshake to Postgres on every call (the old
@@ -453,3 +461,22 @@ omit   = ["corpus_forge/cli.py", "corpus_forge/__main__.py", "corpus_forge/expor
 [tool.coverage.report]
 fail_under   = 85
 show_missing = true
+
+# ── Torch: CPU wheels ──────────────────────────────────────────────────
+# `sentence-transformers` (a base dep) pulls `torch`/`torchvision`, which
+# are declared directly above so this source override actually reaches
+# them. On Linux the default PyPI wheel drags in the full CUDA stack
+# (cuda-toolkit + ~18 nvidia-* wheels, multiple GB) — overkill for a CLI
+# that does CPU embeddings, and far too heavy to bottle for the Homebrew
+# tap. Sourcing from PyTorch's CPU index drops that stack on Linux; on
+# macOS the CPU index serves the same arm64 CPU/MPS wheel PyPI would (no
+# CUDA exists for macOS). There is no x86_64-macOS wheel for current
+# torch, which is why the Homebrew formula targets Apple Silicon on macOS.
+[tool.uv.sources]
+torch       = [{ index = "pytorch-cpu" }]
+torchvision = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name     = "pytorch-cpu"
+url      = "https://download.pytorch.org/whl/cpu"
+explicit = true
