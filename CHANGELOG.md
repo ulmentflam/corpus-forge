@@ -8,6 +8,36 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Changed
+
+- `PostgresBackend` now uses a `psycopg_pool.ConnectionPool` instead
+  of opening a fresh TCP+TLS+auth handshake on every backend call
+  (the previous `# For now, we'll create a new connection each time`
+  TODO). Profiled 2026-05-27 against the maintainer's vault over
+  Tailscale: cold connect was ~45ms per call; pooled drops to
+  ~14ms. With 5-7 backend calls per file × 51k files, this saves
+  ~2 hours of pure connection overhead on a full ingest. New
+  `pool_min_size` / `pool_max_size` kwargs (default 0 / 8 — lazy
+  pool, max 8 concurrent connections); the pool's `close()` is
+  reachable via `backend.close()` so tests + the daemon can dispose
+  of a backend cleanly. Schema `search_path` is set once per pooled
+  connection via the pool's `configure` callback, so the existing
+  unqualified-table-name DDL semantics survive.
+- `ingest_once` now batches the embedding flush across files instead
+  of flushing after every file. The per-file path was paying ~209ms
+  for the `chunks_missing_embedding` LEFT-JOIN-anti-join (called
+  once per file). Now the flush runs every
+  `_FLUSH_EMBEDDINGS_EVERY_N_FILES = 32` files plus once at the
+  end of each source — a **97% reduction** in query cost (32 calls
+  → 1 call per window) and ~56 minutes saved on the 51k-file
+  baseline. `ingest_one` gains a `flush_embeddings: bool = True`
+  kwarg; external callers (the live `ingest_one` API) keep the
+  per-file flush by default, only `ingest_once` opts in to batched.
+  `_write_embeddings_for_chunks` now returns the count of
+  embeddings written so the new `_flush_all_pending_embeddings`
+  helper can loop until it returns 0 (drain-until-empty) without
+  the extra `count_chunks_missing_embedding` round-trip.
+
 ### Fixed
 
 - `OpenAIEmbedder.encode` now has a **circuit breaker** that raises

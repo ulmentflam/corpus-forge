@@ -43,6 +43,12 @@ classifiers = [
 dependencies = [
   "sentence-transformers>=3.0",
   "psycopg[binary]>=3.1",
+  # Connection pool for ``PostgresBackend``. Without it the backend opened
+  # a fresh TCP+TLS+auth handshake to Postgres on every call (the old
+  # ``# For now, we'll create a new connection each time`` TODO), which
+  # cost ~41ms per backend op over Tailscale and dominated per-file
+  # ingest time. Profiled 2026-05-27 against the maintainer's vault.
+  "psycopg-pool>=3.2",
   "pgvector>=0.3",
   "watchdog>=4.0",
   "typer>=0.12",

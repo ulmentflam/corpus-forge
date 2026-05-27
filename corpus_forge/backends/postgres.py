@@ -14,6 +14,7 @@ import numpy as np
 import psycopg
 from psycopg import sql as pgsql
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from ..chunkers.base import TextChunk
 from ..identity import advisory_lock_key, chunk_content_hash
@@ -139,10 +140,49 @@ _RECENT_FEEDBACK_LIMIT: int = 5
 class PostgresBackend(StorageBackend):
     """PostgreSQL storage backend with pgvector support."""
 
-    def __init__(self, dsn: str, schema: str = "corpus"):
+    def __init__(
+        self,
+        dsn: str,
+        schema: str = "corpus",
+        *,
+        pool_min_size: int = 0,
+        pool_max_size: int = 8,
+    ):
         self.dsn = dsn
         self.schema = schema
         self._setup_connection()
+        # Connection pool. Replaces the previous per-call ``psycopg.connect``
+        # which cost ~41ms of TCP+TLS+auth handshake per backend op over
+        # Tailscale (profiled 2026-05-27 against the maintainer's vault).
+        # The pool is process-lifetime; ``close`` is registered at exit so
+        # we don't leak connections.
+        #
+        # ``configure`` runs once per fresh connection — sets the schema
+        # search_path so unqualified table names in DDL still resolve.
+        # (Session-scoped state; reusing a connection from the pool
+        # preserves the search_path between checkouts.)
+        self._pool = ConnectionPool(
+            conninfo=os.path.expandvars(self.dsn),
+            min_size=pool_min_size,
+            max_size=pool_max_size,
+            configure=self._configure_connection,
+            # ``open=True`` is default in psycopg-pool 3.2+ but it pre-warms
+            # ``min_size`` connections — saves the first-query latency hit.
+            open=True,
+        )
+
+    def _configure_connection(self, conn: psycopg.Connection) -> None:
+        """One-time per-connection setup. Called by the pool the first
+        time a connection is created (and again if a connection is
+        replaced after a failure). Must be idempotent and side-effect-
+        free beyond setting session state.
+        """
+        conn.execute(
+            pgsql.SQL("SET search_path = {schema}, public").format(
+                schema=pgsql.Identifier(self.schema)
+            )
+        )
+        conn.commit()
 
     def _setup_connection(self):
         """Setup connection parameters."""
@@ -152,24 +192,27 @@ class PostgresBackend(StorageBackend):
         # In a real implementation, we'd parse the DSN properly
         # For now, we'll assume it's a valid connection string
 
+    def close(self) -> None:
+        """Close the connection pool. Idempotent — safe to call multiple
+        times (subsequent calls are no-ops). Tests + the daemon both
+        rely on being able to dispose of a backend cleanly without
+        leaking the pool's TCP connections.
+        """
+        if self._pool is not None:
+            try:
+                self._pool.close()
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.debug("PG pool close failed: %s", exc)
+
     @contextmanager
     def _get_connection(self):
-        """Context manager for database connections."""
-        # In a real implementation, we'd use a connection pool
-        # For now, we'll create a new connection each time
-        conn = psycopg.connect(self.dsn)
-        try:
-            # Ensure the schema is visible for unqualified table names in DDL.
-            # This must be set per-connection because SET search_path is session-scoped.
-            conn.execute(
-                pgsql.SQL("SET search_path = {schema}, public").format(
-                    schema=pgsql.Identifier(self.schema)
-                )
-            )
-            conn.commit()
+        """Check out a connection from the pool for the duration of the
+        ``with`` block. The connection is returned to the pool on exit
+        — so subsequent calls reuse the warm connection instead of
+        paying the TCP+TLS+auth handshake every time.
+        """
+        with self._pool.connection() as conn:
             yield conn
-        finally:
-            conn.close()
 
     def _execute(self, query: str, params: tuple = ()) -> list[dict]:
         """Execute a query and return results as list of dicts."""
