@@ -128,18 +128,28 @@ class TestUpsertDocumentEmbedderIds:
             assert result == 5
 
     def test_embedder_ids_empty_list_calls_copy_reusable(self):
-        """Empty ``embedder_ids=[]`` must still go through the
-        reuse-copy code path (vs ``None`` which skips it entirely).
+        """Both ``embedder_ids=None`` and ``embedder_ids=[]`` skip the
+        reuse-copy code path entirely.
 
         Updated 2026-05-27 for the batched-INSERT refactor: chunk
         INSERTs collapse into ONE call returning all rows with
         ``id`` + ``content_hash`` (was N per-chunk INSERTs), and
         the reuse-copy is now ``_copy_reusable_embeddings_batch``
-        called ONCE per document (was per-chunk). The
-        ``embedder_ids=[]`` short-circuit inside the batch helper
-        means it returns immediately when the list is empty — but
-        we still must call it (vs the ``None`` path which skips
-        the call entirely).
+        called at most ONCE per document (was per-chunk).
+        ``upsert_document`` guards the call with ``if
+        embedder_ids:``, which is falsy for BOTH ``None`` and
+        ``[]`` — so ``_copy_reusable_embeddings_batch`` is not
+        invoked in either case. This is a deliberate behavior
+        change from the old per-chunk path, where an empty list
+        still called ``_copy_reusable_embeddings`` once per chunk
+        (a no-op loop because the inner ``for embedder_id in
+        embedder_ids`` had nothing to iterate over). The new
+        behavior is more efficient AND semantically clearer — an
+        empty embedder list means "no embedders to copy from", so
+        there's nothing for the batch helper to do. The test name
+        is kept from the pre-refactor era for git-blame
+        continuity; the docstring and assertion below describe
+        the actual current contract.
         """
 
         with patch.object(PostgresBackend, "__init__", lambda self, dsn, schema="corpus": None):
@@ -174,15 +184,19 @@ class TestUpsertDocumentEmbedderIds:
                 embedder_ids=[],
             )
 
-            # Empty ``embedder_ids=[]`` is falsy, so the batched
+            # Both ``None`` and ``[]`` are falsy, so the batched
             # helper is NOT called in the new path (the ``if
-            # embedder_ids:`` guard in upsert_document). This is a
-            # behavior change from the old per-chunk path which
-            # called ``_copy_reusable_embeddings`` once per chunk
-            # even with an empty list. The new behavior is more
-            # efficient AND semantically correct — an empty list
-            # means "no embedders to copy from", so there's nothing
-            # to do.
+            # embedder_ids:`` guard in upsert_document short-
+            # circuits on either). This unifies the two skip cases
+            # that used to be subtly different under the old per-
+            # chunk path, where an empty list still called
+            # ``_copy_reusable_embeddings`` once per chunk (a
+            # no-op loop because the inner ``for embedder_id in
+            # embedder_ids`` had nothing to iterate over). The
+            # new behavior is more efficient AND semantically
+            # clearer — an empty embedder list means "no embedders
+            # to copy from", so there's nothing for the batch
+            # helper to do.
             assert backend._copy_reusable_embeddings_batch.call_count == 0
 
     def test_reuse_batch_called_once_with_all_chunks(self):

@@ -558,3 +558,273 @@ class TestDeleteOps:
             backend._execute = MagicMock()
             backend.delete_conversation(1, "claude-code://proj/sess1")
             assert backend._execute.call_count == 1
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Coverage for the 2026-05-27 batched-upsert refactor — unit-level
+# tests for the helpers that are otherwise exercised only by the
+# integration suite (which doesn't run on the unit-test CI job).
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestEnsureEmbedderCaches:
+    """``_ensure_embedder_caches`` initialises the per-instance caches
+    when ``__init__`` was bypassed (production code initialises them
+    eagerly). Idempotent across calls.
+    """
+
+    def test_initialises_missing_attrs(self):
+        backend = PostgresBackend.__new__(PostgresBackend)
+        # No attrs set yet.
+        assert not hasattr(backend, "_embedder_id_cache")
+        backend._ensure_embedder_caches()
+        assert backend._embedder_id_cache == {}
+        assert backend._embedder_info_cache == {}
+        assert backend._tables_created == set()
+
+    def test_idempotent_preserves_existing_state(self):
+        backend = PostgresBackend.__new__(PostgresBackend)
+        backend._ensure_embedder_caches()
+        # Seed with state — re-init must NOT clobber.
+        backend._embedder_id_cache["x"] = 42
+        backend._tables_created.add("x")
+        backend._ensure_embedder_caches()
+        assert backend._embedder_id_cache == {"x": 42}
+        assert backend._tables_created == {"x"}
+
+
+class TestRegisterEmbedderCache:
+    """Process-lifetime caching on ``register_embedder``: first call
+    hits the DB (3 round-trips); second call with the same embedder
+    name returns the cached id with zero ``_execute`` calls.
+    """
+
+    def test_second_call_is_zero_round_trips(self):
+        with patch.object(PostgresBackend, "__init__", lambda self, dsn, schema="corpus": None):
+            backend = PostgresBackend.__new__(PostgresBackend)
+            # First call: no existing row → INSERT path → 2 _execute
+            # calls + 1 CREATE TABLE inside _create_embedder_table.
+            backend._execute = MagicMock(
+                side_effect=[
+                    [],  # SELECT existing
+                    [{"id": 7}],  # INSERT RETURNING id
+                    [],  # _create_embedder_table CREATE TABLE
+                ]
+            )
+
+            embedder = MagicMock()
+            embedder.name = "cache-test"
+            embedder.provider = "test"
+            embedder.model_id = "model"
+            embedder.dimension = 4
+            embedder.normalized = False
+            embedder.distance = "cosine"
+            embedder.active = True
+
+            first_id = backend.register_embedder(embedder)
+            assert first_id == 7
+            first_call_count = backend._execute.call_count
+            assert first_call_count >= 2
+
+            # Second call: cached → ZERO _execute calls.
+            second_id = backend.register_embedder(embedder)
+            assert second_id == 7
+            assert backend._execute.call_count == first_call_count
+
+
+class TestCopyReusableEmbeddingsBatch:
+    """Batch reuse-embedding helper: 2 round-trips per embedder
+    regardless of chunk count, with empty-input short-circuits and
+    sub-batching past the PG bind-parameter cap.
+    """
+
+    def test_empty_new_chunks_short_circuits(self):
+        backend = PostgresBackend.__new__(PostgresBackend)
+        backend._ensure_embedder_caches()
+        backend._execute = MagicMock()
+        backend._copy_reusable_embeddings_batch([], [1, 2])
+        assert backend._execute.call_count == 0
+
+    def test_empty_embedder_ids_short_circuits(self):
+        backend = PostgresBackend.__new__(PostgresBackend)
+        backend._ensure_embedder_caches()
+        backend._execute = MagicMock()
+        backend._copy_reusable_embeddings_batch([(1, "h1")], [])
+        assert backend._execute.call_count == 0
+
+    def test_single_embedder_two_round_trips(self):
+        """One SELECT (prior_chunk_id per hash) + one INSERT (bulk
+        copy) for the whole document, regardless of chunk count.
+        """
+
+        backend = PostgresBackend.__new__(PostgresBackend)
+        backend._ensure_embedder_caches()
+        # Pre-seed embedder_info cache so we skip the defensive
+        # SELECT name, table_name fallback path.
+        backend._embedder_info_cache[42] = {
+            "name": "test-emb",
+            "table_name": "embeddings_test_emb",
+        }
+        backend._execute = MagicMock(
+            side_effect=[
+                # First _execute: SELECT DISTINCT ON (content_hash) ...
+                [
+                    {"content_hash": "hA", "prior_chunk_id": 100},
+                    {"content_hash": "hB", "prior_chunk_id": 101},
+                ],
+                # Second _execute: INSERT ... SELECT FROM VALUES JOIN
+                [],
+            ]
+        )
+        backend._copy_reusable_embeddings_batch([(200, "hA"), (201, "hB")], [42])
+        # Exactly 2 calls: one SELECT + one INSERT.
+        assert backend._execute.call_count == 2
+
+    def test_no_prior_matches_skips_insert(self):
+        """If no chunk in the SELECT result has a matching prior,
+        the helper skips the INSERT (no zero-row INSERT). Saves the
+        second round-trip when reuse-opportunity is absent.
+        """
+
+        backend = PostgresBackend.__new__(PostgresBackend)
+        backend._ensure_embedder_caches()
+        backend._embedder_info_cache[42] = {
+            "name": "test-emb",
+            "table_name": "embeddings_test_emb",
+        }
+        backend._execute = MagicMock(
+            side_effect=[
+                [],  # SELECT returns no priors
+            ]
+        )
+        backend._copy_reusable_embeddings_batch([(200, "h-novel")], [42])
+        # Just the SELECT — INSERT was skipped because copy_pairs is empty.
+        assert backend._execute.call_count == 1
+
+    def test_skips_self_copy(self):
+        """When the prior_chunk_id equals the new chunk_id (re-ingest
+        of the SAME chunk under the same id), don't add a self-copy
+        pair — would write a duplicate row that violates the
+        ``(chunk_id, embedder_id)`` uniqueness invariant.
+        """
+
+        backend = PostgresBackend.__new__(PostgresBackend)
+        backend._ensure_embedder_caches()
+        backend._embedder_info_cache[42] = {
+            "name": "test-emb",
+            "table_name": "embeddings_test_emb",
+        }
+        backend._execute = MagicMock(
+            side_effect=[
+                [{"content_hash": "h1", "prior_chunk_id": 200}],
+                # No INSERT expected: the only copy_pair would be
+                # (200, 200) which is filtered out.
+            ]
+        )
+        # New chunk_id == prior_chunk_id for the same hash.
+        backend._copy_reusable_embeddings_batch([(200, "h1")], [42])
+        assert backend._execute.call_count == 1  # Only the SELECT.
+
+    def test_falls_back_to_db_lookup_when_info_cache_missing(self):
+        """If a caller passes an embedder_id not in the cache (tests
+        that bypass register_embedder), the helper does a defensive
+        SELECT to populate the info, then proceeds with the batched
+        SELECT + INSERT — 3 _execute calls total instead of 2.
+        """
+
+        backend = PostgresBackend.__new__(PostgresBackend)
+        backend._ensure_embedder_caches()
+        # Don't pre-populate _embedder_info_cache.
+        backend._execute = MagicMock(
+            side_effect=[
+                # Defensive SELECT name, table_name
+                [{"name": "test-emb", "table_name": "embeddings_test_emb"}],
+                # SELECT prior_chunk_id per hash
+                [{"content_hash": "hA", "prior_chunk_id": 100}],
+                # INSERT bulk copy
+                [],
+            ]
+        )
+        backend._copy_reusable_embeddings_batch([(200, "hA")], [42])
+        assert backend._execute.call_count == 3
+        # Cache is now populated for next time.
+        assert 42 in backend._embedder_info_cache
+
+
+class TestInsertChunksBatchSubBatching:
+    """The PG bind-parameter cap (65,535) limits how many chunks fit
+    in a single multi-row INSERT. ``_insert_chunks_batch`` splits
+    larger inputs into sub-batches that each stay under the cap.
+    These tests pin the sub-batching math without actually creating
+    8k+ chunks.
+    """
+
+    def test_empty_chunks_returns_empty_list(self):
+        backend = PostgresBackend.__new__(PostgresBackend)
+        backend._execute = MagicMock()
+        result = backend._insert_chunks_batch(doc_id=1, chunks=[])
+        assert result == []
+        assert backend._execute.call_count == 0
+
+    def test_single_batch_for_small_input(self):
+        """N=2 chunks fit comfortably in one batch — only one
+        ``_execute`` call needed.
+        """
+
+        from corpus_forge.chunkers.base import TextChunk
+
+        backend = PostgresBackend.__new__(PostgresBackend)
+        backend._execute = MagicMock(
+            return_value=[
+                {"id": 10, "content_hash": "h0"},
+                {"id": 11, "content_hash": "h1"},
+            ]
+        )
+        chunks = [
+            TextChunk(text="a", heading="h0", metadata={}, role=None, token_count=1),
+            TextChunk(text="b", heading="h1", metadata={}, role=None, token_count=1),
+        ]
+        result = backend._insert_chunks_batch(doc_id=1, chunks=chunks)
+        assert len(result) == 2
+        assert backend._execute.call_count == 1
+
+    def test_sub_batches_when_input_exceeds_cap(self, monkeypatch):
+        """Override ``_PG_MAX_BIND_PARAMS`` to a tiny value so we
+        can exercise the sub-batching loop without constructing
+        8k+ real chunks. With cap=16 and 8 params/chunk, the
+        max is 2 chunks per batch — so 5 chunks splits into
+        3 batches (2, 2, 1).
+        """
+
+        import corpus_forge.backends.postgres as pg_mod
+        from corpus_forge.chunkers.base import TextChunk
+
+        monkeypatch.setattr(pg_mod, "_PG_MAX_BIND_PARAMS", 16)
+
+        backend = PostgresBackend.__new__(PostgresBackend)
+        # Each _execute call returns however many rows are in that
+        # sub-batch's INSERT (mock that exactly).
+        backend._execute = MagicMock(
+            side_effect=[
+                [{"id": 10, "content_hash": "h0"}, {"id": 11, "content_hash": "h1"}],
+                [{"id": 12, "content_hash": "h2"}, {"id": 13, "content_hash": "h3"}],
+                [{"id": 14, "content_hash": "h4"}],
+            ]
+        )
+        chunks = [
+            TextChunk(text=f"c{i}", heading=f"h{i}", metadata={}, role=None, token_count=1)
+            for i in range(5)
+        ]
+        result = backend._insert_chunks_batch(doc_id=1, chunks=chunks)
+        assert len(result) == 5
+        # 5 chunks / 2 per batch (16 // 8) = 3 batches → 3 _execute calls.
+        assert backend._execute.call_count == 3
+        # chunk_index keeps incrementing across sub-batches: pull the
+        # raw param tuples and confirm indices 0..4 appear in order.
+        all_params = []
+        for call in backend._execute.call_args_list:
+            all_params.extend(call[0][1])
+        # chunk_index is the second param in each 8-tuple, so positions
+        # 1, 9, 17, ... in the flat tuple list.
+        chunk_indices = [all_params[i] for i in range(1, len(all_params), 8)]
+        assert chunk_indices == [0, 1, 2, 3, 4]
