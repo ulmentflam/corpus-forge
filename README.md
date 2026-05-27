@@ -53,6 +53,31 @@ CF_NON_INTERACTIVE=1 CF_BACKEND=sqlite CF_MCP=yes CF_HF=yes \
   curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh | sh
 ```
 
+### Install with Claude (copy-paste prompt)
+
+Already living in Claude Code, Claude Desktop, or another MCP client?
+Skip the manual steps — let the assistant do the whole install *and*
+the MCP wiring. Paste this prompt and answer the two questions it asks:
+
+```
+Install corpus-forge for me by following this repo's CLAUDE.md end to end.
+1. Install corpus-forge, picking the right method for my platform.
+2. Run `corpus-forge setup`, then `corpus-forge migrate`.
+3. Wire corpus-forge as an MCP server in whatever client I'm running
+   right now — Claude Code (.mcp.json), Claude Desktop config, or the
+   Anthropic Agent SDK — using the exact server block from CLAUDE.md.
+4. Register the `corpus-forge-search` and `corpus-curate` skills.
+5. Run the first-run sanity sequence (migrate → doctor → estimate →
+   ingest → embed → search) on the small corpus path I give you.
+If you're not a Claude client, follow AGENTS.md instead.
+Ask me for my backend (postgres or sqlite) and my corpus path before
+you start if I haven't already told you.
+```
+
+`CLAUDE.md` is the canonical guide the assistant follows;
+[`AGENTS.md`](AGENTS.md) (any MCP client) and [`GEMINI.md`](GEMINI.md)
+(Gemini CLI / Code Assist) are the equivalents for non-Claude clients.
+
 ### Upgrade + diagnostics
 
 ```bash

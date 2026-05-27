@@ -37,7 +37,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import sqlite3
 import sys
 import uuid
 from datetime import UTC, datetime
@@ -45,6 +44,8 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
+
+from corpus_forge.backends.conn import open_conn
 
 # ---------------------------------------------------------------------------
 # Sub-app
@@ -72,19 +73,11 @@ _DEMO_PARTS = 4
 def _get_backend_conn(cfg: Any) -> Any:
     """Open and return a DB-API 2.0 connection for the given Config object.
 
-    This thin wrapper exists so tests can monkeypatch it without touching
-    the Config loading machinery.
+    Delegates to :func:`corpus_forge.backends.conn.open_conn`; kept as a
+    module-level seam so tests can monkeypatch it without touching the Config
+    loading machinery.
     """
-    backend = cfg.backend
-    kind: str = getattr(backend, "kind", "sqlite")
-    dsn: str = str(backend.dsn)
-
-    if kind == "sqlite":
-        return sqlite3.connect(dsn)
-
-    import psycopg
-
-    return psycopg.connect(dsn)
+    return open_conn(cfg)
 
 
 def _feedback_dir() -> Path:

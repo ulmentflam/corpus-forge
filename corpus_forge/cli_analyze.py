@@ -34,6 +34,8 @@ from typing import Any
 
 import typer
 
+from corpus_forge.backends.conn import open_conn
+
 # ---------------------------------------------------------------------------
 # Sub-app
 # ---------------------------------------------------------------------------
@@ -55,28 +57,11 @@ _DEFAULT_REPORT_BASE = Path.home() / ".cache" / "corpus-forge" / "reports"
 def _get_backend_conn(cfg: Any) -> Any:
     """Open and return a DB-API 2.0 connection for the given Config object.
 
-    This thin wrapper exists so tests can monkeypatch it without touching
-    the Config loading machinery.
-
-    Args:
-        cfg: A ``corpus_forge.config.Config`` instance (or mock equivalent).
-
-    Returns:
-        A ``sqlite3.Connection`` for SQLite backends, or a psycopg connection
-        for Postgres backends.
+    Delegates to :func:`corpus_forge.backends.conn.open_conn`; kept as a
+    module-level seam so tests can monkeypatch it without touching the Config
+    loading machinery.
     """
-    backend = cfg.backend
-    kind: str = getattr(backend, "kind", "sqlite")
-    dsn: str = str(backend.dsn)
-
-    if kind == "sqlite":
-        return sqlite3.connect(dsn)
-
-    # Postgres path — lazy import psycopg so CLI startup is unaffected on
-    # environments that have only the SQLite extra installed.
-    import psycopg  # noqa: PLC0415
-
-    return psycopg.connect(dsn)
+    return open_conn(cfg)
 
 
 def _resolve_report_dir(

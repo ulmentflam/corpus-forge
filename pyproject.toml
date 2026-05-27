@@ -321,6 +321,10 @@ ignore = ["PLR0911", "PLR0912", "PLR0913", "PLR0915"]
 # cli.py uses intentional lazy imports inside command functions for startup speed
 # and idiomatic typer.Option(...) defaults that ruff flags as B008.
 "corpus_forge/cli.py" = ["PLC0415", "B008"]
+# backends/conn.py defers `import psycopg` inside open_conn() so the shared
+# DB-API factory stays importable on SQLite-only installs (same lazy contract
+# the two CLI subgroups carried before this body was deduplicated here).
+"corpus_forge/backends/conn.py" = ["PLC0415"]
 # mcp/server.py defers all mcp.* imports into build_server() so the module is
 # importable without the optional [mcp] extra (mirrors retrieval/rerank/*.py).
 "corpus_forge/mcp/server.py" = ["PLC0415"]
