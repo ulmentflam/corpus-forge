@@ -275,6 +275,49 @@ def test_load_candidates_rejects_empty_string_field(tmp_path: Path):
         load_candidates(p)
 
 
+_BASE_FIELDS = 'name = "x"\nprovider = "model2vec"\nmodel_id = "fake/x"\ndimension = 256\n'
+
+
+def test_load_candidates_rejects_bad_normalize(tmp_path: Path):
+    """`normalize` is strictly a bool — a non-bool trips the new guard."""
+    p = tmp_path / "bad_normalize.toml"
+    p.write_text(f"[[candidates]]\n{_BASE_FIELDS}normalize = 1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="`normalize` must be a bool"):
+        load_candidates(p)
+
+
+def test_load_candidates_rejects_bad_distance(tmp_path: Path):
+    """`distance` is strictly a string — a non-string trips the new guard."""
+    p = tmp_path / "bad_distance.toml"
+    p.write_text(f"[[candidates]]\n{_BASE_FIELDS}distance = 5\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="`distance` must be a string"):
+        load_candidates(p)
+
+
+def test_load_candidates_rejects_zero_batch_size(tmp_path: Path):
+    """`batch_size` must be a positive int — zero trips the new guard."""
+    p = tmp_path / "zero_batch.toml"
+    p.write_text(f"[[candidates]]\n{_BASE_FIELDS}batch_size = 0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="`batch_size` must be a positive int"):
+        load_candidates(p)
+
+
+def test_load_candidates_rejects_bad_batch_size(tmp_path: Path):
+    """A bool is not a valid `batch_size` (bool is a subtype of int)."""
+    p = tmp_path / "bool_batch.toml"
+    p.write_text(f"[[candidates]]\n{_BASE_FIELDS}batch_size = true\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="`batch_size` must be a positive int"):
+        load_candidates(p)
+
+
+def test_load_candidates_rejects_bad_device(tmp_path: Path):
+    """`device` is strictly a string — a non-string trips the new guard."""
+    p = tmp_path / "bad_device.toml"
+    p.write_text(f"[[candidates]]\n{_BASE_FIELDS}device = 0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="`device` must be a string"):
+        load_candidates(p)
+
+
 # ── GPU-mem helpers: non-CUDA + import-guard early returns ────────────────────
 
 

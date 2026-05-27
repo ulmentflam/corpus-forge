@@ -12,7 +12,7 @@ Python module) so search returns coherent, cross-referencing results.
 
 ## What's inside
 
-```
+```text
 examples/sample-corpus/
 ├── notes/
 │   ├── kickoff-meeting.md   # meeting notes: agenda, decisions, action items

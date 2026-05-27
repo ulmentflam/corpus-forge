@@ -15,7 +15,7 @@ export interface Item {
 /** Either a successful new quantity or a typed failure reason. */
 export type WithdrawResult =
   | { ok: true; remaining: number }
-  | { ok: false; reason: "unknown" | "out-of-stock" };
+  | { ok: false; reason: "unknown" | "out-of-stock" | "invalid-amount" };
 
 /** An ordered collection of items keyed by name. */
 export class Inventory {
@@ -36,6 +36,9 @@ export class Inventory {
 
   /** Remove `amount` units, returning a typed result rather than throwing. */
   withdraw(name: string, amount: number): WithdrawResult {
+    if (amount <= 0) {
+      return { ok: false, reason: "invalid-amount" };
+    }
     const item = this.items.get(name);
     if (item === undefined) {
       return { ok: false, reason: "unknown" };

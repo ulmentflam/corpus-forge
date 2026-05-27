@@ -140,6 +140,65 @@ def test_eval_embedders_happy_path_writes_leaderboard(
     backend.count_chunks_missing_embedding.assert_called_once()
 
 
+def test_eval_embedders_k_without_10_still_honors_primary_cutoff(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """`-k 1,5` omits 10, but the leaderboard ranks on ndcg@10 — the command
+    must append the primary-metric cutoff so ranking stays computable."""
+    manifest = _write_manifest(tmp_path)
+    gold = _write_gold(tmp_path)
+    out_json = tmp_path / "leaderboard.json"
+
+    backend = _fake_backend(chunk_count=2)
+
+    monkeypatch.setattr("corpus_forge.cli._load_eval_config", _fake_config)
+    monkeypatch.setattr("corpus_forge.cli._build_backend_for_eval", lambda config: backend)
+    monkeypatch.setattr(
+        "corpus_forge.embedders.registry.register_from_config",
+        lambda registry, cfg: MagicMock(name="probe-embedder"),
+    )
+
+    fake_metrics = RetrievalMetrics(
+        ndcg={1: 0.9, 5: 0.9, 10: 0.9},
+        mrr={1: 0.8, 5: 0.8, 10: 0.8},
+        recall={1: 0.7, 5: 0.7, 10: 0.7},
+    )
+    fake_perf = EmbedderPerf(embed_seconds=1.0, chunks_per_sec=2.0, peak_gpu_mb=None, device="cpu")
+    captured: dict[str, object] = {}
+
+    def _factory(*a, **k):
+        captured["k_values"] = k.get("k_values")
+        return lambda candidate: (fake_metrics, fake_perf)
+
+    monkeypatch.setattr(
+        "corpus_forge.eval.embedder_ranking.make_default_evaluator",
+        _factory,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "eval",
+            "embedders",
+            "--candidates",
+            str(manifest),
+            "--gold",
+            str(gold),
+            "--k",
+            "1,5",
+            "--out",
+            str(out_json),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    # The primary-metric cutoff (10 from "ndcg@10") was appended to k_values.
+    assert 10 in (captured["k_values"] or [])
+    assert out_json.exists()
+    envelope = json.loads(out_json.read_text())
+    assert [r["name"] for r in envelope["metrics"]["ranking"]] == ["cand-a"]
+
+
 def test_eval_embedders_empty_corpus_exits_2(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

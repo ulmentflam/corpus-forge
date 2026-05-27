@@ -1805,6 +1805,14 @@ def eval_embedders(
 
     # Parse k cutoffs up-front so a bad value fails before any DB/model work.
     k_values = _parse_csv_ints(k)
+    # The leaderboard ranks on DEFAULT_PRIMARY_METRIC (e.g. "ndcg@10"); its
+    # cutoff must be among the computed k_values or the ranking metric is
+    # uncomputable.  Parse the integer after "@" and append it if missing
+    # (preserving the user's order).
+    if "@" in DEFAULT_PRIMARY_METRIC:
+        primary_cutoff = int(DEFAULT_PRIMARY_METRIC.split("@", 1)[1])
+        if primary_cutoff not in k_values:
+            k_values.append(primary_cutoff)
 
     # Resolve the gold set the SAME way `eval retrieval`/`_do_eval` does:
     # bundled name (forge_self) or a path to a .jsonl.

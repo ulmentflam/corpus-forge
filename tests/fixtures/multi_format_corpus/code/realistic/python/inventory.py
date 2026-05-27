@@ -49,6 +49,8 @@ class Inventory:
         Raises :class:`OutOfStockError` if fewer units are available, and
         :class:`KeyError` if the item is unknown.
         """
+        if amount <= 0:
+            raise ValueError("withdraw amount must be positive")
         item = self.items[name]
         if item.quantity < amount:
             raise OutOfStockError(f"{name}: have {item.quantity}, need {amount}")

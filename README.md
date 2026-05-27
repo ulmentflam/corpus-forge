@@ -59,7 +59,7 @@ Already living in Claude Code, Claude Desktop, or another MCP client?
 Skip the manual steps — let the assistant do the whole install *and*
 the MCP wiring. Paste this prompt and answer the two questions it asks:
 
-```
+```text
 Following this repo's CLAUDE.md end to end, do the full corpus-forge install + MCP wiring for me.
 1. Install corpus-forge, picking the right method for my platform.
 2. Run `corpus-forge setup`, then `corpus-forge migrate`.

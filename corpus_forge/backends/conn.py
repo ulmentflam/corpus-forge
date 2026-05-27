@@ -33,9 +33,11 @@ def open_conn(cfg: Any) -> Any:
 
     if kind == "sqlite":
         return sqlite3.connect(dsn)
+    elif kind == "postgres":
+        # Lazy import psycopg so CLI startup is unaffected on environments
+        # that have only the SQLite extra installed.
+        import psycopg
 
-    # Postgres path — lazy import psycopg so CLI startup is unaffected on
-    # environments that have only the SQLite extra installed.
-    import psycopg
-
-    return psycopg.connect(dsn)
+        return psycopg.connect(dsn)
+    else:
+        raise ValueError(f"unsupported backend kind: {kind!r}")

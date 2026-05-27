@@ -317,15 +317,31 @@ def _parse_candidate(path: Path, index: int, row: dict[str, Any]) -> EmbedderCan
     if isinstance(dimension, bool) or not isinstance(dimension, int) or dimension <= 0:
         raise ValueError(f"{path}: candidate #{index} `dimension` must be a positive int")
 
+    normalize = row.get("normalize", True)
+    if not isinstance(normalize, bool):
+        raise ValueError(f"{path}: candidate #{index} `normalize` must be a bool")
+
+    distance = row.get("distance", "cosine")
+    if not isinstance(distance, str):
+        raise ValueError(f"{path}: candidate #{index} `distance` must be a string")
+
+    batch_size = row.get("batch_size", 32)
+    if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size <= 0:
+        raise ValueError(f"{path}: candidate #{index} `batch_size` must be a positive int")
+
+    device = row.get("device", "auto")
+    if not isinstance(device, str):
+        raise ValueError(f"{path}: candidate #{index} `device` must be a string")
+
     return EmbedderCandidate(
         name=_require_str("name"),
         provider=_require_str("provider"),
         model_id=_require_str("model_id"),
         dimension=int(dimension),
-        normalize=bool(row.get("normalize", True)),
-        distance=str(row.get("distance", "cosine")),
-        batch_size=int(row.get("batch_size", 32)),
-        device=str(row.get("device", "auto")),
+        normalize=normalize,
+        distance=distance,
+        batch_size=batch_size,
+        device=device,
     )
 
 

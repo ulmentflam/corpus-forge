@@ -69,3 +69,11 @@ def test_open_conn_postgres_lazy_imports_psycopg(monkeypatch):
 
     assert conn is sentinel
     fake_psycopg.connect.assert_called_once_with("postgresql://u@h/db")
+
+
+def test_open_conn_unknown_kind_raises_value_error():
+    """An unrecognised backend kind (e.g. a typo) raises ValueError instead of
+    silently falling through to the Postgres path."""
+    cfg = SimpleNamespace(backend=SimpleNamespace(kind="postgres-typo", dsn="x"))
+    with pytest.raises(ValueError, match="unsupported backend kind: 'postgres-typo'"):
+        open_conn(cfg)

@@ -17,7 +17,7 @@ small: one command, one data model, a thin cache.
 
 ## Data flow
 
-```
+```text
 skycast now "Reykjavik"
         │
         ▼

@@ -12,7 +12,7 @@
 
 ## Discussion
 
-We want a single-binary command, `skycast <city>`, that prints the
+We want a single-binary command, `skycast now <city>`, that prints the
 current temperature and a one-line forecast without opening a browser.
 The audience is people who live in the terminal and want a glance, not a
 dashboard.
