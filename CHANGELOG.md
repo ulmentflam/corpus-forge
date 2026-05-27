@@ -35,6 +35,31 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ### Changed
 
+- `PostgresBackend.upsert_document` now batches all per-document
+  chunk INSERTs into one multi-row `INSERT ... VALUES ...
+  RETURNING id, content_hash` statement, and the
+  embedding-reuse copy (`_copy_reusable_embeddings_batch`) does
+  exactly 2 round-trips per embedder regardless of chunk count
+  (one `SELECT DISTINCT ON (content_hash)` for prior chunks +
+  one `INSERT ... SELECT ... FROM (VALUES ...) JOIN ...` for the
+  bulk copy). Replaces the per-chunk loop that did 2+ round-trips
+  per chunk. For an N-chunk file at ~4ms per round-trip over
+  Tailscale that's `2 + 4N → 1 + 2` round-trips per embedder —
+  roughly 5-10x faster on the 86%-of-per-file-time slice that
+  the 2026-05-27 profile identified as the ingest bottleneck.
+- `PostgresBackend.register_embedder` is now process-lifetime
+  cached on `embedder.name → id`. First call does the original
+  3 round-trips (SELECT existing + INSERT/UPDATE + CREATE TABLE
+  IF NOT EXISTS); subsequent calls return the cached id without
+  any DB traffic. Saves ~46ms per call × N files in
+  `ingest_one`'s pre-upsert phase (~40 min over the maintainer's
+  51k-file ingest). The associated `_embedder_info_cache` (id →
+  `{name, table_name}`) eliminates the per-chunk `SELECT name,
+  table_name FROM embedders` that the old
+  `_copy_reusable_embeddings` did inside its inner loop. A new
+  `_ensure_embedder_caches` helper lazy-initialises the dicts so
+  unit tests that bypass `__init__` keep working without
+  modification.
 - `PostgresBackend` now registers an `atexit` callback to close
   its connection pool at interpreter shutdown — replaces the
   `couldn't stop thread 'pool-1-worker-N' within 5.0 seconds`

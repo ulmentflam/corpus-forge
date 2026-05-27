@@ -8,6 +8,7 @@ import os
 import socket
 import uuid
 import weakref
+from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -34,6 +35,19 @@ if TYPE_CHECKING:
 # ``isinstance ... len(item) == _LEGACY_CHUNK_TUPLE_LEN`` check stays
 # readable without a ruff ``PLR2004`` magic-number flag.
 _LEGACY_CHUNK_TUPLE_LEN = 2
+
+#: Postgres protocol bind-parameter cap. PG limits the parameter
+#: count per statement to a 16-bit unsigned integer (65,535).
+#: Multi-row ``INSERT ... VALUES (?, ?), (?, ?), ...`` statements
+#: can exceed this on pathological inputs (a single file with
+#: 8k+ chunks for the 8-param chunk INSERT, 32k+ pairs for the
+#: 2-param reuse-copy). We split the batch into sub-batches that
+#: stay under the cap so the bulk-insert refactor doesn't blow up
+#: on edge cases. Caller-side helpers
+#: (``_insert_chunks_batch`` / ``_copy_reusable_embeddings_batch``)
+#: divide their inputs by the per-row param count.
+_PG_MAX_BIND_PARAMS = 65535
+
 
 # pgvector index-building limits (8 KB Postgres page constraint).
 # Source: pgvector README §"Vector Type" / §"Half Vector Type".
@@ -213,6 +227,28 @@ class PostgresBackend(StorageBackend):
         # so cleanup still runs if the backend escapes our reach.
         self._pool_ref = weakref.ref(self._pool)
         atexit.register(_close_pool_at_exit, self._pool_ref)
+        # Process-lifetime caches for per-file hot paths. Profiled
+        # 2026-05-27: ``register_embedder`` cost ~46ms per call (3
+        # round-trips over Tailscale) and was called once per file
+        # during ingest; ``_copy_reusable_embeddings`` issued a fresh
+        # SELECT for embedder metadata per chunk despite identical
+        # ``embedder_id`` arguments. Caching:
+        # - ``_embedder_id_cache``: ``embedder.name`` → ``id``. Names
+        #   are stable for the life of the process so the cache never
+        #   needs to invalidate; on first call we still UPDATE the
+        #   row in case ``embedder.config`` has changed since last
+        #   process restart.
+        # - ``_embedder_info_cache``: ``id`` → ``{"name", "table_name"}``
+        #   used by the embedding-reuse path. Filled lazily on first
+        #   register_embedder call.
+        # - ``_tables_created``: set of embedder names whose
+        #   ``embeddings_<name>`` table we've already CREATE TABLE IF
+        #   NOT EXISTS'd this process — the DDL is idempotent on
+        #   Postgres but still costs a round-trip we can skip after
+        #   the first ingest_one call.
+        self._embedder_id_cache: dict[str, int] = {}
+        self._embedder_info_cache: dict[int, dict[str, str]] = {}
+        self._tables_created: set[str] = set()
 
     def _configure_connection(self, conn: psycopg.Connection) -> None:
         """One-time per-connection setup. Called by the pool the first
@@ -420,8 +456,47 @@ class PostgresBackend(StorageBackend):
         schema_dir = _Path(__file__).parent.parent / "schema"
         apply_migrations(self, schema_dir)
 
+    def _ensure_embedder_caches(self) -> None:
+        """Lazy-initialise the per-embedder caches.
+
+        Production code initialises these in ``__init__``; unit tests
+        that bypass ``__init__`` (via ``PostgresBackend.__new__`` +
+        manual mock injection) miss that initialisation. Calling this
+        helper at the top of every cache-using method keeps both code
+        paths happy without forcing test rewrites for what should be
+        an internal performance detail.
+        """
+        if not hasattr(self, "_embedder_id_cache"):
+            self._embedder_id_cache = {}
+        if not hasattr(self, "_embedder_info_cache"):
+            self._embedder_info_cache = {}
+        if not hasattr(self, "_tables_created"):
+            self._tables_created = set()
+
     def register_embedder(self, embedder) -> int:
-        """Register an embedder and create its table."""
+        """Register an embedder and create its table.
+
+        Cached for process-lifetime — first call does the
+        ``SELECT/UPDATE/INSERT`` + ``CREATE TABLE IF NOT EXISTS``
+        round-trips (one-time cost per embedder), subsequent calls
+        return the cached id and skip every round-trip. Names are
+        stable for the life of the process so the cache never
+        invalidates; if a caller mutates ``embedder.config``
+        mid-process they need to call this with a fresh process or
+        manually invoke the SELECT/UPDATE themselves.
+
+        Saves ~46ms per call x N files in ingest_one (profiled
+        2026-05-27 against the maintainer's Tailscale-PG: 3 round-
+        trips per call = ~12ms each).
+        """
+
+        self._ensure_embedder_caches()
+
+        # Fast path: cached.
+        cached_id = self._embedder_id_cache.get(embedder.name)
+        if cached_id is not None:
+            return cached_id
+
         # Sanitize embedder name for use as a SQL identifier in table_name.
         safe_name = embedder.name.replace("-", "_")
         table_name_val = f"embeddings_{safe_name}"
@@ -482,9 +557,21 @@ class PostgresBackend(StorageBackend):
             )
             embedder_id = result[0]["id"]
 
-        # Create the embedder-specific table
-        self._create_embedder_table(embedder)
+        # Create the embedder-specific table on first call only —
+        # subsequent calls hit the fast path above. The DDL itself
+        # is idempotent (CREATE TABLE IF NOT EXISTS) but we'd still
+        # pay the round-trip without this guard.
+        if embedder.name not in self._tables_created:
+            self._create_embedder_table(embedder)
+            self._tables_created.add(embedder.name)
 
+        # Populate caches AFTER all the DB work succeeds so a failure
+        # mid-registration doesn't poison the cache with a non-existent id.
+        self._embedder_id_cache[embedder.name] = embedder_id
+        self._embedder_info_cache[embedder_id] = {
+            "name": embedder.name,
+            "table_name": table_name_val,
+        }
         return embedder_id
 
     def _create_embedder_table(self, embedder) -> None:
@@ -682,32 +769,18 @@ class PostgresBackend(StorageBackend):
             )
             doc_id = result[0]["id"]
 
-        # Add chunks for new document
-        cache: dict[tuple[str, int], int] = {}
-        for i, chunk in enumerate(norm_chunks):
-            chunk_hash = chunk_content_hash(chunk.text)
-            meta = psycopg.types.json.Json(chunk.metadata or {})
-            row = self._execute(
-                """
-                INSERT INTO corpus.chunks
-                (document_id, chunk_index, heading, text, metadata,
-                 role, token_count, content_hash)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id
-                """,
-                (
-                    doc_id,
-                    i,
-                    chunk.heading,
-                    chunk.text,
-                    meta,
-                    chunk.role,
-                    chunk.token_count,
-                    chunk_hash,
-                ),
-            )
-            if embedder_ids is not None:
-                self._copy_reusable_embeddings(row[0]["id"], chunk_hash, embedder_ids, cache)
+        # Add chunks for new document — batched.
+        # Previously this loop did 2 round-trips per chunk (INSERT + a
+        # follow-up reuse-embedding SELECT/INSERT pair inside
+        # ``_copy_reusable_embeddings``). For an N-chunk file that's
+        # 2N+ round-trips x ~4ms over Tailscale = the dominant cost
+        # in the 2026-05-27 ingest profile. The batched path collapses
+        # this into exactly 1 INSERT (regardless of N) plus 2
+        # round-trips per embedder for the reuse-embeddings copy.
+        if norm_chunks:
+            new_chunk_id_and_hash = self._insert_chunks_batch(doc_id, norm_chunks)
+            if embedder_ids:
+                self._copy_reusable_embeddings_batch(new_chunk_id_and_hash, embedder_ids)
 
         # Phase D / Wave 3 — persist extractor-emitted labels on the
         # document row. Idempotent: ``apply_label`` is a no-op when
@@ -715,6 +788,177 @@ class PostgresBackend(StorageBackend):
         self._apply_document_labels(doc_id, doc)
 
         return doc_id
+
+    def _insert_chunks_batch(
+        self,
+        doc_id: int,
+        chunks: "list[TextChunk]",
+    ) -> list[tuple[int, str]]:
+        """Insert all chunks for a document in one round-trip.
+
+        Returns ``[(chunk_id, content_hash), ...]`` in the same order
+        as the input ``chunks`` list — the caller relies on this order
+        to map back to the chunk objects for follow-up embedding-reuse
+        work.
+
+        The multi-row ``VALUES`` form lets Postgres process every row
+        in one statement; the ``RETURNING`` clause hands back all the
+        generated ids in INSERT order. With the chunks table's unique
+        index on ``(document_id, chunk_index)`` we can rely on PG to
+        validate the chunk-index uniqueness as one batch instead of N
+        per-row checks.
+        """
+
+        # Split into sub-batches that stay under the Postgres
+        # bind-parameter cap (65,535 / 8 params per chunk = 8,191
+        # chunks per statement). Files with more chunks than that are
+        # rare but would otherwise fail with a confusing PG protocol
+        # error. ``chunk_index`` keeps incrementing across sub-batches
+        # via ``batch_start + i`` so the returned ordering matches
+        # the caller's expectations.
+        _PARAMS_PER_CHUNK = 8
+        max_chunks_per_batch = _PG_MAX_BIND_PARAMS // _PARAMS_PER_CHUNK
+        result: list[tuple[int, str]] = []
+        for batch_start in range(0, len(chunks), max_chunks_per_batch):
+            sub_chunks = chunks[batch_start : batch_start + max_chunks_per_batch]
+            placeholders = ", ".join(["(%s, %s, %s, %s, %s, %s, %s, %s)"] * len(sub_chunks))
+            params: list[Any] = []
+            for offset, chunk in enumerate(sub_chunks):
+                chunk_hash = chunk_content_hash(chunk.text)
+                meta = psycopg.types.json.Json(chunk.metadata or {})
+                params.extend(
+                    (
+                        doc_id,
+                        batch_start + offset,
+                        chunk.heading,
+                        chunk.text,
+                        meta,
+                        chunk.role,
+                        chunk.token_count,
+                        chunk_hash,
+                    )
+                )
+            rows = self._execute(
+                f"""
+                INSERT INTO corpus.chunks
+                (document_id, chunk_index, heading, text, metadata,
+                 role, token_count, content_hash)
+                VALUES {placeholders}
+                RETURNING id, content_hash
+                """,
+                tuple(params),
+            )
+            result.extend((r["id"], r["content_hash"]) for r in rows)
+        return result
+
+    def _copy_reusable_embeddings_batch(
+        self,
+        new_chunks: list[tuple[int, str]],
+        embedder_ids: list[int],
+    ) -> None:
+        """Bulk version of :meth:`_copy_reusable_embeddings`.
+
+        For each ``embedder_id``, does TWO round-trips total
+        regardless of ``len(new_chunks)``:
+
+        1. ``SELECT DISTINCT ON (content_hash) ...`` to find a prior
+           chunk with each unique content_hash that already has an
+           embedding stored.
+        2. ``INSERT INTO embeddings_<name> SELECT ... FROM VALUES
+           JOIN embeddings_<name> ON prior_chunk_id`` to copy the
+           reusable vectors against the new chunk_ids.
+
+        Compared to the per-chunk :meth:`_copy_reusable_embeddings`
+        path (3 round-trips per chunk per embedder), this is a
+        ~N/2-ish speedup on multi-chunk files — a 25-chunk file on
+        the maintainer's vault drops from ~75 round-trips per
+        embedder to 2.
+        """
+
+        if not new_chunks or not embedder_ids:
+            return
+
+        self._ensure_embedder_caches()
+
+        # Group new chunks by content_hash so we issue one prior-lookup
+        # per unique hash, not one per chunk.
+        hash_to_new_chunks: dict[str, list[int]] = defaultdict(list)
+        for chunk_id, h in new_chunks:
+            hash_to_new_chunks[h].append(chunk_id)
+        unique_hashes = list(hash_to_new_chunks.keys())
+
+        for embedder_id in embedder_ids:
+            info = self._embedder_info_cache.get(embedder_id)
+            if info is None:
+                # Defensive: this branch is for callers that bypass
+                # register_embedder (mostly tests). The DB SELECT
+                # restores the cache so subsequent batches hit the
+                # fast path.
+                rows = self._execute(
+                    "SELECT name, table_name FROM corpus.embedders WHERE id = %s",
+                    (embedder_id,),
+                )
+                if not rows:
+                    continue
+                info = {"name": rows[0]["name"], "table_name": rows[0]["table_name"]}
+                self._embedder_info_cache[embedder_id] = info
+
+            embedder_table = f"corpus.{info['table_name']}"
+
+            # 1 RTT: prior_chunk_id per unique content_hash (newest match).
+            prior_rows = self._execute(
+                f"""
+                SELECT DISTINCT ON (c.content_hash)
+                    c.content_hash, e.chunk_id AS prior_chunk_id
+                FROM corpus.chunks c
+                JOIN {embedder_table} e ON e.chunk_id = c.id
+                WHERE c.content_hash = ANY(%s)
+                ORDER BY c.content_hash, c.id DESC
+                """,
+                (unique_hashes,),
+            )
+            hash_to_prior: dict[str, int] = {
+                r["content_hash"]: r["prior_chunk_id"] for r in prior_rows
+            }
+
+            # Build (new_chunk_id, prior_chunk_id) pairs to copy.
+            # Skip self-copies (the new chunk IS its own prior — happens
+            # when the same chunk gets re-ingested without
+            # ``current_hash == doc.content_hash`` short-circuiting,
+            # e.g. when only document metadata changed).
+            copy_pairs: list[tuple[int, int]] = []
+            for h, new_ids in hash_to_new_chunks.items():
+                prior = hash_to_prior.get(h)
+                if prior is None:
+                    continue
+                for new_id in new_ids:
+                    if new_id != prior:
+                        copy_pairs.append((new_id, prior))
+
+            if not copy_pairs:
+                continue
+
+            # Bulk-copy embeddings via VALUES + JOIN, sub-batched to
+            # stay under the Postgres bind-parameter cap (65,535 / 2
+            # params per pair = 32,767 pairs per statement). Each
+            # sub-batch is one round-trip; the loop only kicks in for
+            # files with >32k unique chunks, which is rare in practice
+            # but real on pathological inputs.
+            _PARAMS_PER_PAIR = 2
+            max_pairs_per_batch = _PG_MAX_BIND_PARAMS // _PARAMS_PER_PAIR
+            for batch_start in range(0, len(copy_pairs), max_pairs_per_batch):
+                sub_pairs = copy_pairs[batch_start : batch_start + max_pairs_per_batch]
+                values_placeholders = ", ".join(["(%s, %s)"] * len(sub_pairs))
+                flat_pairs = [v for pair in sub_pairs for v in pair]
+                self._execute(
+                    f"""
+                    INSERT INTO {embedder_table} (chunk_id, embedder_id, embedding)
+                    SELECT t.new_id, e.embedder_id, e.embedding
+                    FROM (VALUES {values_placeholders}) AS t(new_id, prior_id)
+                    JOIN {embedder_table} e ON e.chunk_id = t.prior_id
+                    """,
+                    tuple(flat_pairs),
+                )
 
     def _apply_document_labels(self, doc_id: int, doc: "RawDocument") -> None:
         """Persist ``doc.labels`` against the ``corpus.document_labels`` junction.
