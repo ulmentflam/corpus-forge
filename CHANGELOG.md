@@ -35,6 +35,30 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ### Changed
 
+- `PostgresBackend` now registers an `atexit` callback to close
+  its connection pool at interpreter shutdown — replaces the
+  `couldn't stop thread 'pool-1-worker-N' within 5.0 seconds`
+  warnings that psycopg-pool emits at the end of every CLI
+  invocation. Held by **weakref** so the callback doesn't pin the
+  pool alive for the process lifetime (if the backend is GC'd
+  mid-process, the pool can be reclaimed normally and the atexit
+  call becomes a no-op via the dead weakref). Uses `atexit`
+  rather than `weakref.finalize` (which fires on GC and at
+  shutdown) because the earlier attempt at the same fix (commit
+  ec9632e, reverted in 50913a3) broke py3.12 Integration CI: the
+  finalizer fired mid-test as backends went out of scope, racing
+  pytest's own teardown and exhausting Postgres's
+  `max_connections` budget with "FATAL: sorry, too many clients
+  already" on ~6 alembic-migration tests. `atexit` fires only at
+  interpreter shutdown so it can't disrupt test-time connection
+  state. Regression coverage in the new
+  `tests/integration/test_postgres_pool_lifecycle.py` (8 tests)
+  pins: `atexit` is registered (not `weakref.finalize`), 20
+  concurrent backends don't exhaust `max_connections`, 50
+  serial-then-close backends never exhaust either, `close()` is
+  idempotent, `close()` actually closes the pool, dead-weakref in
+  the atexit callback is a no-op, and pool-close exceptions
+  during interpreter shutdown are suppressed cleanly.
 - `PostgresBackend` now uses a `psycopg_pool.ConnectionPool` instead
   of opening a fresh TCP+TLS+auth handshake on every backend call
   (the previous `# For now, we'll create a new connection each time`

@@ -1,10 +1,13 @@
 """PostgreSQL storage backend implementation for corpus-forge."""
 
+import atexit
+import contextlib
 import json
 import logging
 import os
 import socket
 import uuid
+import weakref
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -137,6 +140,37 @@ _ENTITY_TABLE_MAP: dict[str, str] = {
 _RECENT_FEEDBACK_LIMIT: int = 5
 
 
+def _close_pool_at_exit(pool_ref: "weakref.ReferenceType[ConnectionPool]") -> None:
+    """``atexit`` callback that closes a pool at interpreter shutdown.
+
+    Holds a **weak** reference to the pool so the callback doesn't
+    pin the pool alive for the lifetime of the process — if the
+    owning backend is GC'd mid-process, the pool gets reclaimed
+    normally and this becomes a no-op via the dead weakref.
+
+    Critically: ``atexit`` fires **only at interpreter shutdown**,
+    not during garbage collection. Earlier we tried
+    :func:`weakref.finalize` (commit ec9632e) which fires on both
+    GC *and* shutdown — that interacted badly with pytest's
+    py3.12 GC timing and exhausted Postgres's connection pool in
+    Integration CI ("FATAL: sorry, too many clients already" on
+    ~6 alembic-migration tests). Reverted in 50913a3. ``atexit``
+    side-steps the issue because no callback fires until the
+    process is actually exiting.
+    """
+
+    pool = pool_ref()
+    if pool is None:
+        return  # backend was GC'd before exit — pool already gone
+    with contextlib.suppress(Exception):
+        # Interpreter-shutdown best-effort: the threading machinery
+        # may already be torn down by the time atexit fires, and
+        # ``pool.close()`` can raise from inside the worker threads.
+        # Swallow so we replace psycopg-pool's noisy "couldn't stop
+        # thread" stderr spam with a clean exit.
+        pool.close()
+
+
 class PostgresBackend(StorageBackend):
     """PostgreSQL storage backend with pgvector support."""
 
@@ -154,8 +188,6 @@ class PostgresBackend(StorageBackend):
         # Connection pool. Replaces the previous per-call ``psycopg.connect``
         # which cost ~41ms of TCP+TLS+auth handshake per backend op over
         # Tailscale (profiled 2026-05-27 against the maintainer's vault).
-        # The pool is process-lifetime; ``close`` is registered at exit so
-        # we don't leak connections.
         #
         # ``configure`` runs once per fresh connection — sets the schema
         # search_path so unqualified table names in DDL still resolve.
@@ -170,6 +202,17 @@ class PostgresBackend(StorageBackend):
             # ``min_size`` connections — saves the first-query latency hit.
             open=True,
         )
+        # Register pool cleanup at interpreter shutdown via ``atexit``
+        # (NOT ``weakref.finalize`` — see ``_close_pool_at_exit`` above
+        # for why). Without this, psycopg-pool emits "couldn't stop
+        # thread 'pool-1-worker-N' within 5.0 seconds" warnings at
+        # exit; with it, every CLI invocation tears down cleanly.
+        # Storing the weakref on ``self`` means it stays paired with
+        # the backend instance and dies with the backend — but the
+        # ``atexit`` registration holds its own copy of the weakref
+        # so cleanup still runs if the backend escapes our reach.
+        self._pool_ref = weakref.ref(self._pool)
+        atexit.register(_close_pool_at_exit, self._pool_ref)
 
     def _configure_connection(self, conn: psycopg.Connection) -> None:
         """One-time per-connection setup. Called by the pool the first
