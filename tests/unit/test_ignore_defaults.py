@@ -226,7 +226,10 @@ class TestRenderAndParse:
 # ``render_managed_block`` / ``parse_managed_lines``) so the coder is
 # free to fold them into ``_ALWAYS_ON`` or a new sorted group.
 
-# The canonical 21 patterns from the requirement (gitignore syntax).
+# The canonical 25 patterns from the requirement (gitignore syntax).
+# Extended (post-PR-#68) to cover Elixir/Erlang Mix (`deps/`, `_build/`),
+# Go modules / PHP Composer / Ruby Bundler (`vendor/`), and legacy JS
+# package manager (`bower_components/`).
 _DEV_BUILD_JUNK: tuple[str, ...] = (
     ".git/",
     ".venv/",
@@ -249,6 +252,11 @@ _DEV_BUILD_JUNK: tuple[str, ...] = (
     ".terraform/",
     ".ipynb_checkpoints/",
     "site-packages/",
+    # Multi-language vendor + build dirs (this PR).
+    "_build/",
+    "bower_components/",
+    "deps/",
+    "vendor/",
 )
 
 
