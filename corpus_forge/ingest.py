@@ -1903,16 +1903,27 @@ def _render_status(
     return "\n".join(lines)
 
 
-def print_ingest_status(config: Config, *, json_output: bool = False) -> None:
+def print_ingest_status(config: Config | None, *, json_output: bool = False) -> None:
     """Print the latest ingest run status to stdout.
 
     Read-only: never calls ``migrate()`` or any write method on the backend.
 
     Args:
-        config:      Fully-resolved Config.
+        config:      Fully-resolved Config, or ``None`` when no config file
+                     exists yet (no-setup state).  When ``None`` the function
+                     emits a "no runs found" response identical to an empty DB
+                     so that ``--status`` remains useful before ``setup`` is run.
         json_output: If True, emit a single JSON document instead of the
                      human-readable two-section table.
     """
+    if config is None:
+        # No config file — treat identically to an empty DB.
+        if json_output:
+            print(json.dumps({"run": None, "sources": []}))
+        else:
+            print("no runs found")
+        return
+
     backend = _build_backend_for_status(config)
 
     run: dict[str, Any] | None = backend.latest_ingest_run()

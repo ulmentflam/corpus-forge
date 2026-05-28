@@ -302,7 +302,14 @@ def ingest(
         # Route to read-only status display.
         from .config import Config
 
-        config = Config.load()
+        try:
+            config = Config.load()
+        except FileNotFoundError:
+            # No config file yet — treat identically to an empty DB: no runs
+            # recorded.  Pass None so print_ingest_status can emit the
+            # "no config" variant of "no runs found".
+            config = None  # type: ignore[assignment]
+
         try:
             if json_flag:
                 ingest_module.print_ingest_status(config, json_output=True)
