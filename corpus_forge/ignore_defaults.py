@@ -71,6 +71,11 @@ MANAGED_END: str = "# <<< corpus-forge managed <<<"
 #   * iCloud placeholder files.
 #   * Archives (compressed; treat as binary opaque).
 #   * Build / output directories (gitignore-style trailing slash).
+#   * Dev / build junk: VCS metadata, language virtualenvs, package
+#     caches, and compiled-artifact dirs that DROWN the scanner when a
+#     code repo lands under an ingested root (a single ``.venv`` can be
+#     60k+ files; ``node_modules`` / ``.git`` / ``__pycache__`` recur by
+#     the hundreds). These are pure tooling output — never chunk-worthy.
 #   * Lockfiles (no information density worth chunking).
 #   * Minified bundles + sourcemaps (text but unstructured).
 _ALWAYS_ON: tuple[str, ...] = tuple(
@@ -101,6 +106,29 @@ _ALWAYS_ON: tuple[str, ...] = tuple(
             "dist/",
             "out/",
             "target/",
+            # Dev / build junk — VCS, virtualenvs, package + tool caches,
+            # compiled Python artifacts, infra-tool state dirs.
+            ".cache/",
+            ".eggs/",
+            ".git/",
+            ".gradle/",
+            ".ipynb_checkpoints/",
+            ".mypy_cache/",
+            ".pytest_cache/",
+            ".ruff_cache/",
+            ".terraform/",
+            ".tox/",
+            ".venv/",
+            "*.egg",
+            "*.egg-info/",
+            "*.pyc",
+            "*.pyd",
+            "*.pyo",
+            "__pycache__/",
+            "env/",
+            "node_modules/",
+            "site-packages/",
+            "venv/",
             # Archives (binary, opaque to text extractors)
             "*.7z",
             "*.dmg",
