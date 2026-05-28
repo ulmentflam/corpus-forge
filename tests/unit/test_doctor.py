@@ -350,3 +350,108 @@ class TestDoctorJsonShapePreserved:
         assert "config" in names
         # New name.
         assert "corpusignore" in names
+
+
+# ── 2026-05-27 — global managed-ignore drift check ────────────────────
+
+
+class TestCheckGlobalIgnoreDrift:
+    """``_check_global_ignore`` compares the user-global ignore file's
+    managed block against the current template and WARNs on drift,
+    mirroring the ``embedder_indexes`` idiom (WARN + exact repair
+    command, no silent mutation from the audit path).
+
+    The global file lives at ``~/.config/corpus-forge/ignore`` but
+    honors ``CF_GLOBAL_IGNORE_FILE``; the tests point that env var at a
+    tmp path so the real ``~/.config`` is never touched.
+    """
+
+    def test_skip_when_global_file_absent(self, tmp_path: Path, monkeypatch) -> None:
+        from corpus_forge.doctor.checks import _check_global_ignore
+
+        global_path = tmp_path / "ignore"  # does not exist
+        monkeypatch.setenv("CF_GLOBAL_IGNORE_FILE", str(global_path))
+        result = _check_global_ignore()
+        assert result.name == "global_ignore"
+        assert result.status == CheckStatus.SKIP
+
+    def test_skip_when_no_managed_block(self, tmp_path: Path, monkeypatch) -> None:
+        # A global file the user created by hand with no sentinels at
+        # all — nothing for us to compare, so SKIP (not WARN).
+        from corpus_forge.doctor.checks import _check_global_ignore
+
+        global_path = tmp_path / "ignore"
+        global_path.write_text("# my own patterns\nSecret/\n", encoding="utf-8")
+        monkeypatch.setenv("CF_GLOBAL_IGNORE_FILE", str(global_path))
+        result = _check_global_ignore()
+        assert result.status == CheckStatus.SKIP
+
+    def test_ok_when_global_block_matches_template(self, tmp_path: Path, monkeypatch) -> None:
+        from corpus_forge.doctor.checks import _check_global_ignore
+        from corpus_forge.ignore_defaults import render_managed_block
+
+        global_path = tmp_path / "ignore"
+        # Render with all features off (the conservative preset the
+        # wizard/sync use for the global file).
+        global_path.write_text(
+            render_managed_block(
+                {"whisper": False, "image_extractor": False, "code_enricher": False, "vlm": False}
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("CF_GLOBAL_IGNORE_FILE", str(global_path))
+        result = _check_global_ignore()
+        assert result.status == CheckStatus.OK
+
+    def test_warn_when_global_block_missing_junk_patterns(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # Simulate a STALE managed block written before the dev/build
+        # junk patterns existed: a sentinel-wrapped block that omits
+        # ``.venv/`` / ``node_modules/`` / ``__pycache__/`` etc.
+        from corpus_forge.doctor.checks import _check_global_ignore
+        from corpus_forge.ignore_defaults import MANAGED_END, MANAGED_START
+
+        stale = (
+            f"{MANAGED_START}\n"
+            "# Generated 2026-01-01T00:00:00+00:00 — do not edit; managed by corpus-forge.\n"
+            ".DS_Store\n"
+            "*.icloud\n"
+            "build/\n"
+            "dist/\n"
+            f"{MANAGED_END}\n"
+        )
+        global_path = tmp_path / "ignore"
+        global_path.write_text(stale, encoding="utf-8")
+        monkeypatch.setenv("CF_GLOBAL_IGNORE_FILE", str(global_path))
+        result = _check_global_ignore()
+        assert result.status == CheckStatus.WARN
+        # The check must name the one-command fix.
+        assert "ignore sync" in result.detail.lower()
+        assert "--also-global" in result.detail
+
+    def test_warn_does_not_mutate_the_file(self, tmp_path: Path, monkeypatch) -> None:
+        # The audit path must NOT silently rewrite user config.
+        from corpus_forge.doctor.checks import _check_global_ignore
+        from corpus_forge.ignore_defaults import MANAGED_END, MANAGED_START
+
+        stale = f"{MANAGED_START}\n.DS_Store\n{MANAGED_END}\n"
+        global_path = tmp_path / "ignore"
+        global_path.write_text(stale, encoding="utf-8")
+        monkeypatch.setenv("CF_GLOBAL_IGNORE_FILE", str(global_path))
+        result = _check_global_ignore()
+        assert result.status == CheckStatus.WARN
+        # File untouched.
+        assert global_path.read_text(encoding="utf-8") == stale
+
+    def test_global_ignore_appears_in_full_report(self, tmp_path: Path, monkeypatch) -> None:
+        # Additive to the orchestrated report; existing names survive.
+        monkeypatch.setenv("CF_GLOBAL_IGNORE_FILE", str(tmp_path / "ignore"))
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text('[backend]\nkind = "sqlite"\ndsn = ":memory:"\n', encoding="utf-8")
+        report = run_doctor(config_path=cfg_path)
+        names = {r.name for r in report.results}
+        assert "python" in names
+        assert "config" in names
+        assert "corpusignore" in names
+        assert "global_ignore" in names

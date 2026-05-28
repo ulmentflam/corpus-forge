@@ -385,6 +385,104 @@ def _check_corpusignore(cfg: Config) -> CheckResult:
     )
 
 
+# ── 2026-05-27 — global managed-ignore drift check ────────────────────
+
+
+def _check_global_ignore(cfg: Config | None = None) -> CheckResult:
+    """Flag a stale managed block in the user-global ignore file.
+
+    The global ignore lives at ``~/.config/corpus-forge/ignore``
+    (honoring ``CF_GLOBAL_IGNORE_FILE``). A fresh ``corpus-forge setup``
+    bakes the conservative managed template into it — including the
+    dev/build junk patterns (``.venv/`` / ``node_modules/`` /
+    ``__pycache__/`` …) that otherwise drown the scanner. On EXISTING
+    installs whose global block predates a template change, the block
+    silently lags behind. This check surfaces that drift.
+
+    Status logic (mirrors :func:`_check_embedder_indexes`):
+
+    - ``SKIP`` when the global file doesn't exist (fresh / no global
+      config yet) or has no managed-block sentinels (a hand-rolled file
+      we don't own — nothing to compare).
+    - ``WARN`` when the managed block is missing any pattern the current
+      template would emit, with the exact one-command fix
+      (``corpus-forge ignore sync --also-global``). We WARN-not-mutate:
+      the audit path never silently rewrites user config — that's the
+      ``sync`` verb's job.
+    - ``OK`` when the managed block already carries the full template.
+
+    Feature flags come from ``cfg`` when supplied; otherwise the
+    conservative all-off preset is used (the same preset the wizard /
+    ``ignore sync`` write the global file with), so the junk patterns —
+    which are unconditional — are always part of the expected set.
+    """
+    from corpus_forge.ignore_defaults import (  # noqa: PLC0415
+        default_managed_lines,
+        feature_flags_from_config,
+        parse_managed_lines,
+    )
+    from corpus_forge.ignore_lifecycle import _resolve_global_path  # noqa: PLC0415
+
+    global_path = _resolve_global_path()
+    if not global_path.exists():
+        return CheckResult(
+            "global_ignore",
+            CheckStatus.SKIP,
+            f"{global_path} not present (no global ignore configured)",
+        )
+
+    try:
+        text = global_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return CheckResult(
+            "global_ignore",
+            CheckStatus.SKIP,
+            f"unable to read {global_path}: {exc}",
+        )
+
+    body = parse_managed_lines(text)
+    if body is None:
+        # No sentinels — a hand-rolled global file we don't manage.
+        return CheckResult(
+            "global_ignore",
+            CheckStatus.SKIP,
+            f"{global_path}: no corpus-forge managed block (not managed by us)",
+        )
+
+    if cfg is not None:
+        features = feature_flags_from_config(cfg)
+    else:
+        features = {
+            "whisper": False,
+            "image_extractor": False,
+            "code_enricher": False,
+            "vlm": False,
+        }
+    expected = set(default_managed_lines(features))
+    present = {line for line in body if not line.startswith("#")}
+    missing = expected - present
+
+    if missing:
+        max_sample = 6
+        sample = ", ".join(sorted(missing)[:max_sample])
+        more = "" if len(missing) <= max_sample else f" (+{len(missing) - max_sample} more)"
+        return CheckResult(
+            "global_ignore",
+            CheckStatus.WARN,
+            (
+                f"{global_path}: managed block is stale — missing "
+                f"{len(missing)} pattern(s): {sample}{more}. "
+                f"Run `corpus-forge ignore sync --also-global` to refresh it."
+            ),
+        )
+
+    return CheckResult(
+        "global_ignore",
+        CheckStatus.OK,
+        f"{global_path}: managed block matches the current template",
+    )
+
+
 # ── Phase M Wave 4 — Zotero check ─────────────────────────────────────
 
 
@@ -823,4 +921,9 @@ def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
         results.append(_check_embedder_indexes(loaded_cfg))
         results.append(_check_embedder_drift(loaded_cfg))
         results.append(_check_icloud_access(loaded_cfg))
+    # The global ignore drift check is independent of whether the config
+    # loaded — the global file lives at ~/.config/corpus-forge/ignore
+    # regardless. Pass the (possibly None) config for feature derivation;
+    # the check falls back to the conservative all-off preset.
+    results.append(_check_global_ignore(loaded_cfg))
     return DoctorReport(results=results)

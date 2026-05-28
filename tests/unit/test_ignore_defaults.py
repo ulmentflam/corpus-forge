@@ -214,6 +214,92 @@ class TestRenderAndParse:
         assert expected.issubset(set(body))
 
 
+# ── dev/build junk patterns (2026-05-27) ──────────────────────────────
+#
+# A real user's ingested roots contained code repos whose dev/build
+# artifacts DROWNED the scanner: one repo's ``.venv`` alone was 61,217
+# files, plus 577+ ``node_modules`` / ``.git`` / ``__pycache__`` dirs.
+# These patterns must be UNCONDITIONALLY in the always-on managed
+# template so a fresh ``corpus-forge setup`` / init auto-ignores them.
+#
+# Tests assert through the PUBLIC surface (``default_managed_lines`` /
+# ``render_managed_block`` / ``parse_managed_lines``) so the coder is
+# free to fold them into ``_ALWAYS_ON`` or a new sorted group.
+
+# The canonical 21 patterns from the requirement (gitignore syntax).
+_DEV_BUILD_JUNK: tuple[str, ...] = (
+    ".git/",
+    ".venv/",
+    "venv/",
+    "env/",
+    "node_modules/",
+    "__pycache__/",
+    "*.pyc",
+    "*.pyo",
+    "*.pyd",
+    ".mypy_cache/",
+    ".pytest_cache/",
+    ".ruff_cache/",
+    ".tox/",
+    ".eggs/",
+    "*.egg-info/",
+    "*.egg",
+    ".cache/",
+    ".gradle/",
+    ".terraform/",
+    ".ipynb_checkpoints/",
+    "site-packages/",
+)
+
+
+class TestDevBuildJunkPatterns:
+    def test_all_junk_patterns_are_unconditionally_present(self) -> None:
+        # Always-on: produced for the empty / all-off feature map.
+        lines = set(default_managed_lines({}))
+        for pat in _DEV_BUILD_JUNK:
+            assert pat in lines, f"dev/build junk pattern missing from template: {pat!r}"
+
+    def test_junk_patterns_survive_every_feature_combination(self) -> None:
+        # The junk set is unconditional — no feature flip drops it.
+        combos = [
+            {},
+            {"whisper": True},
+            {"whisper": False},
+            {"image_extractor": True},
+            {"image_extractor": True, "whisper": True, "vlm": True},
+            {"whisper": True, "image_extractor": True, "code_enricher": True, "vlm": True},
+        ]
+        junk = set(_DEV_BUILD_JUNK)
+        for features in combos:
+            out = set(default_managed_lines(features))
+            assert junk.issubset(out), (
+                f"dev/build junk dropped for features={features}: missing {junk - out}"
+            )
+
+    def test_junk_patterns_round_trip_through_render_and_parse(self) -> None:
+        rendered = render_managed_block({}, include_timestamp=False)
+        body = parse_managed_lines(rendered)
+        assert body is not None
+        body_set = set(body)
+        for pat in _DEV_BUILD_JUNK:
+            assert pat in body_set, f"junk pattern not round-tripped: {pat!r}"
+
+    def test_notebook_file_still_not_ignored_but_checkpoints_dir_is(self) -> None:
+        # ``.ipynb_checkpoints/`` is a junk DIRECTORY (safe to ignore);
+        # ``*.ipynb`` is a real notebook FILE and must NEVER be ignored.
+        lines = set(default_managed_lines({}))
+        assert ".ipynb_checkpoints/" in lines
+        assert "*.ipynb" not in lines
+
+    def test_junk_patterns_do_not_swallow_source_or_docs(self) -> None:
+        # Belt-and-suspenders alongside the existing conservative-policy
+        # test: none of the source/doc extensions sneak in via the junk
+        # group.
+        lines = set(default_managed_lines({}))
+        for forbidden in ("*.py", "*.pdf", "*.md", "*.ipynb", "*.rs", "*.ts", "*.go"):
+            assert forbidden not in lines
+
+
 # ── feature_flags_from_config ─────────────────────────────────────────
 
 

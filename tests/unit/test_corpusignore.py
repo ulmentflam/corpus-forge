@@ -305,6 +305,50 @@ class TestLoadLocalIgnore:
         assert not any(p.pattern_str == "*.auto" for p in ig.patterns)
 
 
+# ── 2026-05-27 — managed template ignores dev/build junk dirs ─────────
+
+
+class TestManagedTemplateIgnoresJunk:
+    """End-to-end: a freshly rendered managed ``.corpusignore`` must
+    actually match (ignore) the dev/build junk dirs that drowned the
+    scanner, when loaded back through :class:`CorpusIgnore`.
+    """
+
+    def _rendered_ignore(self, tmp_path: Path) -> CorpusIgnore:
+        from corpus_forge.ignore_lifecycle import write_corpusignore
+
+        write_corpusignore(tmp_path, {"whisper": False})
+        return CorpusIgnore.from_file(tmp_path / ".corpusignore", root=tmp_path)
+
+    def test_ignores_venv_directory(self, tmp_path: Path) -> None:
+        ig = self._rendered_ignore(tmp_path)
+        assert ig.matches(tmp_path / ".venv", is_dir=True) is True
+
+    def test_ignores_node_modules_directory(self, tmp_path: Path) -> None:
+        ig = self._rendered_ignore(tmp_path)
+        assert ig.matches(tmp_path / "node_modules", is_dir=True) is True
+
+    def test_ignores_pycache_directory(self, tmp_path: Path) -> None:
+        ig = self._rendered_ignore(tmp_path)
+        assert ig.matches(tmp_path / "__pycache__", is_dir=True) is True
+
+    def test_ignores_git_directory_at_depth(self, tmp_path: Path) -> None:
+        # ``.git/`` is unanchored → matches at any depth.
+        ig = self._rendered_ignore(tmp_path)
+        assert ig.matches(tmp_path / "subproj" / ".git", is_dir=True) is True
+
+    def test_ignores_pyc_file(self, tmp_path: Path) -> None:
+        ig = self._rendered_ignore(tmp_path)
+        assert ig.matches(tmp_path / "mod.pyc", is_dir=False) is True
+
+    def test_does_not_ignore_source_or_docs(self, tmp_path: Path) -> None:
+        ig = self._rendered_ignore(tmp_path)
+        assert ig.matches(tmp_path / "notes.md", is_dir=False) is False
+        assert ig.matches(tmp_path / "app.py", is_dir=False) is False
+        assert ig.matches(tmp_path / "paper.pdf", is_dir=False) is False
+        assert ig.matches(tmp_path / "analysis.ipynb", is_dir=False) is False
+
+
 # ── frozen-dataclass invariants ──────────────────────────────────────────
 
 

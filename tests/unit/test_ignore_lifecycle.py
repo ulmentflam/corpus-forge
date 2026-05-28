@@ -336,3 +336,77 @@ class TestResyncAll:
         assert (root_a / ".corpusignore") in written
         assert global_path in written
         assert global_path.exists()
+
+
+# ── 2026-05-27 — dev/build junk flows through the lifecycle ───────────
+
+
+# The dev/build junk that a fresh ``write_corpusignore`` / ``resync_all``
+# must bake in so a code repo under an ingested root doesn't drown the
+# scanner. Sampled from the full 21-pattern set.
+_JUNK_SAMPLE: tuple[str, ...] = (
+    ".git/",
+    ".venv/",
+    "node_modules/",
+    "__pycache__/",
+    "*.pyc",
+    ".mypy_cache/",
+    ".pytest_cache/",
+    ".ruff_cache/",
+    "site-packages/",
+)
+
+
+class TestDevBuildJunkLifecycle:
+    def test_fresh_write_includes_junk_patterns(self, tmp_path: Path) -> None:
+        write_corpusignore(tmp_path, {"whisper": False})
+        text = (tmp_path / ".corpusignore").read_text(encoding="utf-8")
+        for pat in _JUNK_SAMPLE:
+            assert pat in text, f"junk pattern missing from fresh .corpusignore: {pat!r}"
+
+    def test_resync_writes_junk_into_each_root(self, tmp_path: Path) -> None:
+        root_a = tmp_path / "tree_a"
+        root_a.mkdir()
+        cfg = _make_cfg([{"plugin": "filesystem", "root": str(root_a), "chunker": "markdown"}])
+        resync_all(cfg)
+        text = (root_a / ".corpusignore").read_text(encoding="utf-8")
+        for pat in _JUNK_SAMPLE:
+            assert pat in text
+
+    def test_regen_only_rewrites_between_sentinels(self, tmp_path: Path) -> None:
+        # User content above AND below the managed block must survive a
+        # regen verbatim; only the managed body changes.
+        path = tmp_path / ".corpusignore"
+        write_corpusignore(tmp_path, {"whisper": False})
+        original = path.read_text(encoding="utf-8")
+        # Sandwich user lines around the managed block.
+        head = "# my custom header\nSecretVault/\n"
+        tail = "# trailing notes\nDrafts/private/\n"
+        path.write_text(head + original + tail, encoding="utf-8")
+        # Regenerate.
+        write_corpusignore(tmp_path, {"whisper": False})
+        after = path.read_text(encoding="utf-8")
+        # User content on both sides survives untouched.
+        assert "# my custom header" in after
+        assert "SecretVault/" in after
+        assert "# trailing notes" in after
+        assert "Drafts/private/" in after
+        # The managed body still carries the junk patterns.
+        for pat in _JUNK_SAMPLE:
+            assert pat in after
+
+    def test_regen_is_idempotent_on_junk(self, tmp_path: Path) -> None:
+        # Two regens with the same features → identical managed body
+        # (modulo the timestamp comment line).
+        write_corpusignore(tmp_path, {"whisper": False})
+        first = (tmp_path / ".corpusignore").read_text(encoding="utf-8")
+        write_corpusignore(tmp_path, {"whisper": False})
+        second = (tmp_path / ".corpusignore").read_text(encoding="utf-8")
+
+        def _body(text: str) -> list[str]:
+            lines = text.splitlines()
+            start = next(i for i, ln in enumerate(lines) if ln == MANAGED_START)
+            end = next(i for i, ln in enumerate(lines) if ln == MANAGED_END)
+            return [ln for ln in lines[start + 1 : end] if not ln.startswith("# Generated ")]
+
+        assert _body(first) == _body(second)
