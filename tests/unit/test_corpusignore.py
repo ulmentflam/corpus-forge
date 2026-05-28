@@ -348,6 +348,27 @@ class TestManagedTemplateIgnoresJunk:
         assert ig.matches(tmp_path / "paper.pdf", is_dir=False) is False
         assert ig.matches(tmp_path / "analysis.ipynb", is_dir=False) is False
 
+    # Multi-language vendor + build dirs (this PR).
+
+    def test_ignores_elixir_mix_deps_directory(self, tmp_path: Path) -> None:
+        # The smoking gun: Elixir Mix `deps/` was the dir that survived
+        # PR #68's template and stalled ingest on `Forte/Workspace`'s
+        # `gjallarhorn/deps/makeup/...` tree.
+        ig = self._rendered_ignore(tmp_path)
+        assert ig.matches(tmp_path / "deps", is_dir=True) is True
+
+    def test_ignores_elixir_mix_build_directory(self, tmp_path: Path) -> None:
+        ig = self._rendered_ignore(tmp_path)
+        assert ig.matches(tmp_path / "_build", is_dir=True) is True
+
+    def test_ignores_go_php_ruby_vendor_directory(self, tmp_path: Path) -> None:
+        ig = self._rendered_ignore(tmp_path)
+        assert ig.matches(tmp_path / "vendor", is_dir=True) is True
+
+    def test_ignores_bower_components_directory(self, tmp_path: Path) -> None:
+        ig = self._rendered_ignore(tmp_path)
+        assert ig.matches(tmp_path / "bower_components", is_dir=True) is True
+
 
 # ── frozen-dataclass invariants ──────────────────────────────────────────
 

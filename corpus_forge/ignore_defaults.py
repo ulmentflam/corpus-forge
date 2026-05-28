@@ -72,10 +72,12 @@ MANAGED_END: str = "# <<< corpus-forge managed <<<"
 #   * Archives (compressed; treat as binary opaque).
 #   * Build / output directories (gitignore-style trailing slash).
 #   * Dev / build junk: VCS metadata, language virtualenvs, package
-#     caches, and compiled-artifact dirs that DROWN the scanner when a
-#     code repo lands under an ingested root (a single ``.venv`` can be
-#     60k+ files; ``node_modules`` / ``.git`` / ``__pycache__`` recur by
-#     the hundreds). These are pure tooling output — never chunk-worthy.
+#     caches, vendored-dependency dirs (Elixir ``deps/``, Go/PHP/Ruby
+#     ``vendor/``, legacy JS ``bower_components/``), and build-output
+#     dirs (Elixir ``_build/``) that DROWN the scanner when a code repo
+#     lands under an ingested root (a single ``.venv`` can be 60k+
+#     files; ``node_modules`` / ``deps`` / ``.git`` / ``__pycache__``
+#     recur by the hundreds). Pure tooling output — never chunk-worthy.
 #   * Lockfiles (no information density worth chunking).
 #   * Minified bundles + sourcemaps (text but unstructured).
 _ALWAYS_ON: tuple[str, ...] = tuple(
@@ -107,7 +109,12 @@ _ALWAYS_ON: tuple[str, ...] = tuple(
             "out/",
             "target/",
             # Dev / build junk — VCS, virtualenvs, package + tool caches,
-            # compiled Python artifacts, infra-tool state dirs.
+            # compiled Python artifacts, infra-tool state dirs, and
+            # multi-language vendored-dependency / build-output dirs.
+            "_build/",  # Elixir / Erlang Mix build output.
+            "bower_components/",  # Legacy JS package manager (deprecated).
+            "deps/",  # Elixir / Erlang Mix vendored dependencies.
+            "vendor/",  # Go modules vendor dir; also PHP Composer, Ruby Bundler.
             ".cache/",
             ".eggs/",
             ".git/",
