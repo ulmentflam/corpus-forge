@@ -4,8 +4,11 @@ Synthetic deep tree with artificial per-readdir latency (monkeypatched
 `os.scandir` sleep) to prove that concurrent enumeration overlaps I/O
 and finishes in meaningfully less wall time than serial.
 
-Marked `@pytest.mark.slow` -- excluded from default CI; run explicitly
-with `uv run pytest tests/perf/test_scan_concurrency_bench.py -m slow`.
+The two latency-injected timing tests are marked `@pytest.mark.slow`
+(excluded from default CI; run explicitly with
+`uv run pytest tests/perf/test_scan_concurrency_bench.py -m slow`).
+The third test (file-set parity, no sleep) is fast and runs by default
+as a lightweight correctness smoke for the concurrent path.
 
 Design notes:
   - Each `os.scandir` call sleeps a fixed delay (SLEEP_PER_DIR seconds)
@@ -30,8 +33,6 @@ import time
 from pathlib import Path
 
 import pytest
-
-pytestmark = pytest.mark.slow
 
 # -- Tuning constants -------------------------------------------------------
 
@@ -100,6 +101,7 @@ def _make_slowed_scandir(real_scandir, sleep_s: float):  # type: ignore[no-untyp
 # -- Benchmark tests --------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_concurrent_walk_faster_than_serial_with_artificial_latency(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -173,6 +175,7 @@ def test_concurrent_walk_faster_than_serial_with_artificial_latency(
     )
 
 
+@pytest.mark.slow
 def test_serial_baseline_with_artificial_latency(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

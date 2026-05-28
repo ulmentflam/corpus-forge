@@ -34,6 +34,7 @@ from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Semaphore
 from typing import TYPE_CHECKING
 
 # Re-use the baseline tables from `estimate.py` so there is exactly one
@@ -96,8 +97,20 @@ def resolve_effective_workers(config_workers: int | None) -> int:
     """
     env_val = os.environ.get("CF_SCAN_WORKERS")
     if env_val is not None:
-        return int(env_val)
-    if config_workers is None:
+        try:
+            parsed = int(env_val)
+        except ValueError as exc:
+            raise ValueError(
+                f"CF_SCAN_WORKERS={env_val!r} is not a valid integer "
+                "(must be a positive integer >= 1)"
+            ) from exc
+        if parsed < 1:
+            raise ValueError(f"CF_SCAN_WORKERS={env_val!r} must be an integer >= 1 (got {parsed})")
+        return parsed
+    # ``config_workers`` may be ``None`` (auto/unset) OR a non-``int`` from
+    # a test mock or partially-built config — treat anything that isn't a
+    # real ``int`` as auto and fall back to the formula.
+    if not isinstance(config_workers, int) or isinstance(config_workers, bool):
         return min(32, (os.cpu_count() or 1) * 4)
     return config_workers
 
@@ -455,10 +468,29 @@ def _walk_concurrent(
     - Thread safety: only the main thread increments ``WalkStats``
       counters and yields entries — no shared mutable state across threads.
     """
+    # Bound the number of in-flight (pending + running) scandir tasks to
+    # ``workers * 2`` so a very wide tree (many siblings) can't enqueue an
+    # unbounded number of futures into the pool.  Acquired before each
+    # ``pool.submit`` and released in the future's done callback.
+    submit_semaphore = Semaphore(workers * 2)
+
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        # Stack items: (path, rel, future_or_none)
+
+        def _submit_scandir(path: Path) -> Future[list[os.DirEntry[str]]]:
+            submit_semaphore.acquire()
+            try:
+                fut = pool.submit(_scandir_safe, path)
+            except BaseException:
+                # If submit fails (e.g. pool shutdown), release immediately
+                # so we don't leak a permit.  Re-raise — caller decides.
+                submit_semaphore.release()
+                raise
+            fut.add_done_callback(lambda _f: submit_semaphore.release())
+            return fut
+
+        # Stack items: (path, rel, future)
         # We start by submitting the root scandir immediately.
-        root_future: Future[list[os.DirEntry[str]]] = pool.submit(_scandir_safe, root_path)
+        root_future = _submit_scandir(root_path)
         stack: list[tuple[Path, str, Future[list[os.DirEntry[str]]]]] = [
             (root_path, "", root_future)
         ]
@@ -484,15 +516,15 @@ def _walk_concurrent(
                 stats=stats,
             )
 
-            # Eagerly submit scandir futures for all accepted subdirs
-            # before yielding any files from this dir.  This overlaps I/O
-            # with the main thread's work on files below.
-            # We push in reversed order so LIFO pops them in sorted DFS order.
+            # Submit scandir futures for accepted subdirs (bounded by the
+            # semaphore).  Push in reversed order so LIFO pops in sorted
+            # DFS order — preserves the deterministic yield order of the
+            # serial path.  ``_submit_scandir`` may block here if more than
+            # ``workers * 2`` scandirs are already in flight; that's the
+            # backpressure that bounds memory on wide trees.
             futures_to_push: list[tuple[Path, str, Future[list[os.DirEntry[str]]]]] = []
             for child_path, child_rel in subdirs_to_push:
-                child_future: Future[list[os.DirEntry[str]]] = pool.submit(
-                    _scandir_safe, child_path
-                )
+                child_future = _submit_scandir(child_path)
                 futures_to_push.append((child_path, child_rel, child_future))
 
             for item in reversed(futures_to_push):
