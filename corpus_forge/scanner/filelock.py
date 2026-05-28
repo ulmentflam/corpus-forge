@@ -99,7 +99,7 @@ def acquire(
     # Compute canonical key; path may not exist yet.
     try:
         canonical = str(path.resolve())
-    except OSError:
+    except OSError:  # pragma: no cover — fallback for broken FS
         canonical = str(path.absolute())
 
     path_lock = _get_path_lock(canonical)
@@ -162,7 +162,7 @@ def _posix_acquire(path: Path, *, wait: bool, timeout: float | None) -> bool:
     path.touch(exist_ok=True)
     try:
         canonical = str(path.resolve())
-    except OSError:
+    except OSError:  # pragma: no cover — fallback for broken FS
         canonical = str(path.absolute())
 
     fd = os.open(str(path), os.O_RDWR | os.O_CREAT)
@@ -212,7 +212,7 @@ def _posix_release(path: Path) -> None:
     """Release the flock and close the stored fd."""
     try:
         canonical = str(path.resolve())
-    except OSError:
+    except OSError:  # pragma: no cover — fallback for broken FS
         canonical = str(path.absolute())
 
     with _posix_fds_mu:
@@ -244,7 +244,7 @@ def _win_acquire(path: Path, *, wait: bool, timeout: float | None) -> bool:  # p
     path.touch(exist_ok=True)
     try:
         canonical = str(path.resolve())
-    except OSError:
+    except OSError:  # pragma: no cover — fallback for broken FS
         canonical = str(path.absolute())
 
     f = path.open("wb+")  # SIM115: must keep file open for lock lifetime; no context manager
@@ -291,7 +291,7 @@ def _win_release(path: Path) -> None:  # pragma: no cover
     """Release the msvcrt lock and close the stored file object."""
     try:
         canonical = str(path.resolve())
-    except OSError:
+    except OSError:  # pragma: no cover — fallback for broken FS
         canonical = str(path.absolute())
 
     with _win_files_mu:
