@@ -405,3 +405,39 @@ E-10 P1 gate).
 
 - Verdict: rework
 - Notes: Three blocking defects. Issue 1 (exit code 75) means lock contention silently exits 1 instead of 75 — callers relying on POSIX EX_TEMPFAIL for retry logic will misbehave. Issue 2 (json serialization) means --status --json is completely broken in production use. Issue 3 is a stale test assertion that makes the regression suite misleading. The cross-backend divergence (Issue 4) should be fixed in the same pass to avoid functional differences between Postgres and SQLite deployments. The test isolation issue (Issue 5) should be documented for the tester to address. Five-star quality on the lock-release safety, signal handler, flakiness profile, and format/lint/typecheck gates; only the implementation details in ingest.py and the test gaps need work.
+
+---
+
+## SR-G8 fixes (tdd-coder — 2026-05-28)
+
+All four SR-Q1 defects fixed. Summary:
+
+**D1 (BLOCKING — exit code 75 never fires on lock contention)**
+- Root cause confirmed: `lock_source` is `@contextmanager`; calling it creates the generator without running the body. `IngestRunInProgressError` fires at `with lock_ctx:` entry. The old `try/except` only wrapped the factory call.
+- Fix: Moved `lock_ctx = backend.lock_source(...)` inside a new outer `try: ... except IngestRunInProgressError:` block that also wraps `with lock_ctx:`. Both the factory call and the `with` entry are now covered. The outer `try:` shares indentation with the inner `try/except BaseException` (lock-release safety pattern) — lock-release invariant preserved.
+- New test: `TestIngestOnceLockContentionViaContextEntry` (2 tests) exercises the real `__enter__`-based contention path via `mock_cm.__enter__.side_effect`.
+- Smoke: second concurrent `ingest --once` exits 75 with "another ingest run is in progress" message confirmed.
+
+**D2 (BLOCKING — `--status --json` TypeError on datetime)**
+- Root cause: `json.dumps({"run": run, "sources": sources})` at ingest.py:~1897 had no `default=` handler. SQLiteBackend returns `datetime` objects for timestamp fields.
+- Fix: Added `_json_default(obj)` closure inside `print_ingest_status` that calls `obj.isoformat()` for objects with that method, `str(obj)` fallback for others. Passed as `default=` to `json.dumps`.
+- New test: `TestJsonDumpsDatetimeSerialization.test_json_output_survives_datetime_fields` passes a run dict with real `datetime` objects through the JSON path and asserts no TypeError + valid ISO string output.
+- Smoke: `ingest --status --json` emits parseable JSON with `started_at` as ISO string confirmed.
+
+**D3 (BLOCKING — stale test assertion)**
+- Fix: Updated `test_main_with_once_true` assertion from `mock_ingest.assert_called_once_with(mock_config)` to `mock_ingest.assert_called_once_with(mock_config, resume=False, wait=False, max_scan_age=None)`.
+- No sibling tests with the same pattern (checked at lines 441, 530).
+
+**Advisory 4 (cross-backend `find_source_last_scanned_at` divergence)**
+- Fix: Updated `PostgresBackend.find_source_last_scanned_at` to JOIN `corpus.ingest_runs ir ON ir.run_id = irs.run_id WHERE ir.status IN ('completed', 'interrupted') AND irs.finished_at IS NOT NULL` — matches the SQLite query shape. Updated `SQLiteBackend.find_source_last_scanned_at` to use `MAX(irs.finished_at)` (was `MAX(irs.last_scanned_at)`) with the same run-status join and `finished_at IS NOT NULL` guard.
+- Postgres integration tests updated: 4 tests in `TestFindSourceLastScannedAt` that called `upsert_ingest_run_source(finished=True)` but did NOT call `finish_ingest_run` now call `finish_ingest_run(status="completed")` — these tests were pinning the OLD wrong behavior (run-status not filtered). `test_returns_max_across_multiple_runs` also updated (run_id_2 now gets `finish_ingest_run` before the assert).
+- SQLite tests: no changes needed — SQLite tests already correctly call `finish_ingest_run` and use semantic-agnostic timestamp comparisons.
+
+**Gates (all pass):**
+- format: `ruff format --check` — 764 files already formatted
+- lint: `ruff check` — All checks passed
+- typecheck: `pyrefly check --ignore missing-import corpus_forge` — 0 errors (71 suppressed)
+- test (scoped): 229 passed, 0 failed (test_ingest_extended.py + test_ingest_run_lock.py + test_cli_ingest_status.py + test_postgres_ingest_runs.py + test_sqlite_ingest_runs.py + test_ingest_resume_e2e.py)
+- test (adjacent): 34 passed, 0 failed (test_ingest_core.py + test_ingest_filesystem.py + test_ingest_progress.py)
+
+**Advisory 5 (test ordering):** NOT fixed per instructions — passes under random ordering (CI behavior).

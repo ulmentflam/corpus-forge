@@ -403,6 +403,70 @@ class TestIngestOnceLockContention:
 
 
 # ---------------------------------------------------------------------------
+# 4b. Contention via __enter__ (real contextmanager path — D1 regression lock)
+# ---------------------------------------------------------------------------
+
+
+class TestIngestOnceLockContentionViaContextEntry:
+    """Lock contention raised DURING ``with lock_ctx:`` entry (the real production path).
+
+    D1 fix: the ``IngestRunInProgressError`` is raised inside the
+    ``@contextmanager`` body before the ``yield``, which means it fires
+    when Python calls ``lock_ctx.__enter__()``, NOT when the factory
+    function is called.  This class exercises that path by returning a
+    mock context manager whose ``__enter__`` raises.
+    """
+
+    def _make_cm_raising_on_enter(self):
+        """Return a mock context manager that raises IngestRunInProgressError
+        when entering the ``with`` block (``__enter__``), not when called."""
+        mock_cm = MagicMock()
+        mock_cm.__enter__.side_effect = IngestRunInProgressError(
+            "another ingest run is in progress on this host"
+        )
+        mock_cm.__exit__.return_value = False
+        return mock_cm
+
+    def test_enter_contention_exits_75(self, tmp_path):
+        """When __enter__ raises IngestRunInProgressError, ingest_once must exit 75."""
+        from corpus_forge.ingest import ingest_once
+
+        mock_backend = MagicMock()
+        mock_backend.lock_source.return_value = self._make_cm_raising_on_enter()
+        config = _make_config(tmp_path)
+
+        with (
+            patch("corpus_forge.ingest.PostgresBackend", return_value=mock_backend),
+            patch("corpus_forge.ingest.get_active_embedders", return_value=[]),
+            patch("corpus_forge.ingest._plan_ingest", return_value={}),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            ingest_once(config)
+
+        assert exc_info.value.code == 75, (
+            f"Expected SystemExit(75) for __enter__ contention; got code {exc_info.value.code}"
+        )
+
+    def test_enter_contention_does_not_call_migrate(self, tmp_path):
+        """When __enter__ raises IngestRunInProgressError, migrate() must NOT be called."""
+        from corpus_forge.ingest import ingest_once
+
+        mock_backend = MagicMock()
+        mock_backend.lock_source.return_value = self._make_cm_raising_on_enter()
+        config = _make_config(tmp_path)
+
+        with (
+            patch("corpus_forge.ingest.PostgresBackend", return_value=mock_backend),
+            patch("corpus_forge.ingest.get_active_embedders", return_value=[]),
+            patch("corpus_forge.ingest._plan_ingest", return_value={}),
+            pytest.raises(SystemExit),
+        ):
+            ingest_once(config)
+
+        mock_backend.migrate.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # 5. Contention with wait=True → lock_source called with wait=True
 # ---------------------------------------------------------------------------
 

@@ -3473,15 +3473,20 @@ class PostgresBackend(StorageBackend):
     def find_source_last_scanned_at(self, source_uri_prefix: str) -> datetime | None:
         """Latest finished_at across any completed/interrupted run for this source_uri_prefix.
 
-        Excludes rows where finished_at IS NULL (source still in-progress)
-        and excludes runs with status='running' (not yet finished).
+        Joins to ingest_runs to filter by run status ('completed' or 'interrupted')
+        so that still-running runs are excluded from the max calculation.
+        Also excludes rows where finished_at IS NULL (source still in-progress within a run).
         Returns a UTC-aware datetime, or None if the source has never been scanned.
+
+        Matches SQLite backend semantics per the binding contract in tasks.md §5.
         """
         rows = self._execute(
             """
             SELECT MAX(irs.finished_at) AS last_scanned_at
             FROM corpus.ingest_run_sources irs
+            JOIN corpus.ingest_runs ir ON ir.run_id = irs.run_id
             WHERE irs.source_uri_prefix = %s
+              AND ir.status IN ('completed', 'interrupted')
               AND irs.finished_at IS NOT NULL
             """,
             (source_uri_prefix,),

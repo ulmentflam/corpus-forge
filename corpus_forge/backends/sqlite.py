@@ -3756,22 +3756,28 @@ class SQLiteBackend:
         )
 
     def find_source_last_scanned_at(self, source_uri_prefix: str) -> "datetime | None":
-        """Return the max ``last_scanned_at`` across completed/interrupted runs.
+        """Return the max ``finished_at`` across completed/interrupted runs.
 
         Only rows whose parent ingest run has status in
         ``('completed', 'interrupted')`` are considered — a still-running
         run's scan timestamps are excluded so the resume-skip logic sees the
-        last *finished* scan date, not an in-progress one.
+        last *finished* scan date, not an in-progress one.  Also excludes
+        rows where ``finished_at IS NULL`` (source still in-progress within
+        a run).
+
+        Uses ``finished_at`` (not ``last_scanned_at``) to match Postgres
+        backend semantics per the binding contract in tasks.md §5.
 
         Returns ``None`` if the source has never been fully scanned.
         """
         rows = self._execute(
             """
-            SELECT MAX(irs.last_scanned_at) AS max_scanned
+            SELECT MAX(irs.finished_at) AS max_scanned
               FROM ingest_run_sources AS irs
               JOIN ingest_runs AS ir ON ir.run_id = irs.run_id
              WHERE irs.source_uri_prefix = ?
                AND ir.status IN ('completed', 'interrupted')
+               AND irs.finished_at IS NOT NULL
             """,
             (source_uri_prefix,),
         )

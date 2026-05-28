@@ -577,7 +577,9 @@ active = true
 
             with patch("corpus_forge.ingest.ingest_once") as mock_ingest:
                 main(once=True)
-                mock_ingest.assert_called_once_with(mock_config)
+                mock_ingest.assert_called_once_with(
+                    mock_config, resume=False, wait=False, max_scan_age=None
+                )
 
     def test_main_with_once_false_logs_daemon_message(self, temp_dir):
         """Test main with once=False logs daemon message."""

@@ -941,7 +941,8 @@ class TestFindSourceLastScannedAt:
         )
 
     def test_returns_finished_at_when_source_finished(self, backend: PostgresBackend) -> None:
-        """After a finished upsert, find_source_last_scanned_at returns the timestamp."""
+        """After a finished source upsert in a completed run, find_source_last_scanned_at
+        returns the finished_at timestamp."""
         run_id = _run_id()
         dataset_id = _dataset_id(backend)
         backend.start_ingest_run(
@@ -958,6 +959,9 @@ class TestFindSourceLastScannedAt:
             finished=True,
         )
         after = datetime.now(tz=UTC)
+        # The run must be in a terminal status for find_source_last_scanned_at
+        # to return the source's finished_at (binding contract: completed/interrupted only).
+        backend.finish_ingest_run(run_id=run_id, status="completed")
 
         result = backend.find_source_last_scanned_at("vault://done")
         assert result is not None
@@ -1006,6 +1010,9 @@ class TestFindSourceLastScannedAt:
             "WHERE run_id = %s AND source_uri_prefix = %s",
             (run_id_2, "vault://repeated"),
         )[0]["finished_at"]
+        # The run must be in a terminal status for find_source_last_scanned_at
+        # to include it (binding contract: completed/interrupted only).
+        backend.finish_ingest_run(run_id=run_id_2, status="completed")
 
         result = backend.find_source_last_scanned_at("vault://repeated")
         assert result is not None
@@ -1110,6 +1117,8 @@ class TestFindSourceLastScannedAt:
             dataset_id=dataset_id,
             finished=True,
         )
+        # Run must be terminal for find_source_last_scanned_at to include it.
+        backend.finish_ingest_run(run_id=run_id, status="completed")
         result = backend.find_source_last_scanned_at("vault://typed")
         assert isinstance(result, datetime), (
             f"find_source_last_scanned_at must return a datetime; got {type(result)!r}"
@@ -1161,6 +1170,8 @@ class TestUtcTimestamps:
             dataset_id=dataset_id,
             finished=True,
         )
+        # Run must be terminal for find_source_last_scanned_at to include it.
+        backend.finish_ingest_run(run_id=run_id, status="completed")
         result = backend.find_source_last_scanned_at("vault://tz-check")
         assert result is not None
         if result.tzinfo is not None:

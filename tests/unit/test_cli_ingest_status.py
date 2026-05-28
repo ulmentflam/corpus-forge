@@ -1041,3 +1041,85 @@ class TestStatusMutualExclusion:
             _runner().invoke(app, ["ingest", "--status", "--json"])
 
         assert captured.get("json_output") is True
+
+
+# ---------------------------------------------------------------------------
+# Regression lock: D2 — json.dumps must survive real datetime objects
+# ---------------------------------------------------------------------------
+
+
+class TestJsonDumpsDatetimeSerialization:
+    """Regression lock for D2: print_ingest_status(json_output=True) must not
+    raise TypeError when the backend returns dict rows containing datetime objects.
+
+    The real SQLiteBackend.latest_ingest_run() returns datetime objects for
+    timestamp fields. Prior to the fix, json.dumps lacked a default encoder,
+    causing:
+        TypeError: Object of type datetime is not JSON serializable
+    This test pins that the fix (default=_json_default) handles datetimes.
+    """
+
+    def test_json_output_survives_datetime_fields(self, capsys, tmp_path) -> None:
+        """print_ingest_status(json_output=True) must not raise when run dict
+        contains real datetime objects (not pre-serialized ISO strings).
+        """
+        import textwrap
+        from datetime import UTC, datetime
+
+        from corpus_forge import ingest as ingest_module
+        from corpus_forge.config import Config
+        from corpus_forge.ingest import print_ingest_status
+
+        db_path = tmp_path / "dt_test.db"
+        cfg_text = textwrap.dedent(
+            f"""
+            [backend]
+            kind = "sqlite"
+            dsn  = "{db_path.as_posix()}"
+            [daemon]
+            [[datasets]]
+            name = "default"
+            kind = "text"
+            sources = [{{plugin = "markdown_vault", vault_root = "/tmp", chunker = "markdown"}}]
+            """
+        )
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text(cfg_text)
+        config = Config.load(config_path=cfg_path)
+
+        now = datetime(2026, 5, 28, 10, 0, 0, tzinfo=UTC)
+        run_with_datetimes = {
+            "run_id": "TEST-RUN-DT",
+            "status": "completed",
+            "host": "testhost",
+            "pid": 1,
+            "started_at": now,
+            "ended_at": now,
+            "last_progress_at": now,
+            "last_op": "finalize",
+            "last_done": 10,
+            "last_total": 10,
+            "error": None,
+            "config_digest": "abc123",
+        }
+
+        backend = MagicMock()
+        backend.latest_ingest_run.return_value = run_with_datetimes
+        backend.list_ingest_run_sources.return_value = []
+        backend.get_ingest_run_sources.return_value = []
+
+        with patch.object(ingest_module, "_build_backend_for_status", return_value=backend):
+            # Must NOT raise TypeError — this is the regression we're pinning.
+            print_ingest_status(config, json_output=True)
+
+        captured = capsys.readouterr()
+        output = captured.out + captured.err
+        # Must be parseable JSON
+        lines = [ln for ln in output.splitlines() if ln.strip().startswith("{")]
+        assert lines, f"No JSON line in output:\n{output!r}"
+        payload = json.loads(lines[0])
+        assert payload["run"]["run_id"] == "TEST-RUN-DT"
+        # datetime was serialized to an ISO string, not Python repr
+        started = payload["run"]["started_at"]
+        assert isinstance(started, str), f"started_at must be a string in JSON; got {started!r}"
+        assert "2026-05-28" in started, f"Expected ISO date in started_at; got {started!r}"
