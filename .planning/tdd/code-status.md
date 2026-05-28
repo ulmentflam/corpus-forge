@@ -2,6 +2,34 @@
 
 Record of implementations written by tdd-coder.
 
+## PR-72-coderabbit
+- Source files:
+  - `corpus_forge/alembic/versions/0017_ingest_runs.py` (finding 1: try/finally around FK pragma sequence)
+  - `corpus_forge/backends/postgres.py` (finding 2: UPSERT adds host/pid/config_digest to ON CONFLICT SET)
+  - `corpus_forge/backends/sqlite.py` (finding 3: lock file DB-scoped; finding 4: UPSERT adds host/pid/config_digest/error/started_at to ON CONFLICT SET)
+  - `corpus_forge/cli.py` (findings 5/6/7: --wait/--max-scan-age require --once; --json requires --status; drift moved after --status early-return; finding 9: parsed_max_scan_age type float|None=None)
+  - `corpus_forge/ingest.py` (finding 8: _source_uri_prefix_for uses full path + _legacy_source_uri_prefix_for compat; finding 9: main() signature float|None=None, pass through without truthy conversion)
+  - `corpus_forge/scanner/age_spec.py` (finding 10: math.isfinite validation for NaN/inf)
+  - `corpus_forge/scanner/filelock.py` (finding 11: narrow OSError swallowing to EAGAIN/EWOULDBLOCK on POSIX, EACCES on Windows)
+  - `tests/integration/test_postgres_ingest_runs.py` (findings 12/13: tighten test_different_sources_are_independent; assert ended_at is None on resume)
+  - `tests/integration/test_sqlite_ingest_runs.py` (finding 14: tighten test_returns_latest_scanned_at_across_runs + add prefix isolation case)
+  - `.planning/tdd/tasks.md` (finding 15: fix surface area file names)
+  - `.planning/tdd/test-status.md` (finding 16: replace 5 absolute machine paths with repo-relative)
+  - `tests/integration/test_migrate_0017_ingest_runs.py` (finding 17: rename test_downgrade_minus1_drops_both_tables_sqlite + update module docstring)
+  - `tests/unit/test_cli_ingest_status.py` (finding 18: make test_backend_write_methods_not_called functional with backend method patches)
+  - `tests/unit/test_ingest_extended.py` (finding 19: add test_main_with_max_scan_age_zero_preserves_zero regression test)
+  - `tests/unit/test_ingest_run_lock.py` (finding 20: tighten blocking assertion to >= first_exit; update mock barrier to set after first_exit)
+- Gates:
+  - format: ✓ (`ruff format --check` — 769 files already formatted)
+  - lint: ✓ (`ruff check` — all checks passed)
+  - typecheck: ✓ (`pyrefly check --ignore missing-import corpus_forge` — 0 errors, 64 suppressed)
+  - test (target): ✓ (`pytest <15 target test files> -q --no-cov` — 497 passed, 0 failed)
+  - test (regression): ✓ (`pytest tests/unit tests/cli tests/admin ... -q -n auto --timeout=60 --no-cov` — 6258 passed, 2 failed: both pre-existing at HEAD before this diff: test_config_with_secrets + test_git_context flaky-parallel)
+- Test files modified: findings 12-14, 17-20 explicitly request test improvements. No tests weakened or skipped.
+- Diff scope: within surface — yes (all files match per-finding surface specifications)
+- Skipped: MD040 bare-fence tagging (194 fences in test-status.md; markdownlint is not a CI gate; scope too large for a nitpick)
+- Status: green — handed off to tdd-qa
+
 ## SR-G5
 - Source files:
   - `corpus_forge/ingest.py` (added `_BackendClassProxy`, `_SQLITE_BACKEND_PROXY`, `_POSTGRES_BACKEND_PROXY`, module `__getattr__`, `_run_logger`, `_checkpoint_logger`, `_lock_logger`, `_CHECKPOINT_INTERVAL_S`, extended `ingest_once` signature + full resume/lock/checkpoint/max-scan-age body)

@@ -269,20 +269,6 @@ class TestIngestOnceUnknownKindRaises:
             ingest_once(config)
 
 
-# Temporarily skipped (PR #72): this class verifies that
-# `corpus_forge.backends.sqlite` is lazy-imported inside `ingest_once`, but
-# its verification strategy pops and re-imports `corpus_forge.ingest` from
-# `sys.modules`. Under pytest-xdist `-n auto`, the briefly-distinct in-flight
-# `corpus_forge.ingest` module makes `corpus_forge.cli`'s captured reference
-# go stale, so downstream tests that patch `corpus_forge.ingest.main` and
-# invoke the Typer `app` see patches as uncalled. Cascades dozens of failures
-# across `tests/cli/test_ingest_cli_resume_flags.py` +
-# `tests/unit/test_cli_ingest_status.py` (QA Advisory 5 on PR #72).
-#
-# Follow-up: replace the sys.modules-mutation strategy with either a subprocess
-# (clean import in a fresh process) or move this check to a dedicated CI step
-# that runs after the rest of the suite.
-@pytest.mark.skip(reason="Pollutes sys.modules under -n auto; QA Advisory 5 (PR #72)")
 class TestIngestOnceSQLiteLazyImport:
     """The SQLiteBackend import happens inside the function, not at module level.
 
@@ -292,6 +278,21 @@ class TestIngestOnceSQLiteLazyImport:
     with create=True intercepts the name at call time.
     """
 
+    # Temporarily skipped (PR #72 / QA Advisory 5): this test pops and
+    # re-imports `corpus_forge.ingest` from `sys.modules`. Under
+    # `pytest-xdist -n auto`, the briefly-distinct in-flight module makes
+    # `corpus_forge.cli`'s captured reference go stale, so downstream tests
+    # that patch `corpus_forge.ingest.main` and invoke the Typer `app` see
+    # patches as uncalled, cascading dozens of failures across
+    # `tests/cli/test_ingest_cli_resume_flags.py` +
+    # `tests/unit/test_cli_ingest_status.py`. The companion test below
+    # (`test_sqlite_backend_present_in_sys_modules_after_sqlite_call`)
+    # exercises the same lazy-import code path SAFELY (observe-only, no
+    # sys.modules mutation), so coverage of the SQLite branch in
+    # `ingest_once` is preserved.
+    # Follow-up: replace the sys.modules-mutation strategy with a subprocess
+    # invocation (clean import in a fresh process) or AST-based static check.
+    @pytest.mark.skip(reason="Pollutes sys.modules under -n auto; QA Advisory 5 (PR #72)")
     def test_sqlite_backend_import_is_not_at_module_level(self):
         """corpus_forge.backends.sqlite should not be imported just by importing ingest.
 
