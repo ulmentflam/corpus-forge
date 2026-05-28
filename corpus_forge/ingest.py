@@ -1155,6 +1155,7 @@ def _instantiate_source(source_config, *, config: Config | None = None):
             root=source_config.root,
             exclude_globs=source_config.exclude_globs or [],
             extraction=extraction,
+            scan_config=config.scan if config is not None else None,
             vlm=vlm,
             whisper=whisper,
             debounce=2.0,
