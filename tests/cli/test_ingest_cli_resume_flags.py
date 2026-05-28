@@ -585,13 +585,21 @@ class TestBackwardsCompatibility:
         assert "wait" in captured, f"wait not in captured={captured!r}"
         assert captured["wait"] is False
 
-    def test_ingest_once_max_scan_age_zero_by_default(self) -> None:
+    def test_ingest_once_max_scan_age_none_by_default(self) -> None:
+        # New contract (per CodeRabbit review on PR #72): when the user
+        # does not pass --max-scan-age, the CLI forwards ``None`` (not
+        # ``0.0``) so ``ingest_once`` falls back to ``config.scan.max_scan_age``.
+        # Passing 0.0 explicitly means "always rescan", which is now a
+        # deliberate caller opt-in rather than the implicit default.
         spy, captured = _make_fake_main()
         with patch("corpus_forge.ingest.main", spy):
             _runner().invoke(app, ["ingest", "--once"])
         assert spy.called, "ingest.main not called"
         assert "max_scan_age" in captured, f"max_scan_age not in captured={captured!r}"
-        assert captured["max_scan_age"] == pytest.approx(0.0)
+        assert captured["max_scan_age"] is None, (
+            f"--max-scan-age default must forward None (use config), "
+            f"got {captured['max_scan_age']!r}"
+        )
 
     def test_bare_ingest_is_still_accepted(self) -> None:
         """Plain ``ingest`` (daemon mode) must still parse without error."""

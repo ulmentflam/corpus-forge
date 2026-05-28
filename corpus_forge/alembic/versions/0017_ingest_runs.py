@@ -225,25 +225,27 @@ def _sqlite_add_datasets_kind_default() -> None:
         return
 
     op.execute("PRAGMA foreign_keys=OFF")
+    try:
+        # Capture ALL existing column names so the SELECT mirrors whatever the
+        # live schema looks like at upgrade time (future migrations may add cols).
+        col_names = [r[1] for r in rows]
+        cols_csv = ", ".join(col_names)
 
-    # Capture ALL existing column names so the SELECT mirrors whatever the
-    # live schema looks like at upgrade time (future migrations may add cols).
-    col_names = [r[1] for r in rows]
-    cols_csv = ", ".join(col_names)
-
-    op.execute(
-        "CREATE TABLE IF NOT EXISTS datasets_v2 ("
-        "    id          INTEGER PRIMARY KEY,"
-        "    name        TEXT NOT NULL UNIQUE,"
-        "    kind        TEXT NOT NULL DEFAULT 'text',"
-        "    description TEXT,"
-        "    created_at  TEXT NOT NULL"
-        "        DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
-        ")"
-    )
-    op.execute(f"INSERT OR IGNORE INTO datasets_v2 ({cols_csv}) SELECT {cols_csv} FROM datasets")
-    op.execute("DROP TABLE datasets")
-    op.execute("ALTER TABLE datasets_v2 RENAME TO datasets")
-
-    op.execute("PRAGMA foreign_keys=ON")
+        op.execute(
+            "CREATE TABLE IF NOT EXISTS datasets_v2 ("
+            "    id          INTEGER PRIMARY KEY,"
+            "    name        TEXT NOT NULL UNIQUE,"
+            "    kind        TEXT NOT NULL DEFAULT 'text',"
+            "    description TEXT,"
+            "    created_at  TEXT NOT NULL"
+            "        DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
+            ")"
+        )
+        op.execute(
+            f"INSERT OR IGNORE INTO datasets_v2 ({cols_csv}) SELECT {cols_csv} FROM datasets"
+        )
+        op.execute("DROP TABLE datasets")
+        op.execute("ALTER TABLE datasets_v2 RENAME TO datasets")
+    finally:
+        op.execute("PRAGMA foreign_keys=ON")
     logger.info("0017_ingest_runs: datasets.kind DEFAULT 'text' added (sqlite)")

@@ -7,6 +7,8 @@ callback and the integration layer (SR-T7) can share the same parser.
 
 from __future__ import annotations
 
+import math
+
 _SUFFIX_MULTIPLIERS: dict[str, float] = {
     "s": 1.0,
     "m": 60.0,
@@ -28,7 +30,7 @@ def parse_scan_age_spec(s: str) -> float:
     Raises:
         ValueError: for empty/whitespace strings, alpha-only strings,
             unknown suffixes, double suffixes, bare suffixes (no coefficient),
-            and negative values.
+            negative values, NaN, and infinite values.
     """
     if not s or not s.strip():
         raise ValueError(f"Invalid scan age spec: {s!r} — must not be empty or whitespace")
@@ -49,11 +51,21 @@ def parse_scan_age_spec(s: str) -> float:
             raise ValueError(
                 f"Invalid scan age spec: {s!r} — '{coefficient_str}' is not a valid number"
             ) from None
+        if not math.isfinite(coefficient):
+            raise ValueError(
+                f"Invalid scan age spec: {s!r} — coefficient {coefficient!r} is not finite"
+                " (NaN and infinity are not allowed)"
+            )
         result = coefficient * _SUFFIX_MULTIPLIERS[suffix]
         if result < 0:
             raise ValueError(
                 f"Invalid scan age spec: {s!r} — result {result} is negative;"
                 " use a non-negative value"
+            )
+        if not math.isfinite(result):
+            raise ValueError(
+                f"Invalid scan age spec: {s!r} — result {result!r} is not finite"
+                " (NaN and infinity are not allowed)"
             )
         return result
 
@@ -66,6 +78,11 @@ def parse_scan_age_spec(s: str) -> float:
             f"(valid suffixes: {', '.join(sorted(_SUFFIX_MULTIPLIERS))})"
         ) from None
 
+    if not math.isfinite(result):
+        raise ValueError(
+            f"Invalid scan age spec: {s!r} — value {result!r} is not finite"
+            " (NaN and infinity are not allowed)"
+        )
     if result < 0:
         raise ValueError(
             f"Invalid scan age spec: {s!r} — negative values are not allowed;"

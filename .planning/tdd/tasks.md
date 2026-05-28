@@ -776,14 +776,17 @@ Each GREEN task is bounded by its paired RED. The coder MUST run only the target
   - `corpus_forge/scanner/filelock.py`
   - `tests/unit/test_alembic_head_pins_0017.py`
   - `tests/unit/test_backend_abc_ingest_runs.py`
-  - `tests/unit/test_ingest_signal_handling.py`
-  - `tests/unit/test_cli_ingest_flags.py`
+  - `tests/unit/test_ingest_stop_controller.py`
+  - `tests/cli/test_ingest_cli_resume_flags.py`
   - `tests/unit/test_cli_ingest_status.py`
-  - `tests/unit/test_ingest_checkpoint_telemetry.py`
+  - `tests/unit/test_ingest_checkpoint_cadence.py`
+  - `tests/unit/test_ingest_telemetry.py`
+  - `tests/unit/test_ingest_run_lock.py`
+  - `tests/unit/test_filelock.py`
+  - `tests/unit/test_scan_config_max_scan_age.py`
   - `tests/integration/test_migrate_0017_ingest_runs.py`
   - `tests/integration/test_postgres_ingest_runs.py`
   - `tests/integration/test_sqlite_ingest_runs.py`
-  - `tests/integration/test_ingest_run_concurrency.py`
   - `tests/integration/test_ingest_resume_e2e.py`
 - Touched files (additive, behavior-preserving on default flags):
   - `corpus_forge/ingest.py` (signal controller, resume logic, checkpoint cadence, max-scan-age skip, print_ingest_status)

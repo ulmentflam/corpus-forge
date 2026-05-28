@@ -616,7 +616,7 @@ FAILED tests/unit/test_config_extended.py::TestDatasetConfigSyncEnabled::test_da
   - [ ] regression — N/A (new class, no prior implementation)
 - Red output (tail):
 ```
-ImportError while importing test module '/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Workspace/playground/corpus-forge/tests/unit/test_sync_echo.py'.
+ImportError while importing test module 'tests/unit/test_sync_echo.py'.
 tests/unit/test_sync_echo.py:11: in <module>
     from corpus_forge.sync.echo import EchoSuppressor
 E   ModuleNotFoundError: No module named 'corpus_forge.sync.echo'
@@ -656,7 +656,7 @@ E   ModuleNotFoundError: No module named 'corpus_forge.sync.echo'
   - [ ] regression — N/A (new function, no prior implementation)
 - Red output (tail):
 ```
-ImportError while importing test module '/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Workspace/playground/corpus-forge/tests/unit/test_sync_cloud.py'.
+ImportError while importing test module 'tests/unit/test_sync_cloud.py'.
 tests/unit/test_sync_cloud.py:9: in <module>
     from corpus_forge.sync.cloud import detect_cloud_provider
 E   ImportError: cannot import name 'detect_cloud_provider' from 'corpus_forge.sync.cloud'
@@ -2774,7 +2774,7 @@ Test patterns of note:
   - [ ] N/A — regression hooks (no prior bug referenced for this new model)
 - Red output (tail):
   ```
-  E       ImportError: cannot import name 'AnalyzeConfig' from 'corpus_forge.config' (/Users/evanowen/Library/Mobile Documents/com~apple~CloudDocs/Workspace/playground/corpus-forge/corpus_forge/config.py)
+  E       ImportError: cannot import name 'AnalyzeConfig' from 'corpus_forge.config' (corpus_forge/config.py)
   
   tests/unit/test_analyze_config.py:143: ImportError
   =============================== warnings summary ===============================
@@ -3485,8 +3485,8 @@ Test patterns of note:
 
 ## SR-T2
 - Test files:
-  - `/Users/evanowen/Workspace/playground/corpus-forge/tests/unit/test_backend_abc_ingest_runs.py`
-  - `/Users/evanowen/Workspace/playground/corpus-forge/tests/integration/test_postgres_ingest_runs.py`
+  - `tests/unit/test_backend_abc_ingest_runs.py`
+  - `tests/integration/test_postgres_ingest_runs.py`
 - Run command: `uv run pytest tests/unit/test_backend_abc_ingest_runs.py tests/integration/test_postgres_ingest_runs.py -q`
 - Edge case checklist:
   - [x] happy — create/read/update/delete for each of the 7 new methods

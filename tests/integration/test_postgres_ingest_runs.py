@@ -214,6 +214,10 @@ class TestStartIngestRun:
         assert rows[0]["status"] == "running", (
             f"After resume start_ingest_run, status must be 'running'; got {rows[0]['status']!r}"
         )
+        assert rows[0]["ended_at"] is None, (
+            f"After resume start_ingest_run, ended_at must be NULL (cleared); "
+            f"got {rows[0]['ended_at']!r}"
+        )
 
 
 # ── TestUpdateIngestRun ───────────────────────────────────────────────────────
@@ -1094,6 +1098,10 @@ class TestFindSourceLastScannedAt:
             dataset_id=dataset_id,
             finished=True,
         )
+        # Finish the run so the source-A row is in a terminal state; without
+        # this the lookup for source-B could vacuously return None because the
+        # query filters to completed/interrupted runs.
+        backend.finish_ingest_run(run_id=run_id, status="completed")
         # source-B never seen
         result = backend.find_source_last_scanned_at("vault://source-B")
         assert result is None, (

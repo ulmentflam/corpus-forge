@@ -557,19 +557,44 @@ class TestStatusReadOnlyInvariants:
         """Backend write methods must not be called during --status."""
         from corpus_forge import ingest as ingest_module
 
-        # We verify via the print_ingest_status mock: it receives a config,
-        # not a backend. If the coder correctly keeps print_ingest_status
-        # read-only internally, these are never called.
         called_writes: list[str] = []
 
-        def _mock_print_status(config, *, json_output: bool = False) -> None:
-            # In the real impl, print_ingest_status creates a backend and
-            # calls latest_ingest_run (read). We assert it does NOT call
-            # start_ingest_run / update_ingest_run / finish_ingest_run.
-            # Here we just ensure print_ingest_status is the only call path.
-            pass
+        def _mock_start(*args: Any, **kwargs: Any) -> None:
+            called_writes.append("start")
 
-        with patch.object(ingest_module, "print_ingest_status", side_effect=_mock_print_status):
+        def _mock_update(*args: Any, **kwargs: Any) -> None:
+            called_writes.append("update")
+
+        def _mock_finish(*args: Any, **kwargs: Any) -> None:
+            called_writes.append("finish")
+
+        with (
+            patch.object(ingest_module, "print_ingest_status", return_value=None),
+            patch(
+                "corpus_forge.backends.postgres.PostgresBackend.start_ingest_run",
+                side_effect=_mock_start,
+            ),
+            patch(
+                "corpus_forge.backends.postgres.PostgresBackend.update_ingest_run",
+                side_effect=_mock_update,
+            ),
+            patch(
+                "corpus_forge.backends.postgres.PostgresBackend.finish_ingest_run",
+                side_effect=_mock_finish,
+            ),
+            patch(
+                "corpus_forge.backends.sqlite.SQLiteBackend.start_ingest_run",
+                side_effect=_mock_start,
+            ),
+            patch(
+                "corpus_forge.backends.sqlite.SQLiteBackend.update_ingest_run",
+                side_effect=_mock_update,
+            ),
+            patch(
+                "corpus_forge.backends.sqlite.SQLiteBackend.finish_ingest_run",
+                side_effect=_mock_finish,
+            ),
+        ):
             _runner().invoke(app, ["ingest", "--status"])
 
         assert called_writes == [], f"Unexpected write-method calls: {called_writes}"

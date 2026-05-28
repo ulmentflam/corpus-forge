@@ -278,7 +278,12 @@ def ingest(
     """
     from . import ingest as ingest_module
 
-    _maybe_handle_drift(ctx)
+    # ── --json requires --status ──────────────────────────────────────────
+    if json_flag and not status:
+        raise typer.BadParameter(
+            "--json may only be used with --status",
+            param_hint="--json",
+        )
 
     # ── Mutex: --status is incompatible with all run-control flags ────────
     if status:
@@ -320,6 +325,9 @@ def ingest(
             raise typer.Exit(code=1) from exc
         return
 
+    # ── Drift detection — only for normal ingestion paths, not --status ───
+    _maybe_handle_drift(ctx)
+
     # ── --resume requires --once ──────────────────────────────────────────
     if resume and not once:
         raise typer.BadParameter(
@@ -327,8 +335,24 @@ def ingest(
             param_hint="--resume",
         )
 
+    # ── --wait requires --once ────────────────────────────────────────────
+    if wait and not once:
+        raise typer.BadParameter(
+            "--wait requires --once. Use: corpus-forge ingest --once --wait",
+            param_hint="--wait",
+        )
+
+    # ── --max-scan-age requires --once ────────────────────────────────────
+    if max_scan_age and max_scan_age != "0" and not once:
+        raise typer.BadParameter(
+            "--max-scan-age requires --once. Use: corpus-forge ingest --once --max-scan-age ...",
+            param_hint="--max-scan-age",
+        )
+
     # ── Parse --max-scan-age if provided ─────────────────────────────────
-    parsed_max_scan_age: float = 0.0
+    # None means "not provided — use config default".
+    # 0.0 means "always rescan" (explicit user override).
+    parsed_max_scan_age: float | None = None
     if max_scan_age:
         from .scanner import parse_scan_age_spec
 

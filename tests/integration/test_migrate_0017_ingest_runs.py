@@ -11,7 +11,7 @@ Asserts that after applying ``alembic upgrade 0017_ingest_runs``:
 - The migration chains correctly from ``0016_chunk_provenance``.
 - ``downgrade()`` is forward-only (single ``pass`` body per project convention).
 - ``alembic upgrade head`` is idempotent (double-run, no error).
-- ``alembic downgrade -1`` drops both tables.
+- ``alembic downgrade -1`` rolls back the Alembic version pin (forward-only; tables may remain).
 
 Both Postgres and SQLite dialects are exercised.  The Postgres path is gated on
 ``requires_docker`` and uses the session-scoped ``pg_dsn`` fixture from the root
@@ -1018,21 +1018,13 @@ class TestSQLiteIngestRuns:
                 "ingest_run_sources lost on idempotent second upgrade"
             )
 
-    def test_downgrade_minus1_drops_both_tables_sqlite(self, tmp_path: Path) -> None:
-        """alembic downgrade -1 must drop ingest_runs and ingest_run_sources.
+    def test_alembic_version_rolls_back_one_revision(self, tmp_path: Path) -> None:
+        """alembic downgrade -1 moves the version pin back to 0016, without error.
 
-        The project convention is forward-only (downgrade is a no-op pass),
-        so ``downgrade -1`` rolls back to 0016_chunk_provenance, which by
-        definition means the 0017 tables vanish.
-
-        NOTE: Because downgrade() is a no-op ``pass``, the alembic runner
-        will update ``alembic_version`` to 0016 but leave the tables in
-        place.  If the coder implements an actual DROP in downgrade(), the
-        tables WILL be gone and this test catches any regression there.
-        However, the project convention IS forward-only — so this test
-        asserts the alembic_version pin moves, NOT that tables are dropped
-        (alembic itself handles the version bookkeeping; the tables staying
-        is acceptable under the forward-only convention).
+        The project convention is forward-only (downgrade is a no-op ``pass``),
+        so this test only verifies that the Alembic version bookkeeping works and
+        the command completes cleanly — it does NOT assert that tables are dropped
+        (the forward-only convention permits them to stay).
 
         What we DO assert: the downgrade command completes without error and
         the alembic_version moves back to 0016_chunk_provenance.

@@ -549,13 +549,15 @@ class TestIngestOnceLockWait:
         @contextmanager
         def blocking_lock(*args, wait=False, **kwargs):
             if not wait:
-                # Non-wait holder: take the lock, signal, hold for a bit
+                # Non-wait holder: take the lock, hold it, then signal after release.
                 events.append("first_enter")
-                barrier.set()
                 yield
                 events.append("first_exit")
+                # Signal AFTER first_exit so the second path cannot enter until
+                # this lock context has fully exited.
+                barrier.set()
             else:
-                # Wait path: block until barrier (simulates pg_advisory_lock blocking)
+                # Wait path: block until the first holder has released the lock.
                 barrier.wait(timeout=2.0)
                 events.append("second_enter")
                 yield
@@ -585,8 +587,11 @@ class TestIngestOnceLockWait:
         # Both completed
         assert "first_enter" in events
         assert "second_enter" in events
-        # second_enter must happen after first_enter (barrier guarantees this)
-        assert events.index("second_enter") >= events.index("first_enter")
+        assert "first_exit" in events
+        # second_enter must happen AFTER first_exit, proving the second path
+        # was blocked (waiting) until the first path released the lock — not
+        # merely that it ran after first_enter.
+        assert events.index("second_enter") >= events.index("first_exit")
 
 
 # ---------------------------------------------------------------------------

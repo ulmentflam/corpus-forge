@@ -3340,7 +3340,10 @@ class PostgresBackend(StorageBackend):
             ON CONFLICT (run_id) DO UPDATE
                 SET status           = 'running',
                     ended_at         = NULL,
-                    last_progress_at = EXCLUDED.last_progress_at
+                    last_progress_at = EXCLUDED.last_progress_at,
+                    host             = EXCLUDED.host,
+                    pid              = EXCLUDED.pid,
+                    config_digest    = EXCLUDED.config_digest
             """,
             (run_id, host, pid, config_digest, now, now),
         )

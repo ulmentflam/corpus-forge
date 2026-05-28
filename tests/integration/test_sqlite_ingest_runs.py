@@ -692,10 +692,33 @@ class TestFindSourceLastScannedAt:
 
         result = backend.find_source_last_scanned_at(prefix)
         assert result is not None
-        # The returned value should be the newer timestamp (or close to it)
+        # The returned value must be new_ts (the newer timestamp), NOT old_ts.
         result_str = str(result)
         assert "2026-05-01" in result_str or result >= new_ts, (
-            f"Expected newest scanned_at, got {result}"
+            f"Expected newest scanned_at ({new_ts!r}), got {result!r}"
+        )
+        assert result >= old_ts, f"Result {result!r} must be >= old_ts {old_ts!r}"
+
+        # Negative isolation case: a row with the SAME timestamp but a DIFFERENT
+        # prefix must not affect the result for this prefix.
+        other_run = _run_id("fsl-other-prefix")
+        backend.start_ingest_run(run_id=other_run, host=_HOST, pid=_PID, config_digest=_DIGEST)
+        backend.upsert_ingest_run_source(
+            run_id=other_run,
+            source_uri_prefix="fs:///other-vault",
+            dataset_id=ds_id,
+            last_scanned_at=new_ts,
+            finished=True,
+        )
+        backend.finish_ingest_run(other_run, status="completed")
+
+        # Result for original prefix must still be new_ts (not affected by other prefix).
+        result2 = backend.find_source_last_scanned_at(prefix)
+        assert result2 is not None
+        result2_str = str(result2)
+        assert "2026-05-01" in result2_str or result2 >= new_ts, (
+            f"Prefix isolation failed: after inserting 'fs:///other-vault' row, "
+            f"find_source_last_scanned_at({prefix!r}) returned {result2!r}"
         )
 
     def test_different_prefix_returns_none(self, tmp_path):

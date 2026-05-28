@@ -319,7 +319,7 @@ class SQLiteBackend:
                 # In-memory DB: no filesystem lock needed; yield immediately.
                 yield
                 return
-            lock_file = db_path.parent / "corpus-forge.ingest.lock"
+            lock_file = db_path.parent / f".{db_path.stem}.ingest.lock"
 
             with _fl_acquire(lock_file, wait=wait) as acquired:
                 if not acquired:
@@ -3560,7 +3560,14 @@ class SQLiteBackend:
             ON CONFLICT(run_id) DO UPDATE SET
                 status           = 'running',
                 ended_at         = NULL,
-                last_progress_at = excluded.last_progress_at
+                last_progress_at = excluded.last_progress_at,
+                host             = excluded.host,
+                pid              = excluded.pid,
+                config_digest    = excluded.config_digest,
+                error            = NULL
+                -- Deliberately NOT updating started_at: resuming continues
+                -- the same logical run; only process identity refreshes.
+                -- Mirrors Postgres backend semantics.
             """,
             (run_id, now, now, host, pid, config_digest),
         )

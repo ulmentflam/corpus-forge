@@ -947,21 +947,42 @@ def _source_uri_prefix_for(source: Any) -> str:
     """Derive the ingest_run_sources.source_uri_prefix for *source*.
 
     Convention: filesystem-rooted sources (those with a ``.root`` Path
-    attribute) use ``"filesystem://<root.name>"`` so the prefix is stable
-    across restarts regardless of the absolute path. API-based sources
-    fall back to ``"<source.name>://<identity>"``.
+    attribute) use ``"filesystem://<root.resolve().as_posix()>"`` so the
+    prefix is unique across any two roots that share the same basename
+    (e.g. ``/Users/me/Notes`` vs ``/Users/me/Archive/Notes``).
+    API-based sources fall back to ``"<source.name>://<identity>"``.
 
     The "filesystem://" scheme is intentional: it matches the URI scheme
     used by ``FilesystemSource`` document URIs and is the convention the
     tests seed when verifying the max-scan-age skip path.
+
+    NOTE: legacy rows written by earlier versions of corpus-forge used
+    ``"filesystem://<root.name>"`` (basename only).  The
+    ``find_source_last_scanned_at`` backends accept BOTH formats via a
+    secondary OR clause so existing rows continue to match.
     """
     root: Path | None = getattr(source, "root", None)
     if root is not None:
         # Normalise to Path so callers can pass either a str or a Path.
         if not isinstance(root, Path):
             root = Path(root)
-        return f"filesystem://{root.name}"
+        return f"filesystem://{root.resolve().as_posix()}"
     return f"{source.name}://{source.identity()}"
+
+
+def _legacy_source_uri_prefix_for(source: Any) -> str | None:
+    """Return the legacy basename-only prefix for *source*, or None if N/A.
+
+    Used as the compatibility fallback in find_source_last_scanned_at so
+    old rows (written by earlier corpus-forge versions) still match after
+    the _source_uri_prefix_for change to full-path URIs.
+    """
+    root: Path | None = getattr(source, "root", None)
+    if root is not None:
+        if not isinstance(root, Path):
+            root = Path(root)
+        return f"filesystem://{root.name}"
+    return None
 
 
 def ingest_once(
@@ -1191,6 +1212,21 @@ def ingest_once(
                                             # Accept only real datetime objects.
                                             if isinstance(_raw_scanned, datetime):
                                                 prior_scanned_at = _raw_scanned
+                                            # Compatibility: fall back to legacy basename-only
+                                            # prefix for rows written by older corpus-forge
+                                            # versions that used "filesystem://<root.name>".
+                                            if prior_scanned_at is None:
+                                                _legacy_prefix = _legacy_source_uri_prefix_for(
+                                                    source
+                                                )
+                                                if _legacy_prefix is not None:
+                                                    _raw_legacy = (
+                                                        backend.find_source_last_scanned_at(
+                                                            _legacy_prefix
+                                                        )
+                                                    )
+                                                    if isinstance(_raw_legacy, datetime):
+                                                        prior_scanned_at = _raw_legacy
                                         except Exception as exc:
                                             logger.debug(
                                                 "find_source_last_scanned_at failed for "
@@ -1747,7 +1783,7 @@ def main(
     *,
     resume: bool = False,
     wait: bool = False,
-    max_scan_age: float = 0.0,
+    max_scan_age: float | None = None,
 ) -> None:
     """Main entry point for ingestion.
 
@@ -1759,9 +1795,9 @@ def main(
         wait:          If True, block on lock contention rather than exiting fast
                        (forwarded to :func:`ingest_once`).  Requires ``once=True``.
         max_scan_age:  Per-invocation override for ``config.scan.max_scan_age``
-                       (seconds; 0.0 = always rescan).  Forwarded to
-                       :func:`ingest_once` as ``max_scan_age`` when non-zero,
-                       or as ``None`` (always-rescan) when zero.
+                       (seconds).  ``None`` means use the config value (default).
+                       ``0.0`` means always rescan (overrides config).  Forwarded
+                       to :func:`ingest_once` directly without conversion.
     """
 
     # Load config
@@ -1780,7 +1816,7 @@ def main(
                 config,
                 resume=resume,
                 wait=wait,
-                max_scan_age=max_scan_age if max_scan_age else None,
+                max_scan_age=max_scan_age,
             )
         except EmbedderWedged as exc:
             # Translate the circuit-breaker exception into a clean

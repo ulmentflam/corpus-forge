@@ -21,6 +21,7 @@ Cross-process behaviour (POSIX):
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
 import sys
 import threading
@@ -175,7 +176,12 @@ def _posix_acquire(path: Path, *, wait: bool, timeout: float | None) -> bool:
                     try:
                         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                         break
-                    except OSError:
+                    except OSError as _e:
+                        # Only swallow "lock held by another process" errors;
+                        # re-raise permission errors and other genuine failures.
+                        if _e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                            os.close(fd)
+                            raise
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
                             os.close(fd)
@@ -184,7 +190,12 @@ def _posix_acquire(path: Path, *, wait: bool, timeout: float | None) -> bool:
         else:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
+            except OSError as _e:
+                # Only swallow "lock held by another process" errors;
+                # re-raise permission errors and other genuine failures.
+                if _e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                    os.close(fd)
+                    raise
                 os.close(fd)
                 return False
 
@@ -237,6 +248,9 @@ def _win_acquire(path: Path, *, wait: bool, timeout: float | None) -> bool:  # p
         canonical = str(path.absolute())
 
     f = path.open("wb+")  # SIM115: must keep file open for lock lifetime; no context manager
+    # On Windows, msvcrt.locking raises OSError(EACCES) when the lock is held
+    # by another process.  Only swallow that specific errno; re-raise others.
+    _WIN_LOCK_CONTENTION_ERRNOS = frozenset({errno.EACCES})
     try:
         if wait:
             deadline = (time.monotonic() + timeout) if timeout is not None else None
@@ -244,7 +258,11 @@ def _win_acquire(path: Path, *, wait: bool, timeout: float | None) -> bool:  # p
                 try:
                     msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, _LOCK_SIZE)  # pyrefly: ignore[unknown-name]  # msvcrt is Windows-only
                     break
-                except OSError:
+                except OSError as _e:
+                    # Only swallow "lock held" errors; re-raise genuine failures.
+                    if _e.errno not in _WIN_LOCK_CONTENTION_ERRNOS:
+                        f.close()
+                        raise
                     if deadline is not None and time.monotonic() >= deadline:
                         f.close()
                         return False
@@ -252,7 +270,11 @@ def _win_acquire(path: Path, *, wait: bool, timeout: float | None) -> bool:  # p
         else:
             try:
                 msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, _LOCK_SIZE)  # pyrefly: ignore[unknown-name]  # msvcrt is Windows-only
-            except OSError:
+            except OSError as _e:
+                # Only swallow "lock held" errors; re-raise genuine failures.
+                if _e.errno not in _WIN_LOCK_CONTENTION_ERRNOS:
+                    f.close()
+                    raise
                 f.close()
                 return False
 
