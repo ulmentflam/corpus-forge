@@ -1174,3 +1174,20 @@ These two constraints are mutually exclusive in standard JSON. No output format 
 **Evidence**: Verified that using `find("{")` instead of `rfind("{")` produces the correct outer `{` position (index 0 for the first JSON object in the output). With `end = output.rfind("}") + 1` pointing to the outer closing `}`, `output[0:end]` is the complete valid JSON.
 
 **Current state**: All 10 non-JSON-parsing tests pass. The implementation is functionally correct. Only the test helper's `rfind` bug prevents the remaining 18 tests from passing.
+
+## CW1-G1 / CW2-G1
+- Source files:
+  - `corpus_forge/scanner/walker.py` (concurrent walk + `resolve_effective_workers`)
+  - `corpus_forge/config.py` (updated `ScanConfig.workers` docstring)
+  - `corpus_forge/estimate.py` (`_walk` / `walk_with_stats` / `estimate_sync` wired with workers)
+  - `corpus_forge/sources/filesystem.py` (`FilesystemSource` wired with `scan_config` + workers)
+  - `config.example.toml` (updated workers comment)
+- Gates:
+  - format: ✓ (`ruff format --check` — 746 files already formatted)
+  - lint: ✓ (`ruff check` — all checks passed)
+  - typecheck: ✓ (`pyrefly check --ignore missing-import corpus_forge` — 0 errors)
+  - test: ✓ (`pytest tests/unit/test_walker_concurrent.py tests/unit/test_scan_config_workers.py tests/unit/test_walker.py` — 54 passed, 0 failed; `pytest tests/perf/test_scan_concurrency_bench.py` — 3 passed, 0 failed; `pytest tests/unit/test_walker.py tests/unit/test_ignore_directory_pruned.py tests/unit/test_estimate.py` — 79 passed, 0 failed)
+  - bench: concurrent 0.620s vs serial 1.753s — speedup 2.83x (target > 1.67x)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (walker.py, config.py, estimate.py, filesystem.py, config.example.toml)
+- Status: green — handed off to tdd-qa
