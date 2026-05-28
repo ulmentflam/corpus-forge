@@ -28,3 +28,20 @@ def advisory_lock_key(source_uri: str) -> int:
     """Generate advisory lock key from source URI."""
     # Simple hash to integer for advisory lock
     return int(hashlib.md5(source_uri.encode()).hexdigest()[:16], 16) % 2**31
+
+
+def ingest_run_lock_key(host: str) -> int:
+    """Return the advisory lock key for the ingest-run lock on *host*.
+
+    Derived from ``advisory_lock_key(f"ingest-run://{host}")``.
+    Used by Postgres to acquire a session-level advisory lock that
+    prevents two concurrent ingest runs on the same host.
+
+    Args:
+        host: Result of ``socket.gethostname()``.
+
+    Returns:
+        A non-negative integer fitting in Postgres ``bigint`` range
+        (i.e. ``0 <= key < 2^63``).
+    """
+    return advisory_lock_key(f"ingest-run://{host}")

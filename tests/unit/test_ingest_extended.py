@@ -577,7 +577,28 @@ active = true
 
             with patch("corpus_forge.ingest.ingest_once") as mock_ingest:
                 main(once=True)
-                mock_ingest.assert_called_once_with(mock_config)
+                mock_ingest.assert_called_once_with(
+                    mock_config, resume=False, wait=False, max_scan_age=None
+                )
+
+    def test_main_with_max_scan_age_zero_preserves_zero(self, temp_dir):
+        """Explicit max_scan_age=0.0 must be forwarded as 0.0, NOT converted to None.
+
+        Regression pin for finding #9: the old truthy check ``max_scan_age if
+        max_scan_age else None`` silently converted 0.0 to None, making it
+        impossible to force "always rescan" via the API.  The new signature
+        uses ``float | None = None`` and passes through directly.
+        """
+        with patch.object(Config, "load") as mock_load:
+            mock_config = MagicMock()
+            mock_config.daemon.log_level = "INFO"
+            mock_load.return_value = mock_config
+
+            with patch("corpus_forge.ingest.ingest_once") as mock_ingest:
+                main(once=True, max_scan_age=0.0)
+                mock_ingest.assert_called_once_with(
+                    mock_config, resume=False, wait=False, max_scan_age=0.0
+                )
 
     def test_main_with_once_false_logs_daemon_message(self, temp_dir):
         """Test main with once=False logs daemon message."""

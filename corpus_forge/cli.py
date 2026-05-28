@@ -226,6 +226,39 @@ def migrate_history() -> None:
 def ingest(
     ctx: typer.Context,
     once: bool = typer.Option(False, "--once", help="Run one-shot ingestion pass"),
+    status: bool = typer.Option(
+        False,
+        "--status",
+        help=(
+            "Print the latest ingest run status and exit (read-only; "
+            "mutually exclusive with --once, --resume, --wait, --max-scan-age)."
+        ),
+    ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help="Resume from the latest non-completed run (requires --once).",
+    ),
+    wait: bool = typer.Option(
+        False,
+        "--wait",
+        help="Block on lock contention instead of exiting immediately (requires --once).",
+    ),
+    max_scan_age: str = typer.Option(
+        "",
+        "--max-scan-age",
+        help=(
+            "Per-invocation override for [scan].max_scan_age. "
+            "Accepts bare seconds (e.g. '60') or duration suffixes: "
+            "Ns (seconds), Nm (minutes), Nh (hours), Nd (days). "
+            "Empty string or '0' means always rescan (requires --once)."
+        ),
+    ),
+    json_flag: bool = typer.Option(
+        False,
+        "--json",
+        help="Output status as JSON (use with --status).",
+    ),
 ):
     """Discover, extract, chunk, and persist every document the configured sources expose.
 
@@ -238,11 +271,106 @@ def ingest(
     With ``--once`` the pass exits after one full scan; without it the
     process stays resident and watches for filesystem changes (debounced
     by ``daemon.debounce_seconds``).
-    """
-    from .ingest import main
 
+    Use ``--status`` to display the latest ingest run (read-only).
+    Use ``--once --resume`` to continue from an interrupted run.
+    Use ``--once --max-scan-age Nh`` to skip sources scanned recently.
+    """
+    from . import ingest as ingest_module
+
+    # ── --json requires --status ──────────────────────────────────────────
+    if json_flag and not status:
+        raise typer.BadParameter(
+            "--json may only be used with --status",
+            param_hint="--json",
+        )
+
+    # ── Mutex: --status is incompatible with all run-control flags ────────
+    if status:
+        conflicts = []
+        if once:
+            conflicts.append("--once")
+        if resume:
+            conflicts.append("--resume")
+        if wait:
+            conflicts.append("--wait")
+        if max_scan_age:
+            conflicts.append("--max-scan-age")
+        if conflicts:
+            raise typer.BadParameter(
+                f"--status is mutually exclusive with {', '.join(conflicts)}. "
+                "Remove the conflicting flags to use --status, "
+                "or remove --status to run ingestion.",
+                param_hint="--status",
+            )
+
+        # Route to read-only status display.
+        from .config import Config
+
+        try:
+            config = Config.load()
+        except FileNotFoundError:
+            # No config file yet — treat identically to an empty DB: no runs
+            # recorded.  Pass None so print_ingest_status can emit the
+            # "no config" variant of "no runs found".
+            config = None  # type: ignore[assignment]
+
+        try:
+            if json_flag:
+                ingest_module.print_ingest_status(config, json_output=True)
+            else:
+                ingest_module.print_ingest_status(config)
+        except Exception as exc:
+            ui_error(f"Error retrieving status: {exc}")
+            raise typer.Exit(code=1) from exc
+        return
+
+    # ── Drift detection — only for normal ingestion paths, not --status ───
     _maybe_handle_drift(ctx)
-    main(once=once)
+
+    # ── --resume requires --once ──────────────────────────────────────────
+    if resume and not once:
+        raise typer.BadParameter(
+            "--resume requires --once. Use: corpus-forge ingest --once --resume",
+            param_hint="--resume",
+        )
+
+    # ── --wait requires --once ────────────────────────────────────────────
+    if wait and not once:
+        raise typer.BadParameter(
+            "--wait requires --once. Use: corpus-forge ingest --once --wait",
+            param_hint="--wait",
+        )
+
+    # ── --max-scan-age requires --once ────────────────────────────────────
+    if max_scan_age and max_scan_age != "0" and not once:
+        raise typer.BadParameter(
+            "--max-scan-age requires --once. Use: corpus-forge ingest --once --max-scan-age ...",
+            param_hint="--max-scan-age",
+        )
+
+    # ── Parse --max-scan-age if provided ─────────────────────────────────
+    # None means "not provided — use config default".
+    # 0.0 means "always rescan" (explicit user override).
+    parsed_max_scan_age: float | None = None
+    if max_scan_age:
+        from .scanner import parse_scan_age_spec
+
+        try:
+            parsed_max_scan_age = parse_scan_age_spec(max_scan_age)
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f"{max_scan_age}: {exc}",
+                param_hint="--max-scan-age",
+            ) from exc
+
+    # ── Normal ingestion path ─────────────────────────────────────────────
+    ingest_module.main(
+        once=once,
+        resume=resume,
+        wait=wait,
+        max_scan_age=parsed_max_scan_age,
+    )
 
 
 @app.command()

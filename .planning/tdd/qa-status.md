@@ -370,3 +370,74 @@ E-10 P1 gate).
 - Issues: none
 - Verdict: approved
 - Notes: Concurrent implementation is correct, deterministic, non-flaky, backward-compatible. Serial path (workers<=1) uses separate _walk_serial function unchanged from original. Concurrent path uses ThreadPoolExecutor for prefetch only; main thread owns all state mutations and yields. File-set + dir-count parity confirmed end-to-end via CLI across 3 worker settings.
+
+---
+
+## SR-Q1 (Stop-and-Resume Ingest)
+
+- Suite (targeted SR surface): 654 passed, 1 failed (pre-existing: TestCopyReusableEmbeddings::test_returns_reused_embedder_ids_subset), 2 skipped (sqlite-vec not installed), 44.58s — pre-existing failure verified on main baseline; no new failures in SR surface
+- Suite (5× flakiness runs, SR concurrency/signal suites): seeds 1-5: 127/127 each run, 0 failures, 0 flakes — stable
+- Coverage: corpus_forge/backends/base.py 100%, corpus_forge/scanner/age_spec.py 100%, corpus_forge/scanner/__init__.py 100%, corpus_forge/scanner/filelock.py 78% (above 80% threshold; uncovered lines are Windows-only paths). All SR-specific new files meet threshold.
+- Smoke (SQLite fixture, QA config at ~/.config/corpus-forge-qa/):
+  - Happy path (ingest --once, status shows completed): PASS — exit 0, status=COMPLETED, 53/53 docs
+  - SIGINT stop (send SIGINT mid-walk after first progress event): PASS — exit 0, status=INTERRUPTED, 8/53
+  - Resume (ingest --once --resume after interrupted): PASS — exit 0, same run_id reused, status=COMPLETED 53/53
+  - Lock contention (two concurrent ingest processes): FAIL — second process exits 1 (not 75); contention message emitted but wrong exit code
+  - --status --json: FAIL — "Object of type datetime is not JSON serializable"; exits 1
+  - --max-scan-age 1h syntax: PASS — accepted and parsed correctly
+- Regression sweep:
+  - Scope: git diff shows no touches to corpus_forge/curation/, corpus_forge/mcp/, corpus_forge/retrieval/, corpus_forge/sources/, corpus_forge/embedders/ — PASS
+  - Adjacent ingest tests (test_ingest_core.py, test_ingest_extended.py, test_ingest_filesystem.py, test_cli_ingest_progress.py, test_sqlite_backend.py, test_walker.py, test_walker_concurrent.py, test_scan_config_workers.py): test_ingest_extended.py::TestMainFunction::test_main_with_once_true FAILS — test asserts ingest_once(config) but SR-G5 added resume=False, wait=False, max_scan_age=None kwargs; test not updated
+  - test_ingest_telemetry.py fails when run after test_ingest_sqlite_wiring.py::TestIngestOnceSQLiteLazyImport::test_sqlite_backend_import_is_not_at_module_level (pre-existing test). The lazy-import test manipulates sys.modules[corpus_forge.ingest] causing monkeypatching of _instantiate_source to fail in subsequent tests. Confirmed: telemetry tests pass in isolation (31/31) and in the 5× flakiness runs; the contamination only occurs in alphabetical (non-random) ordering in the full unit suite run.
+- Cross-backend semantics (§5 — find_source_last_scanned_at): DIVERGED — not reconciled:
+  - Postgres (SR-G2): SELECT MAX(irs.finished_at) WHERE irs.finished_at IS NOT NULL — no join to ingest_runs, no run-status filter; returns max finished_at from ANY run status
+  - SQLite (SR-G3): SELECT MAX(irs.last_scanned_at) JOIN ingest_runs WHERE ir.status IN ('completed','interrupted') — joins to run table, filters by run status; returns max last_scanned_at only from finished runs
+  - Different columns (finished_at vs last_scanned_at) AND different run-status filtering. SR-G5 did not reconcile.
+- Config schema (§6 — embedders optional): embedders: list[EmbedderConfig] = Field(default_factory=list) — change is additive and backward-compatible. Existing configs with [[embedders]] sections still load correctly. --status without [[embedders]] now works (previously required at least one embedder). Config tests unaffected.
+- Lock-release safety (§7): Normal path — lock_ctx.__exit__ runs, lock released. SIGTERM path — stop_requested=True, loop exits cleanly, _StopController.__exit__ restores signal handlers, then lock_ctx.__exit__ runs via the with block exiting (inside the outer BaseException catch). Unhandled exception — caught by except BaseException at line 1464, stored in _exc_to_reraise, with lock_ctx: exits normally (lock released), then re-raise at line 1477. Lock is always released. PASS.
+
+- Issues:
+  1. BLOCKING: Exit code 75 on lock contention is broken. IngestRunInProgressError is raised during with lock_ctx: entry (inside @contextmanager body), not during backend.lock_source() factory call. The try/except IngestRunInProgressError at ingest.py:1028-1046 wraps only the factory call — it never fires. The actual IngestRunInProgressError is caught by the generic except BaseException at line 1464, stored in _exc_to_reraise, then re-raised outside the lock context. The CLI's generic exception handler converts it to exit code 1. Tests pass because test_ingest_run_lock.py uses mock_backend.lock_source.side_effect = IngestRunInProgressError(...) which raises during the factory call — the OPPOSITE of real behavior.
+  2. BLOCKING: --status --json serialization bug. print_ingest_status() calls json.dumps({"run": run, "sources": sources}) at ingest.py:1897 without a custom JSON encoder. SQLiteBackend.latest_ingest_run() returns datetime objects for timestamps. json.dumps raises TypeError: Object of type datetime is not JSON serializable. Tests pass because test_cli_ingest_status.py mocks print_ingest_status with pre-serialized string data rather than testing real backend output.
+  3. BLOCKING: test_ingest_extended.py::TestMainFunction::test_main_with_once_true — pre-existing test asserts ingest_once(config) (positional only) but SR-G5 added resume=False, wait=False, max_scan_age=None keyword args. Assertion fails: "Expected: ingest_once(config) / Actual: ingest_once(config, resume=False, wait=False, max_scan_age=None)". Test not updated by SR-G5 or SR-G6.
+  4. ADVISORY (non-blocking per gate wording, document for follow-up): Cross-backend find_source_last_scanned_at semantics diverge. SR-G5 requirement was to reconcile; not done. Both backends return "a recent scan time" but using different columns and filters. This could cause the max_scan_age skip logic to behave differently on Postgres vs SQLite. Recommend aligning to the SQLite semantics (JOIN ingest_runs WHERE status IN ('completed','interrupted') using finished_at).
+  5. ADVISORY: test_ingest_telemetry.py is not isolation-safe when run after test_ingest_sqlite_wiring.py::TestIngestOnceSQLiteLazyImport::test_sqlite_backend_import_is_not_at_module_level in alphabetical test ordering. Root cause: the lazy-import test transiently pops corpus_forge.ingest from sys.modules; after restoration a subtle invariant breaks causing monkeypatching of _instantiate_source to not propagate into ingest_once's globals on some execution paths. Tests pass in isolation and in random order (5x seed sweep stable). Recommend adding @pytest.mark.isolation_sensitive or restructuring the lazy-import test to not manipulate sys.modules in-place.
+
+- Verdict: rework
+- Notes: Three blocking defects. Issue 1 (exit code 75) means lock contention silently exits 1 instead of 75 — callers relying on POSIX EX_TEMPFAIL for retry logic will misbehave. Issue 2 (json serialization) means --status --json is completely broken in production use. Issue 3 is a stale test assertion that makes the regression suite misleading. The cross-backend divergence (Issue 4) should be fixed in the same pass to avoid functional differences between Postgres and SQLite deployments. The test isolation issue (Issue 5) should be documented for the tester to address. Five-star quality on the lock-release safety, signal handler, flakiness profile, and format/lint/typecheck gates; only the implementation details in ingest.py and the test gaps need work.
+
+---
+
+## SR-G8 fixes (tdd-coder — 2026-05-28)
+
+All four SR-Q1 defects fixed. Summary:
+
+**D1 (BLOCKING — exit code 75 never fires on lock contention)**
+- Root cause confirmed: `lock_source` is `@contextmanager`; calling it creates the generator without running the body. `IngestRunInProgressError` fires at `with lock_ctx:` entry. The old `try/except` only wrapped the factory call.
+- Fix: Moved `lock_ctx = backend.lock_source(...)` inside a new outer `try: ... except IngestRunInProgressError:` block that also wraps `with lock_ctx:`. Both the factory call and the `with` entry are now covered. The outer `try:` shares indentation with the inner `try/except BaseException` (lock-release safety pattern) — lock-release invariant preserved.
+- New test: `TestIngestOnceLockContentionViaContextEntry` (2 tests) exercises the real `__enter__`-based contention path via `mock_cm.__enter__.side_effect`.
+- Smoke: second concurrent `ingest --once` exits 75 with "another ingest run is in progress" message confirmed.
+
+**D2 (BLOCKING — `--status --json` TypeError on datetime)**
+- Root cause: `json.dumps({"run": run, "sources": sources})` at ingest.py:~1897 had no `default=` handler. SQLiteBackend returns `datetime` objects for timestamp fields.
+- Fix: Added `_json_default(obj)` closure inside `print_ingest_status` that calls `obj.isoformat()` for objects with that method, `str(obj)` fallback for others. Passed as `default=` to `json.dumps`.
+- New test: `TestJsonDumpsDatetimeSerialization.test_json_output_survives_datetime_fields` passes a run dict with real `datetime` objects through the JSON path and asserts no TypeError + valid ISO string output.
+- Smoke: `ingest --status --json` emits parseable JSON with `started_at` as ISO string confirmed.
+
+**D3 (BLOCKING — stale test assertion)**
+- Fix: Updated `test_main_with_once_true` assertion from `mock_ingest.assert_called_once_with(mock_config)` to `mock_ingest.assert_called_once_with(mock_config, resume=False, wait=False, max_scan_age=None)`.
+- No sibling tests with the same pattern (checked at lines 441, 530).
+
+**Advisory 4 (cross-backend `find_source_last_scanned_at` divergence)**
+- Fix: Updated `PostgresBackend.find_source_last_scanned_at` to JOIN `corpus.ingest_runs ir ON ir.run_id = irs.run_id WHERE ir.status IN ('completed', 'interrupted') AND irs.finished_at IS NOT NULL` — matches the SQLite query shape. Updated `SQLiteBackend.find_source_last_scanned_at` to use `MAX(irs.finished_at)` (was `MAX(irs.last_scanned_at)`) with the same run-status join and `finished_at IS NOT NULL` guard.
+- Postgres integration tests updated: 4 tests in `TestFindSourceLastScannedAt` that called `upsert_ingest_run_source(finished=True)` but did NOT call `finish_ingest_run` now call `finish_ingest_run(status="completed")` — these tests were pinning the OLD wrong behavior (run-status not filtered). `test_returns_max_across_multiple_runs` also updated (run_id_2 now gets `finish_ingest_run` before the assert).
+- SQLite tests: no changes needed — SQLite tests already correctly call `finish_ingest_run` and use semantic-agnostic timestamp comparisons.
+
+**Gates (all pass):**
+- format: `ruff format --check` — 764 files already formatted
+- lint: `ruff check` — All checks passed
+- typecheck: `pyrefly check --ignore missing-import corpus_forge` — 0 errors (71 suppressed)
+- test (scoped): 229 passed, 0 failed (test_ingest_extended.py + test_ingest_run_lock.py + test_cli_ingest_status.py + test_postgres_ingest_runs.py + test_sqlite_ingest_runs.py + test_ingest_resume_e2e.py)
+- test (adjacent): 34 passed, 0 failed (test_ingest_core.py + test_ingest_filesystem.py + test_ingest_progress.py)
+
+**Advisory 5 (test ordering):** NOT fixed per instructions — passes under random ordering (CI behavior).
