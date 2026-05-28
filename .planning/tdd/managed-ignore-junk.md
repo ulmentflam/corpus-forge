@@ -17,7 +17,10 @@ _Requirement source: 2026-05-27 user prompt — dev/build artifacts (`.venv`, `n
 - DO NOT commit/push — workers cannot sign (1Password SSH needs TTY). Main session commits.
 
 ## Tasks
+## Tasks
+
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
+|----|-------|------------|---------|------|--------|------------|-------|
 |----|-------|------------|---------|------|--------|------------|-------|
 | T1 | Add dev/build junk patterns to managed template | — | corpus_forge/ignore_defaults.py, tests/unit/test_ignore_defaults.py | low | done | principal | GREEN 33 passed; 21 patterns added to _ALWAYS_ON dev/build group (sorted); QA approved |
 | T2 | doctor: flag/heal stale GLOBAL managed-ignore block | T1 | corpus_forge/doctor/checks.py, tests/unit/test_doctor.py | med | done | principal | `_check_global_ignore` WARNs on drift + suggests `corpus-forge ignore sync --also-global`; no silent mutation; SKIP when absent/unmanaged; wired into run_doctor; QA approved |
