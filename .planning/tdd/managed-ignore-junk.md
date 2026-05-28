@@ -17,7 +17,6 @@ _Requirement source: 2026-05-27 user prompt — dev/build artifacts (`.venv`, `n
 - DO NOT commit/push — workers cannot sign (1Password SSH needs TTY). Main session commits.
 
 ## Tasks
-## Tasks
 
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
