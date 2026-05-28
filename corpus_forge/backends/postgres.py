@@ -12,7 +12,7 @@ from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import psycopg
@@ -22,7 +22,7 @@ from psycopg_pool import ConnectionPool
 
 from ..chunkers.base import TextChunk
 from ..identity import advisory_lock_key, chunk_content_hash
-from .base import StorageBackend
+from .base import IngestRunInProgressError, StorageBackend
 
 if TYPE_CHECKING:
     from corpus_forge.classifiers.base import ClassifiableDocument
@@ -1492,17 +1492,33 @@ class PostgresBackend(StorageBackend):
             yield (row["id"], meta)
 
     @contextmanager
-    def lock_source(self, key: str):
-        """Context manager for advisory lock on a source."""
+    def lock_source(self, key: str, *, wait: bool = False):
+        """Context manager for advisory lock on a source.
+
+        Args:
+            key:  Advisory-lock key string (hashed to a bigint).
+            wait: If ``False`` (default), use ``pg_try_advisory_lock`` — fails
+                  fast and raises ``IngestRunInProgressError`` if the lock is
+                  already held.  If ``True``, use ``pg_advisory_lock`` which
+                  blocks until the lock becomes available.
+        """
         lock_key = advisory_lock_key(key)
         with self._get_connection() as conn, conn.cursor() as cur:
-            # Try to acquire advisory lock
-            cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_key,))
-            row = cur.fetchone()
-            acquired = row[0] if row is not None else False
+            if wait:
+                # Blocking acquire — blocks until the lock is available.
+                cur.execute("SELECT pg_advisory_lock(%s)", (lock_key,))
+                acquired = True
+            else:
+                # Non-blocking acquire — returns False if already held.
+                cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_key,))
+                row = cur.fetchone()
+                acquired = row[0] if row is not None else False
 
             if not acquired:
-                raise RuntimeError(f"Could not acquire lock for source: {key}")
+                raise IngestRunInProgressError(
+                    f"Could not acquire lock for source: {key}. "
+                    "Another ingest run may be in progress on this host."
+                )
 
             try:
                 yield
@@ -3298,3 +3314,184 @@ class PostgresBackend(StorageBackend):
             """,
             (json.dumps(payload), chunk_id),
         )
+
+    # --- Ingest-run state (SR-G2) -------------------------------------------
+
+    def start_ingest_run(
+        self,
+        *,
+        run_id: str,
+        host: str,
+        pid: int,
+        config_digest: str,
+    ) -> None:
+        """Insert a new ingest-run row with status='running'.
+
+        On conflict (same run_id — resume path), flips status back to
+        'running', clears ended_at, and bumps last_progress_at so the
+        row is recycled rather than duplicated.
+        """
+        now = datetime.now(tz=UTC)
+        self._execute(
+            """
+            INSERT INTO corpus.ingest_runs
+                (run_id, host, pid, config_digest, status, started_at, last_progress_at)
+            VALUES (%s, %s, %s, %s, 'running', %s, %s)
+            ON CONFLICT (run_id) DO UPDATE
+                SET status           = 'running',
+                    ended_at         = NULL,
+                    last_progress_at = EXCLUDED.last_progress_at
+            """,
+            (run_id, host, pid, config_digest, now, now),
+        )
+
+    def update_ingest_run(
+        self,
+        run_id: str,
+        *,
+        last_op: str | None = None,
+        last_done: int | None = None,
+        last_total: int | None = None,
+    ) -> None:
+        """Best-effort heartbeat update; swallows psycopg.OperationalError at DEBUG."""
+        # Build a dynamic SET clause that only touches provided fields.
+        now = datetime.now(tz=UTC)
+        set_parts = ["last_progress_at = %s"]
+        params: list[Any] = [now]
+        if last_op is not None:
+            set_parts.append("last_op = %s")
+            params.append(last_op)
+        if last_done is not None:
+            set_parts.append("last_done = %s")
+            params.append(last_done)
+        if last_total is not None:
+            set_parts.append("last_total = %s")
+            params.append(last_total)
+        params.append(run_id)
+        try:
+            self._execute(
+                f"UPDATE corpus.ingest_runs SET {', '.join(set_parts)} WHERE run_id = %s",
+                tuple(params),
+            )
+        except psycopg.OperationalError as exc:
+            logger.debug("update_ingest_run swallowed OperationalError: %r", exc)
+
+    def finish_ingest_run(
+        self,
+        run_id: str,
+        *,
+        status: "Literal['completed', 'interrupted', 'failed']",
+        error: str | None = None,
+    ) -> None:
+        """Set ended_at, status, and optional error on the ingest-run row."""
+        now = datetime.now(tz=UTC)
+        self._execute(
+            """
+            UPDATE corpus.ingest_runs
+            SET status   = %s,
+                ended_at = %s,
+                error    = %s
+            WHERE run_id = %s
+            """,
+            (status, now, error, run_id),
+        )
+
+    def latest_ingest_run(self) -> dict | None:
+        """Returns the row with the most-recent started_at (any status)."""
+        rows = self._execute(
+            """
+            SELECT run_id, status, host, pid, config_digest,
+                   started_at, ended_at, last_progress_at,
+                   last_op, last_done, last_total, error
+            FROM corpus.ingest_runs
+            ORDER BY started_at DESC
+            LIMIT 1
+            """
+        )
+        return dict(rows[0]) if rows else None
+
+    def latest_unfinished_ingest_run(self) -> dict | None:
+        """Returns the most-recent row with status IN ('running','interrupted'); None otherwise."""
+        rows = self._execute(
+            """
+            SELECT run_id, status, host, pid, config_digest,
+                   started_at, ended_at, last_progress_at,
+                   last_op, last_done, last_total, error
+            FROM corpus.ingest_runs
+            WHERE status IN ('running', 'interrupted')
+            ORDER BY started_at DESC
+            LIMIT 1
+            """
+        )
+        return dict(rows[0]) if rows else None
+
+    def upsert_ingest_run_source(
+        self,
+        *,
+        run_id: str,
+        source_uri_prefix: str,
+        dataset_id: int,
+        last_scanned_at: datetime | None = None,
+        docs_seen_delta: int = 0,
+        docs_skipped_delta: int = 0,
+        docs_failed_delta: int = 0,
+        finished: bool = False,
+    ) -> None:
+        """UPSERT on (run_id, source_uri_prefix). Deltas ADD to existing counters.
+        When finished=True, finished_at is set to NOW().
+        """
+        now = datetime.now(tz=UTC)
+        finished_at_val = now if finished else None
+        self._execute(
+            """
+            INSERT INTO corpus.ingest_run_sources AS t
+                (run_id, source_uri_prefix, dataset_id,
+                 last_scanned_at, docs_seen, docs_skipped, docs_failed, finished_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (run_id, source_uri_prefix) DO UPDATE
+                SET docs_seen       = t.docs_seen    + EXCLUDED.docs_seen,
+                    docs_skipped    = t.docs_skipped + EXCLUDED.docs_skipped,
+                    docs_failed     = t.docs_failed  + EXCLUDED.docs_failed,
+                    last_scanned_at = COALESCE(EXCLUDED.last_scanned_at, t.last_scanned_at),
+                    finished_at     = CASE WHEN EXCLUDED.finished_at IS NOT NULL
+                                          THEN EXCLUDED.finished_at
+                                          ELSE t.finished_at
+                                     END
+            """,
+            (
+                run_id,
+                source_uri_prefix,
+                dataset_id,
+                last_scanned_at,
+                docs_seen_delta,
+                docs_skipped_delta,
+                docs_failed_delta,
+                finished_at_val,
+            ),
+        )
+
+    def find_source_last_scanned_at(self, source_uri_prefix: str) -> datetime | None:
+        """Latest finished_at across any completed/interrupted run for this source_uri_prefix.
+
+        Excludes rows where finished_at IS NULL (source still in-progress)
+        and excludes runs with status='running' (not yet finished).
+        Returns a UTC-aware datetime, or None if the source has never been scanned.
+        """
+        rows = self._execute(
+            """
+            SELECT MAX(irs.finished_at) AS last_scanned_at
+            FROM corpus.ingest_run_sources irs
+            WHERE irs.source_uri_prefix = %s
+              AND irs.finished_at IS NOT NULL
+            """,
+            (source_uri_prefix,),
+        )
+        if not rows:
+            return None
+        ts = rows[0]["last_scanned_at"]
+        if ts is None:
+            return None
+        # Ensure UTC-aware
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        return ts

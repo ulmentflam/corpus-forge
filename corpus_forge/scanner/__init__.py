@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from corpus_forge.config import ScanConfig
 
+from .age_spec import parse_scan_age_spec
 from .walker import WalkEntry, WalkStats, walk
 
-__all__ = ["ScanConfig", "WalkEntry", "WalkStats", "walk"]
+__all__ = ["ScanConfig", "WalkEntry", "WalkStats", "parse_scan_age_spec", "walk"]

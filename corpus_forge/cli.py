@@ -226,6 +226,39 @@ def migrate_history() -> None:
 def ingest(
     ctx: typer.Context,
     once: bool = typer.Option(False, "--once", help="Run one-shot ingestion pass"),
+    status: bool = typer.Option(
+        False,
+        "--status",
+        help=(
+            "Print the latest ingest run status and exit (read-only; "
+            "mutually exclusive with --once, --resume, --wait, --max-scan-age)."
+        ),
+    ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help="Resume from the latest non-completed run (requires --once).",
+    ),
+    wait: bool = typer.Option(
+        False,
+        "--wait",
+        help="Block on lock contention instead of exiting immediately (requires --once).",
+    ),
+    max_scan_age: str = typer.Option(
+        "",
+        "--max-scan-age",
+        help=(
+            "Per-invocation override for [scan].max_scan_age. "
+            "Accepts bare seconds (e.g. '60') or duration suffixes: "
+            "Ns (seconds), Nm (minutes), Nh (hours), Nd (days). "
+            "Empty string or '0' means always rescan (requires --once)."
+        ),
+    ),
+    json_flag: bool = typer.Option(
+        False,
+        "--json",
+        help="Output status as JSON (use with --status).",
+    ),
 ):
     """Discover, extract, chunk, and persist every document the configured sources expose.
 
@@ -238,11 +271,75 @@ def ingest(
     With ``--once`` the pass exits after one full scan; without it the
     process stays resident and watches for filesystem changes (debounced
     by ``daemon.debounce_seconds``).
+
+    Use ``--status`` to display the latest ingest run (read-only).
+    Use ``--once --resume`` to continue from an interrupted run.
+    Use ``--once --max-scan-age Nh`` to skip sources scanned recently.
     """
-    from .ingest import main
+    from . import ingest as ingest_module
 
     _maybe_handle_drift(ctx)
-    main(once=once)
+
+    # ── Mutex: --status is incompatible with all run-control flags ────────
+    if status:
+        conflicts = []
+        if once:
+            conflicts.append("--once")
+        if resume:
+            conflicts.append("--resume")
+        if wait:
+            conflicts.append("--wait")
+        if max_scan_age:
+            conflicts.append("--max-scan-age")
+        if conflicts:
+            raise typer.BadParameter(
+                f"--status is mutually exclusive with {', '.join(conflicts)}. "
+                "Remove the conflicting flags to use --status, "
+                "or remove --status to run ingestion.",
+                param_hint="--status",
+            )
+
+        # Route to read-only status display.
+        from .config import Config
+
+        config = Config.load()
+        try:
+            if json_flag:
+                ingest_module.print_ingest_status(config, json_output=True)
+            else:
+                ingest_module.print_ingest_status(config)
+        except Exception as exc:
+            ui_error(f"Error retrieving status: {exc}")
+            raise typer.Exit(code=1) from exc
+        return
+
+    # ── --resume requires --once ──────────────────────────────────────────
+    if resume and not once:
+        raise typer.BadParameter(
+            "--resume requires --once. Use: corpus-forge ingest --once --resume",
+            param_hint="--resume",
+        )
+
+    # ── Parse --max-scan-age if provided ─────────────────────────────────
+    parsed_max_scan_age: float = 0.0
+    if max_scan_age:
+        from .scanner import parse_scan_age_spec
+
+        try:
+            parsed_max_scan_age = parse_scan_age_spec(max_scan_age)
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f"{max_scan_age}: {exc}",
+                param_hint="--max-scan-age",
+            ) from exc
+
+    # ── Normal ingestion path ─────────────────────────────────────────────
+    ingest_module.main(
+        once=once,
+        resume=resume,
+        wait=wait,
+        max_scan_age=parsed_max_scan_age,
+    )
 
 
 @app.command()

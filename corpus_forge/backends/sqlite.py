@@ -22,6 +22,7 @@ from ..chunkers.base import TextChunk
 from ..identity import chunk_content_hash
 from ..schema import migrate as _migrate_module
 from ..sources.base import RawDocument
+from .base import IngestRunInProgressError
 from .sqlite_vec_loader import SQLITE_VEC_AVAILABLE, load_sqlite_vec
 
 # Width of the legacy ``(heading, text)`` chunk shape accepted by
@@ -245,8 +246,10 @@ class SQLiteBackend:
     @contextlib.contextmanager  # type: ignore[return]
     def lock_source(
         self,
-        key: str,  # noqa: ARG002 — accepted for StorageBackend protocol parity; SQLite uses the global write-lock, not per-key advisory locks
+        key: str,
         lock_timeout_s: float = 30.0,
+        *,
+        wait: bool = True,
     ) -> "AbstractContextManager[None]":  # pyrefly: ignore[bad-return]  # @contextlib.contextmanager transforms the generator into a context manager at runtime; the public return type is AbstractContextManager[None]
         """Acquire a write-lock for the duration of the ``with`` block.
 
@@ -285,17 +288,49 @@ class SQLiteBackend:
             Re-raises the exception.
 
         Args:
-            key: Advisory-lock key accepted for protocol symmetry.  **Ignored.**
+            key: Advisory-lock key.  If it starts with ``"ingest-run://"``, a
+                cross-process file lock is used (see below).  Otherwise ignored.
             lock_timeout_s: Maximum seconds to wait for ``BEGIN IMMEDIATE`` to
                 succeed before raising ``OperationalError``.  Default 30.0 s.
+            wait: Controls behaviour on contention for the ingest-run lock.
+                ``True`` (default) → block until the lock becomes available.
+                ``False`` → try once; on failure raise
+                ``IngestRunInProgressError``.  Ignored for per-document keys.
 
         Yields:
             None
 
         Raises:
-            sqlite3.OperationalError: If the write lock cannot be acquired within
-                ``lock_timeout_s`` seconds.
+            sqlite3.OperationalError: If the per-doc write lock cannot be
+                acquired within ``lock_timeout_s`` seconds.
+            IngestRunInProgressError: If ``key`` is an ingest-run key,
+                ``wait=False``, and the file lock is already held.
         """
+        # SR-G5: Ingest-run advisory lock uses a file lock instead of
+        # BEGIN IMMEDIATE so it does not conflict with per-document locks
+        # (which also use BEGIN IMMEDIATE + _write_lock).  This avoids a
+        # reentrant-lock deadlock when ingest_once holds the ingest-run
+        # lock while ingest_one holds a per-doc lock on the same backend.
+        if key.startswith("ingest-run://"):
+            from ..scanner.filelock import acquire as _fl_acquire  # noqa: PLC0415
+
+            db_path = Path(getattr(self, "path", ":memory:"))
+            if str(db_path) == ":memory:":
+                # In-memory DB: no filesystem lock needed; yield immediately.
+                yield
+                return
+            lock_file = db_path.parent / "corpus-forge.ingest.lock"
+
+            with _fl_acquire(lock_file, wait=wait) as acquired:
+                if not acquired:
+                    raise IngestRunInProgressError(
+                        f"Another ingest run is in progress on this host "
+                        f"(lock file: {lock_file}). "
+                        "Use --wait to block until the running ingest finishes."
+                    )
+                yield
+            return
+
         if not hasattr(self, "_write_lock"):
             # Lazily initialise the threading lock on the first call.
             # A race on first access is harmless: two threads both constructing
@@ -3466,3 +3501,281 @@ class SQLiteBackend:
             "UPDATE chunks SET metadata = ? WHERE id = ?",
             (json.dumps(md), chunk_id),
         )
+
+    # -------------------------------------------------------------------------
+    # Ingest-run state — SR-G3 (SQLite implementation of SR-G2 Protocol)
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _now_iso() -> str:
+        """Return current UTC time as an ISO-8601 string with Z suffix."""
+        return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+
+    @staticmethod
+    def _parse_iso_dt(value: "str | None") -> "datetime | None":
+        """Parse a stored ISO-8601 UTC string into an aware :class:`datetime`.
+
+        Accepts both ``Z`` suffix and ``+00:00`` offset.  Returns ``None``
+        when *value* is ``None`` or empty.
+        """
+        if not value:
+            return None
+        # Normalise 'Z' suffix to '+00:00' for fromisoformat compatibility.
+        normalised = value.rstrip("Z")
+        if normalised != value:
+            normalised += "+00:00"
+        try:
+            return datetime.fromisoformat(normalised)
+        except ValueError:
+            return None
+
+    def start_ingest_run(
+        self,
+        *,
+        run_id: str,
+        host: str,
+        pid: int,
+        config_digest: str,
+    ) -> None:
+        """Insert a new ingest-run row with status='running'.
+
+        On conflict (same run_id — resume path): flip status back to
+        'running', clear ended_at, and bump last_progress_at without
+        creating a duplicate row.
+
+        Raises:
+            sqlite3.IntegrityError: If run_id is empty (NOT NULL constraint
+                or UNIQUE empty-string insert depending on SQLite version).
+        """
+        if not run_id:
+            raise ValueError("run_id must be non-empty")
+
+        now = self._now_iso()
+        self._execute(
+            """
+            INSERT INTO ingest_runs
+                (run_id, started_at, last_progress_at, status, last_done,
+                 host, pid, config_digest)
+            VALUES (?, ?, ?, 'running', 0, ?, ?, ?)
+            ON CONFLICT(run_id) DO UPDATE SET
+                status           = 'running',
+                ended_at         = NULL,
+                last_progress_at = excluded.last_progress_at
+            """,
+            (run_id, now, now, host, pid, config_digest),
+        )
+
+    def update_ingest_run(
+        self,
+        run_id: str,
+        *,
+        last_op: "str | None" = None,
+        last_done: "int | None" = None,
+        last_total: "int | None" = None,
+    ) -> None:
+        """Best-effort heartbeat update for an ingest run.
+
+        Builds a dynamic SET clause from whichever optional fields were
+        supplied.  Always bumps last_progress_at.
+
+        Per protocol contract: swallows ``sqlite3.OperationalError`` and
+        logs at DEBUG so a flaky DB does not kill ingest.
+        """
+        sets: list[str] = ["last_progress_at = ?"]
+        params: list[object] = [self._now_iso()]
+
+        if last_op is not None:
+            sets.append("last_op = ?")
+            params.append(last_op)
+        if last_done is not None:
+            sets.append("last_done = ?")
+            params.append(last_done)
+        if last_total is not None:
+            sets.append("last_total = ?")
+            params.append(last_total)
+
+        params.append(run_id)
+        sql = f"UPDATE ingest_runs SET {', '.join(sets)} WHERE run_id = ?"
+
+        try:
+            self._execute(sql, tuple(params))
+        except sqlite3.OperationalError as exc:
+            logger.debug("ingest_run checkpoint write failed: %r", exc)
+
+    def finish_ingest_run(
+        self,
+        run_id: str,
+        *,
+        status: "str",
+        error: "str | None" = None,
+    ) -> None:
+        """Set ended_at, status, and optional error on the ingest-run row.
+
+        Raises:
+            ValueError: If *status* is not one of the three allowed values.
+        """
+        allowed = {"completed", "interrupted", "failed"}
+        if status not in allowed:
+            raise ValueError(f"status must be one of {allowed!r}, got {status!r}")
+        now = self._now_iso()
+        self._execute(
+            """
+            UPDATE ingest_runs
+               SET status           = ?,
+                   ended_at         = ?,
+                   last_progress_at = ?,
+                   error            = ?
+             WHERE run_id = ?
+            """,
+            (status, now, now, error, run_id),
+        )
+
+    def latest_ingest_run(self) -> "dict | None":
+        """Return the row with the most-recent started_at (any status).
+
+        Returns ``None`` when the table is empty.  Timestamps are returned
+        as UTC-aware :class:`datetime` objects.
+        """
+        rows = self._execute(
+            """
+            SELECT id, run_id, started_at, ended_at, last_progress_at,
+                   status, last_op, last_done, last_total, error, host,
+                   pid, config_digest
+              FROM ingest_runs
+             ORDER BY started_at DESC
+             LIMIT 1
+            """,
+            (),
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            "id": row["id"],
+            "run_id": row["run_id"],
+            "started_at": self._parse_iso_dt(row["started_at"]),
+            "ended_at": self._parse_iso_dt(row["ended_at"]),
+            "last_progress_at": self._parse_iso_dt(row["last_progress_at"]),
+            "status": row["status"],
+            "last_op": row["last_op"],
+            "last_done": row["last_done"],
+            "last_total": row["last_total"],
+            "error": row["error"],
+            "host": row["host"],
+            "pid": row["pid"],
+            "config_digest": row["config_digest"],
+        }
+
+    def latest_unfinished_ingest_run(self) -> "dict | None":
+        """Return the most-recent row with status IN ('running', 'interrupted').
+
+        Returns ``None`` when no such row exists.
+        """
+        rows = self._execute(
+            """
+            SELECT id, run_id, started_at, ended_at, last_progress_at,
+                   status, last_op, last_done, last_total, error, host,
+                   pid, config_digest
+              FROM ingest_runs
+             WHERE status IN ('running', 'interrupted')
+             ORDER BY started_at DESC
+             LIMIT 1
+            """,
+            (),
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            "id": row["id"],
+            "run_id": row["run_id"],
+            "started_at": self._parse_iso_dt(row["started_at"]),
+            "ended_at": self._parse_iso_dt(row["ended_at"]),
+            "last_progress_at": self._parse_iso_dt(row["last_progress_at"]),
+            "status": row["status"],
+            "last_op": row["last_op"],
+            "last_done": row["last_done"],
+            "last_total": row["last_total"],
+            "error": row["error"],
+            "host": row["host"],
+            "pid": row["pid"],
+            "config_digest": row["config_digest"],
+        }
+
+    def upsert_ingest_run_source(
+        self,
+        *,
+        run_id: str,
+        source_uri_prefix: str,
+        dataset_id: int,
+        last_scanned_at: "datetime | None" = None,
+        docs_seen_delta: int = 0,
+        docs_skipped_delta: int = 0,
+        docs_failed_delta: int = 0,
+        finished: bool = False,
+    ) -> None:
+        """UPSERT on ``(run_id, source_uri_prefix)``.
+
+        Counters are accumulated via ``col = col + delta`` so repeated calls
+        from the ingest hot-path add up correctly.  ``finished=True`` sets
+        ``finished_at`` to NOW; ``False`` (default) leaves it NULL.
+        ``last_scanned_at`` is stored as an ISO-8601 TEXT; ``None`` leaves
+        the column unchanged on conflict.
+        """
+        last_scanned_str: str | None = None
+        if last_scanned_at is not None:
+            last_scanned_str = last_scanned_at.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+
+        finished_at_str: str | None = self._now_iso() if finished else None
+
+        self._execute(
+            """
+            INSERT INTO ingest_run_sources
+                (run_id, source_uri_prefix, dataset_id, last_scanned_at,
+                 docs_seen, docs_skipped, docs_failed, finished_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, source_uri_prefix) DO UPDATE SET
+                docs_seen       = docs_seen       + excluded.docs_seen,
+                docs_skipped    = docs_skipped    + excluded.docs_skipped,
+                docs_failed     = docs_failed     + excluded.docs_failed,
+                last_scanned_at = COALESCE(excluded.last_scanned_at,
+                                           ingest_run_sources.last_scanned_at),
+                finished_at     = COALESCE(excluded.finished_at,
+                                           ingest_run_sources.finished_at)
+            """,
+            (
+                run_id,
+                source_uri_prefix,
+                dataset_id,
+                last_scanned_str,
+                docs_seen_delta,
+                docs_skipped_delta,
+                docs_failed_delta,
+                finished_at_str,
+            ),
+        )
+
+    def find_source_last_scanned_at(self, source_uri_prefix: str) -> "datetime | None":
+        """Return the max ``last_scanned_at`` across completed/interrupted runs.
+
+        Only rows whose parent ingest run has status in
+        ``('completed', 'interrupted')`` are considered — a still-running
+        run's scan timestamps are excluded so the resume-skip logic sees the
+        last *finished* scan date, not an in-progress one.
+
+        Returns ``None`` if the source has never been fully scanned.
+        """
+        rows = self._execute(
+            """
+            SELECT MAX(irs.last_scanned_at) AS max_scanned
+              FROM ingest_run_sources AS irs
+              JOIN ingest_runs AS ir ON ir.run_id = irs.run_id
+             WHERE irs.source_uri_prefix = ?
+               AND ir.status IN ('completed', 'interrupted')
+            """,
+            (source_uri_prefix,),
+        )
+        if not rows:
+            return None
+        raw = rows[0]["max_scanned"]
+        return self._parse_iso_dt(raw)

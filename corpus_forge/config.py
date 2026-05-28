@@ -761,11 +761,24 @@ class ScanConfig(BaseModel):
       ``CF_SCAN_WORKERS`` environment variable (env wins unconditionally).
       Auto-default (when unset): ``min(32, (os.cpu_count() or 1) * 4)``
       — see :func:`~corpus_forge.scanner.walker.resolve_effective_workers`.
+    - ``max_scan_age``: seconds. If > 0, sources whose last completed scan
+      finished within ``max_scan_age`` seconds are skipped on ``--resume``
+      ingest passes. ``0.0`` means always rescan (default — preserves
+      existing behaviour; resume-skip is opt-in).
     """
 
     extra_skip_dirs: list[str] = Field(default_factory=list)
     follow_symlinks: bool = False
     workers: int = Field(default=1, ge=1)
+    max_scan_age: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "If > 0, sources whose last completed scan finished within"
+            " max_scan_age seconds are skipped on --resume ingest passes."
+            " 0 means always rescan."
+        ),
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -944,7 +957,7 @@ class Config(BaseModel):
     backend: BackendConfig
     daemon: DaemonConfig
     datasets: list[DatasetConfig]
-    embedders: list[EmbedderConfig]
+    embedders: list[EmbedderConfig] = Field(default_factory=list)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     # Phase D / Wave 4 (E-04) — VLM backend selector. Default Noop so
     # adding the field doesn't change behaviour for existing configs.

@@ -2,14 +2,24 @@
 
 from collections.abc import Iterator
 from contextlib import AbstractContextManager
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     import numpy as np
 
     from corpus_forge.embedders.base import Embedder
     from corpus_forge.retrieval.types import Hit
     from corpus_forge.sources.base import RawConversation, RawDocument
+
+
+class IngestRunInProgressError(RuntimeError):
+    """Raised when a concurrent ingest run is already in progress on this host.
+
+    Exit code convention: callers that catch this at the CLI boundary MUST
+    exit with code 75 (POSIX EX_TEMPFAIL — "temporary failure, retry later").
+    """
 
 
 class StorageBackend(Protocol):
@@ -309,5 +319,75 @@ class StorageBackend(Protocol):
                 ``source LIKE 'classifier:%'``. User-attached class
                 labels (``source='user'``) do NOT block iteration —
                 the classifier writes its own source-distinct row.
+        """
+        ...
+
+    # --- Ingest-run state (SR-G2) -------------------------------------------
+
+    def start_ingest_run(
+        self,
+        *,
+        run_id: str,
+        host: str,
+        pid: int,
+        config_digest: str,
+    ) -> None:
+        """Insert a new ingest-run row with status='running'.
+
+        On conflict (same run_id already exists — resume path), update
+        status back to 'running' and bump last_progress_at instead of
+        raising a unique-violation error.
+        """
+        ...
+
+    def update_ingest_run(
+        self,
+        run_id: str,
+        *,
+        last_op: str | None = None,
+        last_done: int | None = None,
+        last_total: int | None = None,
+    ) -> None:
+        """Best-effort heartbeat. Implementations MUST swallow OperationalError and log at DEBUG."""
+        ...
+
+    def finish_ingest_run(
+        self,
+        run_id: str,
+        *,
+        status: "Literal['completed', 'interrupted', 'failed']",
+        error: str | None = None,
+    ) -> None:
+        """Set ended_at, status, and optional error on the ingest-run row."""
+        ...
+
+    def latest_ingest_run(self) -> "dict | None":
+        """Returns the row with the most-recent started_at (any status)."""
+        ...
+
+    def latest_unfinished_ingest_run(self) -> "dict | None":
+        """Returns the most-recent row with status IN ('running','interrupted'); None otherwise."""
+        ...
+
+    def upsert_ingest_run_source(
+        self,
+        *,
+        run_id: str,
+        source_uri_prefix: str,
+        dataset_id: int,
+        last_scanned_at: "datetime | None" = None,
+        docs_seen_delta: int = 0,
+        docs_skipped_delta: int = 0,
+        docs_failed_delta: int = 0,
+        finished: bool = False,
+    ) -> None:
+        """UPSERT on (run_id, source_uri_prefix). Deltas ADD to existing counters.
+        When finished=True, set finished_at = now().
+        """
+        ...
+
+    def find_source_last_scanned_at(self, source_uri_prefix: str) -> "datetime | None":
+        """Latest finished_at across any completed/interrupted run for this source_uri_prefix.
+        Used by --resume + max-scan-age skip logic. Returns None if never scanned.
         """
         ...

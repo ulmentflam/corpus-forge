@@ -229,6 +229,9 @@ class TestSchemaTablePresence:
             "search_result_events",
             # Q-01 (0014_sdft_demonstrations) adds SDFT capture table.
             "sdft_demonstrations",
+            # SR-G1 (0017_ingest_runs) adds the ingest-run tracking tables.
+            "ingest_runs",
+            "ingest_run_sources",
         ]
     )
 

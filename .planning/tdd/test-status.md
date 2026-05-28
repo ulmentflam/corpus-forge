@@ -3,6 +3,8 @@
 Record of test suites written by tdd-tester.
 | task-id | status | notes |
 |---------|--------|-------|
+| SR-T3   | red    | `tests/integration/test_sqlite_ingest_runs.py` (45 FAIL + 1 acceptable-pass) + `tests/unit/test_filelock.py` (collection ImportError) + `tests/unit/test_sqlite_backend.py` (5 FAIL). Handed off to tdd-coder. |
+| SR-T2   | red    | 16 unit tests in `tests/unit/test_backend_abc_ingest_runs.py` + 46 integration tests in `tests/integration/test_postgres_ingest_runs.py`. All 62 fail with `AttributeError` — methods not yet on Protocol or PostgresBackend. Handed off to tdd-coder. |
 | W3-01   | red    | `tests/cli/test_setup_quick.py` (9 tests) + `tests/cli/test_banner.py` (5 tests). All 14 fail at RED (missing `run_quick`, `_probe_ollama`, `_urlopen_compat`, `--quick` flag, banner-on-setup). Ready for GREEN. |
 | W3-02   | red    | `tests/cli/test_doctor_json.py` (10 tests) + `tests/cli/test_doctor_banner_in_json_mode.py` (1 test). All 11 fail at RED (missing `DoctorReport.to_json`, `--json` flag, banner-on-doctor, exit-code mapping). Ready for GREEN. |
 | J4-01   | red    | 47 tests in `tests/unit/test_curation_selector.py` covering score primitives, dataclass discipline, batch grouping, and generic-walk fallback. Suite went green against the implementation in the same task — see code-status.md. |
@@ -50,6 +52,32 @@ Record of test suites written by tdd-tester.
 | B-04    | red    | 18 tests written for register_embedder; all failing with AttributeError (method not yet implemented). 848 existing tests still pass. |
 | D-03    | red    | backfill test (3 tests) + parity ext to 0002_chunk_content_hash — all fail CommandError; 0001_core parity GREEN. |
 | G-05    | red (2/3 fail) | Integration smoke written. 2 tests fail: export_chat does not resolve custom templates from DB (production gap). 1 test passes (builtin chatml render). Skill contract rename: 4 GREEN. |
+| SR-T5   | red    | 27 tests in `tests/unit/test_ingest_run_lock.py`. All fail at collection (ImportError: `ingest_run_lock_key` not in `corpus_forge.identity`, `IngestRunInProgressError` not in `corpus_forge.backends.base`). Ready for tdd-coder. |
+
+## SR-T5 — Concurrent-run advisory lock at the ingest entry point
+
+- Test files: `tests/unit/test_ingest_run_lock.py`
+- Run command: `uv run pytest tests/unit/test_ingest_run_lock.py -q`
+- Edge case checklist:
+  - [x] happy — `test_lock_released_on_normal_exit`, `test_acquired_emits_ingest_run_acquired_event`, `test_released_emits_ingest_run_released_event`
+  - [x] boundaries — `test_empty_string_host`, `test_key_is_within_postgres_advisory_range`
+  - [x] type/format — `test_unicode_hostname`, `test_returns_int`
+  - [x] state — `test_stable_across_calls`, `test_lock_released_on_exception`, `test_contention_does_not_write_to_db`
+  - [x] concurrency — `test_wait_true_blocks_until_lock_released_threading` (threading.Thread + barrier)
+  - [x] failure paths — `test_second_invocation_exits_75_when_lock_held`, `test_sqlite_contention_exits_75`, `test_exit_code_is_exactly_75_not_1_or_2`, `test_lock_released_on_exception`
+  - [ ] N/A — locale/time (no timestamps in this surface)
+  - [x] production-realistic — uses `socket.gethostname()` as real hostname, SQLite backend variant
+  - [x] regression hooks — `test_exit_code_is_exactly_75_not_1_or_2` pins the exact EX_TEMPFAIL value; `test_derived_from_advisory_lock_key` pins the formula; `test_lock_source_called_before_migrate` pins ordering
+- Red output (tail):
+  ```
+  ERROR tests/unit/test_ingest_run_lock.py
+  ImportError while importing test module '.../tests/unit/test_ingest_run_lock.py'.
+  tests/unit/test_ingest_run_lock.py:45: in <module>
+      from corpus_forge.identity import (
+  E   ImportError: cannot import name 'ingest_run_lock_key' from 'corpus_forge.identity'
+  1 error in 0.18s
+  ```
+- Status: red — handed off to tdd-coder
 
 ## Phase G — G-05 Integration Smoke
 
@@ -3454,3 +3482,243 @@ Test patterns of note:
   2 failed, 1 passed in 3.69s
   ```
 - Status: red -- handed off to tdd-coder
+
+## SR-T2
+- Test files:
+  - `/Users/evanowen/Workspace/playground/corpus-forge/tests/unit/test_backend_abc_ingest_runs.py`
+  - `/Users/evanowen/Workspace/playground/corpus-forge/tests/integration/test_postgres_ingest_runs.py`
+- Run command: `uv run pytest tests/unit/test_backend_abc_ingest_runs.py tests/integration/test_postgres_ingest_runs.py -q`
+- Edge case checklist:
+  - [x] happy — create/read/update/delete for each of the 7 new methods
+  - [x] boundaries — empty table returns None; single row; ordering among multiple rows
+  - [x] type / format — status enum values (all 3 terminal states parametrized); delta=0 OK; finished=True vs False
+  - [x] state — idempotency on second start_ingest_run (resume path flips status back to 'running'); upsert_ingest_run_source second call updates not duplicates; deltas accumulate
+  - [x] concurrency — N/A (pure sequential CRUD; concurrent-lock tests are SR-T5's scope)
+  - [x] failure paths — update_ingest_run swallows psycopg.OperationalError + logs at DEBUG
+  - [x] locale / time — UTC-aware timestamps asserted on started_at and find_source_last_scanned_at result; last_progress_at advances on second update
+  - [x] production-realistic data — multi-run source tracking; FK cascade on ingest_runs delete
+  - [x] regression hooks — find_source_last_scanned_at returns max across runs (not just current); partial update does not null out unchanged fields
+  - [x] Protocol shape — 7 method existence tests + 7 signature tests + IngestRunInProgressError class existence and Exception subclass
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_backend_abc_ingest_runs.py::TestProtocolMethodExistence::test_update_ingest_run_exists
+  FAILED tests/unit/test_backend_abc_ingest_runs.py::TestProtocolMethodExistence::test_latest_ingest_run_exists
+  FAILED tests/unit/test_backend_abc_ingest_runs.py::TestIngestRunInProgressErrorExists::test_exception_importable_from_backends
+  FAILED tests/unit/test_backend_abc_ingest_runs.py::TestIngestRunInProgressErrorExists::test_exception_is_exception_subclass
+  62 failed in 6.79s
+
+  Failure reason for integration tests:
+  AttributeError: 'PostgresBackend' object has no attribute 'start_ingest_run'
+
+  Failure reason for unit tests:
+  AssertionError: StorageBackend.start_ingest_run not found — add Protocol stub (SR-G2)
+  ```
+- Status: red — handed off to tdd-coder
+
+## SR-T4
+- Test files: `tests/unit/test_ingest_stop_controller.py`
+- Run command: `uv run pytest tests/unit/test_ingest_stop_controller.py -q`
+- Edge case checklist:
+  - [x] happy path -- install/restore round-trip on normal block exit; context-manager __enter__/__exit__
+  - [x] boundaries -- restore without prior install (no-op guard); install twice (idempotent); fresh controller independent of a previously-signalled one
+  - [x] type/format -- _handle_signal accepts frame=None and a real frame object
+  - [x] state -- stop_requested stays True after restore_handlers(); nested context managers restore outer handler; multiple instances share no state
+  - [x] concurrency -- non-main-thread install_handlers() is a no-op (no ValueError, flag stays False); main-thread handler not displaced by worker-thread call
+  - [x] failure paths -- restore_handlers() called in finally on exception path; first signal MUST NOT call os._exit or sys.exit
+  - [ ] N/A -- locale/time (pure signal/bool logic, no timestamps or encodings)
+  - [x] production-realistic data -- os.kill(SIGINT/SIGTERM) full dispatch path tested (not just direct _handle_signal invocation)
+  - [x] regression hooks -- second SIGINT escalation to os._exit(130) has its own named test; repeated SIGTERM does NOT escalate (spec asymmetry pinned as a named test)
+- Notes:
+  - tasks.md listed surface as test_ingest_signal_handling.py; renamed to test_ingest_stop_controller.py per user instruction. tasks.md updated accordingly.
+  - test_sigterm_then_sigint_escalates deliberately accepts both SIGINT-only counter and all-signal-counter implementations; ambiguity is documented in the test body and left for SR-G4 coder to resolve.
+- Red output (tail):
+  ```
+  ERROR tests/unit/test_ingest_stop_controller.py
+  ImportError while importing test module '...tests/unit/test_ingest_stop_controller.py'.
+  tests/unit/test_ingest_stop_controller.py:37: in <module>
+      from corpus_forge.ingest import _StopController  # type: ignore[attr-defined]
+  E   ImportError: cannot import name '_StopController' from 'corpus_forge.ingest'
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  1 error in 2.22s
+  ```
+- Status: red -- handed off to tdd-coder
+
+## SR-T8
+- Test files: `tests/unit/test_cli_ingest_status.py` (new, 51 tests)
+- Run command: `uv run pytest tests/unit/test_cli_ingest_status.py -q`
+- Edge case checklist:
+  - [x] happy -- completed run renders two-section table with run_id/status/host/pid/timestamps/progress/per-source rows
+  - [x] boundaries -- last_done=0/last_total=0 (no ZeroDivisionError); last_total=None (no crash); no source rows (no crash)
+  - [x] type/format -- null ended_at renders as em-dash, not bare 'None'; ISO timestamps present; progress pct '25.0%' for 50/200
+  - [x] state -- running (no ended_at), interrupted (INTERRUPTED + --resume hint), failed (error text shown), completed (error field absent)
+  - [ ] N/A -- concurrency (pure renderer + CLI dispatch, no concurrent paths)
+  - [x] failure paths -- DB connect failure exits 1 + stderr message; migrate() raise does not kill --status (patched)
+  - [ ] N/A -- locale/time (ISO strings from DB row passed through; no time-zone conversion in renderer)
+  - [x] production-realistic data -- run dicts shaped exactly to the corpus.ingest_runs schema columns from tasks.md
+  - [x] regression hooks -- read-only invariants: migrate() never called, ingest_once() never called, no backend write methods called
+- JSON schema pinned (via TestStatusJsonFlag):
+  ```json
+  {
+    "run": {
+      "run_id": "str",
+      "status": "running|completed|interrupted|failed",
+      "started_at": "ISO 8601 str",
+      "ended_at": "ISO 8601 str | null",
+      "last_op": "str | null",
+      "last_done": "int",
+      "last_total": "int | null",
+      "host": "str",
+      "pid": "int",
+      "error": "str | null"
+    },
+    "sources": [
+      {
+        "source_uri_prefix": "str",
+        "docs_seen": "int",
+        "docs_skipped": "int",
+        "docs_failed": "int",
+        "last_scanned_at": "ISO 8601 str | null",
+        "finished_at": "ISO 8601 str | null"
+      }
+    ]
+  }
+  ```
+  No-runs case: `{"run": null, "sources": []}`.
+- Coder surface decision: `_render_status(run: dict, sources: list[dict]) -> str` in `corpus_forge.ingest` (primary) or `corpus_forge.cli` (secondary fallback). `print_ingest_status(config, *, json_output: bool = False) -> None` in `corpus_forge.ingest`. `_build_backend_for_status(config) -> StorageBackend` is the internal factory the tests patch for isolation.
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_cli_ingest_status.py::TestStatusReadOnlyInvariants::test_migrate_not_called_during_status
+  FAILED tests/unit/test_cli_ingest_status.py::TestStatusReadOnlyInvariants::test_backend_write_methods_not_called
+  FAILED tests/unit/test_cli_ingest_status.py::TestStatusReadOnlyInvariants::test_ingest_once_not_called_during_status
+  ERROR tests/unit/test_cli_ingest_status.py::TestRenderStatusFunction::test_completed_run_contains_run_id
+  ERROR tests/unit/test_cli_ingest_status.py::TestRenderStatusFunction::test_progress_percentage_25_pct
+  ERROR tests/unit/test_cli_ingest_status.py::TestStatusTwoSectionTable::test_ended_at_shown_for_completed
+  ERROR tests/unit/test_cli_ingest_status.py::TestStatusTwoSectionTable::test_no_sources_still_renders_cleanly
+  AttributeError: <module 'corpus_forge.ingest'> does not have the attribute 'print_ingest_status'
+  Failed: _render_status not found in corpus_forge.ingest or corpus_forge.cli. Coder must add it in SR-G6.
+  21 failed, 30 errors in 3.32s
+  ```
+- Status: red -- handed off to tdd-coder
+
+## SR-T1
+- Test files:
+  - `tests/integration/test_migrate_0017_ingest_runs.py` (new — 61 tests)
+  - `tests/unit/test_alembic_head_pins_0017.py` (new — 7 tests)
+- Run command: `uv run pytest tests/unit/test_alembic_head_pins_0017.py tests/integration/test_migrate_0017_ingest_runs.py -q`
+- Edge case checklist:
+  - [x] happy — upgrade to 0017 creates both tables with all columns, indexes, and constraints
+  - [x] boundaries — nullable vs NOT NULL per-column; INTEGER DEFAULT 0 counters vs nullable timestamps; UNIQUE on run_id; UNIQUE on (run_id, source_uri_prefix)
+  - [x] type/format — PG: bigint/text/integer/timestamptz; SQLite: INTEGER/TEXT + CURRENT_TIMESTAMP; revision id <= 32 chars (VARCHAR(32) guard)
+  - [x] state — idempotency: rewind alembic_version to 0016 then re-run upgrade must not raise; downgrade -1 returns alembic_version to 0016
+  - [N/A] concurrency — pure DDL, sequential, no shared state
+  - [x] failure paths — all 75 tests fail RED with FileNotFoundError (module load) or alembic CommandError
+  - [N/A] locale/time — timestamp defaults are DB-side; no locale assertions
+  - [x] production-realistic — column shapes verbatim from tasks.md design contract; FK cascade via live INSERT+DELETE on SQLite
+  - [x] regression hooks — UNIQUE constraints enforced; ON DELETE CASCADE enforced; revision id VARCHAR(32) guard; ScriptDirectory linear chain check
+  - [x] note — test_apply_migrations_uses_alembic.py uses _expected_head_revision() dynamically (no manual pin needed). EXPECTED_TABLES in test_sqlite_backend.py needs ingest_runs + ingest_run_sources added during GREEN.
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_alembic_head_pins_0017.py::test_revision_file_exists
+  FAILED tests/unit/test_alembic_head_pins_0017.py::test_alembic_script_directory_head_is_0017
+  ...
+  E   FileNotFoundError: No such file or directory:
+      '...corpus_forge/alembic/versions/0017_ingest_runs.py'
+  E   alembic.util.exc.CommandError: Can't locate revision identified by '0017_ingest_runs'
+  75 failed in 7.18s
+  ```
+- Status: red — handed off to tdd-coder
+
+## SR-T9
+- Test files: `tests/unit/test_ingest_checkpoint_cadence.py`, `tests/unit/test_ingest_telemetry.py`
+- Run command: `uv run pytest tests/unit/test_ingest_checkpoint_cadence.py tests/unit/test_ingest_telemetry.py -q`
+- Edge case checklist:
+  - [x] happy — constant exists at 5.0; run/checkpoint/lock events emitted on a normal 2-5 doc run
+  - [x] boundaries — 1-doc source (minimum boundary calls), 1000-doc source at 0.001s/call (cadence rarely fires), 20-doc source at 1s/call (cadence fires ~4 times)
+  - [x] type/format — last_done must be int, elapsed_s numeric, run_id non-empty str, event field a str
+  - [x] state — fast-advancing clock (step=10s) forces cadence fires; frozen clock (step=0) suppresses cadence fires inside loop
+  - [ ] N/A — concurrency (pure ingest_once, single-threaded; concurrent-run lock is SR-T5)
+  - [x] failure paths — backend.update_ingest_run raising RuntimeError must not propagate; must be swallowed + logged at DEBUG
+  - [ ] N/A — locale/time (elapsed_s is a bare float; no locale-sensitive formatting tested here)
+  - [x] production-realistic — fake source yields RawDocument items matching the real dataclass shape; backend mock matches the real Protocol surface (start_ingest_run, update_ingest_run, finish_ingest_run)
+  - [x] regression hooks — TestCheckpointCadence.test_checkpoint_count_far_below_doc_count pins that cadence guard is not per-doc; TestPayloadJsonSafety.test_forbidden_type_detected pins the json-safety invariant helper
+- Red output (tail):
+  ```
+  AssertionError: corpus_forge.ingest must expose a module-level logger attribute for 'corpus_forge.ingest.lock'. SR-G5 must add this.
+  AssertionError: corpus_forge.ingest must expose a module-level logger attribute for 'corpus_forge.ingest.checkpoint'. SR-G5 must add this.
+  AssertionError: corpus_forge.ingest must expose a module-level logger attribute for 'corpus_forge.ingest.run'. SR-G5 must add this. (currently missing)
+  AssertionError: _CHECKPOINT_INTERVAL_S missing after fresh import
+  AssertionError: _CHECKPOINT_INTERVAL_S must be 5.0, got None
+
+  30 failed, 12 passed in 2.52s
+  ```
+- Status: red — handed off to tdd-coder
+- Notes: 12 passing tests are intentional: Python's `logging.getLogger(name)` always succeeds (loggers are always resolvable by name), `TestLoggerExistence` tests that name, not emission. The 4 `TestPayloadJsonSafety` tests exercise the local `_assert_*` helper logic (green against current code). `test_module_importable` confirms the module loads cleanly. `test_lock_contention_event_shape` exercises the helper with a hand-crafted dict. None of the 12 passes are false positives.
+
+## SR-T6
+- Test files: `tests/cli/test_ingest_cli_resume_flags.py` (new, 53 tests)
+- Run command: `uv run pytest tests/cli/test_ingest_cli_resume_flags.py -q`
+- Edge case checklist:
+  - [x] happy — `--status` exits 0 and calls `print_ingest_status`; `--once --resume` reaches `main(resume=True)`.
+  - [x] boundaries — `--max-scan-age 0`, `0s`, `1s`, `1.5m`, `30m`, `2h`, `24h`, `1d`, `3d`, `90`, `60.0`.
+  - [x] type / format — empty string, whitespace-only, alpha-only, unknown suffix, double suffix all raise.
+  - [x] state — default invocation `ingest --once` forwards `resume=False, wait=False, max_scan_age=0.0`; bare `ingest` still accepted.
+  - [x] failure paths — negative values, `--resume` alone, `--status --once`, `--status --resume`, `--status --wait`, `--status --max-scan-age`.
+  - [ ] N/A — concurrency (pure CLI flag dispatch test, no concurrent paths).
+  - [ ] N/A — locale/time (flag parser has no locale dependency).
+  - [ ] N/A — regression hooks (no specific bug referenced; new feature).
+- Decisions:
+  - File placed in `tests/cli/` (not `tests/unit/`) to match existing CLI test conventions in this repo.
+  - `parse_scan_age_spec(s: str) -> float` MUST be a named public function in `corpus_forge.scanner` (new module). Tests import it directly — coder cannot hide it in a closure.
+  - Mutex tests assert BOTH flag names appear in the error message, not just "no such option", to pin the post-implementation error shape.
+  - 3 tests pass today as correct characterization tests: `test_resume_alone_is_error` (error even before flag exists), `test_bare_ingest_is_still_accepted` (backward compat), `test_ingest_once_reaches_main_with_once_true` (backward compat). These 3 must remain passing after GREEN.
+- Red output (tail):
+  ```
+  FAILED tests/cli/test_ingest_cli_resume_flags.py::TestFlagPresence::test_status_flag_in_help
+  FAILED tests/cli/test_ingest_cli_resume_flags.py::TestFlagPresence::test_resume_flag_in_help
+  FAILED tests/cli/test_ingest_cli_resume_flags.py::TestFlagPresence::test_wait_flag_in_help
+  FAILED tests/cli/test_ingest_cli_resume_flags.py::TestFlagPresence::test_max_scan_age_flag_in_help
+  FAILED tests/cli/test_ingest_cli_resume_flags.py::TestStatusHappyPath::test_status_exits_zero
+  FAILED tests/cli/test_ingest_cli_resume_flags.py::TestStatusHappyPath::test_status_prints_run_info
+  FAILED tests/cli/test_ingest_cli_resume_flags.py::TestStatusHappyPath::test_status_does_not_call_ingest_main
+  FAILED tests/cli/test_ingest_cli_resume_flags.py::TestStatusHappyPath::test_status_calls_print_ingest_status
+  FAILED tests/cli/test_ingest_cli_resume_flags.py::TestStatusMutex::test_status_and_once_is_error
+  FAILED tests/cli/test_ingest_cli_resume_flags.py::TestStatusMutex::test_status_and_resume_is_error
+  FAILED tests/cli/test_ingest_cli_resume_flags.py::TestStatusMutex::test_status_and_wait_is_error
+  FAILED tests/cli/test_ingest_cli_resume_flags.py::TestStatusMutex::test_status_and_max_scan_age_is_error
+  FAILED tests/cli/test_ingest_cli_resume_flags.py::TestParseScanAgeSpec::* (20 tests)
+  FAILED tests/cli/test_ingest_cli_resume_flags.py::TestMaxScanAgeCLIWiring::* (7 tests)
+  FAILED tests/cli/test_ingest_cli_resume_flags.py::TestWaitCLIWiring::* (2 tests)
+  FAILED tests/cli/test_ingest_cli_resume_flags.py::TestResumeCLIWiring::* (2 tests)
+  FAILED tests/cli/test_ingest_cli_resume_flags.py::TestBackwardsCompatibility::* (4 tests)
+  50 failed, 3 passed in 4.01s
+  ```
+- Status: red — handed off to tdd-coder
+
+## SR-T7 — ingest_once end-to-end resume + max-scan-age skip
+
+- Test files:
+  - `tests/integration/test_ingest_resume_e2e.py` (new — 32 tests)
+  - `tests/unit/test_scan_config_max_scan_age.py` (new — 18 tests)
+- Run command: `uv run pytest tests/integration/test_ingest_resume_e2e.py tests/unit/test_scan_config_max_scan_age.py -q`
+- Edge case checklist:
+  - [x] happy — `test_fresh_ingest_once_creates_one_run_row`, `test_run_row_has_required_fields`, `test_config_digest_matches_expected`
+  - [x] boundaries — `test_max_scan_age_zero_always_rescans` (0 = always rescan), `test_no_resume_flag_creates_fresh_run`, `test_resume_no_prior_run_starts_fresh`, `test_scan_config_max_scan_age_fractional_accepted` (sub-second)
+  - [x] type/format — `test_scan_config_max_scan_age_default_is_float`, `test_scan_config_max_scan_age_integer_zero_coerced`, signature kwarg tests
+  - [x] state — `test_resume_reuses_run_id` (1 row after resume), `test_no_duplicate_documents_after_resume`, `test_two_sequential_invocations_create_two_rows`
+  - [ ] N/A — concurrency (covered by SR-T5; out of scope for E2E resume)
+  - [x] failure paths — digest mismatch (starts fresh, prior stays interrupted), `test_negative_max_scan_age_raises_value_error`, `test_stale_source_is_rescanned`
+  - [ ] N/A — locale/time (timestamps seeded as ISO-8601 strings directly; no TZ logic exercised)
+  - [x] production-realistic — 20-file vault fixture; real SQLiteBackend + real migrate(); direct SQL seeding
+  - [x] regression hooks — `test_config_digest_matches_expected` pins sha256 formula; `test_source_row_finished_at_set` pins finished_at non-null invariant
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_scan_config_max_scan_age.py::test_scan_config_max_scan_age_default_is_zero
+  FAILED tests/unit/test_scan_config_max_scan_age.py::test_scan_config_max_scan_age_field_exists
+  FAILED tests/unit/test_scan_config_max_scan_age.py::test_scan_config_max_scan_age_3600_accepted
+  ERROR tests/integration/test_ingest_resume_e2e.py::TestResumeReusesSameRunId::test_resume_reuses_run_id
+  ERROR tests/integration/test_ingest_resume_e2e.py::TestBackendIngestRunHelpers::test_latest_unfinished_ingest_run_exists_on_backend
+  Failed: ingest_runs table missing after migrate() — 0017 migration not yet written: no such table: ingest_runs
+  14 failed, 4 passed, 32 errors in 3.59s
+  ```
+- Notes: 4 unit tests pass before implementation (negative-value + extra-field guards); these are not false positives — they test invariants that hold in both states (extra_forbidden today, ge=0.0 constraint after SR-G7). Integration tests all error at the backend fixture: 0017 migration not yet written. SR-G1 unblocks these in sequence.
+- Status: red — handed off to tdd-coder

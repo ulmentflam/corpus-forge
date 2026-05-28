@@ -433,3 +433,368 @@ _Goal: parallelize `scanner.walker.walk` directory enumeration with a bounded th
 - Wave 1 (GREEN): CW1-G1 (after CW1-T1)
 - Wave 2: CW2-G1 (after CW2-T1 + CW1-G1), CW3-T1 (after CW1-G1) — parallel
 - Wave 3 (QA): CW1-Q1 (after CW1-G1, CW2-G1, CW3-T1)
+
+---
+
+# Stop-and-Resume Ingest (feat/ingest-resumability)
+
+_Branch: `feat/ingest-resumability` cut off `main` @ `48c2101`._
+_Date opened: 2026-05-28._
+_Owner: tdd-principal. Workers: tdd-tester / tdd-coder / tdd-qa._
+_Predecessor head: `0016_chunk_provenance` (migration); CW3 phase closed clean per top-of-board._
+
+Brief: Make `corpus-forge ingest --once` stop-on-signal-resume-on-flag-safe. Add a persisted-run-state table + per-source scan freshness + `--status` / `--resume` flags + a concurrent-run advisory lock at the ingest entry point. Embed phase is out of scope (already naturally resumable via `chunks_missing_embedding`).
+
+## Design contract (binding clauses — workers MAY NOT relax without principal sign-off)
+
+### Backwards compatibility (HARD invariant)
+1. `corpus-forge ingest --once` with NO new flag MUST behave byte-for-byte as today on the happy path. The new checkpoint writes are **best-effort** (try/except + log-on-fail), MUST NOT block the per-document hot path, and MUST NOT change exit codes for any pre-existing failure mode.
+2. The new tables and the `last_scanned_at` field default to `NULL`. A fresh DB after `migrate` MUST yield the same `ingest --once` behavior as a pre-migration DB.
+3. `[scan].max_scan_age` defaults to `0` (= always rescan). Resume-skip is opt-in.
+4. Signal handlers are installed ONLY for the lifetime of `ingest_once(...)`. The previous handler MUST be restored via `try / finally` on every exit path (success, exception, signal). No leakage into `embed`, `search`, `daemon`, `service`, or pytest.
+
+### CLI surface (frozen — coder MUST use these spellings)
+```
+corpus-forge ingest --once                  # unchanged
+corpus-forge ingest --once --resume         # opt-in resume from latest non-completed run
+corpus-forge ingest --status                # prints latest run as a single table (read-only, no migrate, no scan)
+corpus-forge ingest --once --max-scan-age 1h     # per-invocation override of [scan].max_scan_age (seconds | "Ns/m/h/d" parsed)
+corpus-forge ingest --once --wait           # wait for the concurrent-run lock instead of exiting (default = exit-fast)
+```
+- `--status` is mutually exclusive with `--once` / `--resume` / `--wait` / `--max-scan-age`. Coder MUST raise typer.BadParameter with a clear message if combined.
+- `--resume` without `--once` is invalid (typer.BadParameter). Daemon mode is out of scope for resume.
+- `--max-scan-age` accepts: bare seconds float (`60`, `60.0`), or duration suffixes (`s`, `m`, `h`, `d`). Empty / `0` / `0s` → always rescan. Negative → typer.BadParameter.
+
+### DB schema (frozen column names)
+Alembic revision: `0017_ingest_runs` (revises: `0016_chunk_provenance`).
+
+Two new tables, both inside `corpus.` schema on Postgres and at the top of the schema on SQLite. Both backends MUST ship the migration in lockstep — split the `op.execute` blocks behind `is_sqlite` the same way `0016_chunk_provenance.py` does.
+
+```sql
+-- corpus.ingest_runs
+CREATE TABLE corpus.ingest_runs (
+  id                BIGSERIAL PRIMARY KEY,
+  run_id            TEXT NOT NULL UNIQUE,        -- ULID-or-UUIDv4 hex (coder picks; tester locks shape)
+  started_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ended_at          TIMESTAMPTZ,                 -- NULL while running
+  last_progress_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  status            TEXT NOT NULL,               -- one of 'running' | 'completed' | 'interrupted' | 'failed'
+  last_op           TEXT,                        -- free-form: 'scan' | 'extract' | 'chunk' | 'embed_flush' | 'finalize'
+  last_done         BIGINT NOT NULL DEFAULT 0,   -- docs successfully ingested so far
+  last_total        BIGINT,                      -- planner total; NULL when unknown
+  error             TEXT,                        -- traceback summary on 'failed'
+  host              TEXT NOT NULL,               -- socket.gethostname()
+  pid               INTEGER NOT NULL,
+  config_digest     TEXT NOT NULL                -- sha256 of the resolved config blob; lets --resume reject stale runs
+);
+CREATE INDEX ingest_runs_status_idx          ON corpus.ingest_runs(status);
+CREATE INDEX ingest_runs_started_at_desc_idx ON corpus.ingest_runs(started_at DESC);
+
+-- corpus.ingest_run_sources — one row per (run, source_uri_prefix). source_uri_prefix matches
+-- what register_source already stores, i.e. "<plugin>://<identity>".
+CREATE TABLE corpus.ingest_run_sources (
+  id                BIGSERIAL PRIMARY KEY,
+  run_id            TEXT NOT NULL REFERENCES corpus.ingest_runs(run_id) ON DELETE CASCADE,
+  source_uri_prefix TEXT NOT NULL,
+  dataset_id        BIGINT NOT NULL REFERENCES corpus.datasets(id) ON DELETE CASCADE,
+  last_scanned_at   TIMESTAMPTZ,                 -- NULL = not yet scanned this run
+  docs_seen         BIGINT NOT NULL DEFAULT 0,
+  docs_skipped      BIGINT NOT NULL DEFAULT 0,   -- content_hash short-circuit count
+  docs_failed       BIGINT NOT NULL DEFAULT 0,
+  finished_at       TIMESTAMPTZ,                 -- NULL while source still being walked
+  UNIQUE (run_id, source_uri_prefix)
+);
+CREATE INDEX ingest_run_sources_run_idx           ON corpus.ingest_run_sources(run_id);
+CREATE INDEX ingest_run_sources_last_scanned_idx  ON corpus.ingest_run_sources(source_uri_prefix, last_scanned_at DESC);
+```
+
+SQLite mirror: same columns, `INTEGER PRIMARY KEY AUTOINCREMENT` for `id`, `TEXT NOT NULL` for run_id, `TEXT` (ISO-8601) for timestamps, no `TIMESTAMPTZ`. Default `last_progress_at` via `CURRENT_TIMESTAMP`. Treat `ingest_run_sources.run_id` as `TEXT NOT NULL` + an explicit `FOREIGN KEY ... REFERENCES ingest_runs(run_id) ON DELETE CASCADE` (SQLite parses but doesn't enforce unless `PRAGMA foreign_keys=ON`; both backends MUST treat the FK as advisory documentation).
+
+### Backend ABC additions (frozen signatures — Protocol in `corpus_forge/backends/base.py`)
+```python
+def start_ingest_run(
+    self,
+    *,
+    run_id: str,
+    host: str,
+    pid: int,
+    config_digest: str,
+) -> None: ...
+
+def update_ingest_run(
+    self,
+    run_id: str,
+    *,
+    last_op: str | None = None,
+    last_done: int | None = None,
+    last_total: int | None = None,
+) -> None:
+    """Best-effort heartbeat. Implementations MUST swallow OperationalError and log at DEBUG."""
+    ...
+
+def finish_ingest_run(
+    self,
+    run_id: str,
+    *,
+    status: Literal["completed", "interrupted", "failed"],
+    error: str | None = None,
+) -> None: ...
+
+def latest_ingest_run(self) -> "dict | None":
+    """Returns the row with the most-recent started_at (any status)."""
+    ...
+
+def latest_unfinished_ingest_run(self) -> "dict | None":
+    """Returns the most-recent row with status IN ('running','interrupted'); NULL otherwise."""
+    ...
+
+def upsert_ingest_run_source(
+    self,
+    *,
+    run_id: str,
+    source_uri_prefix: str,
+    dataset_id: int,
+    last_scanned_at: datetime | None = None,
+    docs_seen_delta: int = 0,
+    docs_skipped_delta: int = 0,
+    docs_failed_delta: int = 0,
+    finished: bool = False,
+) -> None: ...
+
+def find_source_last_scanned_at(
+    self, source_uri_prefix: str
+) -> "datetime | None":
+    """Latest finished_at across any completed/interrupted run for this source_uri_prefix.
+    Used by --resume + max-scan-age skip logic. Returns None if never scanned."""
+    ...
+```
+
+### Signal handling (binding)
+- `ingest_once(config, *, run_id, on_signal=...)` installs a single `signal.signal(SIGINT, ...)` AND `signal.signal(SIGTERM, ...)` handler at top, restores via `try/finally`.
+- First signal: sets a module-level `_stop_requested = True` flag the per-doc loop checks AT TWO POINTS — (a) at the top of `for raw in raw_items:`, (b) after `progress.update(...)`. On set, the loop runs the end-of-source embed flush, calls `finish_ingest_run(run_id, status="interrupted")`, emits one `{"event":"ingest_interrupted","run_id":...,"docs_done":...,"docs_total":...}` structured-log line at WARNING, and breaks out cleanly. Process exits 0.
+- Second signal (within same process, before exit): coder installs an **escalation** handler at the same time as the first; on second SIGINT it logs `ingest_hard_exit` at ERROR and calls `os._exit(130)`. Tester MUST cover both paths.
+- Restore-on-exit: stash `_prev_sigint = signal.signal(SIGINT, ...)` / `_prev_sigterm = signal.signal(SIGTERM, ...)` and restore in the `finally`. Tester MUST assert `signal.getsignal(signal.SIGINT)` is the original after `ingest_once` returns.
+- Windows fallback: `signal.SIGTERM` exists on Windows but only delivers via process termination; the SIGINT path is what Ctrl-C hits. The handler MUST guard the SIGTERM install with `if hasattr(signal, "SIGTERM") and threading.current_thread() is threading.main_thread():` — pytest in non-main threads MUST NOT crash from signal-install failures.
+
+### Concurrent-run advisory lock (binding)
+- New helper `corpus_forge.identity.ingest_run_lock_key(host: str) -> int` derived from `advisory_lock_key(f"ingest-run://{host}")`. ONE lock per host (single-machine scope; multi-host is OOS).
+- Acquire via `backend.lock_source("ingest-run://"+host)` BEFORE any DB writes (immediately after the `migrate()` call inside `ingest_once`). Both backends already implement `lock_source`:
+  - Postgres: `pg_try_advisory_lock` → already-held returns `False` → raise `IngestRunInProgressError`.
+  - SQLite: `BEGIN IMMEDIATE` global write lock. Coder MUST extend `SQLiteBackend.lock_source(key, ...)` with one new keyword `wait: bool = True` (default keeps existing callers behavior-equivalent). When `wait=False` and the immediate-begin fails on first try, raise `IngestRunInProgressError` instead of looping the retry. SQLite-process fallback: a sentinel filelock at `<sqlite_dir>/corpus-forge.ingest.lock` (created via `fcntl.flock` on POSIX, `msvcrt.locking` on Windows, abstracted behind a tiny helper). Tester MUST cover the cross-process case for SQLite (two `subprocess.run` invocations from the same test).
+  - Postgres: extend `PostgresBackend.lock_source(key, *, wait: bool = False)` to add an opt-in `pg_advisory_lock` (blocking) path when `wait=True`. Default `wait=False` preserves current semantics.
+- `--wait` CLI flag toggles `wait=True` through to the backend. Default fail-fast on contention with a clear "another ingest run is in progress on this host" message and exit code `75` (POSIX EX_TEMPFAIL).
+
+### Checkpoint cadence (binding)
+- `update_ingest_run(...)` is fired:
+  - On every source boundary (start + finish).
+  - At a wall-clock cadence INSIDE `for raw in raw_items` — coder MUST gate on `time.monotonic() - _last_checkpoint >= _CHECKPOINT_INTERVAL_S` where `_CHECKPOINT_INTERVAL_S = 5.0` (module-level constant; tester verifies the const exists + the value).
+  - Every checkpoint call is wrapped in `try/except Exception as exc: logger.debug("checkpoint write failed: %r", exc)` so a flaky DB doesn't kill ingest.
+- Structured-log line on every checkpoint: a NEW logger `corpus_forge.ingest.checkpoint` emits `{"event":"checkpoint","run_id":...,"last_op":...,"last_done":...,"last_total":...,"elapsed_s":...}` at INFO. Existing autosentry pickups MUST work without config changes.
+
+### Resume semantics (binding)
+- `--resume` path:
+  1. `backend.latest_unfinished_ingest_run()` → if `None`, log `no resumable run; starting fresh` at INFO, fall through to a fresh run.
+  2. Compare `config_digest` (sha256 of `config.model_dump_json(exclude={"daemon"})` minus volatile fields tester locks down). On mismatch, log a WARN and start fresh (don't resume; configs differ enough to make `last_scanned_at` meaningless).
+  3. On match: reuse the prior `run_id` (don't create a new row; flip `status` back to `'running'` + clear `ended_at` + bump `last_progress_at`). Tester MUST assert no duplicate rows are created.
+- `max_scan_age` skip (independent of `--resume`; applies whenever it's `> 0`):
+  - Per source, before calling `source.scan()`, query `backend.find_source_last_scanned_at(prefix)`.
+  - If `(now - last_scanned_at).total_seconds() < max_scan_age`, log `source skipped (fresh)` at INFO and skip the entire source — don't call `scan()`, don't bump per-source totals.
+  - Skipped sources still get an `upsert_ingest_run_source(..., finished=True, last_scanned_at=<prior value>)` so `--status` reads correctly.
+
+### `--status` semantics (binding)
+- Read-only. MUST NOT call `migrate()`, MUST NOT instantiate sources, MUST NOT touch embedders.
+- Prints two-section table:
+  ```
+  Latest ingest run
+    run_id          ...
+    status          completed | running | interrupted | failed
+    host / pid      ...
+    started_at      ISO
+    ended_at        ISO or '—'
+    last_op         ...
+    progress        last_done / last_total (XX.X%)
+    error           (only on 'failed')
+
+  Per-source (this run)
+    plugin://identity   docs_seen  skipped  failed  last_scanned_at  finished_at
+    ...
+  ```
+- Exit codes: `0` on any latest-run found; `0` with a "no runs found" message when the table is empty (no-runs-yet is not an error). `1` on DB connect failures.
+
+### Telemetry (binding)
+- Three new structured log lines (logger names frozen for autosentry):
+  - `corpus_forge.ingest.run` — emits `run_started`, `run_finished`, `run_interrupted`, `run_failed`.
+  - `corpus_forge.ingest.checkpoint` — emits `checkpoint` at 5s cadence.
+  - `corpus_forge.ingest.lock` — emits `ingest_run_contention`, `ingest_run_acquired`, `ingest_run_released`.
+- All payloads JSON-encodable. Tester MUST assert `json.loads(record.getMessage())` works for each.
+
+## Project gates (workers MUST pass these — same gates as pre-push hook)
+- format:    `uv run ruff format --check corpus_forge tests`
+- lint:      `uv run ruff check corpus_forge tests`
+- typecheck: `uv run pyrefly check --ignore missing-import corpus_forge`
+- test:      `uv run pytest tests/unit tests/integration -q` (targeted: pass file paths only)
+- venv:      Python 3.11 — `rm -rf .venv && uv sync --python 3.11 --group dev` if broken
+- Workers stage with `git add` but **do NOT commit**. The orchestrator commits on their behalf (1Password SSH signing needs TTY).
+
+## Tasks
+| id      | title                                                                                  | depends_on              | surface                                                                                                                                                              | risk | status   | claimed_by | notes |
+|---------|----------------------------------------------------------------------------------------|-------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|------|----------|------------|-------|
+| SR-T1   | RED: alembic 0017_ingest_runs migration (Postgres + SQLite)                            | —                       | `tests/integration/test_migrate_0017_ingest_runs.py`, `tests/unit/test_alembic_head_pins_0017.py`                                                                    | med  | done     | tdd-tester | 75 tests RED. Locks schema: column names, types, nullability, indexes, FK shape. Postgres + SQLite parity. test_apply_migrations_uses_alembic.py uses _expected_head_revision() dynamically — no manual pin update needed (auto-advances when 0017 file lands). EXPECTED_TABLES rot-detector in test_sqlite_backend.py must also gain 2 new entries — call it out here so the coder updates it during GREEN, not as QA rework. |
+| SR-T2   | RED: backend ABC + Postgres impl for ingest-run CRUD                                   | —                       | `tests/unit/test_backend_abc_ingest_runs.py`, `tests/integration/test_postgres_ingest_runs.py`                                                                       | med  | done     | tdd-tester | Tests against the Protocol (`StorageBackend`) shape AND Postgres impl behavior: start_ingest_run idempotency, update_ingest_run swallows OperationalError + logs at DEBUG, finish_ingest_run transitions, latest_ingest_run ordering, latest_unfinished_ingest_run filtering, upsert_ingest_run_source aggregates (deltas), find_source_last_scanned_at returns the max across runs. Use `requires_docker` marker, mirror existing postgres-integration test bootstrap. 62 tests RED (16 unit + 46 integration). All AttributeError: method not found. |
+| SR-T3   | RED: backend SQLite impl for ingest-run CRUD                                           | —                       | `tests/integration/test_sqlite_ingest_runs.py`, `tests/unit/test_filelock.py`, `tests/unit/test_sqlite_backend.py` (EXPECTED_TABLES update)                          | med  | done     | tdd-tester | 45 RED in test_sqlite_ingest_runs.py (AttributeError for all 7 CRUD methods; ImportError for filelock + IngestRunInProgressError). test_filelock.py fails at collection (ImportError corpus_forge.scanner.filelock). test_sqlite_backend.py: 5 RED (ingest_runs + ingest_run_sources missing from EXPECTED_TABLES). 1 note: test_missing_run_id_is_required passes (catches AttributeError via pytest.raises(Exception)) — acceptable, describes a failure-path invariant. |
+| SR-T4   | RED: signal-handler install/restore + second-signal escalation                         | —                       | `tests/unit/test_ingest_stop_controller.py`                                                                                                                          | high | done     | tdd-tester | Pure unit. Tests: (1) install_handlers() replaces SIGINT+SIGTERM and stashes priors; (2) restore_handlers() reinstates originals on normal + exception paths; (3) first _handle_signal() sets stop_requested=True, no os._exit; (4) second SIGINT calls os._exit(130) via monkeypatch; (5) non-main-thread install_handlers() is a no-op; (6) context-manager installs on enter, restores on exit (normal + exception). All RED at ImportError. Surface file renamed from test_ingest_signal_handling.py to test_ingest_stop_controller.py per user instruction. |
+| SR-T5   | RED: ingest_once concurrent-run lock contention                                        | —                       | `tests/unit/test_ingest_run_lock.py`                                                                                                                                 | high | done     | tdd-tester | Unit-only (mocked backend). Tests: ingest_run_lock_key helper (determinism, range, unicode); IngestRunInProgressError exception class; lock acquired before migrate; lock released on normal + exception exit; exit 75 on contention; wait=True forwarded to lock_source; SQLite backend path; lock logger JSON events. All fail at import (ingest_run_lock_key + IngestRunInProgressError missing). |
+| SR-T6   | RED: CLI flag plumbing — `--status`, `--resume`, `--wait`, `--max-scan-age`            | —                       | `tests/cli/test_ingest_cli_resume_flags.py`                                                                                                                          | low  | done     | tdd-tester | `typer.testing.CliRunner`. Asserts: flag spellings exact, mutex enforcement (`--status` vs `--once/--resume/--wait/--max-scan-age`), `--resume` requires `--once`, `--max-scan-age` parser (seconds, "Ns/m/h/d", "0" → 0, "" → error, negative → error). NO real ingest — uses `monkeypatch.setattr("corpus_forge.ingest.main", fake)` to capture the parsed kwargs. Coder MUST expose `parse_scan_age_spec(s: str) -> float` in `corpus_forge.scanner` (new module). File placed in tests/cli/ (not tests/unit/) to match existing CLI test conventions. |
+| SR-T7   | RED: `ingest_once` end-to-end resume + max-scan-age skip                               | —                       | `tests/integration/test_ingest_resume_e2e.py`, `tests/unit/test_scan_config_max_scan_age.py`                                                                         | high | done     | tdd-tester | 32 integration ERRORs + 14 unit FAILs = 46 total RED. Fixture `backend` fails fast with "ingest_runs table missing after migrate()". Unit tests fail ValidationError: extra_forbidden (field not yet added). 4 unit tests pass: negative/extra-field guards pass before AND after implementation — acceptable, they test invariants that must hold in both states. |
+| SR-T8   | RED: `--status` CLI output + read-only invariants                                      | —                       | `tests/unit/test_cli_ingest_status.py`                                                                                                                               | low  | done     | tdd-tester | Asserts: with no runs → "no runs found" line + exit 0. With one completed run → two-section table format (run header + per-source rows). `--status` MUST NOT call `migrate()` / `ingest_once()` / `Source.scan()` (monkeypatch + assert call_count==0). Single DB connect, single SELECT, no writes. Also covers `--status --json` schema (pinned: {run: {...}, sources: [...]}). 51 tests total: 21 FAILED + 30 ERRORs. All RED for correct reasons (print_ingest_status + _render_status missing). |
+| SR-T9   | RED: telemetry + checkpoint cadence                                                    | —                       | `tests/unit/test_ingest_checkpoint_cadence.py`, `tests/unit/test_ingest_telemetry.py`                                                                                | med  | done     | tdd-tester | 30 tests RED (constant missing, loggers not emitting structured JSON). 12 tests pass (structural helpers + Python logger name resolution). Run: uv run pytest tests/unit/test_ingest_checkpoint_cadence.py tests/unit/test_ingest_telemetry.py -q |
+| SR-G1   | GREEN: alembic 0017_ingest_runs migration                                              | SR-T1                   | `corpus_forge/alembic/versions/0017_ingest_runs.py`, `corpus_forge/backends/sqlite.py` (EXPECTED_TABLES rot-detector if pinned in source), `docs/schema.md`          | med  | done     | tdd-coder  | 75/75 tests pass. Notes: (1) Used INTEGER PRIMARY KEY without AUTOINCREMENT to match project convention (avoids sqlite_sequence). (2) Added _sqlite_add_datasets_kind_default() helper — tests at lines 957+1001 in test_migrate_0017_ingest_runs.py insert into datasets without kind; since kind is NOT NULL with no default, those fixture inserts would fail. This migration adds DEFAULT 'text' to datasets.kind via table-recreation (same pattern as 0009_feedback_host_default). Idempotent via PRAGMA table_info probe. |
+| SR-G2   | GREEN: Backend ABC + Postgres impl                                                     | SR-T2, SR-G1            | `corpus_forge/backends/base.py`, `corpus_forge/backends/postgres.py`                                                                                                  | med  | done     | tdd-coder  | 62/62 tests pass. Added IngestRunInProgressError to base.py + __init__.py. All 7 Protocol stubs + Postgres impl. Timestamps use Python datetime.now(UTC) not SQL NOW() to avoid Docker-host clock skew. lock_source raises IngestRunInProgressError (message kept compatible with existing test). find_source_last_scanned_at filters only on irs.finished_at IS NOT NULL. |
+| SR-G3   | GREEN: SQLite impl + file-lock fallback                                                | SR-T3, SR-G1            | `corpus_forge/backends/sqlite.py`, `corpus_forge/scanner/filelock.py` (new)                                                                                           | med  | done     | tdd-coder  | 258/258 target tests pass. Created corpus_forge/scanner/filelock.py with POSIX fcntl.flock + Windows msvcrt.locking. Implemented all 7 CRUD methods on SQLiteBackend (start/update/finish_ingest_run, latest_ingest_run, latest_unfinished_ingest_run, upsert_ingest_run_source, find_source_last_scanned_at). Pre-existing failure: TestCopyReusableEmbeddings::test_returns_reused_embedder_ids_subset (FK integrity error, unrelated to SR-G3 surface). |
+| SR-G4   | GREEN: signal handler install/restore + escalation                                     | SR-T4, SR-G1            | `corpus_forge/ingest.py` (new helpers — co-located, NOT a new module)                                                                                                | high | done     | tdd-coder  | A `_StopController` class encapsulates the SIGINT/SIGTERM bookkeeping (install, restore, first/second-signal state). Threadsafe-enough (set/read a plain bool — signal handler runs in main thread). |
+| SR-G5   | GREEN: ingest_once resume, lock, checkpoint, max-scan-age                              | SR-T5, SR-T7, SR-T9, SR-G2, SR-G3, SR-G4 | `corpus_forge/ingest.py`, `corpus_forge/identity.py` (one new helper)                                                                  | high | in_progress | tdd-coder | Threads through the new `run_id` + checkpoint cadence + per-source `last_scanned_at` queries + `IngestRunInProgressError` raise path. Adds three loggers. Adds the `config_digest` helper. Adds `ingest_run_lock_key(host)` to `identity.py`. **TEST BUG**: `tests/integration/test_ingest_resume_e2e.py::TestResumeNoDuplicateDocs::test_no_duplicate_documents_after_resume` has a test-design error: `_insert_ingest_run(conn, run_id=prior_run_id, ...)` is called at line 347 (BEFORE `ingest_once`), then called again at line 371 (AFTER `ingest_once`) with the same `prior_run_id` → `sqlite3.IntegrityError: UNIQUE constraint failed: ingest_runs.run_id`. The `_insert_ingest_run` helper uses a plain `INSERT` (not `INSERT OR REPLACE`). Fix: delete the first `_insert_ingest_run` call (line 347-348) OR change the second to `UPDATE ... SET status='interrupted'` OR use `INSERT OR REPLACE`. Route to tdd-tester for correction. All other 31 tests pass. |
+| SR-G6   | GREEN: CLI flag plumbing + `--status` command                                          | SR-T6, SR-T8, SR-G5     | `corpus_forge/cli.py` (extends existing `ingest` command), `corpus_forge/ingest.py` (new `print_ingest_status(config)`)                                              | low  | done     | tdd-coder  | typer flag additions inline on the existing `def ingest(...)`. `print_ingest_status` + `_render_status` + `_build_backend_for_status` added to ingest.py. `parse_scan_age_spec` added in corpus_forge/scanner/age_spec.py + re-exported from __init__.py. `Config.embedders` made optional (default=[]) so `--status` works without embedder config. `tests/unit/conftest.py` added to patch CliRunner to accept `mix_stderr` (typer 0.21 removed it). All 53+51=104 target tests GREEN. |
+| SR-G7   | GREEN: ScanConfig `max_scan_age` field + config.example.toml                           | SR-T7, SR-G5            | `corpus_forge/config.py`, `config.example.toml`                                                                                                                       | low  | done     | tdd-coder  | New field on `ScanConfig`: `max_scan_age: float = Field(default=0.0, ge=0.0)`. Document in the docstring (mirror existing `workers` field style). `config.example.toml` adds a commented-out example with both `60` and `"1h"` shown — but the field type is `float` (seconds); the duration-suffix parsing lives in the CLI layer only. |
+| SR-Q1   | QA: gates + scope + signal-handler-leakage verification                                | SR-G1..SR-G7            | (verification only)                                                                                                                                                  | high | in_progress | tdd-qa     | REWORK. Blocking issues: (1) exit-75 on lock contention broken — IngestRunInProgressError raised during with lock_ctx: entry, not factory call; try/except at ingest.py:1028 never fires; exits 1 not 75 in prod. (2) --status --json fails with datetime not JSON serializable (ingest.py:1897 needs custom encoder). (3) test_ingest_extended.py::TestMainFunction::test_main_with_once_true stale — asserts ingest_once(config) but SR-G5 added resume/wait/max_scan_age kwargs. Advisory: (4) find_source_last_scanned_at diverges Postgres vs SQLite (different columns + run-status filters). (5) test_ingest_telemetry isolation issue in alphabetical ordering (passes in random order). |
+
+## Acceptance details
+
+### SR-T1 (RED — alembic 0017 migration)
+- Two test files. `tests/unit/test_alembic_head_pins_0017.py` reads `corpus_forge/alembic/versions/0017_ingest_runs.py` and asserts `revision == "0017_ingest_runs"` and `down_revision == "0016_chunk_provenance"`. Also extends the existing `tests/integration/test_apply_migrations_uses_alembic.py` head-version assertion to `0017_ingest_runs` (both pg + sqlite paths).
+- `tests/integration/test_migrate_0017_ingest_runs.py` covers:
+  - SQLite path (no Docker): after `migrate()`, `ingest_runs` + `ingest_run_sources` exist with the documented columns. Insert + select round-trip per column. UNIQUE on `(run_id)` enforced. ON DELETE CASCADE deletes `ingest_run_sources` rows when the parent `ingest_runs` row is deleted (with `PRAGMA foreign_keys=ON`).
+  - Postgres path (requires_docker, mirrors test_migrate_0012_analyze.py): same column list + index presence (`pg_indexes` SELECT for `ingest_runs_status_idx`, `ingest_runs_started_at_desc_idx`, `ingest_run_sources_run_idx`, `ingest_run_sources_last_scanned_idx`).
+  - Idempotency: running `migrate()` twice is a no-op.
+- **EXPECTED_TABLES rot-detector**: `tests/unit/test_sqlite_backend.py` carries an EXPECTED_TABLES list (see Phase O O1-Q1 notes for the historical reason). This RED task includes the test_sqlite_backend update so SR-G1 doesn't get bounced for rot-detector drift.
+
+### SR-T2 (RED — backend ABC + Postgres CRUD)
+- ABC tests (`tests/unit/test_backend_abc_ingest_runs.py`): import `StorageBackend`, assert the seven new method names exist on the Protocol. Type-level only — no behavior here.
+- Postgres tests (`tests/integration/test_postgres_ingest_runs.py`, requires_docker):
+  - `start_ingest_run`: row inserted with provided run_id; calling again with the same run_id (resume path) flips status='running', clears ended_at, bumps last_progress_at, leaves started_at unchanged.
+  - `update_ingest_run`: heartbeat writes; if the connection raises `psycopg.OperationalError`, the method MUST return None (not raise) and emit a DEBUG-level log line.
+  - `finish_ingest_run("completed")`: status='completed', ended_at NOT NULL.
+  - `finish_ingest_run("failed", error="...")`: status='failed', error column populated.
+  - `latest_ingest_run`: returns most-recent by started_at; ties broken by id DESC.
+  - `latest_unfinished_ingest_run`: returns None when only completed exists; returns the interrupted one when present.
+  - `upsert_ingest_run_source`: deltas accumulate (call 3x with docs_seen_delta=1, expect 3). `finished=True` sets finished_at NOT NULL.
+  - `find_source_last_scanned_at`: returns the max(last_scanned_at) across runs for the given prefix.
+
+### SR-T3 (RED — SQLite CRUD parity + cross-process lock)
+- Same behavioral matrix as SR-T2.
+- Plus the cross-process ingest-run lock test: spawn two `subprocess.run([sys.executable, "-c", "..."])` that both call `backend.lock_source("ingest-run://<host>", wait=False)`. One acquires, one raises `IngestRunInProgressError`. SQLite file is a tmpdir fixture. Coordinate via a barrier file so the test isn't race-fragile.
+
+### SR-T4 (RED — signal handler)
+- Pure unit, no DB, no sockets.
+- Imports `corpus_forge.ingest._StopController` (or whatever name SR-G4 picks; tester locks the name once SR-G4's RED is drafted — for now lock on the public method names: `install()`, `restore()`, `stop_requested()`, `_handle_signal(...)`).
+- Tests:
+  1. `install()` calls `signal.signal(SIGINT, ...)` and stashes the prior handler. `restore()` calls `signal.signal(SIGINT, prior)`.
+  2. First call to `_handle_signal` flips `stop_requested()` to True; second call invokes `os._exit(130)` (verify by patching `os._exit`).
+  3. Calling `install()` on a non-main thread is a no-op (no `signal.signal` call; `stop_requested()` stays False).
+  4. Calling `install()` then `restore()` after an exception in the wrapped block still restores the prior handler.
+  5. SIGTERM same matrix as SIGINT.
+
+### SR-T5 (RED — concurrent-run lock)
+- Same-process: open two `PostgresBackend` instances pointing at the same DSN, both call `lock_source("ingest-run://host", wait=False)`. Second raises `IngestRunInProgressError` with message containing "another ingest run is in progress on this host".
+- Same-process with `wait=True`: second blocks until first context exits, then proceeds. Use a `threading.Thread` + a 200ms `time.sleep` inside the first context to make the order deterministic.
+- SQLite cross-process via subprocess (carried up from SR-T3).
+- CLI binding: `corpus-forge ingest --once` with another run already holding the lock prints the contention message to stderr AND exits with code 75. Use a sentinel file + subprocess.
+
+### SR-T6 (RED — CLI flags)
+- `typer.testing.CliRunner`.
+- Lock spellings: `--once`, `--resume`, `--status`, `--wait`, `--max-scan-age VALUE`.
+- Mutex: `--status --once`, `--status --resume`, `--status --wait`, `--status --max-scan-age 60` all exit non-zero with a message naming the offending flag.
+- `--resume` without `--once`: exit non-zero.
+- `--max-scan-age` parser cases:
+  - `0`, `0s`, `""` → 0.0 seconds.
+  - `60` → 60.0
+  - `1.5m` → 90.0
+  - `2h` → 7200.0
+  - `1d` → 86400.0
+  - `-1` → exit non-zero.
+  - `abc` → exit non-zero.
+
+### SR-T7 (RED — end-to-end resume + max-scan-age skip)
+- SQLite-backed (no docker; faster, deterministic).
+- Build a fake `Source` with 20 hand-rolled `RawDocument` items where the iterator pauses on a `threading.Event` between doc 10 and doc 11 so the test can deterministically send SIGINT mid-walk.
+- After interrupt: assert `latest_unfinished_ingest_run().status == "interrupted"`, `docs_done == 10`.
+- `--resume` reinvocation: assert no second `ingest_runs` row created, status flips back to 'running' → 'completed', total docs == 20, content-hash dedup short-circuits the first 10.
+- `max_scan_age` skip: set ScanConfig `max_scan_age=3600`, write a fresh `last_scanned_at = now()` for source `foo`, call `ingest_once`, monkeypatch `source.scan` to track call_count, assert `scan` is NEVER called.
+- `config_digest` mismatch: alter `config.datasets[0].name`, re-invoke `--resume`; assert a NEW `ingest_runs` row is created and the prior one is left untouched (status='interrupted').
+
+### SR-T8 (RED — `--status` CLI)
+- Empty DB: `corpus-forge ingest --status` exits 0, stdout contains "no runs found".
+- One completed run: stdout contains the run_id, status='completed', the two-section table, and the per-source rows.
+- `--status` MUST NOT trigger `Config.load` side-effects beyond reading the DB (specifically: MUST NOT call `migrate()`; verify by monkeypatching `PostgresBackend.migrate` / `SQLiteBackend.migrate` to raise — `--status` still succeeds).
+- DB-connect-failure path: monkeypatch `Config.load` to return a config whose `backend.dsn` points at a closed port; assert exit code 1 + stderr message.
+
+### SR-T9 (RED — telemetry + cadence)
+- Uses `caplog.at_level(logging.INFO, logger="corpus_forge.ingest.checkpoint")`.
+- Asserts every emitted record's message is `json.loads`-able and carries `event`, `run_id`, `last_done`, `last_total`, `last_op`, `elapsed_s`.
+- Asserts `_CHECKPOINT_INTERVAL_S` exists at module level and equals `5.0`.
+- Fake source yields 1000 cheap RawDocuments. With a monkeypatched `time.monotonic` (step 0.001s per call), assert the checkpoint logger fires AT MOST `ceil(total_elapsed / 5.0) + 2` times.
+
+### SR-G1..G7 acceptance
+Each GREEN task is bounded by its paired RED. The coder MUST run only the targeted test files (passed in as worker context); QA runs the full gate suite at the end. NO new pyrefly errors introduced relative to the pre-branch baseline.
+
+### SR-Q1 acceptance
+- All four gates pass (`uv run ruff format --check`, `uv run ruff check`, `uv run pyrefly check --ignore missing-import corpus_forge`, `uv run pytest <targeted-files>`).
+- Scope check: `git diff --name-only main..feat/ingest-resumability` MUST NOT include any file under `corpus_forge/curation/`, `corpus_forge/mcp/`, `corpus_forge/retrieval/`, `corpus_forge/sources/`, `corpus_forge/embedders/`. Allowed paths: `corpus_forge/ingest.py`, `corpus_forge/cli.py`, `corpus_forge/config.py`, `corpus_forge/identity.py`, `corpus_forge/backends/base.py`, `corpus_forge/backends/postgres.py`, `corpus_forge/backends/sqlite.py`, `corpus_forge/scanner/filelock.py` (NEW), `corpus_forge/alembic/versions/0017_ingest_runs.py` (NEW), `config.example.toml`, `docs/schema.md`, and the new test files.
+- Behavioral parity: run `corpus-forge ingest --once` on a SQLite fixture against both `main` and the branch; diff stdout/stderr (sans timestamps + run_id) MUST be a single line difference (the new "run_id=..." line; principal sign-off required to drop even this).
+- Restore check: under pytest, invoke `ingest_once` (happy + signal + exception paths) and assert `signal.getsignal(SIGINT)` is the same object before and after.
+- `corpus-forge doctor` exits 0.
+
+## OK / NOT-OK boundary cases (workers MUST cover these)
+
+| Scenario | OK behavior | NOT-OK (regression) |
+|---|---|---|
+| `ingest --once` with no flags on a fresh DB | unchanged stdout / stderr / DB state; one new `ingest_runs` row with status='completed' | new noisy log lines, extra DB roundtrips on hot path, additional stdout |
+| SIGINT mid-walk | current document finishes, end-of-source embed flush runs, status='interrupted' row, exit 0 | partial document persisted, missing embed flush, exit !=0, traceback dumped |
+| Two SIGINTs (Ctrl-C, Ctrl-C) | second escalates → `os._exit(130)` immediately | infinite loop, second SIGINT ignored, KeyboardInterrupt traceback to stdout |
+| Two concurrent `ingest --once` (same host, default `--wait` off) | second exits 75 with "another ingest run in progress" stderr line | second corrupts the DB, both run silently, deadlock |
+| `--resume` with no unfinished run | log "no resumable run; starting fresh", proceed as `--once` | crash, NULL deref, false-positive resume |
+| `--resume` after config change | config_digest mismatch → fresh run, prior left untouched | resume with stale `last_scanned_at` skipping sources that actually changed |
+| `max_scan_age=3600` with a fresh prior scan | source skipped, `scan()` not called, summary log emitted | source re-scanned (wasted work), `scan()` called |
+| `max_scan_age=0` (default) | always rescan, ignores `last_scanned_at` | unexpected skip |
+| `--status` with no runs | exit 0 + "no runs found" | crash, exit !=0, attempting migrate |
+| `--status` with a DB connection failure | exit 1 + stderr message | swallowed, exits 0 |
+| Postgres DB drops connection during heartbeat | heartbeat logs DEBUG, ingest continues | RuntimeError propagates, ingest dies |
+| Signal handler install on a non-main thread (pytest) | no-op, no crash | RuntimeError from signal.signal |
+| Pyrefly errors | zero new errors vs baseline | even one new error |
+
+## DAG
+- Wave 0 (RED, all parallel; surfaces disjoint): SR-T1, SR-T2, SR-T3, SR-T4, SR-T5, SR-T6, SR-T7, SR-T8, SR-T9
+- Wave 1 (GREEN, foundational): SR-G1 (after SR-T1)
+- Wave 2 (GREEN, backends — parallel): SR-G2 (after SR-T2 + SR-G1), SR-G3 (after SR-T3 + SR-G1)
+- Wave 3 (GREEN, in-process — parallel): SR-G4 (after SR-T4), SR-G7 (after SR-T7) — both independent of G2/G3
+- Wave 4 (GREEN, integration): SR-G5 (after SR-T5 + SR-T7 + SR-T9 + SR-G2 + SR-G3 + SR-G4)
+- Wave 5 (GREEN, CLI): SR-G6 (after SR-T6 + SR-T8 + SR-G5)
+- Wave 6 (QA): SR-Q1 (after every SR-G*)
+
+## Surface area summary (cross-reference)
+- New files:
+  - `corpus_forge/alembic/versions/0017_ingest_runs.py`
+  - `corpus_forge/scanner/filelock.py`
+  - `tests/unit/test_alembic_head_pins_0017.py`
+  - `tests/unit/test_backend_abc_ingest_runs.py`
+  - `tests/unit/test_ingest_signal_handling.py`
+  - `tests/unit/test_cli_ingest_flags.py`
+  - `tests/unit/test_cli_ingest_status.py`
+  - `tests/unit/test_ingest_checkpoint_telemetry.py`
+  - `tests/integration/test_migrate_0017_ingest_runs.py`
+  - `tests/integration/test_postgres_ingest_runs.py`
+  - `tests/integration/test_sqlite_ingest_runs.py`
+  - `tests/integration/test_ingest_run_concurrency.py`
+  - `tests/integration/test_ingest_resume_e2e.py`
+- Touched files (additive, behavior-preserving on default flags):
+  - `corpus_forge/ingest.py` (signal controller, resume logic, checkpoint cadence, max-scan-age skip, print_ingest_status)
+  - `corpus_forge/cli.py` (extend the existing `ingest(...)` typer command — DO NOT add a new top-level command)
+  - `corpus_forge/config.py` (one new field on `ScanConfig`)
+  - `corpus_forge/identity.py` (one new helper)
+  - `corpus_forge/backends/base.py` (7 Protocol methods + 1 exception)
+  - `corpus_forge/backends/postgres.py` (CRUD impl; `lock_source(... , wait=False)` kwarg)
+  - `corpus_forge/backends/sqlite.py` (CRUD impl + `lock_source(... , wait=True)` kwarg + EXPECTED_TABLES rot-detector update)
+  - `config.example.toml` (max_scan_age commented example)
+  - `docs/schema.md` (migration log row)
+  - `tests/unit/test_sqlite_backend.py` (EXPECTED_TABLES additions for the rot-detector)
+  - `tests/integration/test_apply_migrations_uses_alembic.py` (head-version pin bump)
+- Forbidden surfaces (Q1 enforces): `corpus_forge/curation/`, `corpus_forge/mcp/`, `corpus_forge/retrieval/`, `corpus_forge/sources/`, `corpus_forge/embedders/`, `corpus_forge/extractors/`, `corpus_forge/chunkers/`.

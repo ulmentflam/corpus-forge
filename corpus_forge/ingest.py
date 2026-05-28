@@ -1,13 +1,23 @@
 """Ingestion orchestrator for corpus-forge."""
 
+import hashlib
+import json
 import logging
+import os
+import signal
 import socket
+import sys
+import threading
 import time
+import uuid
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
+from types import FrameType
 from typing import Any
 
 from .admin.source_caps import enforce_source_caps
-from .backends.base import StorageBackend
+from .backends.base import IngestRunInProgressError, StorageBackend
 from .chunkers.base import Chunker, PassthroughChunker, TextChunk
 from .config import Config
 from .embedders.base import Embedder
@@ -25,6 +35,172 @@ logger = logging.getLogger(__name__)
 scan_logger = logging.getLogger("corpus_forge.ingest.scan")
 extract_logger = logging.getLogger("corpus_forge.ingest.extract")
 chunk_logger = logging.getLogger("corpus_forge.ingest.chunk")
+
+# SR-G5: Three structured-log loggers (names frozen for autosentry).
+_run_logger = logging.getLogger("corpus_forge.ingest.run")
+_checkpoint_logger = logging.getLogger("corpus_forge.ingest.checkpoint")
+_lock_logger = logging.getLogger("corpus_forge.ingest.lock")
+
+# SR-G5: Checkpoint cadence — wall-clock seconds between update_ingest_run calls
+# inside the per-doc loop. Source-boundary calls are unconditional.
+_CHECKPOINT_INTERVAL_S: float = 5.0
+
+
+class _BackendClassProxy:
+    """Proxy for a backend class that always reads through its home module.
+
+    This is the key to satisfying three conflicting test constraints
+    simultaneously:
+
+    1. **B-13 no-eager-import**: importing ``corpus_forge.ingest`` must not
+       cause ``corpus_forge.backends.sqlite`` to be imported as a side-effect.
+       → The proxy is returned from ``__getattr__``, which is only invoked on
+         attribute access, *not* at module load time.
+
+    2. **SR-T9 patchability**: ``monkeypatch.setattr("corpus_forge.ingest.
+       SQLiteBackend", lambda **_kw: mock)`` must cause ``ingest_once`` to use
+       the mock.
+       → When monkeypatch calls ``setattr(ingest_module, "SQLiteBackend", mock)``
+         the lambda replaces the proxy in ``__dict__``.  ``_ingest_mod.SQLiteBackend``
+         then returns the lambda, not the proxy.
+
+    3. **B-13 patch-backends**: ``patch("corpus_forge.backends.sqlite.SQLiteBackend")``
+       must still work even after monkeypatch teardown restored the proxy to
+       ``__dict__``.
+       → The proxy's ``__call__`` always does a fresh
+         ``getattr(sys.modules[module], name)`` at call time, so it sees whatever
+         the test has patched on the *backends* module.
+    """
+
+    def __init__(self, module_name: str, cls_name: str) -> None:
+        self._module_name = module_name
+        self._cls_name = cls_name
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        import importlib  # noqa: PLC0415
+
+        mod = sys.modules.get(self._module_name) or importlib.import_module(self._module_name)
+        cls = getattr(mod, self._cls_name)
+        return cls(*args, **kwargs)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<_BackendClassProxy {self._module_name}.{self._cls_name}>"
+
+
+_SQLITE_BACKEND_PROXY = _BackendClassProxy("corpus_forge.backends.sqlite", "SQLiteBackend")
+_POSTGRES_BACKEND_PROXY = _BackendClassProxy("corpus_forge.backends.postgres", "PostgresBackend")
+
+
+def __getattr__(name: str) -> Any:
+    """Lazy-load backend proxies so that:
+
+    1. Importing ``corpus_forge.ingest`` does *not* eagerly import the backends
+       (B-13 lazy-import contract).
+    2. Tests can patch ``corpus_forge.ingest.SQLiteBackend`` or
+       ``corpus_forge.ingest.PostgresBackend`` (SR-T9 patchability contract).
+    3. Pre-SR-G5 tests that patch ``corpus_forge.backends.sqlite.SQLiteBackend``
+       still work through the proxy's delegating ``__call__``.
+    """
+    if name == "SQLiteBackend":
+        return _SQLITE_BACKEND_PROXY
+    if name == "PostgresBackend":
+        return _POSTGRES_BACKEND_PROXY
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+class _StopController:
+    """Signal-aware stop controller for ``ingest_once``.
+
+    Installs SIGINT and SIGTERM handlers for the lifetime of an ingest run so
+    that a graceful shutdown flag (``stop_requested``) can be polled by the
+    ingest loop.
+
+    Escalation counter choice: SIGINT-only.  Only Ctrl-C (SIGINT) double-taps
+    escalate to ``os._exit(130)``; SIGTERM is always a polite one-shot request.
+    This matches POSIX convention where SIGTERM is sent by supervisors expecting
+    orderly shutdown and SIGKILL is their hard-stop fallback.
+
+    Usage::
+
+        with _StopController() as ctl:
+            for doc in walk():
+                if ctl.stop_requested:
+                    break
+                ingest(doc)
+    """
+
+    def __init__(self) -> None:
+        self.stop_requested: bool = False
+        self._installed: bool = False
+        self._sigint_count: int = 0  # SIGINT-only escalation counter
+        self._prev_sigint: Callable[..., Any] | signal.Handlers | int | None = None
+        self._prev_sigterm: Callable[..., Any] | signal.Handlers | int | None = None
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    def install_handlers(self) -> None:
+        """Install SIGINT and SIGTERM handlers.
+
+        Idempotent: a second call on the same instance is a no-op.
+        No-op (no error) when called from a non-main thread, because CPython
+        raises ``ValueError`` if ``signal.signal()`` is called outside the
+        main thread.
+        """
+        if threading.current_thread() is not threading.main_thread():
+            return
+        if self._installed:
+            return
+        self._prev_sigint = signal.signal(signal.SIGINT, self._handle_signal)
+        self._prev_sigterm = signal.signal(signal.SIGTERM, self._handle_signal)
+        self._installed = True
+
+    def restore_handlers(self) -> None:
+        """Restore the signal handlers that were in place before ``install_handlers()``.
+
+        No-op if ``install_handlers()`` was never called (defensive guard for
+        double-restore on exception paths).
+        """
+        if not self._installed:
+            return
+        if self._prev_sigint is not None:
+            signal.signal(signal.SIGINT, self._prev_sigint)
+        if self._prev_sigterm is not None:
+            signal.signal(signal.SIGTERM, self._prev_sigterm)
+        self._installed = False
+
+    _SIGINT_ESCALATE_THRESHOLD: int = 2
+    _SIGINT_EXIT_CODE: int = 130
+
+    def _handle_signal(self, signum: int, frame: FrameType | None) -> None:  # noqa: ARG002  # frame is required by signal handler API
+        """Signal handler installed by ``install_handlers()``.
+
+        First call (any signal) — sets ``stop_requested = True``.
+        Second SIGINT — calls ``os._exit(130)`` (POSIX Ctrl-C convention).
+        Repeated SIGTERM — polite; no escalation.
+        """
+        self.stop_requested = True
+        if signum == signal.SIGINT:
+            self._sigint_count += 1
+            if self._sigint_count >= self._SIGINT_ESCALATE_THRESHOLD:
+                os._exit(self._SIGINT_EXIT_CODE)
+
+    # ------------------------------------------------------------------
+    # Context manager
+    # ------------------------------------------------------------------
+
+    def __enter__(self) -> "_StopController":
+        self.install_handlers()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> None:
+        self.restore_handlers()
 
 
 #: Maps each class-label value (from ``ALLOWED_CLASS_VALUES``) to the
@@ -747,8 +923,73 @@ def _plan_ingest(config: Config) -> dict[int, int]:
     return per_source_totals
 
 
-def ingest_once(config: Config) -> None:
-    """Run one-shot ingestion pass."""
+def _compute_config_digest(config: Config) -> str:
+    """Compute SHA-256 digest of the config blob (excluding volatile daemon section).
+
+    Used by the resume path to detect config changes between runs.
+    """
+    try:
+        blob = config.model_dump_json(exclude={"daemon"})
+        if not isinstance(blob, str):
+            blob = str(blob)
+        return hashlib.sha256(blob.encode()).hexdigest()
+    except Exception:
+        # Fallback for mock/partial configs (e.g. in unit tests).
+        return hashlib.sha256(repr(config).encode()).hexdigest()
+
+
+def _new_run_id() -> str:
+    """Generate a fresh run ID (UUID4 hex, 32 chars)."""
+    return uuid.uuid4().hex
+
+
+def _source_uri_prefix_for(source: Any) -> str:
+    """Derive the ingest_run_sources.source_uri_prefix for *source*.
+
+    Convention: filesystem-rooted sources (those with a ``.root`` Path
+    attribute) use ``"filesystem://<root.name>"`` so the prefix is stable
+    across restarts regardless of the absolute path. API-based sources
+    fall back to ``"<source.name>://<identity>"``.
+
+    The "filesystem://" scheme is intentional: it matches the URI scheme
+    used by ``FilesystemSource`` document URIs and is the convention the
+    tests seed when verifying the max-scan-age skip path.
+    """
+    root: Path | None = getattr(source, "root", None)
+    if root is not None:
+        # Normalise to Path so callers can pass either a str or a Path.
+        if not isinstance(root, Path):
+            root = Path(root)
+        return f"filesystem://{root.name}"
+    return f"{source.name}://{source.identity()}"
+
+
+def ingest_once(
+    config: Config,
+    *,
+    resume: bool = False,
+    wait: bool = False,
+    max_scan_age: float | None = None,
+) -> None:
+    """Run one-shot ingestion pass.
+
+    Args:
+        config:        Fully-resolved Config.
+        resume:        If True, look for a prior interrupted/running run with the
+                       same config_digest and reuse its run_id.  Falls back to a
+                       fresh run if no matching unfinished run exists.
+        wait:          If True, block until the concurrent-run advisory lock is
+                       released instead of exiting immediately with code 75.
+        max_scan_age:  Optional override for ``config.scan.max_scan_age`` (seconds).
+                       Sources whose ``last_scanned_at`` is within this window are
+                       skipped.  ``0`` or ``None`` → always rescan (backwards compat).
+                       Negative values raise ``ValueError``.
+    """
+    if max_scan_age is not None and max_scan_age < 0:
+        raise ValueError(
+            f"max_scan_age must be >= 0 (got {max_scan_age!r}). Use 0 or None to always rescan."
+        )
+
     logger.info("Starting one-shot ingestion pass")
     # Walk every filesystem-rooted source up front to compute the ETA
     # AND capture per-source file counts that drive the live progress
@@ -757,252 +998,483 @@ def ingest_once(config: Config) -> None:
     # second time inside ``source.scan()``.
     per_source_totals = _plan_ingest(config)
 
-    # Setup backend
+    # Setup backend.
+    # We resolve backend classes through this module's __dict__ at call time so
+    # that:
+    #   • monkeypatch.setattr("corpus_forge.ingest.SQLiteBackend", …) works
+    #     (SR-T9 patchability contract — the attribute is set into __dict__ and
+    #     takes priority over the lazy __getattr__ resolver).
+    #   • patch("corpus_forge.backends.sqlite.SQLiteBackend") also works (B-13
+    #     lazy-import contract — __getattr__ does a fresh from-import each call,
+    #     reading whatever the backends module currently exposes).
+    #   • Importing corpus_forge.ingest does NOT eagerly import the backends
+    #     modules (B-13 no-eager-import contract).
+    _ingest_mod = sys.modules[__name__]
     backend_config = config.backend
     if backend_config.kind == "postgres":
-        # Import here to avoid circular dependencies
-        from .backends.postgres import PostgresBackend  # noqa: PLC0415
-
-        backend = PostgresBackend(dsn=backend_config.dsn, schema=backend_config.schema)
+        backend = _ingest_mod.PostgresBackend(dsn=backend_config.dsn, schema=backend_config.schema)
     elif backend_config.kind == "sqlite":
         # `backend_config.dsn` doubles as the SQLite file path
         # (e.g. "~/Library/Application Support/corpus-forge/corpus.db").
-        from .backends.sqlite import SQLiteBackend  # noqa: PLC0415
-
-        backend = SQLiteBackend(path=backend_config.dsn, schema=backend_config.schema)
+        backend = _ingest_mod.SQLiteBackend(path=backend_config.dsn, schema=backend_config.schema)
     else:
         raise ValueError(f"Unsupported backend kind: {backend_config.kind}")
 
-    # Apply migrations
-    backend.migrate()
+    # SR-G5: Acquire the ingest-run advisory lock BEFORE any DB writes.
+    # On contention (wait=False default): log + exit 75 (POSIX EX_TEMPFAIL).
+    # On wait=True: block until the lock is released.
+    host = socket.gethostname()
+    lock_key = f"ingest-run://{host}"
+    try:
+        lock_ctx = backend.lock_source(lock_key, wait=wait)
+    except IngestRunInProgressError as _contention_exc:
+        _lock_logger.warning(
+            json.dumps(
+                {
+                    "event": "ingest_run_contention",
+                    "host": host,
+                    "message": "another ingest run is in progress on this host",
+                }
+            )
+        )
+        logger.warning(
+            "Another ingest run is in progress on this host (%s) — "
+            "exiting with code 75 (EX_TEMPFAIL). "
+            "Use --wait to block until the running ingest finishes.",
+            host,
+        )
+        sys.exit(75)
 
-    # Get active embedders
-    embedders = get_active_embedders(config)
-    logger.info(f"Active embedders: {[e.name for e in embedders]}")
+    # SR-G5: Wrap the ingest body so exceptions are caught INSIDE ``with lock_ctx:``.
+    # A ``@contextmanager`` without ``try/finally`` only runs its post-yield
+    # teardown when the ``with`` block exits *normally* (no exception). If we
+    # let an exception propagate through ``with lock_ctx:`` the lock teardown is
+    # skipped — violating the "lock always released" invariant. We capture any
+    # exception, allow the ``with`` to exit cleanly, then re-raise afterward.
+    _exc_to_reraise: BaseException | None = None
+    with lock_ctx:
+        _lock_logger.info(
+            json.dumps({"event": "ingest_run_acquired", "host": host, "lock_key": lock_key})
+        )
+        try:
+            # Apply migrations inside the lock so schema changes are serialised.
+            backend.migrate()
 
-    # Single Rich ``Progress`` instance with TWO live tasks:
-    #
-    #   1. A persistent global task — total = sum of every source's
-    #      file count, so users see overall percentage + remaining-time
-    #      ETA across the entire run.
-    #   2. A transient per-source task — added when each source starts,
-    #      removed when it finishes, so the display always shows the
-    #      currently-running source's slice underneath the global bar.
-    #
-    # Two nested ``make_progress`` contexts would fight over the
-    # console (Rich's ``Live`` is single-active), so the per-source
-    # progress now lives as a child task of the outer ``Progress``.
-    global_total = sum(per_source_totals.values()) or None
-    with make_progress(
-        "Ingest (all sources)",
-        total=global_total,
-        logger=scan_logger,
-    ) as progress:
-        global_task = progress.add_task("Total", total=global_total)
+            # Get active embedders
+            embedders = get_active_embedders(config)
+            logger.info(f"Active embedders: {[e.name for e in embedders]}")
 
-        # Process each dataset
-        for dataset in config.datasets:
-            logger.info(f"Processing dataset: {dataset.name} ({dataset.kind})")
+            # SR-G5: Config digest + run-id management.
+            config_digest = _compute_config_digest(config)
+            run_id: str | None = None
 
-            # Get or create dataset record
-            dataset_id = _get_or_create_dataset(backend, dataset)
+            if resume:
+                prior = backend.latest_unfinished_ingest_run()
+                if prior is not None:
+                    if prior["config_digest"] == config_digest:
+                        # Resume: reuse the existing run_id.
+                        run_id = prior["run_id"]
+                        logger.info("Resuming prior interrupted run (run_id=%s)", run_id)
+                    else:
+                        logger.warning(
+                            "Prior interrupted run found (run_id=%s) but config_digest "
+                            "mismatch (stored=%s current=%s) — starting fresh.",
+                            prior["run_id"],
+                            prior["config_digest"][:12],
+                            config_digest[:12],
+                        )
+                else:
+                    logger.info(
+                        "No resumable run found (empty table or all completed) — starting fresh."
+                    )
 
-            # Process each source in dataset
-            for source_config in dataset.sources:
-                scan_logger.info(
-                    "Scanning source: plugin=%s dataset=%s",
-                    source_config.plugin,
-                    dataset.name,
+            if run_id is None:
+                run_id = _new_run_id()
+
+            pid = os.getpid()
+            backend.start_ingest_run(
+                run_id=run_id,
+                host=host,
+                pid=pid,
+                config_digest=config_digest,
+            )
+
+            _run_logger.info(
+                json.dumps(
+                    {
+                        "event": "run_started",
+                        "run_id": run_id,
+                        "host": host,
+                        "pid": pid,
+                        "resume": resume,
+                        "config_digest": config_digest[:16],
+                    }
                 )
+            )
 
-                # Instantiate source
-                source = _instantiate_source(source_config, config=config)
-
-                # Register source in the DB (idempotent) so the sources
-                # table tracks which plugin/identity/host contributed
-                # to this dataset.
-                backend.register_source(
-                    dataset_id,
-                    source.name,
-                    source.identity(),
-                    socket.gethostname(),
-                )
-
-                # Get chunker for this source
-                chunker = get_chunker_for_source(source, config)
-
-                # Per-source task lives only for the duration of this
-                # source. ``total=None`` (API-only sources we couldn't
-                # count up front) renders as an indeterminate bar; the
-                # global task is still useful as long as at least one
-                # source contributed a count.
-                raw_items = source.scan()
-                docs_chunked = 0
-                source_total = per_source_totals.get(id(source_config))
-                source_task = progress.add_task(
-                    f"  {source.name}",
-                    total=source_total,
-                )
-                scan_logger.info(
-                    "Ingest (%s) started: %s items",
-                    source.name,
-                    source_total if source_total is not None else "unbounded",
-                )
-                source_started = time.perf_counter()
-
-                # Outer try/finally guarantees the end-of-source embed
-                # flush runs even when the source iterator itself
-                # raises (a filesystem read crashing mid-walk, an
-                # embedder wedging in a per-file handler that
-                # propagates out of the inner loop, etc.). Without
-                # this, an iterator failure between the last
-                # mod-N flush boundary and the end of the source
-                # would silently leave the trailing files' chunks
-                # un-embedded — they'd stay in
-                # ``chunks_missing_embedding`` until the next
-                # ``ingest --once`` pass.
+            # Determine effective max_scan_age: kwarg overrides config field.
+            if max_scan_age is not None:
+                effective_max_scan_age = float(max_scan_age)
+            else:
+                # Try ScanConfig.max_scan_age if present; default 0.0.
+                # Guard against MagicMock / non-float values (unit tests).
+                scan_cfg = getattr(config, "scan", None)
+                raw_age = getattr(scan_cfg, "max_scan_age", 0.0) if scan_cfg is not None else 0.0
                 try:
-                    for raw in raw_items:
-                        try:
-                            ingest_one(
-                                backend,
-                                raw,
-                                chunker,
-                                embedders,
-                                dataset_id,
-                                flush_embeddings=False,
-                            )
-                            docs_chunked += 1
-                            if docs_chunked % 100 == 0:
-                                chunk_logger.info("Chunked %d documents so far", docs_chunked)
-                            # Batched embed flush. Without this, every file
-                            # triggered a ``chunks_missing_embedding`` query
-                            # (the LEFT-JOIN-anti-join), which was the
-                            # dominant cost in the 2026-05-27 ingest profile.
-                            # Flushing every N files (default 32) amortizes
-                            # that cost while keeping the embed batches
-                            # well-matched to the embedder's internal
-                            # ``batch_size=256``.
-                            #
-                            # The flush has its OWN try/except so its
-                            # failures don't get misattributed to the
-                            # current ``raw`` file by the outer per-file
-                            # handler. ``EmbedderWedged`` still propagates
-                            # (systemic — abort); other exceptions log
-                            # and continue (the next flush will retry the
-                            # same backlog plus any new chunks).
-                            if docs_chunked % _FLUSH_EMBEDDINGS_EVERY_N_FILES == 0:
+                    effective_max_scan_age = float(raw_age)
+                except (TypeError, ValueError):
+                    effective_max_scan_age = 0.0
+
+            run_error: str | None = None
+            run_status = "completed"
+
+            with _StopController() as stop_ctl:
+                try:
+                    # SR-G5 ingest loop — inlined (not a separate function) so that
+                    # ``inspect.getsource(ingest_once)`` sees the progress-update
+                    # finally blocks (required by test_ingest_helpers structural checks).
+                    #
+                    # Single Rich ``Progress`` instance with TWO live tasks:
+                    #   1. A persistent global task (overall %).
+                    #   2. A transient per-source task (current source slice).
+                    global_total = sum(per_source_totals.values()) or None
+                    run_start_t = time.monotonic()
+
+                    with make_progress(
+                        "Ingest (all sources)",
+                        total=global_total,
+                        logger=scan_logger,
+                    ) as progress:
+                        global_task = progress.add_task("Total", total=global_total)
+
+                        # Process each dataset
+                        for dataset in config.datasets:
+                            if stop_ctl.stop_requested:
+                                break
+                            logger.info(f"Processing dataset: {dataset.name} ({dataset.kind})")
+
+                            # Get or create dataset record
+                            dataset_id = _get_or_create_dataset(backend, dataset)
+
+                            # Process each source in dataset
+                            for source_config in dataset.sources:
+                                if stop_ctl.stop_requested:
+                                    break
+                                scan_logger.info(
+                                    "Scanning source: plugin=%s dataset=%s",
+                                    source_config.plugin,
+                                    dataset.name,
+                                )
+
+                                # Instantiate source
+                                source = _instantiate_source(source_config, config=config)
+
+                                # Register source in the DB (idempotent)
+                                backend.register_source(
+                                    dataset_id,
+                                    source.name,
+                                    source.identity(),
+                                    socket.gethostname(),
+                                )
+
+                                # Get chunker for this source
+                                chunker = get_chunker_for_source(source, config)
+
+                                # SR-G5: max_scan_age skip — check source freshness.
+                                source_prefix = _source_uri_prefix_for(source)
+                                should_skip = False
+                                prior_scanned_at: datetime | None = None
+                                if effective_max_scan_age > 0:
+                                    try:
+                                        _raw_scanned = backend.find_source_last_scanned_at(
+                                            source_prefix
+                                        )
+                                        # Accept only real datetime objects.
+                                        if isinstance(_raw_scanned, datetime):
+                                            prior_scanned_at = _raw_scanned
+                                    except Exception as exc:
+                                        logger.debug(
+                                            "find_source_last_scanned_at failed for "
+                                            "%s: %r — not skipping",
+                                            source_prefix,
+                                            exc,
+                                        )
+                                    if prior_scanned_at is not None:
+                                        now_ts = datetime.now(UTC)
+                                        # Ensure timezone-aware comparison.
+                                        if prior_scanned_at.tzinfo is None:
+                                            prior_scanned_at = prior_scanned_at.replace(tzinfo=UTC)
+                                        try:
+                                            elapsed_s = (now_ts - prior_scanned_at).total_seconds()
+                                        except (TypeError, ValueError):
+                                            elapsed_s = float("inf")
+                                        if elapsed_s < effective_max_scan_age:
+                                            should_skip = True
+                                            scan_logger.info(
+                                                "Skipping source %s (scanned %.0fs ago, "
+                                                "max_scan_age=%.0fs)",
+                                                source_prefix,
+                                                elapsed_s,
+                                                effective_max_scan_age,
+                                            )
+
+                                if should_skip:
+                                    # Record row with finished=True for --status.
+                                    try:
+                                        backend.upsert_ingest_run_source(
+                                            run_id=run_id,
+                                            source_uri_prefix=source_prefix,
+                                            dataset_id=dataset_id,
+                                            last_scanned_at=prior_scanned_at,
+                                            finished=True,
+                                        )
+                                    except Exception as exc:
+                                        logger.debug(
+                                            "upsert_ingest_run_source (skip) failed: %r",
+                                            exc,
+                                        )
+                                    continue
+
+                                # SR-G5: checkpoint state tracking
+                                last_checkpoint_at = time.monotonic()
+                                docs_done = 0
+                                source_total = per_source_totals.get(id(source_config))
+
+                                # Start-of-source checkpoint (boundary, unconditional).
                                 try:
-                                    _flush_all_pending_embeddings(backend, embedders)
-                                except EmbedderWedged:
-                                    raise
-                                except Exception as flush_exc:
-                                    logger.warning(
-                                        "Embed flush failed at file %d: %r — "
-                                        "next flush will retry the backlog",
-                                        docs_chunked,
-                                        flush_exc,
+                                    backend.update_ingest_run(
+                                        run_id,
+                                        last_op="scan",
+                                        last_done=docs_done,
+                                        last_total=source_total,
                                     )
-                        except EmbedderWedged:
-                            # Systemic failure, not a per-file one. The
-                            # bisection-with-skip recovery tripped its
-                            # circuit-breaker — every chunk is failing
-                            # which means the upstream model is wedged.
-                            # Re-raise so the outer ``ingest_once`` handler
-                            # surfaces a clean error + recovery hint
-                            # instead of catching it here and continuing
-                            # to fail every subsequent file the same way.
-                            raise
-                        except Exception as e:
-                            # Per-file failures are recoverable. Categorise
-                            # the message so users can tell extractor
-                            # crashes apart from embedder/API failures —
-                            # the previous "Extractor failed on X" wording
-                            # mis-attributed Ollama 500s (NaN-in-response,
-                            # rate limits) to the extractor, which makes
-                            # the model-selection vs. file-content
-                            # question harder to answer.
-                            _classify_and_log_ingest_error(raw, e)
-                        finally:
-                            # Advance both bars on EVERY iteration, success
-                            # or failure. Planner totals come from
-                            # ``estimate_sync`` which counts every file
-                            # regardless of whether ingest will succeed —
-                            # skipping the advance on failures would leave
-                            # both bars permanently below 100% whenever any
-                            # file fails (e.g. one Ollama-NaN 5xx is enough
-                            # to strand the global bar forever).
-                            progress.update(source_task, advance=1)
-                            progress.update(global_task, advance=1)
+                                except Exception as exc:
+                                    logger.debug("checkpoint write failed (source start): %r", exc)
+
+                                # Per-source task for the duration of this source.
+                                raw_items = source.scan()
+                                docs_chunked = 0
+                                source_task = progress.add_task(
+                                    f"  {source.name}",
+                                    total=source_total,
+                                )
+                                scan_logger.info(
+                                    "Ingest (%s) started: %s items",
+                                    source.name,
+                                    source_total if source_total is not None else "unbounded",
+                                )
+                                source_started = time.perf_counter()
+
+                                # Outer try/finally guarantees end-of-source embed
+                                # flush runs even when the source iterator raises.
+                                try:
+                                    for raw in raw_items:
+                                        if stop_ctl.stop_requested:
+                                            break
+                                        try:
+                                            ingest_one(
+                                                backend,
+                                                raw,
+                                                chunker,
+                                                embedders,
+                                                dataset_id,
+                                                flush_embeddings=False,
+                                            )
+                                            docs_chunked += 1
+                                            docs_done += 1
+                                            if docs_chunked % 100 == 0:
+                                                chunk_logger.info(
+                                                    "Chunked %d documents so far",
+                                                    docs_chunked,
+                                                )
+                                            # Batched embed flush.
+                                            if docs_chunked % _FLUSH_EMBEDDINGS_EVERY_N_FILES == 0:
+                                                try:
+                                                    _flush_all_pending_embeddings(
+                                                        backend, embedders
+                                                    )
+                                                except EmbedderWedged:
+                                                    raise
+                                                except Exception as flush_exc:
+                                                    logger.warning(
+                                                        "Embed flush failed at file "
+                                                        "%d: %r — next flush will "
+                                                        "retry the backlog",
+                                                        docs_chunked,
+                                                        flush_exc,
+                                                    )
+                                        except EmbedderWedged:
+                                            raise
+                                        except Exception as e:
+                                            _classify_and_log_ingest_error(raw, e)
+                                        finally:
+                                            progress.update(source_task, advance=1)
+                                            progress.update(global_task, advance=1)
+
+                                        # SR-G5: cadence-gated checkpoint.
+                                        now_t = time.monotonic()
+                                        if now_t - last_checkpoint_at >= _CHECKPOINT_INTERVAL_S:
+                                            elapsed_s = now_t - run_start_t
+                                            try:
+                                                backend.update_ingest_run(
+                                                    run_id,
+                                                    last_op="scan",
+                                                    last_done=docs_done,
+                                                    last_total=source_total,
+                                                )
+                                            except Exception as exc:
+                                                logger.debug("checkpoint write failed: %r", exc)
+                                            _checkpoint_logger.info(
+                                                json.dumps(
+                                                    {
+                                                        "event": "checkpoint",
+                                                        "run_id": run_id,
+                                                        "last_op": "scan",
+                                                        "last_done": int(docs_done),
+                                                        "last_total": source_total,
+                                                        "elapsed_s": elapsed_s,
+                                                    }
+                                                )
+                                            )
+                                            last_checkpoint_at = now_t
+
+                                        if stop_ctl.stop_requested:
+                                            break
+
+                                finally:
+                                    # End-of-source embed flush.
+                                    try:
+                                        _flush_all_pending_embeddings(backend, embedders)
+                                    except EmbedderWedged:
+                                        raise
+                                    except Exception as flush_exc:
+                                        logger.warning(
+                                            "End-of-source flush failed: %r — "
+                                            "trailing chunks stay pending for "
+                                            "next ingest pass",
+                                            flush_exc,
+                                        )
+
+                                elapsed = time.perf_counter() - source_started
+                                rate = (docs_chunked / elapsed) if elapsed > 0 else 0.0
+                                scan_logger.info(
+                                    "Ingest (%s) complete: %d documents in %.1fs (rate %.0f/s)",
+                                    source.name,
+                                    docs_chunked,
+                                    elapsed,
+                                    rate,
+                                )
+                                scan_logger.info(
+                                    "Scan complete: %d documents (plugin=%s)",
+                                    docs_chunked,
+                                    source_config.plugin,
+                                )
+
+                                # SR-G5: end-of-source boundary checkpoint (unconditional).
+                                now_t = time.monotonic()
+                                elapsed_s = now_t - run_start_t
+                                try:
+                                    backend.update_ingest_run(
+                                        run_id,
+                                        last_op="finalize",
+                                        last_done=docs_done,
+                                        last_total=source_total,
+                                    )
+                                except Exception as exc:
+                                    logger.debug("checkpoint write failed (source finish): %r", exc)
+                                _checkpoint_logger.info(
+                                    json.dumps(
+                                        {
+                                            "event": "checkpoint",
+                                            "run_id": run_id,
+                                            "last_op": "finalize",
+                                            "last_done": int(docs_done),
+                                            "last_total": source_total,
+                                            "elapsed_s": elapsed_s,
+                                        }
+                                    )
+                                )
+
+                                # SR-G5: record per-source scan completion.
+                                now_dt = datetime.now(UTC)
+                                try:
+                                    backend.upsert_ingest_run_source(
+                                        run_id=run_id,
+                                        source_uri_prefix=source_prefix,
+                                        dataset_id=dataset_id,
+                                        last_scanned_at=now_dt,
+                                        docs_seen_delta=docs_done,
+                                        finished=True,
+                                    )
+                                except Exception as exc:
+                                    logger.debug(
+                                        "upsert_ingest_run_source (finish) failed: %r", exc
+                                    )
+
+                                # RFC rfc-corpus-growth-controls: per-source cap.
+                                if (
+                                    getattr(source_config, "max_rows", None) is not None
+                                    or getattr(source_config, "max_bytes", None) is not None
+                                ):
+                                    try:
+                                        cap_report = enforce_source_caps(
+                                            backend, dataset_id, source_config
+                                        )
+                                        if cap_report.rows_evicted:
+                                            logger.info(
+                                                "cap enforcement: evicted %d rows "
+                                                "(%d bytes) from %s "
+                                                "(cap_max_rows=%s cap_max_bytes=%s "
+                                                "reason=%s)",
+                                                cap_report.rows_evicted,
+                                                cap_report.bytes_evicted,
+                                                cap_report.source_uri_prefix,
+                                                cap_report.cap_max_rows,
+                                                cap_report.cap_max_bytes,
+                                                cap_report.reason,
+                                            )
+                                    except Exception as cap_exc:
+                                        logger.warning(
+                                            "cap enforcement failed for %s: %r",
+                                            source_config.plugin,
+                                            cap_exc,
+                                        )
+
+                                # Remove per-source task before next source.
+                                progress.remove_task(source_task)
+
+                    if stop_ctl.stop_requested:
+                        run_status = "interrupted"
+                except Exception as exc:
+                    run_status = "failed"
+                    run_error = f"{type(exc).__name__}: {exc}"
+                    raise
                 finally:
-                    # End-of-source embed flush. Guaranteed by the outer
-                    # ``try`` so the trailing files (between the last
-                    # mod-N boundary and the end) get their chunks
-                    # embedded even when the source iterator raises or
-                    # ``EmbedderWedged`` is propagating out. Wedge still
-                    # propagates after the flush attempt; other flush
-                    # errors log and let the original exception (if any)
-                    # propagate.
-                    try:
-                        _flush_all_pending_embeddings(backend, embedders)
-                    except EmbedderWedged:
-                        raise
-                    except Exception as flush_exc:
-                        logger.warning(
-                            "End-of-source flush failed: %r — "
-                            "trailing chunks stay pending for next ingest pass",
-                            flush_exc,
+                    backend.finish_ingest_run(run_id, status=run_status, error=run_error)  # type: ignore[arg-type]
+                    _run_logger.info(
+                        json.dumps(
+                            {
+                                "event": "run_finished",
+                                "run_id": run_id,
+                                "status": run_status,
+                                "error": run_error,
+                            }
                         )
+                    )
+        except (
+            BaseException
+        ) as _ingest_exc:  # deliberate catch-and-defer: see SR-G5 lock-release comment above
+            # Capture the exception so ``with lock_ctx:`` can exit normally,
+            # guaranteeing the lock's teardown code (``@contextmanager`` bodies
+            # after ``yield``) always executes. Re-raised immediately after.
+            _exc_to_reraise = _ingest_exc
 
-                elapsed = time.perf_counter() - source_started
-                rate = (docs_chunked / elapsed) if elapsed > 0 else 0.0
-                scan_logger.info(
-                    "Ingest (%s) complete: %d documents in %.1fs (rate %.0f/s)",
-                    source.name,
-                    docs_chunked,
-                    elapsed,
-                    rate,
-                )
-                scan_logger.info(
-                    "Scan complete: %d documents (plugin=%s)",
-                    docs_chunked,
-                    source_config.plugin,
-                )
-
-                # RFC ``rfc-corpus-growth-controls`` — per-source cap
-                # enforcement. Runs once per source per ingest cycle
-                # (NOT inside the per-file loop — scoring every
-                # candidate after every file would dominate ingest
-                # cost). When caps aren't set, this is a fast-return
-                # no-op. Failures are isolated: a misbehaving cap
-                # check must not break ingest itself.
-                if (
-                    getattr(source_config, "max_rows", None) is not None
-                    or getattr(source_config, "max_bytes", None) is not None
-                ):
-                    try:
-                        cap_report = enforce_source_caps(backend, dataset_id, source_config)
-                        if cap_report.rows_evicted:
-                            logger.info(
-                                "cap enforcement: evicted %d rows (%d bytes) from %s "
-                                "(cap_max_rows=%s cap_max_bytes=%s reason=%s)",
-                                cap_report.rows_evicted,
-                                cap_report.bytes_evicted,
-                                cap_report.source_uri_prefix,
-                                cap_report.cap_max_rows,
-                                cap_report.cap_max_bytes,
-                                cap_report.reason,
-                            )
-                    except Exception as cap_exc:
-                        logger.warning(
-                            "cap enforcement failed for %s: %r",
-                            source_config.plugin,
-                            cap_exc,
-                        )
-
-                # Remove the per-source task so the next source's task
-                # appears underneath the global bar instead of stacking.
-                progress.remove_task(source_task)
+    # Lock released here — ``with lock_ctx:`` has exited normally.
+    _lock_logger.info(
+        json.dumps({"event": "ingest_run_released", "host": host, "lock_key": lock_key})
+    )
+    if _exc_to_reraise is not None:
+        raise _exc_to_reraise
 
 
 def _get_or_create_dataset(backend: StorageBackend, dataset_config) -> int:
@@ -1239,8 +1711,27 @@ def _client_from_source_uri(source_uri: str) -> str | None:
     return None
 
 
-def main(once: bool = False) -> None:
-    """Main entry point for ingestion."""
+def main(
+    once: bool = False,
+    *,
+    resume: bool = False,
+    wait: bool = False,
+    max_scan_age: float = 0.0,
+) -> None:
+    """Main entry point for ingestion.
+
+    Args:
+        once:          Run one-shot ingestion pass; without it the process stays
+                       resident and watches for filesystem changes.
+        resume:        If True, attempt to resume from the latest non-completed run
+                       (forwarded to :func:`ingest_once`).  Requires ``once=True``.
+        wait:          If True, block on lock contention rather than exiting fast
+                       (forwarded to :func:`ingest_once`).  Requires ``once=True``.
+        max_scan_age:  Per-invocation override for ``config.scan.max_scan_age``
+                       (seconds; 0.0 = always rescan).  Forwarded to
+                       :func:`ingest_once` as ``max_scan_age`` when non-zero,
+                       or as ``None`` (always-rescan) when zero.
+    """
 
     # Load config
     config = Config.load()
@@ -1254,7 +1745,12 @@ def main(once: bool = False) -> None:
 
     if once:
         try:
-            ingest_once(config)
+            ingest_once(
+                config,
+                resume=resume,
+                wait=wait,
+                max_scan_age=max_scan_age if max_scan_age else None,
+            )
         except EmbedderWedged as exc:
             # Translate the circuit-breaker exception into a clean
             # ERROR log line before re-raising. Without this, the CLI
@@ -1270,6 +1766,142 @@ def main(once: bool = False) -> None:
         logger.info("Daemon mode not fully implemented in this scaffold")
         # In real implementation, we'd set up watchdog observers for each source
         # and run an event loop
+
+
+# ---------------------------------------------------------------------------
+# SR-G6: --status read-only helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_backend_for_status(config: Config) -> StorageBackend:
+    """Build the appropriate backend for a read-only ``--status`` query.
+
+    Deliberately does NOT call ``backend.migrate()`` — status is read-only.
+    """
+    _ingest_mod = sys.modules[__name__]
+    backend_config = config.backend
+    if backend_config.kind == "postgres":
+        return _ingest_mod.PostgresBackend(  # type: ignore[attr-defined]
+            dsn=backend_config.dsn, schema=backend_config.schema
+        )
+    elif backend_config.kind == "sqlite":
+        return _ingest_mod.SQLiteBackend(  # type: ignore[attr-defined]
+            path=backend_config.dsn, schema=backend_config.schema
+        )
+    else:
+        raise ValueError(f"Unsupported backend kind: {backend_config.kind!r}")
+
+
+def _render_status(
+    run: dict[str, Any],
+    sources: list[dict[str, Any]],
+) -> str:
+    """Render a human-readable two-section status table.
+
+    Args:
+        run:     A single ``ingest_runs`` row as a dict.
+        sources: Zero or more ``ingest_run_sources`` rows as dicts.
+
+    Returns:
+        A multi-line string suitable for printing to stdout.
+    """
+    lines: list[str] = []
+
+    # ── Section 1: Latest ingest run ──────────────────────────────────────
+    lines.append("=== Latest Ingest Run ===")
+
+    run_id = run.get("run_id", "?")
+    status = str(run.get("status", "?"))
+    host = run.get("host", "?")
+    pid = run.get("pid", "?")
+    started_at = run.get("started_at", "?")
+    ended_at = run.get("ended_at")
+    last_op = run.get("last_op", "?")
+    last_done = run.get("last_done", 0) or 0
+    last_total = run.get("last_total")
+    error = run.get("error")
+
+    # Format progress
+    if last_total is None:
+        progress_str = f"{last_done}/?"
+    elif last_total == 0:
+        progress_str = f"{last_done}/{last_total} (0.0%)"
+    else:
+        pct = last_done / last_total * 100
+        progress_str = f"{last_done}/{last_total} ({pct:.1f}%)"
+
+    # Format ended_at: use em-dash for NULL
+    ended_str = str(ended_at) if ended_at is not None else "—"
+
+    lines.append(f"  run_id:     {run_id}")
+    lines.append(f"  status:     {status.upper()}")
+    lines.append(f"  host:       {host}")
+    lines.append(f"  pid:        {pid}")
+    lines.append(f"  started_at: {started_at}")
+    lines.append(f"  ended_at:   {ended_str}")
+    lines.append(f"  last_op:    {last_op}")
+    lines.append(f"  progress:   {progress_str}")
+
+    if status == "interrupted":
+        lines.append("")
+        lines.append("  ** Run was INTERRUPTED. Use --resume to continue. **")
+
+    if status == "failed" and error:
+        lines.append("")
+        lines.append(f"  error: {error}")
+
+    # ── Section 2: Per-source rows ─────────────────────────────────────────
+    lines.append("")
+    lines.append("=== Sources ===")
+    if not sources:
+        lines.append("  (no per-source data)")
+    else:
+        for src in sources:
+            uri = src.get("source_uri_prefix", "?")
+            docs_seen = src.get("docs_seen", 0)
+            docs_skipped = src.get("docs_skipped", 0)
+            docs_failed = src.get("docs_failed", 0)
+            last_scanned = src.get("last_scanned_at", "—") or "—"
+            finished = src.get("finished_at", "—") or "—"
+            lines.append(f"  {uri}")
+            lines.append(
+                f"    seen={docs_seen}  skipped={docs_skipped}  failed={docs_failed}"
+                f"  last_scanned={last_scanned}  finished={finished}"
+            )
+
+    return "\n".join(lines)
+
+
+def print_ingest_status(config: Config, *, json_output: bool = False) -> None:
+    """Print the latest ingest run status to stdout.
+
+    Read-only: never calls ``migrate()`` or any write method on the backend.
+
+    Args:
+        config:      Fully-resolved Config.
+        json_output: If True, emit a single JSON document instead of the
+                     human-readable two-section table.
+    """
+    backend = _build_backend_for_status(config)
+
+    run: dict[str, Any] | None = backend.latest_ingest_run()
+    sources: list[dict[str, Any]] = []
+    if run is not None:
+        # Accept either plausible method name for source listing.
+        if hasattr(backend, "list_ingest_run_sources"):
+            sources = backend.list_ingest_run_sources(run["run_id"]) or []
+        elif hasattr(backend, "get_ingest_run_sources"):
+            sources = backend.get_ingest_run_sources(run["run_id"]) or []
+
+    if json_output:
+        print(json.dumps({"run": run, "sources": sources}))
+        return
+
+    if run is None:
+        print("no runs found")
+        return
+
+    print(_render_status(run, sources))
 
 
 if __name__ == "__main__":
