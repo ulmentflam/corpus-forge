@@ -109,8 +109,13 @@ def resolve_effective_workers(config_workers: int | None) -> int:
         return parsed
     # ``config_workers`` may be ``None`` (auto/unset) OR a non-``int`` from
     # a test mock or partially-built config — treat anything that isn't a
-    # real ``int`` as auto and fall back to the formula.
-    if not isinstance(config_workers, int) or isinstance(config_workers, bool):
+    # real ``int`` as auto and fall back to the formula.  ``bool`` is a
+    # subclass of ``int`` in Python so we reject it explicitly FIRST (a
+    # ``True``/``False`` reaching here is almost certainly a programmer bug,
+    # not a test-mock pattern; silent fallback would hide it).
+    if isinstance(config_workers, bool):
+        raise ValueError(f"workers must be an int, not bool (got {config_workers!r})")
+    if not isinstance(config_workers, int):
         return min(32, (os.cpu_count() or 1) * 4)
     return config_workers
 
