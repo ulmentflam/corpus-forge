@@ -18,10 +18,11 @@ Tests use a temporary directory for ``root`` so the constructor's
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
-from corpus_forge.config import DatasetSourceConfig, ExtractionConfig
+from corpus_forge.config import DatasetSourceConfig, ExtractionConfig, ScanConfig
 from corpus_forge.ingest import _instantiate_source
 from corpus_forge.sources.filesystem import FilesystemSource
 
@@ -72,6 +73,45 @@ def test_instantiate_filesystem_passes_exclude_globs(tmp_path: Path):
     src = _instantiate_source(cfg)
     assert "*.bak" in src.exclude_globs
     assert ".git/**" in src.exclude_globs
+
+
+def test_instantiate_filesystem_threads_scan_config_from_supplied_config(tmp_path: Path):
+    """When the enclosing ``config`` is supplied, ``config.scan`` must be
+    threaded into ``FilesystemSource`` so ``config.scan.workers`` reaches
+    the directory walk (the per-PR-#69 follow-up).
+
+    Without this wiring, the ``filesystem`` source plugin silently fell
+    back to ``ScanConfig()`` (workers=1, serial) regardless of what the
+    user put in their config — only ``CF_SCAN_WORKERS`` env override
+    would engage concurrency.
+    """
+    cfg = DatasetSourceConfig(
+        plugin="filesystem",
+        root=str(tmp_path),
+        chunker="markdown",
+    )
+    # Stub Config: real ScanConfig (so the resolver gets a real int when
+    # the source's discover() calls it), minimal MagicMock for the rest.
+    enclosing = MagicMock()
+    enclosing.scan = ScanConfig(workers=4)
+    src = _instantiate_source(cfg, config=enclosing)
+    assert isinstance(src, FilesystemSource)
+    assert src.scan_config.workers == 4
+
+
+def test_instantiate_filesystem_defaults_scan_config_when_config_is_none(tmp_path: Path):
+    """Legacy call shape (``config=None``) must continue to give the
+    source a default ``ScanConfig`` (workers=1, serial) — no regression
+    for callers that never pass ``config``."""
+    cfg = DatasetSourceConfig(
+        plugin="filesystem",
+        root=str(tmp_path),
+        chunker="markdown",
+    )
+    src = _instantiate_source(cfg)  # no config=
+    assert isinstance(src, FilesystemSource)
+    assert isinstance(src.scan_config, ScanConfig)
+    assert src.scan_config.workers == 1  # ScanConfig default
 
 
 def test_instantiate_filesystem_csv_max_rows_baked_into_extractor(tmp_path: Path):
