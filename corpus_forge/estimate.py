@@ -482,6 +482,7 @@ def _walk(
     root: Path,
     *,
     ignore: IgnoreStack | None = None,
+    workers: int = 1,
 ) -> tuple[dict[str, _ClassBucket], int, int, int, ScanStats]:
     """Walk ``root`` and bucket every file into an extractor class.
 
@@ -527,6 +528,7 @@ def _walk(
             follow_symlinks=False,
             sort=True,
             stats=walk_stats,
+            workers=workers,
         ):
             name = entry.path.name
             # Suffix the way `pathlib.Path.suffix` would. `entry.path`
@@ -588,6 +590,7 @@ def walk_with_stats(
     root: Path,
     *,
     ignore: IgnoreStack | None = None,
+    workers: int = 1,
 ) -> tuple[dict[str, _ClassBucket], int, int, int, ScanStats]:
     """Public 5-tuple-returning variant of :func:`_walk`.
 
@@ -595,7 +598,7 @@ def walk_with_stats(
     :class:`ScanStats` without having to re-walk. Same contract as
     :func:`_walk`; exported in ``__all__`` for stability.
     """
-    return _walk(root, ignore=ignore)
+    return _walk(root, ignore=ignore, workers=workers)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -670,7 +673,14 @@ def estimate_sync(
         by_name = {e.name: e for e in config.embedders}
         chosen = [by_name[name] for name in wanted]
 
-    buckets, file_count, dir_count, total_raw_bytes, _scan_stats = _walk(root, ignore=ignore)
+    from corpus_forge.scanner.walker import resolve_effective_workers  # noqa: PLC0415
+
+    _scan_workers = resolve_effective_workers(
+        getattr(getattr(config, "scan", None), "workers", None)
+    )
+    buckets, file_count, dir_count, total_raw_bytes, _scan_stats = _walk(
+        root, ignore=ignore, workers=_scan_workers
+    )
 
     # Stable ordering for the per-class roll-up — match the heuristic
     # table order so tests + CLI tables are deterministic.

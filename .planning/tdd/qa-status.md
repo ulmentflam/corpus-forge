@@ -340,3 +340,33 @@ E-10 P1 gate).
   2. INFORMATIONAL (non-blocking per gate wording, but flag for Principal): 1 new pyrefly error from `corpus_forge/analyze/dedup.py:131` (`bad-argument-type` — `int(nb_str)` where datasketch LSH query returns `Hashable`). Gate says "no new errors"; baseline was 3 errors (language.py); O2 brings total to 4. Add `# type: ignore[arg-type]` or a `str()` cast to suppress.
 - Verdict: rework
 - Notes: The dedup and language modules are correct and their tests pass. The drift module has a real nan-return bug in `js_embedding_centroid` that the Hypothesis property test correctly catches. Fix in `corpus_forge/analyze/drift.py` only — add a `math.isnan` guard on the return value. The pyrefly dedup error is a secondary issue that should be addressed in the same pass.
+
+---
+
+## CW1-Q1 (perf/concurrent-scan-walk)
+- Suite (targeted): 57 passed, 0 failed, 0 skipped, 4.96s (test_walker_concurrent.py + test_scan_config_workers.py + test_walker.py + test_scan_concurrency_bench.py)
+- Suite (full unit): 4901 passed, 166 failed, 38 skipped, 1 xfailed; pre-existing baseline on main 196 failed; branch reduces to 166 (30 fewer, new tests now passing). Zero NEW failures introduced.
+- Coverage: n/a per tasks.md coverage-min field (perf change). Pre-existing coverage unaffected.
+- Smoke (CLI parity): uv run corpus-forge estimate <fixture> with fixture having .venv/ + node_modules/ + nested dirs (7 files, both baseline-pruned dirs ignored):
+  - CF_SCAN_WORKERS=1: file_count=5, dir_count=4 PASS
+  - CF_SCAN_WORKERS=8: file_count=5, dir_count=4 PASS
+  - CF_SCAN_WORKERS unset: file_count=5, dir_count=4 PASS
+- Flakiness hunt (6 runs): seeds 1/2/3/4/5 + -p no:randomly; 24/24 each run, 0 flakes in test_walker_concurrent.py and test_scan_concurrency_bench.py.
+- Regression sweep:
+  - Adjacent filter (walk/scan/ignore/estimate/filesystem): 340 passed, 2 failed (pre-existing test_analyze_topics.py hdbscan ModuleNotFoundError on main too), 8 skipped
+  - Full unit diff vs main: comm -13 of FAILED sets shows empty set of new regressions
+  - FilesystemSource construction-site audit (17 sites): all existing callers omit scan_config, default to ScanConfig(workers=1), serial path preserved
+  - ingest.py:1154 does not pass scan_config (serial default; outside CW2-G1 scope, not a defect)
+- Default-behavior check:
+  - ScanConfig.workers=1 default confirmed (config.py:768)
+  - resolve_effective_workers(1) no env = 1 (serial). PASS
+  - resolve_effective_workers(None) no env = min(32, cpu*4) (auto formula). PASS
+  - CF_SCAN_WORKERS=4 with config_workers=1 = 4 (env wins). PASS
+  - estimate.py and FilesystemSource.discover() both wire through resolve_effective_workers before passing workers to walk()
+- Static gates:
+  - pyrefly: 0 errors (63 suppressed). PASS
+  - ruff format: 751 files already formatted. PASS
+  - ruff check: All checks passed. PASS
+- Issues: none
+- Verdict: approved
+- Notes: Concurrent implementation is correct, deterministic, non-flaky, backward-compatible. Serial path (workers<=1) uses separate _walk_serial function unchanged from original. Concurrent path uses ThreadPoolExecutor for prefetch only; main thread owns all state mutations and yields. File-set + dir-count parity confirmed end-to-end via CLI across 3 worker settings.

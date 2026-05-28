@@ -693,9 +693,18 @@ extra_skip_dirs = []
 # (the behaviour both pre-Wave-2 walkers had).
 follow_symlinks = false
 
-# Concurrency knob — API-plumbed but not yet implemented. Leave at 1
-# until a future revision lands a thread pool to overlap stat calls.
-# Values > 1 raise `NotImplementedError` at walk-time.
+# Concurrency knob — number of threads for concurrent os.scandir
+# enumeration.  workers=1 (default) is the safe serial path.
+# workers > 1 runs a bounded ThreadPoolExecutor that prefetches
+# directory listings concurrently while the main thread yields files
+# in deterministic DFS + sorted order.  Useful on iCloud/NFS roots
+# where per-readdir latency is high.
+#
+# Runtime override (wins unconditionally):
+#   CF_SCAN_WORKERS=8 corpus-forge ingest --once
+#
+# Auto-default when unset by call sites:
+#   min(32, (os.cpu_count() or 1) * 4)
 workers = 1
 
 # ─────────────────────────────────────────────────────────────────────

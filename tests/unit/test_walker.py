@@ -422,16 +422,22 @@ def test_scandir_context_handles_closed(tmp_path: Path, monkeypatch: pytest.Monk
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# workers > 1 not yet implemented
+# workers > 1 — NEW contract: concurrent walk is supported
 # ─────────────────────────────────────────────────────────────────────────
+# NOTE: test_workers_greater_than_one_raises was removed in CW1-T1.
+# The old test pinned NotImplementedError for workers > 1.
+# The new contract: workers > 1 is fully supported (concurrent walk).
+# Full concurrent-walk coverage lives in tests/unit/test_walker_concurrent.py.
 
 
-def test_workers_greater_than_one_raises(tmp_path: Path) -> None:
+def test_workers_greater_than_one_does_not_raise(tmp_path: Path) -> None:
+    """workers > 1 must succeed and yield the correct file — NEW contract (CW1-T1)."""
     from corpus_forge.scanner import walk
 
     (tmp_path / "x.md").write_text("hi")
-    with pytest.raises(NotImplementedError):
-        list(walk(tmp_path, workers=2))
+    # Must NOT raise NotImplementedError.
+    files = list(walk(tmp_path, workers=2))
+    assert len(files) == 1
 
 
 # ─────────────────────────────────────────────────────────────────────────

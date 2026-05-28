@@ -25,7 +25,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from corpus_forge.config import ExtractionConfig
+from corpus_forge.config import ExtractionConfig, ScanConfig
 from corpus_forge.extractors.registry import ExtractorRegistry, register_default_extractors
 from corpus_forge.ignore import CorpusIgnore, IgnoreStack
 from corpus_forge.macos_tcc import download_if_evicted, is_iclouddrive_managed
@@ -133,6 +133,7 @@ class FilesystemSource(WatchedSource):
         *,
         exclude_globs: list[str] | None = None,
         extraction: ExtractionConfig | None = None,
+        scan_config: ScanConfig | None = None,
         vlm: VLMBackend | None = None,
         whisper: WhisperBackend | None = None,
         debounce: float = 2.0,
@@ -140,6 +141,7 @@ class FilesystemSource(WatchedSource):
         super().__init__(Path(root), debounce=debounce)
         self.exclude_globs: list[str] = list(exclude_globs) if exclude_globs else []
         self.extraction: ExtractionConfig = extraction or ExtractionConfig()
+        self.scan_config: ScanConfig = scan_config or ScanConfig()
         self.vlm = vlm
         self.whisper = whisper
         # Registry baked with the user's tunables (csv_max_rows,
@@ -193,6 +195,7 @@ class FilesystemSource(WatchedSource):
             load_local_ignore,
         )
         from corpus_forge.scanner import walk  # noqa: PLC0415
+        from corpus_forge.scanner.walker import resolve_effective_workers  # noqa: PLC0415
 
         # Global first, then local — gitignore semantics: later set wins.
         sets = []
@@ -220,6 +223,7 @@ class FilesystemSource(WatchedSource):
         include_exts = self._registry_extensions() or None
         include_filenames = self._registry_filenames() or None
 
+        _workers = resolve_effective_workers(self.scan_config.workers)
         for entry in walk(
             self.root,
             ignore=ignore,
@@ -227,6 +231,7 @@ class FilesystemSource(WatchedSource):
             include_filenames=include_filenames,
             follow_symlinks=False,
             sort=True,
+            workers=_workers,
         ):
             yield entry.path
 

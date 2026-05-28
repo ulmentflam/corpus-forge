@@ -752,8 +752,15 @@ class ScanConfig(BaseModel):
     - ``follow_symlinks``: when True, symlinked directories are descended
       (default False — keeps the walker from chasing cycles and
       double-counting).
-    - ``workers``: API-plumbed but not yet implemented. Must be ``>= 1``;
-      values ``> 1`` raise :class:`NotImplementedError` at walk-time.
+    - ``workers``: number of threads for concurrent ``os.scandir``
+      enumeration.  Must be ``>= 1``.  ``workers=1`` (default) uses the
+      serial code path unchanged.  ``workers > 1`` runs a bounded
+      :class:`~concurrent.futures.ThreadPoolExecutor` that prefetches
+      directory listings concurrently while the main thread yields files
+      in deterministic DFS + sorted order.  Override at runtime via the
+      ``CF_SCAN_WORKERS`` environment variable (env wins unconditionally).
+      Auto-default (when unset): ``min(32, (os.cpu_count() or 1) * 4)``
+      — see :func:`~corpus_forge.scanner.walker.resolve_effective_workers`.
     """
 
     extra_skip_dirs: list[str] = Field(default_factory=list)

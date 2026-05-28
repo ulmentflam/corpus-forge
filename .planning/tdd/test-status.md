@@ -3408,3 +3408,49 @@ Test patterns of note:
   - `_invoke_with_backend` patches `corpus_forge.eval.distill._build_backend` and `_get_backend` — Coder should use one of these names for the backend factory.
   - Template fidelity check uses `chatml` as the default template (builtin); `--template chatml` override is also tested.
 - Status: red — handed off to tdd-coder
+
+## CW1-T1 / CW2-T1 / CW3-T1
+- Test files:
+  - `tests/unit/test_walker_concurrent.py` (new, 30 tests)
+  - `tests/unit/test_scan_config_workers.py` (new, 20 tests)
+  - `tests/perf/test_scan_concurrency_bench.py` (new, 3 tests)
+  - `tests/unit/test_walker.py` (updated: replaced test_workers_greater_than_one_raises)
+- Run command: `uv run pytest tests/unit/test_walker_concurrent.py tests/unit/test_scan_config_workers.py tests/unit/test_walker.py -q`
+- Perf bench (slow): `uv run pytest tests/perf/test_scan_concurrency_bench.py -m slow -q`
+- Edge case checklist:
+  - [x] happy -- file-set parity workers=4 and workers=8 on nested fixture tree
+  - [x] boundaries -- workers=1 serial path no regression; workers=8 wide tree (20 dirs x 15 files); deep tree (4 levels)
+  - [x] type/format -- N/A pure filesystem/concurrency feature
+  - [x] state -- WalkStats thread-safe counter correctness; no double-count; idempotent file-set
+  - [x] concurrency -- the entire test_walker_concurrent.py is concurrency coverage; perf bench measures speedup
+  - [x] failure paths -- N/A (NotImplementedError is the current failure mode)
+  - [x] locale/time -- N/A pure filesystem
+  - [x] production-realistic data -- deep tree (3 branches x 3 x 2 x 2 x 5 files), wide tree (20 dirs x 15 files), nested layout with 4 levels
+  - [x] regression hooks -- test_workers_greater_than_one_does_not_raise replaces the old NotImplementedError pin
+- Contract ambiguity resolved:
+  - Resolver function name pinned: `resolve_effective_workers(config_workers: int | None) -> int` in `corpus_forge.scanner.walker`. Coder MUST use this exact name and signature.
+  - Auto/unset sentinel: `config_workers=None` triggers formula `min(32, (os.cpu_count() or 1) * 4)`.
+  - CF_SCAN_WORKERS env always wins over config_workers (including None).
+  - ScanConfig.workers docstring still says "NotImplementedError" -- coder must update it.
+  - `test_scan_config_workers_gt_1_accepted` currently passes (Pydantic ge=1 already accepts 4). Only resolver tests and walk() tests are RED.
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_scan_config_workers.py::test_effective_default_resolver_is_importable
+  FAILED tests/unit/test_scan_config_workers.py::test_cf_scan_workers_env_1_is_serial
+  FAILED tests/unit/test_scan_config_workers.py::test_cf_scan_workers_env_wins_over_config
+  FAILED tests/unit/test_walker_concurrent.py::test_file_set_parity_workers_8_wide_tree
+  FAILED tests/unit/test_walker_concurrent.py::test_follow_symlinks_false_skips_symlinked_dir_concurrent
+  FAILED tests/unit/test_walker_concurrent.py::test_walk_stats_no_double_count_under_concurrency
+  FAILED tests/unit/test_walker_concurrent.py::test_ignore_prune_venv_concurrent
+  FAILED tests/unit/test_walker_concurrent.py::test_file_set_parity_workers_vs_serial[8]
+  FAILED tests/unit/test_walker_concurrent.py::test_walk_stats_counts_identical_serial_vs_concurrent
+  FAILED tests/unit/test_walker.py::test_workers_greater_than_one_does_not_raise
+  31 failed, 23 passed in 0.31s
+  ```
+- Perf bench:
+  ```
+  FAILED tests/perf/test_scan_concurrency_bench.py::test_concurrent_walk_file_set_parity_no_sleep
+  FAILED tests/perf/test_scan_concurrency_bench.py::test_concurrent_walk_faster_than_serial_with_artificial_latency
+  2 failed, 1 passed in 3.69s
+  ```
+- Status: red -- handed off to tdd-coder
