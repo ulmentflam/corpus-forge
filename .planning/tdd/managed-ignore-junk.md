@@ -13,7 +13,7 @@ _Requirement source: 2026-05-27 user prompt — dev/build artifacts (`.venv`, `n
 
 ## Constraints
 - Run TARGETED unit tests only (the four ignore/doctor files). Repo venv at `.venv/bin/python`.
-- `Could not import X from Y` → iCloud `.venv` corruption (` 2`-suffix dupes); fix with `uv pip install --force-reinstall <pkg>`.
+- `Could not import X from Y` → iCloud `.venv` corruption (`2`-suffix dupes); fix with `uv pip install --force-reinstall <pkg>`.
 - DO NOT commit/push — workers cannot sign (1Password SSH needs TTY). Main session commits.
 
 ## Tasks
