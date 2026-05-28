@@ -279,6 +279,15 @@ class TestFirstSignal:
         finally:
             ctl.restore_handlers()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason=(
+            "os.kill(getpid(), SIGINT) terminates the worker on Windows "
+            "rather than dispatching to Python's signal handler. The direct "
+            "ctl._handle_signal(...) tests above cover the same flag-flip "
+            "contract on all platforms."
+        ),
+    )
     def test_first_signal_via_os_kill(self):
         """Sending SIGINT to the current process via os.kill sets stop_requested.
 
@@ -297,6 +306,10 @@ class TestFirstSignal:
             # Belt-and-suspenders: assert original is restored
             assert signal.getsignal(signal.SIGINT) is prev_sigint
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="os.kill(getpid(), SIGTERM) terminates the worker on Windows.",
+    )
     def test_first_sigterm_via_os_kill(self):
         """Sending SIGTERM to the current process sets stop_requested."""
         prev_sigterm = signal.getsignal(signal.SIGTERM)
@@ -382,6 +395,10 @@ class TestSecondSignalEscalation:
         finally:
             ctl.restore_handlers()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="os.kill(getpid(), SIGINT) terminates the worker on Windows.",
+    )
     def test_second_sigint_via_os_kill(self, monkeypatch):
         """Full signal-dispatch: two os.kill(SIGINT) calls -> os._exit(130)."""
         exit_calls: list[int] = []
