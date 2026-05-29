@@ -30,7 +30,8 @@ Pick one. The tool runs the same way regardless of how you installed it.
 
 ```bash
 # Recommended on macOS / Linux / WSL — Astral's uv, ships in a tool venv.
-uv tool install 'corpus-forge[postgres,hf]'
+# Postgres + pgvector are core deps; `[hf]` is for the HuggingFace export.
+uv tool install 'corpus-forge[hf]'
 
 # Or the guided one-liner (asks a short prompt-tree).
 curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh | sh
@@ -47,10 +48,13 @@ iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install
 ```
 
 Extras:
-- `[postgres]` — first-class backend, multi-host friendly, pgvector required.
+- Postgres + pgvector are in the **core** deps — no extra needed.
 - `[sqlite]` — single-machine fallback via `sqlite-vec`.
 - `[hf]` — HuggingFace Datasets export.
-- `[ocr]`, `[whisper]`, `[clip]`, `[code]` — opt-in heavy stacks. Decide before installing.
+- `[mcp]` — MCP-server transport (Claude Code / Desktop / Gemini CLI / etc.).
+- `[ocr]`, `[whisper]`, `[code]`, `[multi-format]` — opt-in heavy stacks
+  (Tesseract, faster-whisper, tree-sitter language pack, FastCDC). Decide
+  before installing.
 
 Then:
 
