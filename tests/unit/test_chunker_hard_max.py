@@ -598,10 +598,9 @@ def test_enforce_chunk_hard_max_rtl_text_splits_correctly() -> None:
 
     max_chars = 50
     # Arabic letter Alef — valid Unicode scalar, present in RTL text.
-    # noqa marker: this test DELIBERATELY uses Arabic to verify char-boundary
-    # splitting on non-Latin scripts; the RUF001 ambiguous-unicode warning is
-    # a false positive here.
-    arabic = "ا" * 75  # noqa: RUF001  # 75 chars > 50
+    # This test DELIBERATELY uses Arabic to verify char-boundary splitting
+    # on non-Latin scripts; RUF001 (ambiguous-unicode) is a false positive.
+    arabic = "ا" * 75  # noqa: RUF001  -- 75 chars > 50
     chunk = TextChunk(text=arabic)
     result = list(enforce_chunk_hard_max([chunk], max_chars=max_chars))
     assert len(result) == math.ceil(75 / max_chars)
