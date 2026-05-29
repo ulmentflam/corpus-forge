@@ -228,8 +228,8 @@ class TestRenderAndParse:
 
 # The canonical 25 patterns from the requirement (gitignore syntax).
 # Extended (post-PR-#68) to cover Elixir/Erlang Mix (`deps/`, `_build/`),
-# Go modules / PHP Composer / Ruby Bundler (`vendor/`), and legacy JS
-# package manager (`bower_components/`).
+# Go modules / PHP Composer / Ruby Bundler (`vendor/`), legacy JS package
+# manager (`bower_components/`), and iOS / CocoaPods (`Pods/`).
 _DEV_BUILD_JUNK: tuple[str, ...] = (
     ".git/",
     ".venv/",
@@ -256,6 +256,7 @@ _DEV_BUILD_JUNK: tuple[str, ...] = (
     "_build/",
     "bower_components/",
     "deps/",
+    "Pods/",
     "vendor/",
 )
 
