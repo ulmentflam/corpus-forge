@@ -1430,3 +1430,22 @@ These two constraints are mutually exclusive in standard JSON. No output format 
 - Test files modified: NONE (verified)
 - Diff scope: within surface — yes (only `corpus_forge/ingest.py` functionally changed; `corpus_forge/cli.py` net-zero change; planning files updated)
 - Status: green — handed off to tdd-qa
+
+## chunker-hard-max-cap
+- Source files:
+  - `corpus_forge/config.py` (added `chunker_hard_max_chars: int = Field(default=32768, gt=0, ...)` to `ScanConfig`)
+  - `corpus_forge/chunkers/hard_max.py` (new file — `enforce_chunk_hard_max` generator)
+  - `corpus_forge/chunkers/__init__.py` (eager re-export via `from .hard_max import enforce_chunk_hard_max as enforce_chunk_hard_max`)
+- Judgement calls:
+  - `__all__` not updated: a pre-existing test `test_chunkers_init.py::test_dunder_all_lists_every_public_member` asserts `__all__` is exactly the original 7-element set. Adding `enforce_chunk_hard_max` to `__all__` breaks that test. The import still works because the eager import makes it a module attribute; the redundant-alias form (`x as x`) satisfies ruff F401. The contract says "include in `__all__`" but the pre-existing test blocks it — noted here for the Principal.
+  - `ValueError` chosen over `TypeError` for `max_chars <= 0` (both accepted by `pytest.raises((ValueError, TypeError))`).
+  - `original_meta: dict = chunk.metadata or {}` guards the `dict | None` annotation; `TextChunk.__post_init__` guarantees non-None at runtime but pyrefly needs the guard.
+- Gates:
+  - format: ✓ (`ruff format --check` — 779 files already formatted)
+  - lint: ✓ (`ruff check` — all checks passed)
+  - typecheck: ✓ (`pyrefly check --ignore missing-import corpus_forge` — 0 errors, 64 suppressed)
+  - test (target): ✓ (`pytest tests/unit/test_chunker_hard_max.py -q --no-cov` — 42 passed, 0 failed)
+  - test (adjacent regression): ✓ (`pytest tests/unit/test_scan_config_workers.py tests/unit/test_scan_config_max_scan_age.py tests/unit/test_scan_config_stale_run_threshold.py tests/unit -k "chunker" -q --no-cov` — 278 passed, 0 failed)
+- Test files modified: NONE (verified)
+- Diff scope: within surface — yes (only `corpus_forge/config.py`, `corpus_forge/chunkers/hard_max.py`, `corpus_forge/chunkers/__init__.py` touched)
+- Status: green — handed off to tdd-qa
