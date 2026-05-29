@@ -813,6 +813,20 @@ class ScanConfig(BaseModel):
             "margin against false positives."
         ),
     )
+    chunker_hard_max_chars: int = Field(
+        default=32768,
+        gt=0,
+        description=(
+            "Hard upper bound on the character length of any single chunk that "
+            "reaches the embedder. The `enforce_chunk_hard_max` post-chunker filter "
+            "auto-splits anything larger into pieces, each <= this many chars. "
+            "Defaults to 32768 (~8K tokens for typical embedders). Set to a huge "
+            "value (e.g. 2**31-1) to effectively disable. Real production failure "
+            "this prevents: a 1.66 MB synthetic-eval chunk that wedged "
+            "nomic-embed-text with NaN cascades, tripping the EmbedderWedged "
+            "circuit-breaker after the bisect-and-retry path failed."
+        ),
+    )
 
     model_config = ConfigDict(extra="forbid")
 
