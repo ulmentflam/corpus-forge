@@ -469,6 +469,7 @@ def ingest_one(
     source: Source | None = None,
     *,
     flush_embeddings: bool = True,
+    chunker_hard_max_chars: int | None = None,
 ) -> None:
     """Ingest a single raw document or conversation.
 
@@ -478,6 +479,15 @@ def ingest_one(
     work — used by :func:`ingest_once` which batches the flush
     across :data:`_FLUSH_EMBEDDINGS_EVERY_N_FILES` files to amortize
     the ``chunks_missing_embedding`` query cost.
+
+    ``chunker_hard_max_chars`` (default ``None``) enforces a post-
+    chunker hard cap on chunk size via
+    :func:`corpus_forge.chunkers.enforce_chunk_hard_max`. Wired by
+    :func:`ingest_once` from ``config.scan.chunker_hard_max_chars`` so
+    pathological multi-MB chunks never reach the embedder (root cause
+    of the ``EmbedderWedged`` circuit-breaker trip on synthetic
+    long-context fixtures). ``None`` skips enforcement entirely —
+    preserves the legacy contract for existing test invocations.
     """
     logger.debug(f"Ingesting {raw.source_uri}")
 
@@ -508,6 +518,10 @@ def ingest_one(
             # Process document
             _t0 = time.perf_counter()
             chunk_data = _process_document(raw, effective_chunker)
+            if chunker_hard_max_chars is not None:
+                from .chunkers.hard_max import enforce_chunk_hard_max  # noqa: PLC0415
+
+                chunk_data = list(enforce_chunk_hard_max(chunk_data, chunker_hard_max_chars))
             _chunk_elapsed = time.perf_counter() - _t0
 
             _t1 = time.perf_counter()
@@ -531,6 +545,13 @@ def ingest_one(
         else:  # RawConversation
             # Process conversation
             chunked_messages = _process_conversation(raw, effective_chunker)
+            if chunker_hard_max_chars is not None:
+                from .chunkers.hard_max import enforce_chunk_hard_max  # noqa: PLC0415
+
+                chunked_messages = [
+                    list(enforce_chunk_hard_max(per_msg, chunker_hard_max_chars))
+                    for per_msg in chunked_messages
+                ]
             conv_id = backend.upsert_conversation(dataset_id, raw, chunked_messages)
             # If the source is a chat client (claude_code/opencode/gemini), link the session.
             # Prefer explicit _session_link_client on the source object; fall back to
@@ -1336,6 +1357,7 @@ def ingest_once(
                                                     embedders,
                                                     dataset_id,
                                                     flush_embeddings=False,
+                                                    chunker_hard_max_chars=config.scan.chunker_hard_max_chars,
                                                 )
                                                 docs_chunked += 1
                                                 docs_done += 1

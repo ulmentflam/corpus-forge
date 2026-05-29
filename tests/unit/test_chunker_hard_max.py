@@ -11,6 +11,11 @@ Covers two implemented symbols:
   ``len(chunk.text) <= max_chars``, and yields new ``TextChunk`` objects
   carrying ``metadata["hard_max_split"] = True`` for each split piece.
   ``max_chars <= 0`` raises :class:`ValueError`.
+- ``corpus_forge.ingest.ingest_one(..., chunker_hard_max_chars=...)`` —
+  optional wiring hook applied after ``_process_document`` /
+  ``_process_conversation`` and before the backend ``upsert_*`` call.
+  ``ingest_once`` passes ``config.scan.chunker_hard_max_chars`` so the
+  cap is the default for the production ingest path.
 
 The 1.66 MB regression fixture below mirrors the production failure
 where a single oversize chunk from
@@ -616,3 +621,78 @@ def test_enforce_chunk_hard_max_idempotent_on_already_split_output() -> None:
     assert len(second_pass) == len(first_pass)
     for orig, again in zip(first_pass, second_pass, strict=False):
         assert again is orig, "Second pass must return the same objects (idempotent)"
+
+
+# ---------------------------------------------------------------------------
+# Wiring: ingest_one(chunker_hard_max_chars=...) flows into upsert_document
+# ---------------------------------------------------------------------------
+
+
+def _make_doc_chunker_with_oversized_chunk(oversize_len: int) -> tuple[object, object]:
+    """Build a (RawDocument, Chunker) pair where ``chunker.chunk`` returns
+    a single oversize :class:`TextChunk`. Used by both wiring tests below.
+    """
+    from unittest.mock import MagicMock
+
+    from corpus_forge.chunkers.base import TextChunk
+    from corpus_forge.sources.base import RawDocument
+
+    doc = RawDocument(
+        source_uri="test://wiring.txt",
+        content_hash="hash",
+        text="x" * oversize_len,
+        title="Wiring",
+        modified_at=1000.0,
+        metadata={},
+        labels=[],
+    )
+    chunker = MagicMock()
+    chunker.chunk.return_value = [TextChunk(text="x" * oversize_len)]
+    return doc, chunker
+
+
+def test_ingest_one_applies_hard_max_when_passed() -> None:
+    """ingest_one(..., chunker_hard_max_chars=100) must split oversized
+    chunks before they reach backend.upsert_document.
+
+    Without the cap a 250-char chunk would land in the DB as-is and the
+    embedder would try to encode it, which is the root cause of the
+    ``EmbedderWedged`` crashes on multi-MB synthetic context fixtures.
+    With the cap, upsert_document sees pieces all ``<= max_chars``.
+    """
+    from unittest.mock import MagicMock
+
+    from corpus_forge.ingest import ingest_one
+
+    doc, chunker = _make_doc_chunker_with_oversized_chunk(oversize_len=250)
+    backend = MagicMock()
+    backend.get_hash.return_value = None
+
+    ingest_one(backend, doc, chunker, embedders=[], dataset_id=1, chunker_hard_max_chars=100)
+
+    backend.upsert_document.assert_called_once()
+    chunk_arg = backend.upsert_document.call_args.args[2]
+    assert len(chunk_arg) >= 3, "250-char chunk must split into >=3 pieces at max_chars=100"
+    assert all(len(c.text) <= 100 for c in chunk_arg), "every persisted piece must respect cap"
+    # Reassembling the pieces must reproduce the original text (no data loss).
+    assert "".join(c.text for c in chunk_arg) == "x" * 250
+
+
+def test_ingest_one_default_skips_hard_max() -> None:
+    """ingest_one() with no ``chunker_hard_max_chars`` (the legacy
+    contract used by existing tests) must persist chunks untouched —
+    no split, no ``hard_max_split`` metadata injection."""
+    from unittest.mock import MagicMock
+
+    from corpus_forge.ingest import ingest_one
+
+    doc, chunker = _make_doc_chunker_with_oversized_chunk(oversize_len=250)
+    backend = MagicMock()
+    backend.get_hash.return_value = None
+
+    ingest_one(backend, doc, chunker, embedders=[], dataset_id=1)
+
+    chunk_arg = backend.upsert_document.call_args.args[2]
+    assert len(chunk_arg) == 1, "default path must not split chunks"
+    assert len(chunk_arg[0].text) == 250
+    assert "hard_max_split" not in chunk_arg[0].metadata
