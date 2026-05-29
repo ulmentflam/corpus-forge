@@ -1714,6 +1714,13 @@ def _instantiate_source(source_config, *, config: Config | None = None):
             vlm=vlm,
             whisper=whisper,
             debounce=2.0,
+            # Multi-machine ingest: propagate the per-source logical_name
+            # (None when unset) so ``_source_uri_prefix_for`` can emit
+            # ``filesystem://logical/<name>`` and converge cross-host rows
+            # in ``ingest_run_sources``. Without this propagation,
+            # ``DatasetSourceConfig.logical_name`` is silently dropped at
+            # source-construction time and the feature is a no-op end-to-end.
+            logical_name=getattr(source_config, "logical_name", None),
         )
     elif source_config.plugin == "zotero":
         # Phase M Wave 4 — Zotero library connector. Threads VLM/Whisper

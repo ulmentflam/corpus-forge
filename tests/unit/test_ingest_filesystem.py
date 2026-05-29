@@ -38,6 +38,48 @@ def test_instantiate_filesystem_returns_filesystem_source(tmp_path: Path):
     assert src.root == tmp_path
 
 
+def test_instantiate_filesystem_propagates_logical_name(tmp_path: Path):
+    """DR-G1/G3/G5 e2e: ``DatasetSourceConfig.logical_name`` must reach the
+    constructed ``FilesystemSource`` so ``_source_uri_prefix_for`` emits
+    ``filesystem://logical/<name>`` end-to-end. The DR-T5 unit tests used
+    ``SimpleNamespace`` mocks with a ``logical_name`` attr directly — they
+    never caught a missing propagation step. CodeRabbit reported this gap
+    as a real bug on PR #73; this test pins the fix.
+    """
+    from corpus_forge.ingest import _source_uri_prefix_for
+
+    cfg = DatasetSourceConfig(
+        plugin="filesystem",
+        root=str(tmp_path),
+        chunker="markdown",
+        logical_name="notes",
+    )
+    src = _instantiate_source(cfg)
+    assert isinstance(src, FilesystemSource)
+    assert src.logical_name == "notes", (
+        f"logical_name not propagated through _instantiate_source; got {src.logical_name!r}"
+    )
+    # And the end-to-end URI prefix uses the logical form (NOT the path).
+    assert _source_uri_prefix_for(src) == "filesystem://logical/notes"
+
+
+def test_instantiate_filesystem_default_logical_name_is_none(tmp_path: Path):
+    """When DatasetSourceConfig.logical_name is unset, FilesystemSource.logical_name
+    must be None and the URI prefix falls back to the resolved path."""
+    from corpus_forge.ingest import _source_uri_prefix_for
+
+    cfg = DatasetSourceConfig(
+        plugin="filesystem",
+        root=str(tmp_path),
+        chunker="markdown",
+    )
+    src = _instantiate_source(cfg)
+    assert isinstance(src, FilesystemSource)
+    assert src.logical_name is None
+    # Falls back to path-based prefix.
+    assert _source_uri_prefix_for(src) == f"filesystem://{tmp_path.resolve().as_posix()}"
+
+
 def test_instantiate_filesystem_defaults_extraction_when_none(tmp_path: Path):
     cfg = DatasetSourceConfig(
         plugin="filesystem",

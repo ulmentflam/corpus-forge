@@ -3827,25 +3827,35 @@ class SQLiteBackend:
             )
             if not eligible:
                 return 0
+            # Per-row UPDATE goes through ``conn.execute`` so we can read
+            # ``cursor.rowcount`` and only count rows we actually flipped.
+            # The UPDATE WHERE clause re-asserts ``status = 'running'`` so
+            # a concurrent worker (or a finish_ingest_run racing the SELECT)
+            # can't be clobbered: if another writer already transitioned
+            # the row, our UPDATE matches zero rows and we don't count it.
             count = 0
-            for row in eligible:
-                prior_host = row["host"]
-                prior_pid = row["pid"]
-                error_msg = (
-                    f"stale heartbeat: last progress > {threshold_seconds:.0f}s ago; "
-                    f"host {prior_host}/pid {prior_pid} presumed dead"
-                )
-                self._execute(
-                    """
-                    UPDATE ingest_runs
-                       SET status   = 'failed',
-                           ended_at = ?,
-                           error    = ?
-                     WHERE run_id = ?
-                    """,
-                    (now_iso, error_msg, row["run_id"]),
-                )
-                count += 1
+            with self._get_connection() as conn:
+                for row in eligible:
+                    prior_host = row["host"]
+                    prior_pid = row["pid"]
+                    error_msg = (
+                        f"stale heartbeat: last progress > {threshold_seconds:.0f}s ago; "
+                        f"host {prior_host}/pid {prior_pid} presumed dead"
+                    )
+                    cursor = conn.execute(
+                        """
+                        UPDATE ingest_runs
+                           SET status   = 'failed',
+                               ended_at = ?,
+                               error    = ?
+                         WHERE run_id = ?
+                           AND status = 'running'
+                        """,
+                        (now_iso, error_msg, row["run_id"]),
+                    )
+                    if cursor.rowcount > 0:
+                        count += 1
+                conn.commit()
             return count
         except sqlite3.OperationalError as exc:
             logger.debug("mark_stale_runs swallowed OperationalError: %r", exc)

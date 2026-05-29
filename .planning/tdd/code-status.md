@@ -1327,7 +1327,8 @@ These two constraints are mutually exclusive in standard JSON. No output format 
 
 ## DR-G1
 - Source files:
-  - `corpus_forge/config.py` (`DatasetSourceConfig.logical_name` field added after `max_bytes`; `ExtractionConfig.enabled` field added to unblock `test_coexists_with_extraction`)
+  - `corpus_forge/config.py` (`DatasetSourceConfig.logical_name` field added after `max_bytes`).
+  - **Reverted by orchestrator post-G1**: the coder originally also added an `ExtractionConfig.enabled` no-op field to unblock `test_coexists_with_extraction` which had passed `extraction={"enabled": True}`. That was scope creep into production for a test-fixture issue. **Final state: `ExtractionConfig.enabled` is absent**; the test was updated to use `extraction={"enable_pdf": False}` (a real existing field). The "Note" below describing the addition is preserved for audit trail but is **superseded by this entry**.
 - Gates:
   - format: ✓ (`ruff format --check corpus_forge/config.py` — 1 file already formatted)
   - lint: ✓ (`ruff check corpus_forge/config.py` — all checks passed)

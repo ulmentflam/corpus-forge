@@ -138,11 +138,11 @@ Within a single ingest run, resume is scoped to the originating host via `socket
 
 ### Reclaiming dead runs with `stale_run_threshold` and `mark_stale_runs`
 
-A crashed ingest process leaves its `ingest_runs` row in `status='running'` indefinitely.  Any subsequent run on *any* host will call `mark_stale_runs(threshold)` before starting, where `threshold` is the `stale_run_threshold` value from `[scan]` (default `900.0` seconds, equivalent to `"15m"`).  `mark_stale_runs` issues a single `UPDATE` that flips every `status='running'` row whose `last_heartbeat` is older than `threshold` seconds to `status='failed'`, making it eligible for retry.  The operation is safe to call concurrently; the `WHERE` clause is atomic at the Postgres row level.
+A crashed ingest process leaves its `ingest_runs` row in `status='running'` indefinitely.  Any subsequent run on *any* host will call `mark_stale_runs(threshold)` before starting, where `threshold` is the `stale_run_threshold` value from `[scan]` (default `900.0` seconds, equivalent to `"15m"`).  `mark_stale_runs` flips every `status='running'` row whose `last_progress_at` is older than `threshold` seconds to `status='failed'`, making it eligible for retry.  The UPDATE re-asserts `status='running'` in its WHERE clause so a concurrent transition (e.g. a legitimate `finish_ingest_run` racing the stale-detector SELECT) is never clobbered.
 
 ### Interaction with advisory locks
 
-The Postgres backend acquires a `pg_try_advisory_lock` keyed on `(dataset_id, source_id)` before writing chunks.  On a multi-machine deployment each host holds its own lock scope.  Two machines can therefore write *different* source shards concurrently without contention, but two processes writing the *same* source on the *same* host will serialise — by design.  `mark_stale_runs` does not attempt to acquire any advisory lock; it is intentionally lightweight and idempotent.
+The Postgres backend acquires a `pg_try_advisory_lock` keyed on `(dataset_id, source_id)` before writing chunks.  Postgres advisory locks are database-global per key, so the lock serialises the *same source key* across *all* processes that share the DB — regardless of which host or machine they run on.  Two machines writing the *same* `(dataset_id, source_id)` contend; two machines writing *different* source keys do not.  `mark_stale_runs` does not attempt to acquire any advisory lock; it is intentionally lightweight and idempotent.
 
 ## Multi-format extractor layer
 
