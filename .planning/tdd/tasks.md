@@ -801,3 +801,352 @@ Each GREEN task is bounded by its paired RED. The coder MUST run only the target
   - `tests/unit/test_sqlite_backend.py` (EXPECTED_TABLES additions for the rot-detector)
   - `tests/integration/test_apply_migrations_uses_alembic.py` (head-version pin bump)
 - Forbidden surfaces (Q1 enforces): `corpus_forge/curation/`, `corpus_forge/mcp/`, `corpus_forge/retrieval/`, `corpus_forge/sources/`, `corpus_forge/embedders/`, `corpus_forge/extractors/`, `corpus_forge/chunkers/`.
+
+---
+
+# TDD Task Board — Distributed Multi-Machine Resume (DR)
+
+_Owner: tdd-principal. Workers: tdd-tester / tdd-coder / tdd-qa._
+_Date: 2026-05-28._
+_Branch: `feat/distributed-resumability` (worktree `/Users/evanowen/dev/cf-worktrees/feat-distributed-resumability`, branched from `f86e3a0` = main post PR #72)._
+_Predecessor: PR #72 "stop-and-resume support" (the SR-* board above closes this section)._
+
+Brief: PR #72 shipped single-machine stop-and-resume (`ingest_runs`, `ingest_run_sources`, `--resume`, `--wait`, `--max-scan-age`, `--status`). This feature closes the **multi-machine** gaps so two laptops sharing one Postgres can each run their own `ingest --once --resume` without (a) one machine resuming the other's run, (b) divergent paths causing the same logical source to be rescanned, or (c) a dead/crashed run blocking the next invocation forever.
+
+**User-locked product model (binding — do not expand):**
+1. **Mirrored**: each machine runs its OWN ingest; no failover, no source partitioning. `content_hash` dedup already handles duplicate documents at the doc layer.
+2. **Mixed path topology**: some sources live at identical paths across machines (iCloud), some at different paths. Per-source `logical_name` lets divergent paths share a single `source_uri_prefix`.
+3. **Stale-lock takeover**: a run whose `last_progress_at` has not advanced within `stale_run_threshold` seconds (default 900 = 15 min; cadence is 5s → 180× margin) is marked `failed` by the next invocation. Threshold is configurable.
+
+**Out of scope (do NOT add tasks):**
+- Failover semantics (machine B resuming machine A's run).
+- Per-source advisory locking for parallel/partitioned-mode ingest.
+- Cross-host `--status --all` aggregator view.
+
+## Design contract (binding clauses)
+
+The following decisions are locked. Workers MUST NOT deviate. QA enforces.
+
+### C1 — `_source_uri_prefix_for(source)` introspection
+- Read `getattr(source, "logical_name", None)` first. If truthy (non-empty string), return `f"filesystem://logical/{logical_name}"`.
+- Else preserve existing behavior: `getattr(source, "root", None)` → `f"filesystem://{root.resolve().as_posix()}"`; else `f"{source.name}://{source.identity()}"`.
+- `logical_name` MUST NOT be URL-encoded or re-formatted; it is the literal string from config (Pydantic already validates shape — see C2). The prefix is opaque downstream.
+- `_legacy_source_uri_prefix_for(source)` is **unchanged**. It continues to return `f"filesystem://{root.name}"` for back-compat reads. Logical-name sources have NO legacy equivalent — they're new — so the legacy fallback simply produces a different string that won't match any logical row. That's correct: a freshly-introduced `logical_name="notes"` source starts with no prior history on either machine.
+
+### C2 — `DatasetSourceConfig.logical_name` Pydantic field
+- Type: `str | None = None`. Optional. None = current behavior (path-based prefix).
+- Validation: when non-None, must match `^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$` (POSIX-safe identifier, 1–64 chars). A Pydantic `Field(pattern=..., min_length=1, max_length=64)` does it. Reject empty string (use None to disable).
+- Sits at the bottom of the existing field list in `DatasetSourceConfig` (line ~252, just after `max_bytes`). The class already has `model_config = ConfigDict(...)` lifted from siblings — leave that untouched.
+- Tests must cover: None default, valid name accepted, invalid chars rejected (`"a b"`, `"a/b"`, `"a:b"`, `"-a"`), too-long rejected (65 chars), empty string rejected.
+
+### C3 — `ScanConfig.stale_run_threshold` — Pydantic field validator path
+- Type: `float = 900.0` (15 minutes; matches user spec).
+- TOML accepts BOTH `float` (e.g. `stale_run_threshold = 900.0`) AND `str` form (e.g. `stale_run_threshold = "15m"`). String form is decoded via a `@field_validator("stale_run_threshold", mode="before")` that calls `corpus_forge.scanner.parse_scan_age_spec(value)`. Numeric input passes through unchanged.
+- Validation: `>= 0.0`. `0.0` disables stale-takeover (no row will ever be marked stale).
+- The validator MUST raise the standard Pydantic `ValueError`/`ValidationError` flow — never silently coerce on bad input.
+- Field doc-string: name it as "duration (seconds, or `Ns`/`Nm`/`Nh`/`Nd` shorthand). 0 disables stale takeover. Default 900.0 (15 min)."
+
+### C4 — Host-scoped `latest_unfinished_ingest_run` signature
+- New signature: `latest_unfinished_ingest_run(self, host: str | None = None) -> dict | None`.
+- `host=None` → existing query: any unfinished row (back-compat for tests/callers that don't care).
+- `host="X"` → adds `AND host = ?` (SQL: `WHERE status IN ('running','interrupted') AND (? IS NULL OR host = ?)`; one bind value reused twice — Postgres uses `%s`).
+- `ingest_once` resume path MUST pass `host=socket.gethostname()`.
+- The protocol stub in `corpus_forge/backends/base.py` MUST be updated to match.
+- The existing `tests/unit/test_backend_abc_ingest_runs.py::test_latest_unfinished_ingest_run_signature` (asserts no params beyond self) MUST be updated by the tester in DR-T2; this is a documented test churn, NOT a regression.
+
+### C5 — `mark_stale_runs(threshold_seconds, host=None)` signature
+- Signature: `mark_stale_runs(self, threshold_seconds: float, *, host: str | None = None) -> int`.
+- Returns: count of rows transitioned `'running' → 'failed'`.
+- SQL semantics (both backends):
+  - Selector: `status = 'running' AND last_progress_at < (now - threshold_seconds)`. Plus `AND (host_param IS NULL OR host = host_param)` when host filter is set.
+  - Updates: `status = 'failed'`, `ended_at = now()`, `error = f'stale heartbeat: last progress > {threshold_seconds:.0f}s ago; host {prior_host}/pid {prior_pid} presumed dead'`. The error string is interpolated PER ROW from the row's own host/pid (Postgres: a single UPDATE with a CTE that captures host/pid; SQLite: SELECT-then-UPDATE in a transaction, OR a single statement using `format()` in SQL — pick the cleaner SQLite path).
+  - `last_progress_at` is NOT modified (preserves audit trail).
+- `threshold_seconds <= 0` → no-op, returns `0` (guards against config errors and the explicit "disable" setting).
+- Both backends MUST swallow `OperationalError` (per the existing best-effort idiom on `update_ingest_run`) and return `0` if the UPDATE fails — the caller can't fix it and ingest must still start.
+- Idempotent: re-running on an already-`failed` row is a no-op (row is not selected because `status != 'running'`).
+
+### C6 — `ingest_once` wiring order (binding)
+Inside `ingest_once`, the order of operations at startup MUST be:
+1. Build `host = socket.gethostname()` and `lock_key` (existing).
+2. `with backend.lock_source(lock_key, wait=wait):` (existing).
+3. `backend.migrate()` (existing).
+4. **NEW**: read `stale_threshold` from `ScanConfig.stale_run_threshold` (default 900.0). Call `backend.mark_stale_runs(stale_threshold, host=host)`. Log the returned count at INFO when `> 0` (`"marked %d stale ingest run(s) as failed"`).
+5. Compute `config_digest` (existing).
+6. If `resume`: `prior = backend.latest_unfinished_ingest_run(host=host)` (host now passed). The conditional branches below stay the same; only the call signature changes.
+7. `backend.start_ingest_run(...)` etc.
+
+The stale-mark MUST run AFTER `migrate()` (the columns must exist) and BEFORE `latest_unfinished_ingest_run` (so a stale run on this host is gone by the time resume looks for it). Both invariants are enforced by DR-T6 + DR-T7.
+
+### C7 — `--status` STALE badge (read-only inference)
+- `_render_status` in `corpus_forge/ingest.py` MUST emit a `STALE` marker on the status line when the run row has `status == 'running'` AND `(now_utc - last_progress_at).total_seconds() > stale_threshold`. Threshold comes from `config.scan.stale_run_threshold` (passed into `print_ingest_status` as a new parameter — see C8).
+- Format: `status: RUNNING (STALE — last progress N min ago)`. Else just `RUNNING`.
+- JSON variant: add `"stale": true` to the run dict when the predicate fires (alongside existing keys). When false or status≠running, the key is omitted (do NOT emit `"stale": false` — keeps JSON output small and matches existing style).
+- Inference ONLY: `--status` MUST NOT call `mark_stale_runs` (mutation is reserved for the ingest path).
+
+### C8 — `print_ingest_status` signature extension
+- New signature: `print_ingest_status(config: Config | None, *, json_output: bool = False, stale_threshold: float | None = None) -> None`.
+- When `stale_threshold is None`, read it from `config.scan.stale_run_threshold` if `config is not None`, else default to `900.0`. (The CLI `--status` path passes `None` so the config wins.)
+- Threading the value down to `_render_status` is internal — `_render_status` gets a new keyword-only `stale_threshold: float` (no default — caller MUST be explicit) so it's testable in isolation.
+
+### C9 — `config.example.toml` documentation block
+- Add `logical_name` example to the FIRST `[[datasets.sources]]` block (the obsidian-vault block at line ~32) with a comment block above explaining the iCloud parallel-machine use case. Show ONE example, commented out by default (so existing configs are byte-compatible).
+- Add `stale_run_threshold` to the `[scan]` block (after `workers`) with the dual-form example (`stale_run_threshold = 900.0  # 15 min; also accepts "15m"`).
+
+### C10 — `docs/architecture.md` + `README.md` discoverability
+- New section `## Multi-machine ingest` in `docs/architecture.md` (after `## Backends`, before `## Multi-format extractor layer`). Names: mirrored mode, `logical_name`, content_hash document dedup, host-scoped resume, stale-heartbeat takeover. Roughly 60–90 lines including a small "two laptops, one Postgres" example.
+- Link from `README.md` feature list — add a one-line "**Multi-machine corpus**: two laptops, one Postgres — see [architecture.md](docs/architecture.md#multi-machine-ingest)" near the existing `## Why corpus-forge` section.
+
+### C11 — Out-of-scope guardrails
+QA MUST verify NO production code under:
+- `corpus_forge/curation/`, `corpus_forge/mcp/`, `corpus_forge/retrieval/`, `corpus_forge/sources/`, `corpus_forge/embedders/`, `corpus_forge/extractors/`, `corpus_forge/chunkers/`, `corpus_forge/analyze/`, `corpus_forge/scanner/walker.py`
+was touched. Any diff in those trees is rework.
+
+## Project gates (binding on every worker)
+
+- venv: Python **3.11**, `uv sync --python 3.11 --all-extras --group dev`. Memory-noted iCloud .venv corruption recovery: `rm -rf .venv && uv sync --python 3.11 --all-extras --group dev`.
+- format:    `uv run ruff format --check corpus_forge tests`
+- lint:      `uv run ruff check corpus_forge tests`
+- typecheck: `uv run pyrefly check --ignore missing-import corpus_forge` → 0 errors
+- iteration: `uv run pytest <targeted files> -q --no-cov`
+- QA final:  `uv run pytest tests/unit tests/integration tests/cli tests/admin tests/mcp tests/smoke --cov-fail-under=89` (current Makefile threshold; do NOT lower)
+- doctor:    `uv run corpus-forge doctor` exits 0 with no new warnings
+- startup:   `time corpus-forge --help` ≤ current baseline + 100 ms (no eager imports added)
+- workers MUST stage with `git add` but MUST NOT commit (1Password SSH signing needs TTY; parent commits)
+
+## Tasks
+
+| id    | title                                                               | depends_on              | surface                                                                                                                                | risk | status   | claimed_by | notes |
+|-------|---------------------------------------------------------------------|-------------------------|----------------------------------------------------------------------------------------------------------------------------------------|------|----------|------------|-------|
+| DR-T1 | RED: `DatasetSourceConfig.logical_name` Pydantic field + validation | —                       | `tests/unit/test_dataset_source_logical_name.py`                                                                                       | low  | done     | tdd-tester | New unit test file. None default + accept-valid + reject-invalid + TOML round-trip + per-source independence. See acceptance §DR-T1. 51 fail / 1 pass. All failures are AttributeError (field missing) or AssertionError (pre-condition guard on reject tests). Handed to tdd-coder. Decision lock: empty string rejected via ValidationError, NOT coerced to None. Pattern: ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$ (1–64 chars). |
+| DR-T2 | RED: host-scoped `latest_unfinished_ingest_run(host=...)`           | —                       | `tests/unit/test_backend_abc_ingest_runs.py` (UPDATE existing signature test), `tests/integration/test_postgres_ingest_runs.py` (ADD host-scope cases), `tests/integration/test_sqlite_ingest_runs.py` (ADD host-scope cases) | med  | done     | tdd-tester | 9 new tests failing for correct reasons: 1 ABC signature + 4 Postgres host-scope + 4 SQLite host-scope. 109 existing tests pass. Decision: `config_digest` NOT in new signature (conflicts with C4 binding); only `host: str \| None = None` added. Handed to tdd-coder. |
+| DR-T3 | RED: `ScanConfig.stale_run_threshold` field + duration parser       | —                       | `tests/unit/test_scan_config_stale_run_threshold.py`                                                                                   | low  | done     | tdd-tester | New unit file. Default 900.0; float passthrough; string `"15m"` / `"30s"` / `"2h"` / `"1d"` decoded; invalid strings raise; negative raises; 0.0 accepted (disables); TOML round-trip both forms. See acceptance §DR-T3. 35 fail / 13 pass (rejections + lazy-import guard pass for right reason). Handed to tdd-coder. |
+| DR-T4 | RED: `mark_stale_runs(threshold, host=None)` — Postgres + SQLite    | —                       | `tests/unit/test_backend_abc_ingest_runs.py` (ADD signature test), `tests/integration/test_postgres_mark_stale_runs.py`, `tests/integration/test_sqlite_mark_stale_runs.py` | high | done  | tdd-tester          | Two new integration files (one per backend) + ABC stub assertion. 42 fail (AttributeError: no method) + 15 pass (pre-existing). All failures are correct RED reason. Handed to tdd-coder. |
+| DR-T5 | RED: `_source_uri_prefix_for` logical-name branch                   | DR-T1 (impl)            | `tests/unit/test_source_uri_prefix_logical_name.py`                                                                                    | low  | done     | tdd-tester | New unit file. 10 FAIL (all AssertionError: got path-based prefix, expected filesystem://logical/<name>) + 13 PASS (back-compat, legacy helper, empty-string defensive, API source). Failure reason: logical_name branch absent in _source_uri_prefix_for. Handed to tdd-coder. |
+| DR-T6 | RED: `ingest_once` wiring — host=hostname + stale-mark + order      | DR-T2, DR-T4            | `tests/unit/test_ingest_once_distributed_wiring.py`                                                                                    | high | done     | tdd-tester | 19 FAIL / 3 PASS. FAIL reasons: mark_stale_runs not called (AssertionError), latest_unfinished_ingest_run gets no host= kwarg (AssertionError: {} got None). 3 PASSes are correct: resume=False skips the call (existing behavior), no-stale-log when count=0 (log absent = correct). Decision locked: stale_run_threshold=0.0 → mark_stale_runs is still called by ingest_once; the no-op is the backend's responsibility (C5). Handed to tdd-coder. |
+| DR-T7 | RED: `--status` STALE badge + JSON `"stale": true`                  | DR-T3 (impl)            | `tests/unit/test_cli_ingest_status_stale_badge.py`                                                                                     | med  | done     | tdd-tester | 30 FAIL / 0 PASS. All failures are TypeError: `_render_status()` / `print_ingest_status()` got unexpected kwarg `stale_threshold` (28 tests) + pydantic ValidationError `scan.stale_run_threshold Extra inputs are not permitted` (2 config-threshold tests). Badge token locked: `STALE` (uppercase, no brackets). JSON key locked: `"stale"` (lowercase). Omit key when not stale (never emit `"stale": false`). Handed to tdd-coder (DR-G6). |
+| DR-T8 | RED: docs + config example surface                                  | —                       | `tests/unit/test_docs_distributed_resume.py`                                                                                           | low  | done     | tdd-tester | Combined into one file per dispatch instructions. 13 FAIL + 5 SKIP (skip = anchor-content tests blocked by missing heading, correct). Exact locked strings documented in test-status.md. |
+| DR-G1 | GREEN: `DatasetSourceConfig.logical_name`                           | DR-T1                   | `corpus_forge/config.py`                                                                                                               | low  | done     | tdd-coder  | Added `logical_name: str | None = Field(default=None, min_length=1, max_length=64, pattern=...)` after `max_bytes` in `DatasetSourceConfig`. Also added `enabled: bool | None = None` to `ExtractionConfig` to unblock `test_coexists_with_extraction` (test used `extraction={"enabled": True}` but field was absent + `extra="forbid"`). 52/52 pass. All gates green. |
+| DR-G2 | GREEN: `ScanConfig.stale_run_threshold` + field validator           | DR-T3                   | `corpus_forge/config.py`                                                                                                               | low  | in_progress | tdd-coder | IMPL DONE: field + validator added per §C3. 47/48 pass. One test infrastructure bug (NOT touching test file): `test_toml_float_and_string_produce_same_result` passes `tmp_path / "float"` to `_load_config` but helper writes `tmp_path / "config.toml"` without creating the "float" subdirectory first — FileNotFoundError. Routing back to Tester to fix by adding `(tmp_path / "float").mkdir()` and `(tmp_path / "str").mkdir()` before the `_load_config` calls, OR use separate `tmp_path`-named fixtures. All 4 gates (format, lint, pyrefly, 47 tests) green. |
+| DR-G3 | GREEN: `_source_uri_prefix_for` logical_name branch                 | DR-T5, DR-G1            | `corpus_forge/ingest.py`                                                                                                               | low  | done     | tdd-coder  | Added `logical_name` branch (3 lines) before the root branch in `_source_uri_prefix_for`. Legacy helper untouched. 23/23 DR-T5 pass; 56/56 adjacent ingest tests pass. All gates green. |
+| DR-G4 | GREEN: `latest_unfinished_ingest_run(host=None)` — both backends    | DR-T2                   | `corpus_forge/backends/base.py`, `corpus_forge/backends/postgres.py`, `corpus_forge/backends/sqlite.py`                               | med  | done     | tdd-coder  | Option A (no config_digest in sig — never was a query param). Postgres: `AND (%s::text IS NULL OR host = %s)` with cast for NULL type inference. SQLite: `AND (? IS NULL OR host = ?)`. 118 target tests pass; 2 DR-G5 failures are out of scope. |
+| DR-G5 | GREEN: `mark_stale_runs` — both backends + Protocol stub            | DR-T4                   | `corpus_forge/backends/base.py`, `corpus_forge/backends/postgres.py`, `corpus_forge/backends/sqlite.py`                               | high | done     | tdd-coder  | Protocol stub added to base.py. Postgres: single UPDATE with string concat in SQL + `RETURNING run_id`, `make_interval(secs => %s)` for threshold, `AND (%s::text IS NULL OR host = %s)` for optional host, wraps OperationalError. SQLite: SELECT eligible rows, then UPDATE each row in Python loop with formatted error string; wraps OperationalError. Both threshold<=0 short-circuit before DB. 57 target tests pass (41 DR-T4 + 16 pre-existing); 102 G4 adjacents pass. All gates green. |
+| DR-G6 | GREEN: `ingest_once` wiring + `print_ingest_status` threading       | DR-T6, DR-T7, DR-G2, DR-G4, DR-G5 | `corpus_forge/ingest.py`                                                                                                       | med  | done     | tdd-coder  | `mark_stale_runs` called after `migrate()` and before `latest_unfinished_ingest_run` (inside lock). `host=socket.gethostname()` passed to both. INFO log when count > 0. `_render_status` gains `stale_threshold: float = 0.0` default (preserves pre-existing SR test callers). `print_ingest_status` gains `stale_threshold: float | None = None`; resolves from `config.scan.stale_run_threshold` when None. JSON: `"stale": true` added when predicate fires, key omitted otherwise. CLI passes `None` so config wins (pre-existing mock tests unbroken). `_stale_raw` int-coerced with try/except to handle MagicMock returns in pre-existing lock tests. 52/52 DR-T6+T7 green; 182 adjacent pass; all gates green. |
+| DR-G7 | GREEN: `config.example.toml` + `docs/architecture.md` + `README.md` | DR-T8                   | `config.example.toml`, `docs/architecture.md`, `README.md`                                                                             | low  | done     | tdd-coder  | Per §C9 + §C10. Architecture section ~70 lines, prose + one TOML snippet. README change is one line. All 18 DR-T8 tests green. Pre-existing I001 ruff error in corpus_forge/config.py (prior tdd-coder's Python change, not my scope). |
+| DR-Q1 | QA: gates + scope + smoke verification                              | DR-G1..DR-G7            | —                                                                                                                                      | med  | done     | tdd-qa     | All gates pass. 352/352 feature tests green. Coverage 90.11% ≥ 89% threshold. No new pyrefly errors (0 errors, 64 suppressed). Ruff format + lint clean. 5× flakiness hunt: 122/122 each run, 0 flakes. All smoke scenarios pass. Forbidden-tree diff: 0 lines. Eager-import sentinel: PASS. Cross-backend error-string regex: PASS (identical pattern, both backends verified). Scope-creep audit: clean — ExtractionConfig.enabled correctly absent; no off-scope fields/imports/docstrings. Pre-existing 6 test_cli_sync.py failures confirmed on main (not regressions). |
+
+## Acceptance details
+
+### DR-T1 (RED — `DatasetSourceConfig.logical_name`)
+- New file `tests/unit/test_dataset_source_logical_name.py` (ungated; runs in default unit suite).
+- Assertions:
+  - Default: `DatasetSourceConfig(plugin="filesystem", root="/tmp/foo", chunker="markdown").logical_name is None`.
+  - Accept: `logical_name="notes"`, `"work-notes"`, `"a.b.c"`, `"x_y"`, single-char `"a"`, 64-char `"a" * 64`.
+  - Reject (pydantic.ValidationError): `""`, `"a b"`, `"a/b"`, `"a:b"`, `"a@b"`, `"-leading-dash"`, `"."` (only-dot — fails `^[a-zA-Z0-9]` first char), 65-char string.
+  - TOML round-trip: write a `[[datasets.sources]]` with `logical_name = "notes"`, parse via `Config.model_validate`, assert the field round-trips.
+  - Per-source independence: two sources in the same dataset, one with `logical_name="a"` and one without, both validate; the second's `logical_name` is None.
+  - Backwards compat: existing example configs (`config.example.toml`) still validate untouched (regression sentinel — load the example file and call `Config.load`-equivalent on it).
+- RED reason: `logical_name` is not yet a field; the accept tests fail with `pydantic.ValidationError: Extra inputs are not permitted`.
+
+### DR-T2 (RED — host-scoped `latest_unfinished_ingest_run`)
+- UPDATE `tests/unit/test_backend_abc_ingest_runs.py::test_latest_unfinished_ingest_run_signature`:
+  - Old assertion (line 154–158) requires NO non-self params. Replace with: signature has exactly one optional param `host: str | None = None` beyond self, AND no other params.
+  - Use `inspect.signature(StorageBackend.latest_unfinished_ingest_run)` then assert `params[1].name == "host"` and `params[1].default is None` and `len(params) == 2`.
+- ADD to `tests/integration/test_postgres_ingest_runs.py` (and mirror in `test_sqlite_ingest_runs.py`):
+  - `test_latest_unfinished_ingest_run_host_none_returns_any`: two unfinished rows on hosts "A" and "B"; call with `host=None` (or no arg); returns the most-recent of either.
+  - `test_latest_unfinished_ingest_run_host_filter`: two unfinished rows on "A" and "B"; call with `host="A"` returns only A's row; `host="B"` returns only B's row.
+  - `test_latest_unfinished_ingest_run_host_no_match`: only an "A" unfinished row exists; call with `host="B"` returns None.
+  - `test_latest_unfinished_ingest_run_host_ignores_completed_on_same_host`: a completed "A" row + an unfinished "B" row; call with `host="A"` returns None (status filter still applies).
+- RED reason: existing signature accepts no host param → TypeError on `host="A"`; the ABC test now asserts the new shape.
+
+### DR-T3 (RED — `ScanConfig.stale_run_threshold`)
+- New file `tests/unit/test_scan_config_stale_run_threshold.py`.
+- Assertions:
+  - Default: `ScanConfig().stale_run_threshold == 900.0`.
+  - Accept float: `ScanConfig(stale_run_threshold=300.0).stale_run_threshold == 300.0`.
+  - Accept int (coerced to float): `ScanConfig(stale_run_threshold=300).stale_run_threshold == 300.0`.
+  - Accept zero (disables): `ScanConfig(stale_run_threshold=0.0).stale_run_threshold == 0.0`.
+  - Accept string forms via `parse_scan_age_spec`: `"15m"` → 900.0, `"30s"` → 30.0, `"2h"` → 7200.0, `"1d"` → 86400.0, `"1.5m"` → 90.0, `"60"` → 60.0.
+  - Reject (ValidationError): `-1.0`, `"-5m"`, `"abc"`, `"5x"` (unknown suffix), `""`, `"  "`.
+  - TOML round-trip both forms: float literal AND string literal in `[scan]` both validate to the same `stale_run_threshold` value.
+  - Lazy-import: `import corpus_forge.config; "corpus_forge.scanner" not in sys.modules` — validator MUST NOT eagerly import the scanner package at module-import time. (Use the existing `_SUFFIX_MULTIPLIERS` import-trace pattern from `test_analyze_config.py`.)
+- RED reason: field doesn't exist yet; `ScanConfig().stale_run_threshold` → AttributeError.
+
+### DR-T4 (RED — `mark_stale_runs` on both backends)
+- ADD to `tests/unit/test_backend_abc_ingest_runs.py`:
+  - `test_mark_stale_runs_in_protocol`: `"mark_stale_runs" in _protocol_method_names()`.
+  - `test_mark_stale_runs_signature`: one positional `threshold_seconds: float`, one keyword-only `host: str | None = None`, return type `int`.
+- New file `tests/integration/test_postgres_mark_stale_runs.py` (pytestmark = requires_docker):
+  - `test_marks_old_running_as_failed`: insert running row with `last_progress_at = now - 1000s`; call `mark_stale_runs(900)`; assert row is now `status='failed'`, `ended_at` set, `error` contains "stale heartbeat" + the prior host/pid; return value == 1.
+  - `test_does_not_touch_young_running`: insert running row with `last_progress_at = now - 60s`; call `mark_stale_runs(900)`; row unchanged; return == 0.
+  - `test_does_not_touch_completed`: insert completed row > threshold-old; row unchanged; return == 0.
+  - `test_does_not_touch_failed`: insert failed row > threshold-old; row unchanged; return == 0.
+  - `test_does_not_touch_interrupted`: insert interrupted row > threshold-old; row unchanged; return == 0 (interrupted is a terminal state for stale-takeover purposes — user has the run + can resume; only `'running'` is "alive but dead").
+  - `test_host_filter`: two stale running rows, hosts "A" and "B"; call with `host="A"`; only A's row marked failed; return == 1; B remains running.
+  - `test_host_none_filter`: same setup; call with `host=None`; both marked failed; return == 2.
+  - `test_multi_row_marks_all`: three stale running rows on host "A"; call with `host="A"`; return == 3.
+  - `test_idempotent`: call `mark_stale_runs` twice; second call returns 0; rows still failed (status unchanged).
+  - `test_threshold_zero_noop`: stale running row exists; `mark_stale_runs(0.0)` returns 0; row still running.
+  - `test_threshold_negative_noop`: `mark_stale_runs(-5)` returns 0; row untouched.
+  - `test_error_message_format`: marked row's `error` string matches regex `r"^stale heartbeat: last progress > \d+s ago; host \S+/pid \d+ presumed dead$"`.
+  - `test_operationalerror_swallowed_returns_zero`: monkeypatch `_execute` to raise `psycopg.OperationalError`; call returns 0 without raising.
+  - `test_last_progress_at_unchanged`: capture `last_progress_at` before mark; assert unchanged after.
+- New file `tests/integration/test_sqlite_mark_stale_runs.py` mirrors all of the above using `sqlite3.OperationalError` for the swallow test.
+- RED reason: method doesn't exist on either backend; calls raise AttributeError; protocol check fails.
+
+### DR-T5 (RED — `_source_uri_prefix_for` logical_name)
+- New file `tests/unit/test_source_uri_prefix_logical_name.py`.
+- Reuse the fake source class pattern from existing `tests/unit/test_ingest_helpers.py` (if any) or define inline (`SimpleNamespace`-style).
+- Assertions:
+  - `source` with `root=Path("/Users/alice/Notes")` and `logical_name="notes"` → `"filesystem://logical/notes"`.
+  - Same `logical_name="notes"` but `root=Path("/data/Notes")` → also `"filesystem://logical/notes"` (machine-divergent paths converge — the whole point).
+  - `logical_name=None` + `root=Path("/x/y")` → `"filesystem://" + Path("/x/y").resolve().as_posix()` (existing behavior preserved).
+  - `logical_name=""` + `root=...` → treated as None (defensive fallback to path-based prefix; Pydantic should reject empty in normal flow, this guards against a corrupt config or dict-built source).
+  - `logical_name="notes"` + `root=None` → still `"filesystem://logical/notes"` (logical_name wins regardless of root).
+  - No `root` and no `logical_name` (API source with `.name` and `.identity()`) → existing `f"{name}://{identity}"` path unchanged.
+  - `_legacy_source_uri_prefix_for` is NOT modified: for a source with both `logical_name` and `root`, it STILL returns `f"filesystem://{root.name}"` (back-compat reads of OLD rows are by design path-based; logical sources have no legacy equivalent).
+- RED reason: helper currently ignores `logical_name`; the first two assertions fail.
+
+### DR-T6 (RED — `ingest_once` distributed wiring)
+- New file `tests/unit/test_ingest_once_distributed_wiring.py`.
+- Pattern: model after `tests/unit/test_ingest_once.py` (mock backend, monkeypatch `socket.gethostname`).
+- Assertions:
+  - Stale-mark call exists: `backend.mark_stale_runs.assert_called_once_with(900.0, host="test-host")` (or whatever the default ScanConfig threshold resolves to).
+  - Call order: `mock.call_args_list` on the backend confirms `migrate` < `mark_stale_runs` < `latest_unfinished_ingest_run` < `start_ingest_run`.
+  - Host-scoped resume: when `resume=True`, `backend.latest_unfinished_ingest_run.assert_called_with(host="test-host")`.
+  - Custom threshold from config: build a `Config` with `ScanConfig(stale_run_threshold=60.0)`; assert mark called with `60.0`.
+  - Threshold=0.0 disables: `ScanConfig(stale_run_threshold=0.0)` → `backend.mark_stale_runs` NOT called (zero short-circuit). The contract here is the wiring skip — even though the backend method itself also guards, we save the round-trip.
+  - INFO log emitted when `mark_stale_runs` returns > 0 — capture via `caplog`, assert message contains `"marked 3 stale ingest run(s) as failed"` (when return value is 3); when return is 0, no such log (DEBUG or absent — assert NOT in INFO records).
+  - String "presumed dead" anywhere in production code is fenced to the `mark_stale_runs` impl, not the call site (negative grep — only relevant if there's any risk of duplication).
+- RED reason: `ingest_once` doesn't call `mark_stale_runs`, doesn't pass `host=` to `latest_unfinished_ingest_run`, no INFO log on stale count.
+
+### DR-T7 (RED — `--status` STALE badge)
+- New file `tests/unit/test_cli_ingest_status_stale_badge.py`.
+- Pattern: model after `tests/unit/test_cli_ingest_status.py` (build a fake backend with `latest_ingest_run`, no real DB).
+- Assertions:
+  - Running + `last_progress_at = now - 60s` + threshold 900 → status line is `status: RUNNING` (no badge).
+  - Running + `last_progress_at = now - 1200s` + threshold 900 → status line contains `STALE — last progress 20 min ago` (humanized minutes).
+  - Completed + `last_progress_at = now - 9999s` + threshold 900 → status line is `status: COMPLETED` (no badge — completed is terminal).
+  - Failed + `last_progress_at` ancient → `status: FAILED` (no badge).
+  - Interrupted + `last_progress_at` ancient → `status: INTERRUPTED` (no badge — interrupted is also terminal; resume handles it).
+  - JSON variant: stale predicate fires → output dict contains `"stale": true` under the `"run"` key; predicate doesn't fire → key is ABSENT (not `false`).
+  - Threshold sourced from config: build `Config` with `ScanConfig(stale_run_threshold=60.0)`; running row at `last_progress_at = now - 90s` → STALE (because config threshold is 60).
+  - Threshold=0.0 → never STALE regardless of age (zero disables the inference).
+  - `--status` MUST NOT call `mark_stale_runs` (negative — assert `backend.mark_stale_runs.called is False`).
+  - Explicit kwarg override: when caller passes `stale_threshold=120.0` directly, that wins over config.
+- RED reason: `_render_status` doesn't accept threshold + doesn't emit STALE; `print_ingest_status` has no `stale_threshold` kwarg.
+
+### DR-T8 (RED — docs + config example surface)
+- New file `tests/unit/test_config_example_distributed.py`:
+  - `tomllib.load` `config.example.toml`.
+  - Find the first `[[datasets.sources]]` table. Assert raw text (re-read the file as string) contains `logical_name` AND the value is commented out (line starts with `#` to keep it a snippet, not a default).
+  - Find `[scan]` block. Assert raw text contains `stale_run_threshold` AND has BOTH a numeric example AND a string example (e.g. `"15m"`) — accept inline comment form `stale_run_threshold = 900.0  # 15 min; also accepts "15m"`.
+- New file `tests/unit/test_architecture_doc_distributed.py`:
+  - Read `docs/architecture.md` as text.
+  - Assert `## Multi-machine ingest` heading present (regex anchored to line start).
+  - Assert section contains all of: `logical_name`, `content_hash`, `socket.gethostname`, `stale_run_threshold`, `mark_stale_runs` (case-sensitive — these are the API anchors).
+  - Section appears after `## Backends` and before `## Multi-format extractor layer` (heading-index check).
+  - Read `README.md` as text.
+  - Assert it contains the substring `Multi-machine corpus` AND a link to `docs/architecture.md#multi-machine-ingest`.
+- RED reason: section + example fields don't exist yet.
+
+### DR-G1..DR-G7 — covered by tests above; each green task MUST drive the corresponding red suite to pass and MUST NOT break any test in:
+- `tests/unit/test_backend_abc_ingest_runs.py` (after the DR-T2 + DR-T4 amendments are present)
+- `tests/unit/test_ingest_once.py`, `tests/unit/test_ingest_run_lock.py`, `tests/unit/test_ingest_checkpoint_cadence.py`
+- `tests/unit/test_cli_ingest_status.py`
+- `tests/integration/test_postgres_ingest_runs.py`, `tests/integration/test_sqlite_ingest_runs.py`
+- `tests/integration/test_ingest_resume_e2e.py`
+- `tests/integration/test_migrate_0017_ingest_runs.py` (no schema migration; this file should not change — sentinel)
+
+### DR-Q1 (QA — gates + scope verification)
+- Run full sweep:
+  - `uv run ruff format --check corpus_forge tests`
+  - `uv run ruff check corpus_forge tests`
+  - `uv run pyrefly check --ignore missing-import corpus_forge` → expect 0 new errors vs. base SHA `f86e3a0`
+  - `uv run pytest tests/unit tests/integration tests/cli tests/admin tests/mcp tests/smoke --cov-fail-under=89`
+  - `time corpus-forge --help` against pre-change baseline (record both; diff ≤ +100 ms)
+  - `uv run corpus-forge doctor` exits 0
+- Scope guardrails (§C11): `git diff --stat f86e3a0..HEAD` MUST show zero files under the forbidden trees. Any hit is rework.
+- Migration-schema sentinel: assert NO new file under `corpus_forge/alembic/versions/`. The feature is logic-only on the existing 0017 schema. (If a worker invents a migration: rework.)
+- Smoke: run `corpus-forge ingest --status --json` against a fresh SQLite DB after seeding one running row > threshold-old; assert JSON contains `"stale": true`.
+- Two-host mock: in a single test pytest process, drive `ingest_once` twice with `socket.gethostname` patched first to "alpha" then to "beta" against the same SQLite backend; assert each host gets its own `ingest_runs` row and neither resumes the other.
+- Eager-import sentinel: `import corpus_forge.config; assert "corpus_forge.scanner" not in sys.modules; assert "socket" not in sys.modules` (the `socket.gethostname` call is inside `ingest_once`, not at module top — keep cold-start budget intact).
+
+## DAG (waves)
+
+- **Wave 0 (RED, all parallel; surfaces disjoint):**
+  DR-T1, DR-T2, DR-T3, DR-T4, DR-T8.
+  (DR-T5 + DR-T6 + DR-T7 depend on green impl shapes, so they wait one wave.)
+- **Wave 1 (GREEN, foundational config/protocol):**
+  DR-G1 (after DR-T1), DR-G2 (after DR-T3). Parallel.
+- **Wave 2 (RED, second batch unlocked by green protocol shapes):**
+  DR-T5 (after DR-G3-shape preview — gated only on impl-target file existing; test can land first), DR-T6 (after DR-T2 + DR-T4 land), DR-T7 (after DR-T3 lands).
+  Practical scheduling: dispatch DR-T5/T6/T7 in parallel with Wave 1; the tests target signatures the contract has already locked, so the tester writes against the contract, not against existing code.
+- **Wave 3 (GREEN, backend + ingest core; parallel where surfaces disjoint):**
+  DR-G3 (after DR-T5; touches `ingest.py` helper),
+  DR-G4 (after DR-T2; touches all three backend files),
+  DR-G5 (after DR-T4; touches all three backend files).
+  DR-G4 + DR-G5 share `backends/base.py` + `backends/postgres.py` + `backends/sqlite.py` — **NOT** parallel; serialize as DR-G4 then DR-G5 (G5 builds on G4's protocol-stub additions). DR-G3 is parallelizable with either.
+- **Wave 4 (GREEN, ingest wiring):**
+  DR-G6 (after DR-T6, DR-T7, DR-G2, DR-G4, DR-G5).
+- **Wave 5 (GREEN, docs):**
+  DR-G7 (after DR-T8). Can run in parallel with Wave 4 — surfaces disjoint (`config.example.toml`, `docs/`, `README.md`).
+- **Wave 6 (QA):**
+  DR-Q1 (after every DR-G*).
+
+## Surface area summary (cross-reference)
+
+- **New production files:** *(none — feature is additive on existing files)*
+- **Modified production files:**
+  - `corpus_forge/config.py` — `DatasetSourceConfig.logical_name`, `ScanConfig.stale_run_threshold` + validator
+  - `corpus_forge/ingest.py` — `_source_uri_prefix_for` logical branch, `ingest_once` wiring (stale-mark + host=hostname on resume), `_render_status` STALE badge, `print_ingest_status` kwarg
+  - `corpus_forge/backends/base.py` — Protocol stubs: `latest_unfinished_ingest_run(host=None)`, `mark_stale_runs(...)`
+  - `corpus_forge/backends/postgres.py` — `latest_unfinished_ingest_run(host=None)` body, `mark_stale_runs` body
+  - `corpus_forge/backends/sqlite.py` — `latest_unfinished_ingest_run(host=None)` body, `mark_stale_runs` body
+  - `config.example.toml` — commented `logical_name` under obsidian-vault source, `stale_run_threshold` under `[scan]`
+  - `docs/architecture.md` — new `## Multi-machine ingest` section
+  - `README.md` — one-line "Multi-machine corpus" link
+- **New test files:**
+  - `tests/unit/test_dataset_source_logical_name.py` (DR-T1)
+  - `tests/unit/test_scan_config_stale_run_threshold.py` (DR-T3)
+  - `tests/unit/test_source_uri_prefix_logical_name.py` (DR-T5)
+  - `tests/unit/test_ingest_once_distributed_wiring.py` (DR-T6)
+  - `tests/unit/test_cli_ingest_status_stale_badge.py` (DR-T7)
+  - `tests/unit/test_config_example_distributed.py` (DR-T8 part 1)
+  - `tests/unit/test_architecture_doc_distributed.py` (DR-T8 part 2)
+  - `tests/integration/test_postgres_mark_stale_runs.py` (DR-T4 part 1)
+  - `tests/integration/test_sqlite_mark_stale_runs.py` (DR-T4 part 2)
+- **Modified test files (existing rot-detectors + integration suites):**
+  - `tests/unit/test_backend_abc_ingest_runs.py` — UPDATE `test_latest_unfinished_ingest_run_signature` (DR-T2), ADD `mark_stale_runs` Protocol + signature assertions (DR-T4)
+  - `tests/integration/test_postgres_ingest_runs.py` — ADD host-scope cases (DR-T2)
+  - `tests/integration/test_sqlite_ingest_runs.py` — ADD host-scope cases (DR-T2)
+- **No-touch files (sentinels — DR-Q1 enforces):**
+  - `corpus_forge/alembic/versions/*` (feature is logic-only on existing 0017 schema)
+  - `corpus_forge/identity.py` (host-scope is a signature change, not a new lock key)
+  - `corpus_forge/scanner/age_spec.py`, `corpus_forge/scanner/walker.py`, `corpus_forge/scanner/filelock.py`
+- **Forbidden surfaces (DR-Q1 enforces — any diff → rework):**
+  `corpus_forge/curation/`, `corpus_forge/mcp/`, `corpus_forge/retrieval/`, `corpus_forge/sources/`, `corpus_forge/embedders/`, `corpus_forge/extractors/`, `corpus_forge/chunkers/`, `corpus_forge/analyze/`.
+
+## OK / NOT-OK boundary cases (per-worker cheat sheet)
+
+| Worker scope | OK boundary | NOT-OK boundary |
+|--------------|-------------|------------------|
+| DR-T1 / DR-G1 (logical_name) | None default; 64-char accepted; valid POSIX-ident-like accepted | Empty string rejected; 65-char rejected; spaces/slashes/colons rejected; legacy configs (no field) still load |
+| DR-T2 / DR-G4 (host-scoped resume) | `host=None` returns any unfinished row (back-compat); `host="X"` filters to X | `host="Y"` does NOT return X's row; completed row never returned regardless of host filter |
+| DR-T3 / DR-G2 (stale_run_threshold) | 900.0 default; float passthrough; `"15m"` string decoded; 0.0 disables | Negative rejected; bad string rejected; lazy-import not broken |
+| DR-T4 / DR-G5 (mark_stale_runs) | Running rows past threshold → failed with error string + ended_at set; return count accurate; host filter works; `last_progress_at` preserved | Young rows untouched; completed/failed/interrupted untouched; threshold<=0 noop; OperationalError swallowed → returns 0; idempotent re-run |
+| DR-T5 / DR-G3 (_source_uri_prefix_for) | `logical_name` set → `"filesystem://logical/<name>"`; logical wins over root | Empty logical_name treated as None (defensive); legacy helper unchanged; API sources (no root, no logical_name) still use `name://identity` |
+| DR-T6 / DR-G6 (ingest_once wiring) | Order: migrate → mark_stale → latest_unfinished; host=gethostname() passed; INFO log when mark>0; threshold=0 skips call | Stale-mark NOT called before migrate; resume call NOT host-scoped; STALE inference NEVER mutates |
+| DR-T7 / DR-G6 (--status STALE badge) | Running + old → STALE badge + JSON `"stale": true`; terminal states never STALE; threshold=0 disables | `mark_stale_runs` NEVER called from status path; JSON omits `"stale": false` (only emit on true) |
+| DR-T8 / DR-G7 (docs) | `## Multi-machine ingest` exists; mentions all five anchors; README has the link | Section NOT placed under wrong heading; existing sections untouched (no reflow) |
+| DR-Q1 (QA) | All gates pass; forbidden surfaces clean; no new alembic file; two-host mock works; eager-import sentinel green | Coverage drop > 0 from 89%; any pyrefly regression; any forbidden-tree touch; smoke test fails |
+
+## Notes on ambiguity resolutions
+
+- **`stale_run_threshold` parsing**: chose **Pydantic field validator** over "just-a-float" because the user spec explicitly calls out string-form shorthand (`"15m"`, etc.) and the existing `parse_scan_age_spec` is already the canonical parser. A bare float would have shifted parsing into the call site (`ingest_once` or CLI), which is wrong — the config is the contract, not the runtime.
+- **`_source_uri_prefix_for` introspection mechanism**: chose **`getattr(source, "logical_name", None)`** over `isinstance(source, FilesystemSource) and source.config.logical_name` because (a) `source` is `Any`-typed by design (the helper is plugin-agnostic), (b) duck-typing matches the existing `root` introspection on the very next line, and (c) tests can drive the helper with a `SimpleNamespace` instead of standing up a real `FilesystemSource` + `DatasetSourceConfig`. `FilesystemSource.__init__` MUST therefore expose `self.logical_name = scan_config_or_source_config.logical_name` (or equivalent) when constructed — that wiring lives inside DR-G3's surface (`corpus_forge/ingest.py` builds the source) and is enforced by DR-T5's "divergent paths converge" assertion. **NOTE**: if the source-construction code path in `ingest.py` already passes the `DatasetSourceConfig` object to the source ctor, the helper can introspect `source.config.logical_name` instead — the worker picks the cleanest path during DR-G3 implementation; the test in DR-T5 verifies the outcome, not the path. To keep the contract testable without specifying the construction path, **DR-T5 asserts via a fake source object that exposes `logical_name` directly as an attribute**. DR-G3 MUST ensure that whichever construction path is used, `getattr(source, "logical_name", None)` returns the configured value.
+- **`mark_stale_runs` signature**: chose `(threshold_seconds: float, *, host: str | None = None) -> int` over `(threshold_seconds, host)` with both positional because Python keyword-only style is project convention for "filter" args (matches `update_ingest_run`, `upsert_ingest_run_source`, etc.). Return type `int` (count of rows transitioned) supports the INFO log without a second DB round-trip.
+- **`latest_unfinished_ingest_run` back-compat**: `host` is optional with default `None` so existing callers (and the existing protocol tests modulo the DR-T2 amendment) still work. The integration suites that currently call with no args (`tests/integration/test_postgres_ingest_runs.py:555` etc.) keep their behavior — the SQL adds `(? IS NULL OR host = ?)` which is a tautology when `?=NULL`.
+- **STALE badge mutation question**: `--status` is read-only PER SPEC and PER §C7. The status path infers STALE from `last_progress_at`; only the ingest path mutates via `mark_stale_runs`. This matches user expectation that running `corpus-forge ingest --status` from a third machine doesn't accidentally fail a run that's just slow.
+- **`docs/architecture.md` placement**: chose between `## Backends` and `## Multi-format extractor layer` (line 89 / line 114) because the multi-machine story is fundamentally a backend-level concern (it's about the shared Postgres). Placing it after `## Backends` keeps the document's logical flow (backend → backend coordination → extraction → chunking).
+- **`error` string format for `mark_stale_runs`**: `"stale heartbeat: last progress > {threshold}s ago; host {prior_host}/pid {prior_pid} presumed dead"`. Threshold formatted with `:.0f` to avoid `900.0s` ugliness. Prior host/pid pulled from the row being marked — this preserves audit trail (who/what was the dead run).
+

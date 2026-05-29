@@ -35,6 +35,9 @@ sync_enabled = true
   exclude_globs  = [".obsidian/**", ".trash/**", ".*", "*.icloud"]
   chunker        = "markdown"
   chunker_config = { max_chars = 1500, overlap = 200 }
+  # logical_name = "personal-notes"  # NEW (multi-machine): treat the same logical source
+  #                                  # as identical on two machines whose absolute paths
+  #                                  # differ (e.g. /Users/alice/Notes vs /data/Notes).
 
 [[datasets]]
 name = "claude-code"
@@ -706,6 +709,13 @@ follow_symlinks = false
 # Auto-default when unset by call sites:
 #   min(32, (os.cpu_count() or 1) * 4)
 workers = 1
+
+# How long (in seconds) a 'running' ingest row must be silent before it is
+# declared dead and flipped to 'failed' by mark_stale_runs().  This lets
+# multi-machine and multi-process deployments reclaim rows whose writer
+# crashed without calling the cleanup path.  Also accepts the string
+# shorthand form "15m"; 900.0 == "15m".
+stale_run_threshold = 900.0  # or "15m"; flips dead status='running' rows to 'failed' after this many seconds without progress
 
 # ─────────────────────────────────────────────────────────────────────
 # Phase O Wave 1 — EDA + corpus-cleaning analysis.

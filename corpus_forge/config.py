@@ -250,6 +250,28 @@ class DatasetSourceConfig(BaseModel):
     # this field is the storage.
     max_rows: int | None = Field(default=None, gt=0)
     max_bytes: int | None = Field(default=None, gt=0)
+    # DR-G1 — Optional shared identifier for the same logical source on
+    # multiple machines. When set, `ingest_run_sources.source_uri_prefix`
+    # uses `filesystem://logical/<logical_name>` instead of the host's
+    # absolute path, so machine A (root=/Users/alice/Notes) and machine B
+    # (root=/data/Notes) treat the source as identical for cross-host
+    # `find_source_last_scanned_at` lookups and `--max-scan-age` skip
+    # logic. Empty string is rejected; pass None for 'no logical name'.
+    logical_name: str | None = Field(
+        default=None,
+        description=(
+            "Optional shared identifier for the same logical source on "
+            "multiple machines. When set, `ingest_run_sources.source_uri_prefix` "
+            "uses `filesystem://logical/<logical_name>` instead of the host's "
+            "absolute path, so machine A (root=/Users/alice/Notes) and machine B "
+            "(root=/data/Notes) treat the source as identical for cross-host "
+            "`find_source_last_scanned_at` lookups and `--max-scan-age` skip "
+            "logic. Empty string is rejected; pass None for 'no logical name'."
+        ),
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$",
+    )
 
     @model_validator(mode="after")
     def _default_zotero_block_when_plugin_is_zotero(self) -> "DatasetSourceConfig":
@@ -779,8 +801,32 @@ class ScanConfig(BaseModel):
             " 0 means always rescan."
         ),
     )
+    stale_run_threshold: float = Field(
+        default=900.0,
+        ge=0.0,
+        description=(
+            "Seconds without progress before an `ingest_runs` row with "
+            "`status='running'` is presumed dead and auto-flipped to "
+            "`status='failed'` at the next ingest start. Set to 0.0 to disable "
+            "heartbeat-based stale takeover entirely. Multi-machine convention: "
+            "leave at default 15min — the 5s checkpoint cadence gives a ~180x "
+            "margin against false positives."
+        ),
+    )
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("stale_run_threshold", mode="before")
+    @classmethod
+    def _resolve_stale_run_threshold(cls, value: float | int | str) -> float:
+        """Accept a float, int, or duration string like ``"15m"``."""
+        if isinstance(value, str):
+            from corpus_forge.scanner.age_spec import (  # noqa: PLC0415 — lazy import required: importing at module level would eagerly pull corpus_forge.scanner into corpus_forge.config, violating the lightweight-config contract (tested by test_importing_config_does_not_eagerly_import_scanner).
+                parse_scan_age_spec,
+            )
+
+            return parse_scan_age_spec(value)
+        return float(value)
 
 
 class AnalyzeConfig(BaseModel):

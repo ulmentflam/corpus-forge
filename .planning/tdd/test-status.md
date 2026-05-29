@@ -3,6 +3,12 @@
 Record of test suites written by tdd-tester.
 | task-id | status | notes |
 |---------|--------|-------|
+| DR-T7   | red    | 30 fail / 0 pass. All 28 `_render_status`/`print_ingest_status` tests fail TypeError (unexpected kwarg `stale_threshold`). 2 config-threshold tests fail pydantic ValidationError (`scan.stale_run_threshold` Extra inputs not permitted — DR-G2 needed). Badge locked: `STALE` uppercase no brackets. JSON key locked: `"stale"` lowercase, omitted (not false) when not stale. Handed to tdd-coder (DR-G6). |
+| DR-T6   | red    | 19 fail / 3 pass. FAIL reasons: mark_stale_runs not called (AssertionError: Expected call: mark_stale_runs(…) / Not called); latest_unfinished_ingest_run called without host= (AssertionError: {} got None). 3 PASSes correct: resume=False already skips the call, no-stale-log when count=0 is vacuously true. Decision: stale_run_threshold=0.0 → ingest_once still calls mark_stale_runs; no-op is backend's responsibility. Handed to tdd-coder. |
+| DR-T5   | red    | 10 fail (AssertionError: path-based prefix returned instead of filesystem://logical/<name>) + 13 pass (back-compat + legacy + empty-string defensive + API source). Handed to tdd-coder. |
+| DR-T4   | red    | 2 unit ABC + 19 Postgres + 20 SQLite = 41 new tests; all 41 fail AttributeError. 15 pre-existing tests still pass. Handed to tdd-coder. |
+| DR-T1   | red    | 51 fail / 1 pass. All failures: AttributeError (field missing) on accept/default/coexist/TOML tests; AssertionError pre-condition guard on reject tests. 1 pass = import smoke (correct). Decision locked: empty string → ValidationError (not coerced to None). Pattern ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$ enforced. Handed to tdd-coder. |
+| DR-T2   | red    | 9 new tests fail: 1 unit ABC signature + 4 Postgres host-scope + 4 SQLite host-scope. All fail for the correct reasons (no `host` param on backends). 109 existing tests still pass. Handed off to tdd-coder. |
 | SR-T3   | red    | `tests/integration/test_sqlite_ingest_runs.py` (45 FAIL + 1 acceptable-pass) + `tests/unit/test_filelock.py` (collection ImportError) + `tests/unit/test_sqlite_backend.py` (5 FAIL). Handed off to tdd-coder. |
 | SR-T2   | red    | 16 unit tests in `tests/unit/test_backend_abc_ingest_runs.py` + 46 integration tests in `tests/integration/test_postgres_ingest_runs.py`. All 62 fail with `AttributeError` — methods not yet on Protocol or PostgresBackend. Handed off to tdd-coder. |
 | W3-01   | red    | `tests/cli/test_setup_quick.py` (9 tests) + `tests/cli/test_banner.py` (5 tests). All 14 fail at RED (missing `run_quick`, `_probe_ollama`, `_urlopen_compat`, `--quick` flag, banner-on-setup). Ready for GREEN. |
@@ -53,6 +59,76 @@ Record of test suites written by tdd-tester.
 | D-03    | red    | backfill test (3 tests) + parity ext to 0002_chunk_content_hash — all fail CommandError; 0001_core parity GREEN. |
 | G-05    | red (2/3 fail) | Integration smoke written. 2 tests fail: export_chat does not resolve custom templates from DB (production gap). 1 test passes (builtin chatml render). Skill contract rename: 4 GREEN. |
 | SR-T5   | red    | 27 tests in `tests/unit/test_ingest_run_lock.py`. All fail at collection (ImportError: `ingest_run_lock_key` not in `corpus_forge.identity`, `IngestRunInProgressError` not in `corpus_forge.backends.base`). Ready for tdd-coder. |
+
+## DR-T4
+- Test files:
+  - `tests/unit/test_backend_abc_ingest_runs.py` (ADDED `TestMarkStaleRunsProtocol` class — 2 new tests)
+  - `tests/integration/test_postgres_mark_stale_runs.py` (NEW — 19 tests)
+  - `tests/integration/test_sqlite_mark_stale_runs.py` (NEW — 20 tests)
+- Run command: `uv run pytest tests/unit/test_backend_abc_ingest_runs.py tests/integration/test_postgres_mark_stale_runs.py tests/integration/test_sqlite_mark_stale_runs.py -q --no-cov`
+- Edge case checklist:
+  - [x] happy — `test_marks_old_running_as_failed` (both backends)
+  - [x] boundaries — `test_does_not_touch_young_running` (within threshold), `test_row_at_exact_threshold_boundary` (1s over threshold), `test_empty_table_returns_zero`
+  - [x] type/format — `test_return_type_is_int` (always int even on 0), error message regex on `test_error_message_format`
+  - [x] state — `test_idempotent_second_call_returns_zero` (already-failed rows not re-selected), `test_last_progress_at_unchanged_after_mark` (audit trail preserved), `test_mixed_statuses_only_running_marked` (SQLite only; parallel multi-status table)
+  - [ ] N/A — concurrency (serial method; no concurrent-write path in scope for this surface)
+  - [x] failure paths — `test_operationalerror_swallowed_returns_zero` (both backends), `test_threshold_zero_noop`, `test_threshold_negative_noop`
+  - [ ] N/A — locale/time (timestamps are UTC throughout; no locale-sensitive paths)
+  - [x] production-realistic — rows inserted with explicit past timestamps to simulate stale runs; `host`/`pid` fields from realistic values (e.g. `"specific-host"`, `99999`)
+  - [x] regression hooks — `test_does_not_touch_interrupted` pins principal decision #6 (interrupted is sticky); `test_error_message_format` pins the exact regex from principal decision #7; `test_last_progress_at_unchanged_after_mark` pins the audit-trail invariant
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_postgres_mark_stale_runs.py::TestMarkStaleRuns::test_marks_old_running_as_failed
+  ...
+  AttributeError: 'PostgresBackend' object has no attribute 'mark_stale_runs'
+  FAILED tests/integration/test_sqlite_mark_stale_runs.py::TestMarkStaleRuns::test_marks_old_running_as_failed
+  ...
+  AttributeError: 'SQLiteBackend' object has no attribute 'mark_stale_runs'
+  FAILED tests/unit/test_backend_abc_ingest_runs.py::TestMarkStaleRunsProtocol::test_mark_stale_runs_in_protocol
+  AssertionError: StorageBackend.mark_stale_runs not found — add Protocol stub (DR-G5)
+  FAILED tests/unit/test_backend_abc_ingest_runs.py::TestMarkStaleRunsProtocol::test_mark_stale_runs_signature
+  AssertionError: StorageBackend.mark_stale_runs does not exist — add Protocol stub (DR-G5)
+  42 failed, 15 passed in 5.46s
+  ```
+- Status: red — handed off to tdd-coder
+
+## DR-T8
+- Test files: `tests/unit/test_docs_distributed_resume.py`
+- Run command: `uv run pytest tests/unit/test_docs_distributed_resume.py -q --no-cov`
+- Edge case checklist:
+  - [x] happy — each assertion has a passing path (correct heading/anchor/field present)
+  - [x] boundaries — position checks: logical_name before second [[datasets]], ## Multi-machine ingest after ## Backends and before ## Multi-format extractor layer
+  - [x] type/format — regex anchored to line-start for headings; numeric vs string form for stale_run_threshold
+  - [ ] N/A — state (pure static file reads, no mutable state)
+  - [ ] N/A — concurrency (pure file reads)
+  - [ ] N/A — failure paths (files are repo-local; missing file is a test collection error, not a runtime concern)
+  - [ ] N/A — locale/time (ASCII doc content, no time involved)
+  - [x] production-realistic data — reads actual repo files, not toy fixtures
+  - [ ] N/A — regression hooks (no prior bug referenced)
+- Locked strings for DR-G7 (verbatim):
+  - config.example.toml logical_name: commented line matching `#.*logical_name\s*=\s*"[^"]+"`, in first [[datasets.sources]] block before second [[datasets]]
+  - config.example.toml stale_run_threshold: uncommented `^\s*stale_run_threshold\s*=\s*\d[\d.]*` AND `"15m"` appearing nearby (e.g. inline comment)
+  - architecture.md heading: `## Multi-machine ingest` (exact, line-start), after `## Backends`, before `## Multi-format extractor layer`
+  - architecture.md section body must contain (case-sensitive): `logical_name`, `content_hash`, `socket.gethostname`, `stale_run_threshold`, `mark_stale_runs`
+  - README.md: substring `Multi-machine corpus` AND substring `docs/architecture.md#multi-machine-ingest`
+- Red output (tail):
+  ```
+  FAILED TestConfigExampleLogicalName::test_logical_name_appears_in_config_example
+  FAILED TestConfigExampleLogicalName::test_logical_name_has_string_value_in_comment
+  FAILED TestConfigExampleLogicalName::test_logical_name_is_commented_out
+  FAILED TestConfigExampleLogicalName::test_logical_name_appears_before_second_dataset_block
+  FAILED TestConfigExampleStaleRunThreshold::test_stale_run_threshold_present
+  FAILED TestConfigExampleStaleRunThreshold::test_stale_run_threshold_is_in_scan_block
+  FAILED TestConfigExampleStaleRunThreshold::test_stale_run_threshold_has_numeric_value
+  FAILED TestConfigExampleStaleRunThreshold::test_stale_run_threshold_references_string_shorthand
+  FAILED TestArchitectureDocMultiMachineSection::test_multi_machine_ingest_heading_present
+  FAILED TestArchitectureDocMultiMachineSection::test_multi_machine_section_after_backends
+  FAILED TestArchitectureDocMultiMachineSection::test_multi_machine_section_before_multi_format
+  FAILED TestReadmeMultiMachineLink::test_readme_contains_multi_machine_corpus_prose
+  FAILED TestReadmeMultiMachineLink::test_readme_contains_anchor_link_to_architecture
+  13 failed, 5 skipped in 0.19s
+  ```
+- Status: red — handed off to tdd-coder (DR-G7)
 
 ## SR-T5 — Concurrent-run advisory lock at the ingest entry point
 
@@ -3722,3 +3798,173 @@ Test patterns of note:
   ```
 - Notes: 4 unit tests pass before implementation (negative-value + extra-field guards); these are not false positives — they test invariants that hold in both states (extra_forbidden today, ge=0.0 constraint after SR-G7). Integration tests all error at the backend fixture: 0017 migration not yet written. SR-G1 unblocks these in sequence.
 - Status: red — handed off to tdd-coder
+
+## DR-T3
+- Test files: `tests/unit/test_scan_config_stale_run_threshold.py`
+- Run command: `uv run pytest tests/unit/test_scan_config_stale_run_threshold.py -q --no-cov`
+- Edge case checklist:
+  - [x] happy — default 900.0, explicit float, int coercion, zero (disable)
+  - [x] boundaries — 0.0, 0.001, large value (7d), int 0 coerced, bare-number string "60"
+  - [x] type/format — int->float coercion, string forms ("15m"/"30s"/"2h"/"1d"/"1.5m"/"60"), model_dump returns float not string
+  - [x] state — model_dump+model_validate round-trip for both float and string inputs; TOML absent/empty/float/string all normalise correctly
+  - [ ] N/A — concurrency (pure Pydantic field, no shared mutable state)
+  - [x] failure paths — negative float, negative int, negative string "-5m", alpha string "abc", unknown suffix "5x", empty string, whitespace-only, bare suffix "m", double-suffix "5mm", "nan", "inf"
+  - [ ] N/A — locale/time (duration parsing is locale-independent ASCII arithmetic)
+  - [x] production-realistic — TOML round-trips with real Config.load; checks all four suffix types + fractional coefficient
+  - [x] regression hooks — lazy-import sentinel (corpus_forge.scanner absent after import); validator-triggers-import positive check
+- Red output (tail):
+  ```
+  E                   AttributeError: 'ScanConfig' object has no attribute 'stale_run_threshold'
+  .venv/lib/python3.11/site-packages/pydantic/main.py:1042: AttributeError
+  FAILED tests/unit/test_scan_config_stale_run_threshold.py::test_stale_run_threshold_field_exists
+  FAILED tests/unit/test_scan_config_stale_run_threshold.py::test_stale_run_threshold_default_is_900
+  FAILED tests/unit/test_scan_config_stale_run_threshold.py::test_stale_run_threshold_string_15m
+  FAILED tests/unit/test_scan_config_stale_run_threshold.py::test_stale_run_threshold_string_30s
+  FAILED tests/unit/test_scan_config_stale_run_threshold.py::test_stale_run_threshold_string_2h
+  FAILED tests/unit/test_scan_config_stale_run_threshold.py::test_stale_run_threshold_string_1d
+  FAILED tests/unit/test_scan_config_stale_run_threshold.py::test_toml_float_literal_round_trip
+  FAILED tests/unit/test_scan_config_stale_run_threshold.py::test_toml_string_literal_round_trip
+  FAILED tests/unit/test_scan_config_stale_run_threshold.py::test_model_dump_returns_float_for_string_input
+  FAILED tests/unit/test_scan_config_stale_run_threshold.py::test_validator_triggers_scanner_import_on_first_string_use
+  ... (35 total)
+  35 failed, 13 passed in 0.43s
+  ```
+- Notes: 13 tests pass for correct reasons — 12 rejection tests (pytest.raises(ValidationError)) pass because Pydantic extra='forbid' already rejects stale_run_threshold as unknown field; 1 lazy-import test passes because no field means no scanner import fires. All 13 continue to pass after DR-G2 (rejection tests will pass due to ge=0.0 + validator constraints instead). No false positives.
+- Status: red — handed off to tdd-coder
+
+## DR-T1
+- Test files: `tests/unit/test_dataset_source_logical_name.py`
+- Run command: `uv run pytest tests/unit/test_dataset_source_logical_name.py -q --no-cov`
+- Edge case checklist:
+  - [x] happy path — default None, valid names accepted, TOML round-trip
+  - [x] boundaries — single-char "a", 64-char max accepted; 65-char rejected; empty string rejected
+  - [x] type/format — invalid chars (space, slash, colon, at-sign, backslash, hash, exclamation); leading dash/underscore/dot; whitespace-only
+  - [x] state — per-source independence (two sources in same dataset, different logical_name values); model_dump round-trip; model_dump_json round-trip
+  - [ ] N/A — concurrency (pure Pydantic field, no concurrent access)
+  - [ ] N/A — failure paths (no I/O, pure in-memory validation)
+  - [ ] N/A — locale/time (string pattern validation only, no temporal logic)
+  - [x] production-realistic — config.example.toml loaded as backwards-compat regression sentinel; realistic names like "notes", "personal-vault", "team_data"
+  - [x] regression hooks — backwards-compat sentinel ensures adding the field does not break existing configs without it
+- Decision locked: empty string "" is rejected with ValidationError (NOT coerced to None). Callers must pass None to disable. Pattern: ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$ (1-64 chars). First char must be alnum.
+- Reject test RED strategy: each reject test guards with _require_field_exists() asserting "logical_name" in DatasetSourceConfig.model_fields. This fires an AssertionError (not a misleading "DID NOT RAISE") because DatasetSourceConfig has model_config={} (no extra=forbid), so Pydantic silently ignores unknown fields rather than raising.
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_dataset_source_logical_name.py::TestLogicalNameDefault::test_logical_name_default_is_none
+  AttributeError: 'DatasetSourceConfig' object has no attribute 'logical_name'
+  FAILED tests/unit/test_dataset_source_logical_name.py::TestLogicalNameInvalidRejected::test_invalid_logical_name_rejected[.]
+  AssertionError: DR-G1 has not yet added the logical_name field to DatasetSourceConfig.
+  FAILED tests/unit/test_dataset_source_logical_name.py::TestLogicalNameValidAccepted::test_valid_logical_name_accepted[notes]
+  AttributeError: 'DatasetSourceConfig' object has no attribute 'logical_name'
+  FAILED tests/unit/test_dataset_source_logical_name.py::TestLogicalNameTomlRoundTrip::test_toml_without_logical_name_defaults_to_none
+  AttributeError: 'DatasetSourceConfig' object has no attribute 'logical_name'
+  FAILED tests/unit/test_dataset_source_logical_name.py::TestBackwardsCompatWithExampleConfig::test_config_example_toml_validates_after_field_added
+  AttributeError: 'DatasetSourceConfig' object has no attribute 'logical_name'
+  51 failed, 1 passed in 0.61s
+  ```
+- Status: red — handed off to tdd-coder
+
+## DR-T2 — host-scoped `latest_unfinished_ingest_run(host=...)`
+
+- Test files:
+  - `tests/unit/test_backend_abc_ingest_runs.py` (UPDATED `test_latest_unfinished_ingest_run_signature`)
+  - `tests/integration/test_postgres_ingest_runs.py` (ADDED `TestLatestUnfinishedIngestRunHostScope` — 5 tests)
+  - `tests/integration/test_sqlite_ingest_runs.py` (ADDED `TestLatestUnfinishedIngestRunHostScope` — 5 tests)
+- Run command: `uv run pytest tests/unit/test_backend_abc_ingest_runs.py tests/integration/test_postgres_ingest_runs.py tests/integration/test_sqlite_ingest_runs.py -q --no-cov`
+- Edge case checklist:
+  - [x] happy — `test_latest_unfinished_ingest_run_host_none_returns_any` (both backends): any-host back-compat returns most-recent row; explicit `host=None` verified identical to no-arg
+  - [x] boundaries — `test_latest_unfinished_ingest_run_host_no_match` (both backends): host='machine-c' with only machine-a rows returns None
+  - [x] type/format — signature test asserts `host` param present with default None, exactly one non-self param, POSITIONAL_OR_KEYWORD or KEYWORD_ONLY kind; back-compat no-arg calls verified
+  - [x] state — `test_latest_unfinished_ingest_run_host_ignores_completed_on_same_host` (both backends): status filter (IN running/interrupted) still applies when host filter is active; completed row for host-A does not satisfy host='A' query
+  - [ ] N/A — concurrency (pure SELECT query; no concurrent write paths in DR-T2 scope)
+  - [x] failure paths — `test_latest_unfinished_ingest_run_host_no_match`: specified host with zero matching rows returns None (does not fall back to any-host)
+  - [ ] N/A — locale/time (no timestamp logic in the host-filter path)
+  - [x] production-realistic — uses distinct host strings ("machine-a", "machine-b") mirroring iCloud multi-machine topology; time.sleep() ensures started_at ordering is deterministic across tests
+  - [x] regression hooks — `test_latest_unfinished_ingest_run_back_compat_existing_callers` (both backends) pins that existing callers with no host argument continue to work unchanged
+- Decision note: `config_digest` param absent from the new signature per C4 and DR-T2 acceptance (len(params)==2 = self + host). The task prompt listed `config_digest` but that conflicts with binding tasks.md C4; tasks.md wins.
+- Red output (tail):
+  ```
+  FAILED tests/integration/test_postgres_ingest_runs.py::TestLatestUnfinishedIngestRunHostScope::test_latest_unfinished_ingest_run_host_filter
+  FAILED tests/integration/test_postgres_ingest_runs.py::TestLatestUnfinishedIngestRunHostScope::test_latest_unfinished_ingest_run_host_none_returns_any
+  FAILED tests/integration/test_postgres_ingest_runs.py::TestLatestUnfinishedIngestRunHostScope::test_latest_unfinished_ingest_run_host_ignores_completed_on_same_host
+  FAILED tests/integration/test_postgres_ingest_runs.py::TestLatestUnfinishedIngestRunHostScope::test_latest_unfinished_ingest_run_host_no_match
+  FAILED tests/integration/test_sqlite_ingest_runs.py::TestLatestUnfinishedIngestRunHostScope::test_latest_unfinished_ingest_run_host_no_match
+  FAILED tests/integration/test_sqlite_ingest_runs.py::TestLatestUnfinishedIngestRunHostScope::test_latest_unfinished_ingest_run_host_none_returns_any
+  FAILED tests/integration/test_sqlite_ingest_runs.py::TestLatestUnfinishedIngestRunHostScope::test_latest_unfinished_ingest_run_host_ignores_completed_on_same_host
+  FAILED tests/integration/test_sqlite_ingest_runs.py::TestLatestUnfinishedIngestRunHostScope::test_latest_unfinished_ingest_run_host_filter
+  FAILED tests/unit/test_backend_abc_ingest_runs.py::TestProtocolMethodSignatures::test_latest_unfinished_ingest_run_signature
+  E  AssertionError: latest_unfinished_ingest_run should have exactly one parameter beyond self ('host'); got []
+  E  TypeError: SQLiteBackend.latest_unfinished_ingest_run() got an unexpected keyword argument 'host'
+  E  TypeError: PostgresBackend.latest_unfinished_ingest_run() got an unexpected keyword argument 'host'
+  9 failed, 109 passed in 13.68s
+  ```
+- Status: red — handed off to tdd-coder
+
+## DR-T5
+- Test files: `tests/unit/test_source_uri_prefix_logical_name.py` (NEW — 23 tests)
+- Run command: `uv run pytest tests/unit/test_source_uri_prefix_logical_name.py -q --no-cov`
+- Edge case checklist:
+  - [x] happy — `test_logical_name_notes_alice_root`, `test_logical_name_notes_different_root` (core prefix contract)
+  - [x] boundaries — `test_logical_name_single_char` (1-char name), `test_logical_name_with_root_none` (root=None still works when logical_name set), `test_two_machines_same_logical_name_produces_identical_prefix` (machine-convergence invariant)
+  - [x] type/format — `test_logical_name_with_hyphens`, `test_logical_name_with_dots`, `test_logical_name_with_underscores` (allowed chars verbatim, no URL-encoding)
+  - [x] state — `test_none_logical_name_uses_full_path`, `test_no_logical_name_attr_uses_full_path` (getattr default=None path), `test_legacy_returns_basename_not_logical_prefix` (legacy helper state unchanged)
+  - [ ] N/A — concurrency (pure stateless function, no shared mutable state)
+  - [x] failure paths — `test_empty_string_falls_through_to_path_prefix`, `test_empty_string_not_url_encoded_into_logical` (corrupt object defense; Pydantic already rejects empty at config-load time, but runtime must survive)
+  - [ ] N/A — locale/time (no time fields; ASCII path strings; non-ASCII logical_name is out of scope per C2 pattern)
+  - [x] production-realistic data — fake source objects match the duck-typed shape of FilesystemSource, not toy primitives; two-machine convergence test uses realistic paths (/Users/alice, /home/bob)
+  - [x] regression hooks — `test_legacy_returns_basename_not_logical_prefix` pins that _legacy_source_uri_prefix_for is NOT modified (any diff to that helper is a regression); `test_legacy_two_machines_different_prefixes` pins that legacy intentionally diverges across different root basenames (documents the deliberate break from the new path)
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_source_uri_prefix_logical_name.py::TestApiSourceFallback::test_api_source_with_logical_name_set
+  FAILED tests/unit/test_source_uri_prefix_logical_name.py::TestLogicalNameSet::test_logical_name_with_dots
+  FAILED tests/unit/test_source_uri_prefix_logical_name.py::TestLogicalNameSet::test_logical_name_with_root_none
+  FAILED tests/unit/test_source_uri_prefix_logical_name.py::TestLogicalNameSet::test_two_machines_same_logical_name_produces_identical_prefix
+  FAILED tests/unit/test_source_uri_prefix_logical_name.py::TestLogicalNameSet::test_logical_name_with_underscores
+  FAILED tests/unit/test_source_uri_prefix_logical_name.py::TestLogicalNameSet::test_logical_name_wins_over_root_path
+  FAILED tests/unit/test_source_uri_prefix_logical_name.py::TestLogicalNameSet::test_logical_name_single_char
+  FAILED tests/unit/test_source_uri_prefix_logical_name.py::TestLogicalNameSet::test_logical_name_notes_different_root
+  FAILED tests/unit/test_source_uri_prefix_logical_name.py::TestLogicalNameSet::test_logical_name_with_hyphens
+  FAILED tests/unit/test_source_uri_prefix_logical_name.py::TestLogicalNameSet::test_logical_name_notes_alice_root
+  10 failed, 13 passed in 44.91s
+  ```
+  All 10 failures are `AssertionError`: function returned path-based prefix
+  (e.g. `filesystem:///Users/alice/Notes`) instead of `filesystem://logical/notes`.
+  The 13 passes are all correct: back-compat (logical_name=None), empty-string defensive,
+  API source, and all legacy helper regression tests.
+- Status: red — handed off to tdd-coder
+
+## DR-T7
+- Test files: `tests/unit/test_cli_ingest_status_stale_badge.py`
+- Run command: `uv run pytest tests/unit/test_cli_ingest_status_stale_badge.py -q --no-cov`
+- Edge case checklist:
+  - [x] happy — running + recent → no STALE; running + stale → STALE badge present
+  - [x] boundaries — exactly-equal to threshold → NOT stale (> not >=); 1s over → stale
+  - [x] type/format — badge token is uppercase STALE no brackets; JSON key is lowercase "stale"
+  - [x] state — completed / failed / interrupted rows never get STALE badge (terminal states)
+  - N/A — concurrency (pure render function + single-call print)
+  - [x] failure paths — mark_stale_runs NOT called (read-only invariant); poisoned mock asserts it
+  - N/A — locale/time (pinned UTC fixed datetime, no DST/TZ variance in stale logic)
+  - [x] production-realistic data — run dicts match `_make_run()` shape from `test_cli_ingest_status.py`
+  - [x] regression hooks — read-only invariant (SR-Q1/C7); token format locked; JSON key omit-vs-false locked
+  - [x] multi-machine — foreign host run: stale inference independent of socket.gethostname()
+  - [x] threshold=0 disables — stale_threshold=0.0 → STALE never reported
+  - [x] config-sourced threshold — stale_threshold=None reads config.scan.stale_run_threshold
+  - [x] explicit kwarg override — stale_threshold=5000.0 overrides config=60.0
+  - [x] null last_progress_at — must not crash
+- Red output (tail):
+  ```
+  FAILED tests/unit/test_cli_ingest_status_stale_badge.py::TestReadOnlyInvariant::test_mark_stale_runs_not_called_for_stale_run
+  FAILED tests/unit/test_cli_ingest_status_stale_badge.py::TestReadOnlyInvariant::test_mark_stale_runs_not_called_via_mock_assertion
+  FAILED tests/unit/test_cli_ingest_status_stale_badge.py::TestStaleBoundaryExactlyEqual::test_exactly_equal_to_threshold_is_not_stale_human
+  FAILED tests/unit/test_cli_ingest_status_stale_badge.py::TestStaleBoundaryExactlyEqual::test_one_second_over_threshold_is_stale_human
+  FAILED tests/unit/test_cli_ingest_status_stale_badge.py::TestThresholdSourcedFromConfig::test_config_threshold_overrides_default
+  FAILED tests/unit/test_cli_ingest_status_stale_badge.py::TestThresholdSourcedFromConfig::test_explicit_stale_threshold_kwarg_overrides_config
+  FAILED tests/unit/test_cli_ingest_status_stale_badge.py::TestMultiMachineStaleBadge::test_stale_badge_works_for_foreign_host
+  FAILED tests/unit/test_cli_ingest_status_stale_badge.py::TestMultiMachineStaleBadge::test_no_stale_badge_for_foreign_host_recent_run
+  FAILED tests/unit/test_cli_ingest_status_stale_badge.py::TestStaleWhenLastProgressAtNone::test_null_last_progress_at_does_not_raise
+  FAILED tests/unit/test_cli_ingest_status_stale_badge.py::TestStaleBadgeTokenFormat::test_badge_token_is_uppercase_stale
+  FAILED tests/unit/test_cli_ingest_status_stale_badge.py::TestStaleBadgeTokenFormat::test_json_key_is_stale_lowercase
+  30 failed in 3.16s
+  Primary failure reason (28/30): TypeError: _render_status()/_print_ingest_status() got unexpected kwarg 'stale_threshold'
+  2/30 fail: pydantic ValidationError scan.stale_run_threshold Extra inputs not permitted (DR-G2 needed)
+  ```
+- Status: red — handed off to tdd-coder (DR-G6)

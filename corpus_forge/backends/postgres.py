@@ -3413,8 +3413,12 @@ class PostgresBackend(StorageBackend):
         )
         return dict(rows[0]) if rows else None
 
-    def latest_unfinished_ingest_run(self) -> dict | None:
-        """Returns the most-recent row with status IN ('running','interrupted'); None otherwise."""
+    def latest_unfinished_ingest_run(self, host: str | None = None) -> dict | None:
+        """Returns the most-recent row with status IN ('running','interrupted'); None otherwise.
+
+        host=None (default) returns any unfinished row regardless of host (back-compat).
+        host='X' adds AND host = 'X' to the WHERE clause.
+        """
         rows = self._execute(
             """
             SELECT run_id, status, host, pid, config_digest,
@@ -3422,9 +3426,11 @@ class PostgresBackend(StorageBackend):
                    last_op, last_done, last_total, error
             FROM corpus.ingest_runs
             WHERE status IN ('running', 'interrupted')
+              AND (%s::text IS NULL OR host = %s)
             ORDER BY started_at DESC
             LIMIT 1
-            """
+            """,
+            (host, host),
         )
         return dict(rows[0]) if rows else None
 
@@ -3503,3 +3509,42 @@ class PostgresBackend(StorageBackend):
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=UTC)
         return ts
+
+    def mark_stale_runs(
+        self,
+        threshold_seconds: float,
+        *,
+        host: str | None = None,
+    ) -> int:
+        """Transition stale 'running' rows to 'failed'.
+
+        Short-circuits immediately (returns 0) when threshold_seconds <= 0.
+        Wraps psycopg.OperationalError and returns 0 (best-effort idiom).
+        """
+        if threshold_seconds <= 0:
+            return 0
+        now = datetime.now(tz=UTC)
+        try:
+            rows = self._execute(
+                """
+                UPDATE corpus.ingest_runs
+                SET status   = 'failed',
+                    ended_at = %s,
+                    error    = 'stale heartbeat: last progress > '
+                               || ROUND(%s)::text
+                               || 's ago; host '
+                               || host
+                               || '/pid '
+                               || pid::text
+                               || ' presumed dead'
+                WHERE status = 'running'
+                  AND last_progress_at < %s - make_interval(secs => %s)
+                  AND (%s::text IS NULL OR host = %s)
+                RETURNING run_id
+                """,
+                (now, threshold_seconds, now, threshold_seconds, host, host),
+            )
+            return len(rows)
+        except psycopg.OperationalError as exc:
+            logger.debug("mark_stale_runs swallowed OperationalError: %r", exc)
+            return 0

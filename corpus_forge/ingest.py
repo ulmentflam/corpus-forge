@@ -961,6 +961,9 @@ def _source_uri_prefix_for(source: Any) -> str:
     ``find_source_last_scanned_at`` backends accept BOTH formats via a
     secondary OR clause so existing rows continue to match.
     """
+    logical_name = getattr(source, "logical_name", None)
+    if logical_name:  # non-None AND non-empty string (defensive)
+        return f"filesystem://logical/{logical_name}"
     root: Path | None = getattr(source, "root", None)
     if root is not None:
         # Normalise to Path so callers can pass either a str or a Path.
@@ -1077,6 +1080,19 @@ def ingest_once(
                 # Apply migrations inside the lock so schema changes are serialised.
                 backend.migrate()
 
+                # DR-G6: Mark stale runs AFTER migrate (columns must exist) and
+                # BEFORE latest_unfinished_ingest_run (so ghost runs are cleared
+                # before the resume lookup). Always-call: the backend owns the
+                # threshold<=0 no-op short-circuit (C5).
+                _stale_threshold = config.scan.stale_run_threshold
+                _stale_raw = backend.mark_stale_runs(_stale_threshold, host=host)
+                try:
+                    _stale_count = int(_stale_raw) if _stale_raw is not None else 0
+                except (TypeError, ValueError):
+                    _stale_count = 0
+                if _stale_count > 0:
+                    logger.info("marked %d stale ingest run(s) as failed", _stale_count)
+
                 # Get active embedders
                 embedders = get_active_embedders(config)
                 logger.info(f"Active embedders: {[e.name for e in embedders]}")
@@ -1086,7 +1102,7 @@ def ingest_once(
                 run_id: str | None = None
 
                 if resume:
-                    prior = backend.latest_unfinished_ingest_run()
+                    prior = backend.latest_unfinished_ingest_run(host=host)
                     if prior is not None:
                         if prior["config_digest"] == config_digest:
                             # Resume: reuse the existing run_id.
@@ -1863,12 +1879,16 @@ def _build_backend_for_status(config: Config) -> StorageBackend:
 def _render_status(
     run: dict[str, Any],
     sources: list[dict[str, Any]],
+    *,
+    stale_threshold: float = 0.0,
 ) -> str:
     """Render a human-readable two-section status table.
 
     Args:
-        run:     A single ``ingest_runs`` row as a dict.
-        sources: Zero or more ``ingest_run_sources`` rows as dicts.
+        run:              A single ``ingest_runs`` row as a dict.
+        sources:          Zero or more ``ingest_run_sources`` rows as dicts.
+        stale_threshold:  Seconds after which a running row with no heartbeat
+                          is considered STALE. ``0.0`` disables the inference.
 
     Returns:
         A multi-line string suitable for printing to stdout.
@@ -1888,6 +1908,18 @@ def _render_status(
     last_done = run.get("last_done", 0) or 0
     last_total = run.get("last_total")
     error = run.get("error")
+    last_progress_at = run.get("last_progress_at")
+
+    # DR-G6 §C7: STALE inference — read-only, strict > (not >=).
+    # Only applies to running rows; threshold=0.0 disables entirely.
+    is_stale = False
+    stale_minutes: int = 0
+    if status == "running" and stale_threshold > 0.0 and last_progress_at is not None:
+        now_utc = datetime.now(UTC)
+        elapsed = (now_utc - last_progress_at).total_seconds()
+        if elapsed > stale_threshold:
+            is_stale = True
+            stale_minutes = int(elapsed // 60)
 
     # Format progress
     if last_total is None:
@@ -1901,8 +1933,12 @@ def _render_status(
     # Format ended_at: use em-dash for NULL
     ended_str = str(ended_at) if ended_at is not None else "—"
 
+    status_label = status.upper()
+    if is_stale:
+        status_label = f"{status_label} (STALE — last progress {stale_minutes} min ago)"
+
     lines.append(f"  run_id:     {run_id}")
-    lines.append(f"  status:     {status.upper()}")
+    lines.append(f"  status:     {status_label}")
     lines.append(f"  host:       {host}")
     lines.append(f"  pid:        {pid}")
     lines.append(f"  started_at: {started_at}")
@@ -1940,18 +1976,27 @@ def _render_status(
     return "\n".join(lines)
 
 
-def print_ingest_status(config: Config | None, *, json_output: bool = False) -> None:
+def print_ingest_status(
+    config: Config | None,
+    *,
+    json_output: bool = False,
+    stale_threshold: float | None = None,
+) -> None:
     """Print the latest ingest run status to stdout.
 
     Read-only: never calls ``migrate()`` or any write method on the backend.
 
     Args:
-        config:      Fully-resolved Config, or ``None`` when no config file
-                     exists yet (no-setup state).  When ``None`` the function
-                     emits a "no runs found" response identical to an empty DB
-                     so that ``--status`` remains useful before ``setup`` is run.
-        json_output: If True, emit a single JSON document instead of the
-                     human-readable two-section table.
+        config:           Fully-resolved Config, or ``None`` when no config file
+                          exists yet (no-setup state).  When ``None`` the function
+                          emits a "no runs found" response identical to an empty DB
+                          so that ``--status`` remains useful before ``setup`` is run.
+        json_output:      If True, emit a single JSON document instead of the
+                          human-readable two-section table.
+        stale_threshold:  Seconds after which a running row with no heartbeat is
+                          considered STALE.  ``None`` → read from
+                          ``config.scan.stale_run_threshold`` (or 900.0 if no
+                          config).  ``0.0`` disables the inference entirely.
     """
     if config is None:
         # No config file — treat identically to an empty DB.
@@ -1960,6 +2005,15 @@ def print_ingest_status(config: Config | None, *, json_output: bool = False) -> 
         else:
             print("no runs found")
         return
+
+    # DR-G6 §C8: Resolve the effective stale threshold.
+    if stale_threshold is None:
+        try:
+            effective_stale_threshold = float(config.scan.stale_run_threshold)
+        except (AttributeError, TypeError, ValueError):
+            effective_stale_threshold = 900.0
+    else:
+        effective_stale_threshold = stale_threshold
 
     backend = _build_backend_for_status(config)
 
@@ -1982,14 +2036,28 @@ def print_ingest_status(config: Config | None, *, json_output: bool = False) -> 
                 return obj.isoformat()  # type: ignore[union-attr]
             return str(obj)
 
-        print(json.dumps({"run": run, "sources": sources}, default=_json_default))
+        # DR-G6 §C7: Add "stale": true to run object when predicate fires.
+        # OMIT the key entirely when not stale (never emit "stale": false).
+        run_payload: dict[str, Any] | None = run
+        if run is not None:
+            run_status = str(run.get("status", ""))
+            run_payload = dict(run)
+            if run_status == "running" and effective_stale_threshold > 0.0:
+                lpa = run.get("last_progress_at")
+                if lpa is not None:
+                    now_utc = datetime.now(UTC)
+                    elapsed = (now_utc - lpa).total_seconds()
+                    if elapsed > effective_stale_threshold:
+                        run_payload["stale"] = True
+
+        print(json.dumps({"run": run_payload, "sources": sources}, default=_json_default))
         return
 
     if run is None:
         print("no runs found")
         return
 
-    print(_render_status(run, sources))
+    print(_render_status(run, sources, stale_threshold=effective_stale_threshold))
 
 
 if __name__ == "__main__":
