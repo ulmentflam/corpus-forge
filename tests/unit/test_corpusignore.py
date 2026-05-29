@@ -369,6 +369,21 @@ class TestManagedTemplateIgnoresJunk:
         ig = self._rendered_ignore(tmp_path)
         assert ig.matches(tmp_path / "bower_components", is_dir=True) is True
 
+    def test_ignores_ios_cocoapods_pods_directory(self, tmp_path: Path) -> None:
+        # The new smoking gun: a 5h+ ingest pass got bogged down chunking
+        # tens of thousands of vendored C++ headers under
+        # ``iOS/metamask-mobile/ios/Pods/Flipper-Boost-iOSX/boost/...``.
+        # ``Pods/`` is CocoaPods' vendor dir — the iOS analogue of
+        # ``node_modules/`` and ``vendor/``.
+        ig = self._rendered_ignore(tmp_path)
+        assert ig.matches(tmp_path / "Pods", is_dir=True) is True
+
+    def test_ignores_pods_directory_at_depth(self, tmp_path: Path) -> None:
+        # Real-world layout: ``<project>/ios/Pods/``. ``Pods/`` is
+        # unanchored → matches at any depth.
+        ig = self._rendered_ignore(tmp_path)
+        assert ig.matches(tmp_path / "ios" / "Pods", is_dir=True) is True
+
 
 # ── frozen-dataclass invariants ──────────────────────────────────────────
 

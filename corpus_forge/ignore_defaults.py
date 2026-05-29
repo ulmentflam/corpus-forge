@@ -114,6 +114,7 @@ _ALWAYS_ON: tuple[str, ...] = tuple(
             "_build/",  # Elixir / Erlang Mix build output.
             "bower_components/",  # Legacy JS package manager (deprecated).
             "deps/",  # Elixir / Erlang Mix vendored dependencies.
+            "Pods/",  # iOS / CocoaPods vendored dependencies (Xcode projects).
             "vendor/",  # Go modules vendor dir; also PHP Composer, Ruby Bundler.
             ".cache/",
             ".eggs/",
