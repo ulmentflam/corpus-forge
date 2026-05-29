@@ -104,6 +104,10 @@ def _make_minimal_config(source) -> Any:
     config.backend.kind = "sqlite"
     config.backend.dsn = ":memory:"
     config.backend.schema = "corpus"
+    # ScanConfig.chunker_hard_max_chars must be a real int — ``ingest_once``
+    # threads it into ``ingest_one`` and ``enforce_chunk_hard_max`` rejects
+    # non-int values (a MagicMock auto-attr would trip the gt=0 check).
+    config.scan.chunker_hard_max_chars = 32768
     return config, source_config
 
 
