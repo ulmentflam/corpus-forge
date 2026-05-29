@@ -365,8 +365,12 @@ class StorageBackend(Protocol):
         """Returns the row with the most-recent started_at (any status)."""
         ...
 
-    def latest_unfinished_ingest_run(self) -> "dict | None":
-        """Returns the most-recent row with status IN ('running','interrupted'); None otherwise."""
+    def latest_unfinished_ingest_run(self, host: "str | None" = None) -> "dict | None":
+        """Returns the most-recent row with status IN ('running','interrupted'); None otherwise.
+
+        host=None (default) returns any unfinished row regardless of host (back-compat).
+        host='X' adds AND host = 'X' to the WHERE clause.
+        """
         ...
 
     def upsert_ingest_run_source(
@@ -389,5 +393,29 @@ class StorageBackend(Protocol):
     def find_source_last_scanned_at(self, source_uri_prefix: str) -> "datetime | None":
         """Latest finished_at across any completed/interrupted run for this source_uri_prefix.
         Used by --resume + max-scan-age skip logic. Returns None if never scanned.
+        """
+        ...
+
+    def mark_stale_runs(
+        self,
+        threshold_seconds: float,
+        *,
+        host: "str | None" = None,
+    ) -> int:
+        """Transition stale 'running' rows to 'failed'.
+
+        A row is stale when ``now() - last_progress_at > threshold_seconds``.
+        Only rows with ``status='running'`` are eligible; 'interrupted' rows are
+        never touched (they are sticky for --resume).
+
+        Args:
+            threshold_seconds: Age in seconds beyond which a running row is
+                considered dead. Values <= 0 are a no-op short-circuit (returns 0
+                without hitting the DB).
+            host: When not None, further restrict to rows whose ``host`` column
+                matches this value.
+
+        Returns:
+            Number of rows transitioned to 'failed'.
         """
         ...

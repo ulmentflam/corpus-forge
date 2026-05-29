@@ -668,6 +668,200 @@ class TestLatestUnfinishedIngestRun:
         assert result["run_id"] == new_id
 
 
+# ── TestLatestUnfinishedIngestRunHostScope — DR-T2 ───────────────────────────
+
+
+class TestLatestUnfinishedIngestRunHostScope:
+    """DR-T2: latest_unfinished_ingest_run gains optional host= filter.
+
+    RED condition: ``latest_unfinished_ingest_run`` currently accepts no
+    parameters beyond ``self``.  Every call with ``host=...`` will raise
+    ``TypeError: latest_unfinished_ingest_run() got an unexpected keyword
+    argument 'host'``.  The back-compat ``host=None`` call also fails
+    because the ABC signature test (updated in DR-T2) now asserts the new
+    shape, not the old one.
+    """
+
+    def test_latest_unfinished_ingest_run_host_none_returns_any(
+        self, backend: PostgresBackend
+    ) -> None:
+        """host=None (default) returns the most-recent unfinished row regardless of host.
+
+        Two unfinished rows on different hosts exist.  Calling with no host
+        argument (back-compat) must return the most-recent of either.
+        """
+        run_a = _run_id()
+        backend.start_ingest_run(
+            run_id=run_a,
+            host="machine-a",
+            pid=101,
+            config_digest="digest-x",
+        )
+        backend.finish_ingest_run(run_id=run_a, status="interrupted")
+
+        time.sleep(0.05)
+
+        run_b = _run_id()
+        backend.start_ingest_run(
+            run_id=run_b,
+            host="machine-b",
+            pid=202,
+            config_digest="digest-x",
+        )
+        backend.finish_ingest_run(run_id=run_b, status="interrupted")
+
+        # Call with no host argument — back-compat path; must return the most-recent.
+        result = backend.latest_unfinished_ingest_run()
+        assert result is not None, (
+            "latest_unfinished_ingest_run() with no host arg must return a row when "
+            "unfinished rows exist on any host"
+        )
+        assert result["run_id"] == run_b, (
+            f"host=None must return the most-recent unfinished row; "
+            f"expected {run_b!r}, got {result['run_id']!r}"
+        )
+
+        # Also verify explicit host=None is identical to no-arg
+        result_explicit = backend.latest_unfinished_ingest_run(host=None)
+        assert result_explicit is not None
+        assert result_explicit["run_id"] == run_b, (
+            "Explicit host=None must behave identically to omitting the argument"
+        )
+
+    def test_latest_unfinished_ingest_run_host_filter(self, backend: PostgresBackend) -> None:
+        """host='machine-a' returns only machine-a's row; host='machine-b' returns machine-b's.
+
+        Two unfinished rows exist — one per host.  The host filter must be
+        exact: passing host='machine-a' must return machine-a's row and NOT
+        machine-b's, and vice versa.
+        """
+        run_a = _run_id()
+        backend.start_ingest_run(
+            run_id=run_a,
+            host="machine-a",
+            pid=11,
+            config_digest="shared-digest",
+        )
+        backend.finish_ingest_run(run_id=run_a, status="interrupted")
+
+        time.sleep(0.05)
+
+        run_b = _run_id()
+        backend.start_ingest_run(
+            run_id=run_b,
+            host="machine-b",
+            pid=22,
+            config_digest="shared-digest",
+        )
+        backend.finish_ingest_run(run_id=run_b, status="interrupted")
+
+        # host='machine-a' must return only machine-a's row
+        result_a = backend.latest_unfinished_ingest_run(host="machine-a")
+        assert result_a is not None, (
+            "latest_unfinished_ingest_run(host='machine-a') must return machine-a's row"
+        )
+        assert result_a["run_id"] == run_a, (
+            f"host='machine-a' must return machine-a's run; "
+            f"expected {run_a!r}, got {result_a['run_id']!r}"
+        )
+        assert result_a["host"] == "machine-a", (
+            f"Returned row must belong to machine-a; got host={result_a['host']!r}"
+        )
+
+        # host='machine-b' must return only machine-b's row
+        result_b = backend.latest_unfinished_ingest_run(host="machine-b")
+        assert result_b is not None, (
+            "latest_unfinished_ingest_run(host='machine-b') must return machine-b's row"
+        )
+        assert result_b["run_id"] == run_b, (
+            f"host='machine-b' must return machine-b's run; "
+            f"expected {run_b!r}, got {result_b['run_id']!r}"
+        )
+        assert result_b["host"] == "machine-b", (
+            f"Returned row must belong to machine-b; got host={result_b['host']!r}"
+        )
+
+    def test_latest_unfinished_ingest_run_host_no_match(self, backend: PostgresBackend) -> None:
+        """host='machine-c' returns None even when machine-a has an unfinished run.
+
+        The host filter must not fall back to any-host when the specified
+        host has no matching rows.
+        """
+        run_a = _run_id()
+        backend.start_ingest_run(
+            run_id=run_a,
+            host="machine-a",
+            pid=55,
+            config_digest="digest-y",
+        )
+        backend.finish_ingest_run(run_id=run_a, status="interrupted")
+
+        result = backend.latest_unfinished_ingest_run(host="machine-c")
+        assert result is None, (
+            f"latest_unfinished_ingest_run(host='machine-c') must return None when "
+            f"no rows exist for machine-c; got {result!r}"
+        )
+
+    def test_latest_unfinished_ingest_run_host_ignores_completed_on_same_host(
+        self, backend: PostgresBackend
+    ) -> None:
+        """host='machine-a' still applies the status filter.
+
+        A completed run for machine-a plus an unfinished run for machine-b.
+        Calling with host='machine-a' must return None — the status filter
+        (status IN ('running','interrupted')) must still apply even when the
+        host filter is active.
+        """
+        run_a_completed = _run_id()
+        backend.start_ingest_run(
+            run_id=run_a_completed,
+            host="machine-a",
+            pid=77,
+            config_digest="digest-z",
+        )
+        backend.finish_ingest_run(run_id=run_a_completed, status="completed")
+
+        run_b_unfinished = _run_id()
+        backend.start_ingest_run(
+            run_id=run_b_unfinished,
+            host="machine-b",
+            pid=88,
+            config_digest="digest-z",
+        )
+        backend.finish_ingest_run(run_id=run_b_unfinished, status="interrupted")
+
+        # machine-a only has a completed row — host filter + status filter must
+        # both apply, yielding None.
+        result = backend.latest_unfinished_ingest_run(host="machine-a")
+        assert result is None, (
+            f"latest_unfinished_ingest_run(host='machine-a') must return None "
+            f"when machine-a's only row is 'completed'; got {result!r}"
+        )
+
+    def test_latest_unfinished_ingest_run_back_compat_existing_callers(
+        self, backend: PostgresBackend
+    ) -> None:
+        """Existing call-sites that pass only config_digest continue to work.
+
+        The no-host-arg (back-compat) path must still return the unfinished
+        row.  This pins the regression contract referenced in the DR-T2 task
+        description: the call at line ~555 of this file still passes.
+        """
+        run_id = _run_id()
+        backend.start_ingest_run(
+            run_id=run_id,
+            host="some-host",
+            pid=999,
+            config_digest="compat-digest",
+        )
+        # back-compat: no host argument
+        result = backend.latest_unfinished_ingest_run()
+        assert result is not None, (
+            "Back-compat call (no host arg) must still return the unfinished row"
+        )
+        assert result["run_id"] == run_id
+
+
 # ── TestUpsertIngestRunSource ─────────────────────────────────────────────────
 
 

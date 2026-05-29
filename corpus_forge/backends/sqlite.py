@@ -3673,8 +3673,11 @@ class SQLiteBackend:
             "config_digest": row["config_digest"],
         }
 
-    def latest_unfinished_ingest_run(self) -> "dict | None":
+    def latest_unfinished_ingest_run(self, host: "str | None" = None) -> "dict | None":
         """Return the most-recent row with status IN ('running', 'interrupted').
+
+        host=None (default) returns any unfinished row regardless of host (back-compat).
+        host='X' adds AND host = 'X' to the WHERE clause.
 
         Returns ``None`` when no such row exists.
         """
@@ -3685,10 +3688,11 @@ class SQLiteBackend:
                    pid, config_digest
               FROM ingest_runs
              WHERE status IN ('running', 'interrupted')
+               AND (? IS NULL OR host = ?)
              ORDER BY started_at DESC
              LIMIT 1
             """,
-            (),
+            (host, host),
         )
         if not rows:
             return None
@@ -3792,3 +3796,69 @@ class SQLiteBackend:
             return None
         raw = rows[0]["max_scanned"]
         return self._parse_iso_dt(raw)
+
+    def mark_stale_runs(
+        self,
+        threshold_seconds: float,
+        *,
+        host: "str | None" = None,
+    ) -> int:
+        """Transition stale 'running' rows to 'failed'.
+
+        Short-circuits immediately (returns 0) when threshold_seconds <= 0.
+        Wraps sqlite3.OperationalError and returns 0 (best-effort idiom).
+        """
+        if threshold_seconds <= 0:
+            return 0
+        now_iso = self._now_iso()
+        threshold_days = threshold_seconds / 86400.0
+        try:
+            # SELECT eligible rows first so we can build the error string
+            # from the prior host/pid values stored in the row.
+            eligible = self._execute(
+                """
+                SELECT run_id, host, pid
+                  FROM ingest_runs
+                 WHERE status = 'running'
+                   AND (julianday('now') - julianday(last_progress_at)) > ?
+                   AND (? IS NULL OR host = ?)
+                """,
+                (threshold_days, host, host),
+            )
+            if not eligible:
+                return 0
+            # Per-row UPDATE uses ``RETURNING run_id`` so we count only rows
+            # we ACTUALLY flipped — and the UPDATE WHERE clause re-asserts
+            # ``status = 'running'`` so a concurrent worker (or a legitimate
+            # finish_ingest_run racing our SELECT) cannot be clobbered: if
+            # another writer transitioned the row in the meantime, our
+            # UPDATE matches zero rows, RETURNING is empty, we skip it.
+            # We stay on ``self._execute`` (rather than dropping to a raw
+            # cursor) so callers' mocks of _execute (e.g. for OperationalError
+            # swallow tests) still apply uniformly.
+            count = 0
+            for row in eligible:
+                prior_host = row["host"]
+                prior_pid = row["pid"]
+                error_msg = (
+                    f"stale heartbeat: last progress > {threshold_seconds:.0f}s ago; "
+                    f"host {prior_host}/pid {prior_pid} presumed dead"
+                )
+                updated = self._execute(
+                    """
+                    UPDATE ingest_runs
+                       SET status   = 'failed',
+                           ended_at = ?,
+                           error    = ?
+                     WHERE run_id = ?
+                       AND status = 'running'
+                  RETURNING run_id
+                    """,
+                    (now_iso, error_msg, row["run_id"]),
+                )
+                if updated:
+                    count += 1
+            return count
+        except sqlite3.OperationalError as exc:
+            logger.debug("mark_stale_runs swallowed OperationalError: %r", exc)
+            return 0

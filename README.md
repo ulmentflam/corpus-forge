@@ -24,6 +24,7 @@
 - **Multi-embedder by design.** Register as many text embedders as you want — local sentence-transformers, OpenAI, anything served via an OpenAI-compatible endpoint (Ollama, vLLM). Multi-modal embedders (CLIP family) cover the image lane. Backfill new embedders without re-chunking.
 - **Local-or-remote, end to end.** Every model client (VLM, classifier, Whisper, code enricher, reranker) accepts a configurable HTTP URL — default is a local Ollama daemon, swap to a hosted endpoint with a one-line config change and no code edit.
 - **Predictable storage.** `corpus-forge estimate <path>` predicts the Postgres footprint of syncing a tree *before* you sync. Same surface available to any MCP-connected assistant via `estimate_sync_size`.
+- **Multi-machine corpus.** Run the same ingest across a desktop and a laptop — alias sources by `logical_name`, deduplicate by `content_hash`, and let stale-run reclamation handle crashes automatically. See [docs/architecture.md#multi-machine-ingest](docs/architecture.md#multi-machine-ingest).
 
 ## Install
 

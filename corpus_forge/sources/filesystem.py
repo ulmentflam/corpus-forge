@@ -137,6 +137,7 @@ class FilesystemSource(WatchedSource):
         vlm: VLMBackend | None = None,
         whisper: WhisperBackend | None = None,
         debounce: float = 2.0,
+        logical_name: str | None = None,
     ):
         super().__init__(Path(root), debounce=debounce)
         self.exclude_globs: list[str] = list(exclude_globs) if exclude_globs else []
@@ -144,6 +145,12 @@ class FilesystemSource(WatchedSource):
         self.scan_config: ScanConfig = scan_config or ScanConfig()
         self.vlm = vlm
         self.whisper = whisper
+        # Optional shared identifier for the same logical source across
+        # multiple machines (multi-machine ingest). When set, drives the
+        # `filesystem://logical/<name>` URI prefix in ``_source_uri_prefix_for``
+        # so different absolute paths on different hosts converge on a
+        # single ingest_run_sources row. See DatasetSourceConfig.logical_name.
+        self.logical_name: str | None = logical_name
         # Registry baked with the user's tunables (csv_max_rows,
         # code_chunker_config, OCR knobs, VLM injection, Whisper
         # injection) at construction time so the hot path never re-reads

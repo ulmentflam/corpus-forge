@@ -1,16 +1,24 @@
-"""Unit tests — SR-T2: StorageBackend Protocol shape for ingest-run CRUD.
+"""Unit tests — SR-T2 + DR-T4: StorageBackend Protocol shape for ingest-run CRUD.
 
-These tests assert that the methods required by SR-T2 are declared on
+These tests assert that the methods required by SR-T2 and DR-T4 are declared on
 the ``StorageBackend`` Protocol at the correct signatures.  They do NOT
 exercise any real backend — they operate entirely against the Protocol
 class and the ``inspect`` module.
 
-RED condition
--------------
+RED condition (SR-T2)
+---------------------
 The seven Protocol methods below do not yet exist on
 ``corpus_forge.backends.base.StorageBackend``.  Every test here will
 fail with ``AssertionError`` (missing attribute) or ``AttributeError``
 (inspection fails) until SR-G2 adds the Protocol stubs.
+
+RED condition (DR-T4)
+---------------------
+``mark_stale_runs`` is not yet declared on the Protocol.
+``test_mark_stale_runs_in_protocol`` fails with AssertionError
+(missing from _protocol_method_names()) and
+``test_mark_stale_runs_signature`` fails with AssertionError
+(attribute not found) until DR-G5 adds the Protocol stub.
 """
 
 from __future__ import annotations
@@ -150,12 +158,31 @@ class TestProtocolMethodSignatures:
             f"latest_ingest_run should have no parameters beyond self; got {non_self}"
         )
 
-    # latest_unfinished_ingest_run(self) -> dict | None
+    # latest_unfinished_ingest_run(self, host: str | None = None) -> dict | None
+    # DR-T2: updated from "no params beyond self" to "one optional host param".
+    # This is documented test churn per principal decision C4 — NOT a regression.
     def test_latest_unfinished_ingest_run_signature(self) -> None:
         params = self._params("latest_unfinished_ingest_run")
         non_self = [n for n in params if n != "self"]
-        assert non_self == [], (
-            f"latest_unfinished_ingest_run should have no parameters beyond self; got {non_self}"
+        assert len(non_self) == 1, (
+            f"latest_unfinished_ingest_run should have exactly one parameter beyond self "
+            f"('host'); got {non_self}"
+        )
+        host_param = params.get("host")
+        assert host_param is not None, (
+            "latest_unfinished_ingest_run must have a parameter named 'host'"
+        )
+        assert host_param.default is None, (
+            f"latest_unfinished_ingest_run 'host' must default to None; got {host_param.default!r}"
+        )
+        # host must be positional-or-keyword (not keyword-only) — callers can
+        # pass it positionally or as a keyword.
+        assert host_param.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ), (
+            f"latest_unfinished_ingest_run 'host' must be positional-or-keyword "
+            f"or keyword-only; got kind={host_param.kind}"
         )
 
     # upsert_ingest_run_source(self, *, run_id, source_uri_prefix, dataset_id, ...)
@@ -225,4 +252,65 @@ class TestIngestRunInProgressErrorExists:
                 return
         assert issubclass(IngestRunInProgressError, Exception), (
             "IngestRunInProgressError must be a subclass of Exception"
+        )
+
+
+# ── DR-T4: mark_stale_runs Protocol presence + signature ─────────────────────
+
+
+class TestMarkStaleRunsProtocol:
+    """DR-T4: StorageBackend must declare mark_stale_runs with the correct signature.
+
+    RED: method does not yet exist — both tests fail with AssertionError until
+    DR-G5 adds the Protocol stub.
+    """
+
+    def test_mark_stale_runs_in_protocol(self) -> None:
+        """mark_stale_runs must appear in the StorageBackend Protocol."""
+        assert "mark_stale_runs" in _protocol_method_names(), (
+            "StorageBackend.mark_stale_runs not found — add Protocol stub (DR-G5)"
+        )
+
+    def test_mark_stale_runs_signature(self) -> None:
+        """mark_stale_runs must have exactly:
+        - one positional param ``threshold_seconds: float``
+        - one keyword-only param ``host: str | None = None``
+        - return annotation ``int``
+
+        Uses inspect so the check is robust across ``from __future__ import
+        annotations`` (annotations are strings, not live types — we check
+        name + kind + default, not annotation type objects).
+        """
+        m = getattr(StorageBackend, "mark_stale_runs", None)
+        assert m is not None, (
+            "StorageBackend.mark_stale_runs does not exist — add Protocol stub (DR-G5)"
+        )
+        sig = inspect.signature(m)
+        params = dict(sig.parameters)
+
+        # threshold_seconds must be a plain positional(-or-keyword) parameter
+        assert "threshold_seconds" in params, (
+            "mark_stale_runs missing 'threshold_seconds' parameter"
+        )
+        p_threshold = params["threshold_seconds"]
+        assert p_threshold.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.POSITIONAL_ONLY,
+        ), f"mark_stale_runs 'threshold_seconds' must be positional; got kind={p_threshold.kind}"
+
+        # host must be keyword-only with default None
+        assert "host" in params, "mark_stale_runs missing 'host' parameter"
+        p_host = params["host"]
+        assert p_host.kind == inspect.Parameter.KEYWORD_ONLY, (
+            f"mark_stale_runs 'host' must be keyword-only (after *); got kind={p_host.kind}"
+        )
+        assert p_host.default is None, (
+            f"mark_stale_runs 'host' must default to None; got {p_host.default!r}"
+        )
+
+        # No other non-self parameters beyond threshold_seconds and host
+        non_self = [n for n in params if n != "self"]
+        assert set(non_self) == {"threshold_seconds", "host"}, (
+            f"mark_stale_runs must have exactly 'threshold_seconds' and 'host' "
+            f"as non-self parameters; got {sorted(non_self)}"
         )

@@ -111,6 +111,39 @@ The two implementations expose the same method surface but differ in deployment 
 - Use **postgres** if multiple processes on multiple hosts will write concurrently — its per-key advisory locks are finer-grained than SQLite's global write lock.
 - Use **postgres** when you want approximate-nearest-neighbour search at scale; the SQLite path gains ANN only when `sqlite-vec` is installed, and the BLOB fallback is write-only.
 
+## Multi-machine ingest
+
+corpus-forge supports ingesting the same logical corpus from multiple machines — for example a desktop and a laptop that mirror the same notes vault at different absolute paths.  The feature is opt-in and requires the Postgres backend (`kind = "postgres"`); SQLite is single-host only.
+
+### Source aliasing with `logical_name`
+
+By default, each source is identified by its `vault_root` (or equivalent path).  On a second machine the same vault lives at a different absolute path, so the two sources would appear unrelated.  Setting `logical_name` on a `[[datasets.sources]]` block overrides the identity key:
+
+```toml
+[[datasets.sources]]
+plugin       = "markdown_vault"
+vault_root   = "/data/Notes"           # different path on each host …
+logical_name = "personal-notes"        # … but the same logical source everywhere
+```
+
+Both machines emit the same `logical_name`, so the ingest bookkeeping tables treat their rows as referring to the same source.  Only one `logical_name` value is needed; the field is optional and ignored on single-machine deployments.
+
+### Document-level dedup with `content_hash`
+
+Even when two machines sync the same file, there is no guarantee they will emit identical chunks in the same order (file edits, chunker tuning, or even filesystem metadata can differ).  corpus-forge therefore deduplicates at the document layer rather than the chunk layer: every ingested document is fingerprinted by `content_hash` (a SHA-256 of the raw document bytes).  On re-sync, a row whose `content_hash` is unchanged is skipped entirely; only genuinely modified documents are re-chunked and re-embedded.
+
+### Host-scoped resume with `socket.gethostname`
+
+Within a single ingest run, resume is scoped to the originating host via `socket.gethostname()`.  Each ingest row in the `corpus.ingest_runs` table carries the hostname of the machine that started it.  When a run is interrupted (crash, OOM, network loss), the same machine can resume from the last committed checkpoint by matching on `(dataset, source_logical_name, hostname)`.  A second machine will start its own run rather than attempting to continue an alien one, which avoids split-brain corruption when two hosts are syncing concurrently.
+
+### Reclaiming dead runs with `stale_run_threshold` and `mark_stale_runs`
+
+A crashed ingest process leaves its `ingest_runs` row in `status='running'` indefinitely.  Any subsequent run on *any* host will call `mark_stale_runs(threshold)` before starting, where `threshold` is the `stale_run_threshold` value from `[scan]` (default `900.0` seconds, equivalent to `"15m"`).  `mark_stale_runs` flips every `status='running'` row whose `last_progress_at` is older than `threshold` seconds to `status='failed'`, making it eligible for retry.  The UPDATE re-asserts `status='running'` in its WHERE clause so a concurrent transition (e.g. a legitimate `finish_ingest_run` racing the stale-detector SELECT) is never clobbered.
+
+### Interaction with advisory locks
+
+The Postgres backend acquires a `pg_try_advisory_lock` keyed on `(dataset_id, source_id)` before writing chunks.  Postgres advisory locks are database-global per key, so the lock serialises the *same source key* across *all* processes that share the DB — regardless of which host or machine they run on.  Two machines writing the *same* `(dataset_id, source_id)` contend; two machines writing *different* source keys do not.  `mark_stale_runs` does not attempt to acquire any advisory lock; it is intentionally lightweight and idempotent.
+
 ## Multi-format extractor layer
 
 Phase D introduced a new layer between the existing `Source` and `Chunker` protocols so corpus-forge can ingest arbitrary file formats without proliferating per-format `Source` classes. A `FilesystemSource` walks a heterogeneous directory tree, dispatches every file through an `ExtractorRegistry` to an `Extractor`, and emits a `RawDocument` whose `metadata.chunker_hint` selects the chunker downstream.
