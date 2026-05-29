@@ -21,7 +21,10 @@ Pick one. Reach for the first option that matches the user's platform unless the
 
 ```bash
 # Recommended on macOS / Linux / WSL — Astral's uv, ships in a tool venv.
-uv tool install 'corpus-forge[postgres,hf]'
+# Postgres + pgvector are core deps (no extra needed); `[hf]` is for the
+# HuggingFace export. Add other opt-in extras (`code`, `ocr`, `whisper`,
+# `mcp`, …) as needed.
+uv tool install 'corpus-forge[hf]'
 
 # Or the guided one-liner (asks the user a short prompt-tree).
 curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh | sh
@@ -38,10 +41,17 @@ iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install
 ```
 
 Extras worth knowing:
-- `[postgres]` — first-class backend, multi-host friendly, pgvector required.
+- Postgres + pgvector are in the **core** deps — no extra needed. It's the
+  first-class, multi-host backend.
 - `[sqlite]` — single-machine fallback via `sqlite-vec`.
 - `[hf]` — HuggingFace Datasets export.
-- `[ocr]`, `[whisper]`, `[clip]`, `[code]` — opt-in heavy stacks. Tell the user before you pull them.
+- `[mcp]` — pulls the MCP-server transport deps if you're wiring corpus-forge
+  into Claude Code / Claude Desktop / Gemini CLI / etc.
+- `[ocr]`, `[whisper]`, `[code]`, `[multi-format]` — opt-in heavy stacks
+  (Tesseract, faster-whisper, tree-sitter language pack, FastCDC). Tell the
+  user before you pull them.
+- `[rerank]`, `[retrieval]`, `[eval]`, `[analyze]`, `[fast-tier]`, `[tokens]`,
+  `[openai]` — niche extras; see `pyproject.toml` for the full matrix.
 
 ## 2. Configure
 

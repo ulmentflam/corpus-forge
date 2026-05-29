@@ -18,8 +18,9 @@ scanned papers); Zotero item metadata is enriched onto every
 ## Quick start (local mode)
 
 ```bash
-# 1. Install corpus-forge (no extra deps needed for local mode).
-uv tool install 'corpus-forge[postgres,hf]'
+# 1. Install corpus-forge. Postgres + pgvector are core deps; `[hf]` adds the
+#    HuggingFace export, which is the typical Zotero-corpus deliverable.
+uv tool install 'corpus-forge[hf]'
 
 # 2. Add a Zotero source to a dataset.
 corpus-forge source add -d zotero-library
