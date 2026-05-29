@@ -3827,35 +3827,37 @@ class SQLiteBackend:
             )
             if not eligible:
                 return 0
-            # Per-row UPDATE goes through ``conn.execute`` so we can read
-            # ``cursor.rowcount`` and only count rows we actually flipped.
-            # The UPDATE WHERE clause re-asserts ``status = 'running'`` so
-            # a concurrent worker (or a finish_ingest_run racing the SELECT)
-            # can't be clobbered: if another writer already transitioned
-            # the row, our UPDATE matches zero rows and we don't count it.
+            # Per-row UPDATE uses ``RETURNING run_id`` so we count only rows
+            # we ACTUALLY flipped — and the UPDATE WHERE clause re-asserts
+            # ``status = 'running'`` so a concurrent worker (or a legitimate
+            # finish_ingest_run racing our SELECT) cannot be clobbered: if
+            # another writer transitioned the row in the meantime, our
+            # UPDATE matches zero rows, RETURNING is empty, we skip it.
+            # We stay on ``self._execute`` (rather than dropping to a raw
+            # cursor) so callers' mocks of _execute (e.g. for OperationalError
+            # swallow tests) still apply uniformly.
             count = 0
-            with self._get_connection() as conn:
-                for row in eligible:
-                    prior_host = row["host"]
-                    prior_pid = row["pid"]
-                    error_msg = (
-                        f"stale heartbeat: last progress > {threshold_seconds:.0f}s ago; "
-                        f"host {prior_host}/pid {prior_pid} presumed dead"
-                    )
-                    cursor = conn.execute(
-                        """
-                        UPDATE ingest_runs
-                           SET status   = 'failed',
-                               ended_at = ?,
-                               error    = ?
-                         WHERE run_id = ?
-                           AND status = 'running'
-                        """,
-                        (now_iso, error_msg, row["run_id"]),
-                    )
-                    if cursor.rowcount > 0:
-                        count += 1
-                conn.commit()
+            for row in eligible:
+                prior_host = row["host"]
+                prior_pid = row["pid"]
+                error_msg = (
+                    f"stale heartbeat: last progress > {threshold_seconds:.0f}s ago; "
+                    f"host {prior_host}/pid {prior_pid} presumed dead"
+                )
+                updated = self._execute(
+                    """
+                    UPDATE ingest_runs
+                       SET status   = 'failed',
+                           ended_at = ?,
+                           error    = ?
+                     WHERE run_id = ?
+                       AND status = 'running'
+                  RETURNING run_id
+                    """,
+                    (now_iso, error_msg, row["run_id"]),
+                )
+                if updated:
+                    count += 1
             return count
         except sqlite3.OperationalError as exc:
             logger.debug("mark_stale_runs swallowed OperationalError: %r", exc)
