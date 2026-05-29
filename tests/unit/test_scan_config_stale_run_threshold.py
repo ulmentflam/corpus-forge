@@ -468,36 +468,39 @@ def test_importing_config_does_not_eagerly_import_scanner() -> None:
     The field_validator must lazy-import parse_scan_age_spec inside its body,
     not at module level.  This keeps corpus_forge.config import-time cheap.
 
-    Implementation: use ``importlib.reload(corpus_forge.config)`` rather than
-    ``sys.modules.pop`` + re-import.  ``reload`` re-executes the module's
-    top-level code IN-PLACE — the module object identity is preserved, so
-    other modules that already captured references to ``corpus_forge.config``
-    or its classes (e.g. ``corpus_forge.cli`` doing
-    ``from corpus_forge.config import Config``) do NOT see a stale namespace
-    across the reload.  Pop+re-import breaks that invariant and pollutes
-    parallel xdist workers — see the PR #72 cascade and DR-Q1 follow-up.
+    Implementation: spawn a fresh Python subprocess so the verification runs
+    against a clean import state with ZERO impact on the parent's sys.modules.
+    Earlier iterations tried ``sys.modules.pop`` + re-import and then
+    ``importlib.reload`` — both created module-class-identity divergence that
+    polluted parallel xdist workers (the PR #72 cascade; then a PR #73 follow-up
+    where reload re-created ``EstimateConfig`` / ``EvalRegressionConfig``
+    class objects, breaking ``isinstance``/``is`` checks in unrelated tests
+    that had captured the original class refs via ``from corpus_forge.config
+    import X``).  Subprocess sidesteps both pitfalls.
     """
-    import importlib
+    import subprocess
 
-    import corpus_forge.config as _cfg_mod
-
-    # Evict only scanner.* — config's top-level reload must NOT pull them back in.
-    scanner_keys = [k for k in list(sys.modules) if k.startswith("corpus_forge.scanner")]
-    snapshot = {name: sys.modules.pop(name) for name in scanner_keys}
-    try:
-        importlib.reload(_cfg_mod)
-        scanner_keys_after = [k for k in sys.modules if k.startswith("corpus_forge.scanner")]
-        assert scanner_keys_after == [], (
-            f"Reloading corpus_forge.config eagerly loaded corpus_forge.scanner: "
-            f"{scanner_keys_after}. The field_validator must lazy-import "
-            "parse_scan_age_spec inside its body."
-        )
-    finally:
-        # Restore originals so other tests keep their references.
-        # Use setdefault so a fresh import during this test doesn't get clobbered
-        # (subsequent tests will use the version sys.modules already has).
-        for name, mod in snapshot.items():
-            sys.modules.setdefault(name, mod)
+    script = (
+        "import sys\n"
+        "import corpus_forge.config  # noqa: F401\n"
+        "leaked = sorted(k for k in sys.modules if k.startswith('corpus_forge.scanner'))\n"
+        "if leaked:\n"
+        "    print('LEAKED:' + ','.join(leaked))\n"
+        "    raise SystemExit(1)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,  # we inspect returncode + stderr ourselves
+    )
+    assert result.returncode == 0, (
+        "Importing corpus_forge.config eagerly loaded corpus_forge.scanner.\n"
+        f"stdout: {result.stdout}\n"
+        f"stderr: {result.stderr}\n"
+        "The field_validator must lazy-import parse_scan_age_spec inside its body."
+    )
 
 
 def test_validator_triggers_scanner_import_on_first_string_use() -> None:

@@ -45,7 +45,7 @@ typecheck: ## pyrefly strict (fails on any non-`missing-import` error)
 test: test-unit test-integration test-fuzz test-smoke ## All four test categories
 
 test-unit: _warmup-grammars ## Fast, parallel, no Docker, coverage-gated
-	uv run pytest tests/unit tests/ui tests/cli tests/admin tests/diagnostics tests/embedders tests/backends -v -n auto --timeout=60 --cov=corpus_forge --cov-report=term-missing --cov-fail-under=89
+	uv run pytest tests/unit tests/ui tests/cli tests/admin tests/diagnostics tests/embedders tests/backends -v -n auto --timeout=60 --cov=corpus_forge --cov-report=term-missing --cov-fail-under=90
 
 # Pre-warm the tree-sitter grammar cache in a single process so the
 # parallel pytest-xdist workers don't race on `pack.download()` writes.
