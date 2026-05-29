@@ -76,5 +76,6 @@ def test_dunder_all_lists_every_public_member() -> None:
         "MarkdownChunker",
         "PassthroughChunker",
         "TextChunk",
+        "enforce_chunk_hard_max",
     }
     assert set(chunkers_pkg.__all__) == expected

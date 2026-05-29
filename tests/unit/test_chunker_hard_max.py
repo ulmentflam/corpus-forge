@@ -1,36 +1,22 @@
-"""Unit tests for the chunker hard-max-chars cap feature (RED).
+"""Unit tests for the chunker hard-max-chars cap.
 
-Contract (production code does NOT yet exist — all tests must fail):
+Covers two implemented symbols:
 
-Config field:
-  ``ScanConfig.chunker_hard_max_chars: int``
-  - Default: 32768 (≈ 8K tokens for typical embedders)
-  - Validation: ``gt=0`` — zero and negative are rejected.
-  - Lives on ``ScanConfig`` (corpus_forge.config.ScanConfig).
-  - Persisted in the ``[scan]`` TOML block.
+- ``corpus_forge.config.ScanConfig.chunker_hard_max_chars`` —
+  ``int`` field, default ``32768``, validated ``gt=0``, persisted in
+  the ``[scan]`` TOML block.
+- ``corpus_forge.chunkers.enforce_chunk_hard_max(chunks, max_chars)``
+  (canonical home: ``corpus_forge.chunkers.hard_max``) — generator that
+  yields original :class:`TextChunk` objects unchanged when
+  ``len(chunk.text) <= max_chars``, and yields new ``TextChunk`` objects
+  carrying ``metadata["hard_max_split"] = True`` for each split piece.
+  ``max_chars <= 0`` raises :class:`ValueError`.
 
-Helper function:
-  ``enforce_chunk_hard_max(chunks, max_chars) -> Iterator[TextChunk]``
-  - Importable from ``corpus_forge.chunkers`` (re-export) AND from
-    ``corpus_forge.chunkers.hard_max`` (canonical home).
-  - Passes through chunks where ``len(chunk.text) <= max_chars`` as the
-    SAME object (identity preserved, not a copy).
-  - Splits oversized chunks into pieces, each ``<= max_chars`` chars,
-    using pure character-boundary slicing (no semantic awareness).
-  - Each split piece is a new ``TextChunk`` whose ``text`` is a
-    substring of the original, and whose ``metadata`` carries all keys
-    from the original PLUS ``hard_max_split=True``.
-  - The original chunk (when unsplit) is returned as-is; the
-    ``hard_max_split`` key is NOT injected into passing-through chunks.
-  - ``max_chars <= 0`` raises ``ValueError`` (invalid contract).
-  - Input chunks are consumed lazily (function is a generator).
-
-Regression fixture:
-  The real production failure was a 1.66 MB single chunk from
-  ``Llama3_2-Mamba2-distill_len_14026_depth_5600_context.txt``
-  crashing the embedder's bisect-and-retry circuit breaker after 50
-  consecutive sub-chunk failures. Any chunk of that size MUST be split
-  cleanly at 32768-char boundaries with no data loss.
+The 1.66 MB regression fixture below mirrors the production failure
+where a single oversize chunk from
+``Llama3_2-Mamba2-distill_len_14026_depth_5600_context.txt`` tripped
+the embedder's 50-consecutive-fail circuit breaker; the post-chunker
+cap must split it cleanly with no data loss.
 """
 
 from __future__ import annotations
@@ -199,7 +185,7 @@ def test_enforce_chunk_hard_max_zero_max_chars_raises() -> None:
     from corpus_forge.chunkers import TextChunk, enforce_chunk_hard_max
 
     chunks = [TextChunk(text="hello")]
-    with pytest.raises((ValueError, TypeError)):
+    with pytest.raises(ValueError):
         list(enforce_chunk_hard_max(chunks, max_chars=0))
 
 
@@ -208,7 +194,7 @@ def test_enforce_chunk_hard_max_negative_max_chars_raises() -> None:
     from corpus_forge.chunkers import TextChunk, enforce_chunk_hard_max
 
     chunks = [TextChunk(text="hello")]
-    with pytest.raises((ValueError, TypeError)):
+    with pytest.raises(ValueError):
         list(enforce_chunk_hard_max(chunks, max_chars=-1))
 
 
@@ -217,7 +203,7 @@ def test_enforce_chunk_hard_max_large_negative_raises() -> None:
     from corpus_forge.chunkers import TextChunk, enforce_chunk_hard_max
 
     chunks = [TextChunk(text="hello")]
-    with pytest.raises((ValueError, TypeError)):
+    with pytest.raises(ValueError):
         list(enforce_chunk_hard_max(chunks, max_chars=-100_000))
 
 

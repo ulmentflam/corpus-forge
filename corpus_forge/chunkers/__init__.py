@@ -7,7 +7,7 @@ importing this package does not require the optional ``[code]`` extra.
 """
 
 from .base import Chunker, ConversationChunker, MarkdownChunker, PassthroughChunker, TextChunk
-from .hard_max import enforce_chunk_hard_max as enforce_chunk_hard_max
+from .hard_max import enforce_chunk_hard_max
 
 __all__ = [
     "CDCChunker",
@@ -17,6 +17,7 @@ __all__ = [
     "MarkdownChunker",
     "PassthroughChunker",
     "TextChunk",
+    "enforce_chunk_hard_max",
 ]
 
 
