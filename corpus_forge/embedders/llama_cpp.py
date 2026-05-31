@@ -66,6 +66,7 @@ embedder. Same contract as the ``model2vec`` fast-tier addition.
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import json
 import logging
 import time
@@ -416,6 +417,11 @@ class LlamaCppEmbedder(BaseEmbedder):
         self.n_ubatch = n_ubatch if n_ubatch is not None else n_ctx
         self.batch_size = batch_size
         self._llama: Any | None = None
+        # Per-instance latch for the once-per-load runtime introspection
+        # log line. See :meth:`encode` for the actual lookup; the latch
+        # lives here so it survives across multiple :meth:`encode` calls
+        # on the same embedder.
+        self._runtime_logged: bool = False
 
     # ── lazy load ─────────────────────────────────────────────────────
 
@@ -579,11 +585,73 @@ class LlamaCppEmbedder(BaseEmbedder):
         # Per-sequence context cap. llama-cpp-python's decoder will
         # fail with ``decode: failed to find a memory slot for batch
         # of size N`` when any single input tokenises past this many
-        # tokens (the root cause of the bug this PR fixes). Defensive
-        # truncation client-side keeps the C call within the per-call
-        # sequence budget regardless of which binding version is
-        # installed.
-        n_ctx_seq = self.n_ctx // max(self.n_seq_max, 1)
+        # tokens. Defensive truncation client-side keeps the C call
+        # within the per-call sequence budget regardless of which
+        # binding version is installed.
+        #
+        # The configured ``n_ctx`` / ``n_seq_max`` are NOT reliable —
+        # llama-cpp-python's ``embedding=True`` initialiser overrides
+        # ``n_seq_max`` post-construction to up to
+        # ``llama_max_parallel_sequences()`` (~32 on a stock install).
+        # Slicing to 8192 tokens while the decoder accepts only ~256
+        # produces ``decode: failed to find a memory slot`` /
+        # ``RuntimeError: llama_decode returned 1`` on the first real
+        # input (maintainer's 2026-05-29 incident; fixed in PR #80).
+        # Introspect the actual runtime values off the loaded context
+        # via the C-bindings and fall back to the configured-value
+        # path when the bindings don't expose what we need. The
+        # ``import`` lives inside the ``try`` so test fakes that pre-
+        # attach a ``self._llama`` without the real extra installed
+        # take the fallback path cleanly (``ImportError`` covers the
+        # ``ModuleNotFoundError`` raised on minimal installs).
+        try:
+            # pyrefly: ignore[missing-import]  # optional dep
+            import llama_cpp as _lcpp  # noqa: PLC0415  (optional extra)
+
+            _ctx_ptr = self._llama._ctx.ctx  # type: ignore[union-attr]
+            # Guard against MagicMock test doubles (or any non-pointer
+            # value) reaching the C bindings. A Mock here causes pytest-
+            # xdist workers to SIGSEGV on Linux when ctypes dereferences
+            # the bogus pointer — uncatchable from Python. Only proceed if
+            # we actually got a real pointer-shaped value back.
+            if not isinstance(_ctx_ptr, (int, ctypes.c_void_p)):
+                raise TypeError("not a real ctx pointer")
+            _runtime_n_ctx = int(_lcpp.llama_n_ctx(_ctx_ptr))  # type: ignore[arg-type]
+            _runtime_n_seq_max = int(_lcpp.llama_n_seq_max(_ctx_ptr))  # type: ignore[arg-type]
+            # The ``- 4`` is empirically enough headroom for the BOS /
+            # EOS / pooling tokens llama.cpp prepends. The ``max(..., 64)``
+            # floor protects against a pathological zero from the
+            # bindings (e.g. an uninitialised context handle).
+            n_ctx_seq = max(_runtime_n_ctx // max(_runtime_n_seq_max, 1) - 4, 64)
+            _runtime_lookup_ok = True
+        except (AttributeError, TypeError, ImportError, ctypes.ArgumentError, OSError):
+            # Older bindings or test fakes without ``_ctx.ctx`` → fall
+            # back to the configured-value math from PR #79. Still
+            # honest for installs where post-construction mutation
+            # actually sticks.
+            n_ctx_seq = self.n_ctx // max(self.n_seq_max, 1)
+            _runtime_n_ctx = self.n_ctx
+            _runtime_n_seq_max = self.n_seq_max
+            _runtime_lookup_ok = False
+
+        # Once-per-instance INFO log so future triage has a greppable
+        # signal of what the C-bindings actually report vs. what the
+        # config asked for. Suppressed after the first emit to keep
+        # high-throughput ingest logs clean.
+        if not self._runtime_logged:
+            loader_logger.info(
+                "LlamaCppEmbedder runtime n_ctx_seq for %s: runtime=(n_ctx=%d, "
+                "n_seq_max=%d, n_ctx_seq=%d), configured=(n_ctx=%d, n_seq_max=%d), "
+                "lookup_ok=%s",
+                self.name,
+                _runtime_n_ctx,
+                _runtime_n_seq_max,
+                n_ctx_seq,
+                self.n_ctx,
+                self.n_seq_max,
+                _runtime_lookup_ok,
+            )
+            self._runtime_logged = True
 
         texts_list = [self._maybe_truncate(t, n_ctx_seq) for t in texts]
         all_rows: list[list[float]] = []
