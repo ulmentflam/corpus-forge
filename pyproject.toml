@@ -199,6 +199,27 @@ whisper = [
 fast-tier = [
   "model2vec>=0.5",
 ]
+# In-process llama.cpp embedder.  Pulled in to unblock
+# qwen3-embedding:8b on Apple Silicon, where Ollama's OpenAI-shape
+# ``/v1/embeddings`` endpoint returns HTTP 500 with
+# ``failed to encode response: json: unsupported value: NaN`` for
+# ~30 % of Python-code chunks (2026-05-26 incident on the maintainer's
+# vault).  Running ``llama.cpp`` in-process avoids Ollama's JSON
+# encoder entirely.
+#
+# License posture: ``llama-cpp-python`` is MIT.  Does NOT widen the
+# AGPL surface introduced by ``[multi-format]``.
+#
+# Metal GPU offload on Apple Silicon requires building the wheel with
+# ``CMAKE_ARGS="-DGGML_METAL=on" pip install 'corpus-forge[llama-cpp]'``
+# — see the README's ``[llama-cpp]`` row for details.  The default
+# install runs CPU-only, which is correct on Linux servers and works
+# (slowly) on macOS while the user verifies the Metal build.  GGUF
+# weights are NOT bundled; the resolver locates a pre-installed
+# ``ollama pull <model>`` blob or an explicit ``gguf_path``.
+llama-cpp = [
+  "llama-cpp-python>=0.3",
+]
 # Phase O — EDA + corpus-cleaning ML stack.  All deps lazy-imported
 # inside corpus_forge/analyze/ function bodies so corpus-forge --help
 # cold-start budget is unaffected.

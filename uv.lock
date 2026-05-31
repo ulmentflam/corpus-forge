@@ -515,6 +515,9 @@ fast-tier = [
 hf = [
     { name = "datasets" },
 ]
+llama-cpp = [
+    { name = "llama-cpp-python" },
+]
 mcp = [
     { name = "mcp" },
 ]
@@ -592,6 +595,7 @@ requires-dist = [
     { name = "imageio-ffmpeg", marker = "extra == 'whisper'", specifier = ">=0.5" },
     { name = "jupytext", marker = "extra == 'multi-format'", specifier = ">=1.16" },
     { name = "langdetect", marker = "extra == 'analyze'", specifier = ">=1.0" },
+    { name = "llama-cpp-python", marker = "extra == 'llama-cpp'", specifier = ">=0.3" },
     { name = "markdownify", marker = "extra == 'multi-format'", specifier = ">=0.13" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0,<2.0" },
     { name = "model2vec", marker = "extra == 'fast-tier'", specifier = ">=0.5" },
@@ -628,7 +632,7 @@ requires-dist = [
     { name = "umap-learn", marker = "extra == 'analyze'", specifier = ">=0.5" },
     { name = "watchdog", specifier = ">=4.0" },
 ]
-provides-extras = ["openai", "hf", "tokens", "sqlite", "retrieval", "eval", "rerank", "mcp", "code", "multi-format", "ocr", "whisper", "fast-tier", "analyze"]
+provides-extras = ["openai", "hf", "tokens", "sqlite", "retrieval", "eval", "rerank", "mcp", "code", "multi-format", "ocr", "whisper", "fast-tier", "llama-cpp", "analyze"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -863,6 +867,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/81/e1/56027a71e31b02ddc53c7d65b01e68edf64dea2932122fe7746a516f75d5/dill-0.4.1.tar.gz", hash = "sha256:423092df4182177d4d8ba8290c8a5b640c66ab35ec7da59ccfa00f6fa3eea5fa", size = 187315, upload-time = "2026-01-19T02:36:56.85Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1e/77/dc8c558f7593132cf8fefec57c4f60c83b16941c574ac5f619abb3ae7933/dill-0.4.1-py3-none-any.whl", hash = "sha256:1e1ce33e978ae97fcfcff5638477032b801c46c7c65cf717f95fbc2248f79a9d", size = 120019, upload-time = "2026-01-19T02:36:55.663Z" },
+]
+
+[[package]]
+name = "diskcache"
+version = "5.6.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3f/21/1c1ffc1a039ddcc459db43cc108658f32c57d271d7289a2794e401d0fdb6/diskcache-5.6.3.tar.gz", hash = "sha256:2c3a3fa2743d8535d832ec61c2054a1641f41775aa7c556758a109941e33e4fc", size = 67916, upload-time = "2023-08-31T06:12:00.316Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3f/27/4570e78fc0bf5ea0ca45eb1de3818a23787af9b390c0b0a0033a1b8236f9/diskcache-5.6.3-py3-none-any.whl", hash = "sha256:5e31b2d5fbad117cc363ebaf6b689474db18a1f6438bc82358b024abd4c2ca19", size = 45550, upload-time = "2023-08-31T06:11:58.822Z" },
 ]
 
 [[package]]
@@ -1682,6 +1695,18 @@ sdist = { url = "https://files.pythonhosted.org/packages/3b/62/35bb816c5c19d4d0c
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e8/b1/c488b530994c4f68e46efa99a4d6ca6741aaf158e35779fe6c4d8a9a427d/latex2mathml-3.81.0-py3-none-any.whl", hash = "sha256:d317710393fe20579aea39cfe8928fa2ad9b8780896e585326c75e89c1d1d1a4", size = 79185, upload-time = "2026-04-15T00:55:29.301Z" },
 ]
+
+[[package]]
+name = "llama-cpp-python"
+version = "0.3.23"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "diskcache" },
+    { name = "jinja2" },
+    { name = "numpy" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/61/fb/3932d67b89eb7d8f451719b40b67034e031e04b8b598a7f65d13e255ebfb/llama_cpp_python-0.3.23.tar.gz", hash = "sha256:85493cd887b543588941e8704640fef6a54c057443292e527559c30728375ffd", size = 68300621, upload-time = "2026-05-11T10:12:21.665Z" }
 
 [[package]]
 name = "llvmlite"

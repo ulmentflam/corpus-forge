@@ -112,11 +112,94 @@ class TestPerProviderExtras:
 
     def test_common_kwargs_present_for_every_provider(self) -> None:
         common = {"normalized", "distance", "batch_size"}
-        for provider in ("sentence_transformers", "openai", "model2vec"):
+        for provider in ("sentence_transformers", "openai", "model2vec", "llama-cpp"):
             extras = _per_provider_extras(_cfg(provider))
             assert common.issubset(extras.keys()), (
                 f"{provider!r} dropped a common kwarg: missing {common - extras.keys()}"
             )
+
+    # ── llama-cpp ────────────────────────────────────────────────────
+
+    def test_llama_cpp_gets_n_ctx_and_n_gpu_layers(self) -> None:
+        """The llama-cpp provider needs its own kwargs (n_ctx, n_gpu_layers).
+
+        These are llama.cpp-specific — context window + Metal/CUDA
+        offload layer count — and don't apply to any other backend.
+        """
+        extras = _per_provider_extras(_cfg("llama-cpp", n_ctx=2048, n_gpu_layers=0))
+        assert extras["n_ctx"] == 2048
+        assert extras["n_gpu_layers"] == 0
+
+    def test_llama_cpp_omits_device_and_openai_kwargs(self) -> None:
+        """llama-cpp is in-process — no device flag, no API key, no base URL."""
+        extras = _per_provider_extras(_cfg("llama-cpp"))
+        assert "device" not in extras, (
+            "LlamaCppEmbedder.__init__ does not accept 'device' — forwarding "
+            "it would raise TypeError on every first-run ingest"
+        )
+        assert "api_key_env" not in extras
+        assert "base_url" not in extras
+
+    def test_llama_cpp_forwards_gguf_path_when_set(self) -> None:
+        extras = _per_provider_extras(_cfg("llama-cpp", gguf_path="/tmp/x.gguf"))
+        assert extras["gguf_path"] == "/tmp/x.gguf"
+
+    def test_llama_cpp_omits_gguf_path_when_none(self) -> None:
+        """Passing ``gguf_path=None`` MUST NOT forward — otherwise the
+        embedder's ``gguf_path=None`` default would be shadowed and
+        the registry could not reuse the same constructor signature.
+
+        With ``gguf_path`` left out of the kwargs, the LlamaCppEmbedder
+        default (``None``) fires and the resolver falls back to Ollama
+        auto-discover via ``model_id``.
+        """
+        extras = _per_provider_extras(_cfg("llama-cpp", gguf_path=None))
+        assert "gguf_path" not in extras
+
+
+class TestRegisterFromConfigLlamaCpp:
+    """End-to-end: a ``provider="llama-cpp"`` config wires up a real
+    ``LlamaCppEmbedder`` whose ``gguf_path`` / ``n_ctx`` / ``n_gpu_layers``
+    round-trip from the config.
+    """
+
+    def test_llama_cpp_embedder_round_trips(self) -> None:
+        from corpus_forge.embedders.llama_cpp import LlamaCppEmbedder
+
+        reg = EmbedderRegistry()
+        cfg = _cfg(
+            "llama-cpp",
+            name="qwen3-llama-cpp",
+            model_id="qwen3-embedding:8b",
+            dimension=4096,
+            gguf_path="/tmp/qwen3-embedding-8b-Q8_0.gguf",
+            n_ctx=1024,
+            n_gpu_layers=20,
+        )
+        embedder = register_from_config(reg, cfg)
+        assert isinstance(embedder, LlamaCppEmbedder)
+        assert embedder.gguf_path == "/tmp/qwen3-embedding-8b-Q8_0.gguf"
+        assert embedder.n_ctx == 1024
+        assert embedder.n_gpu_layers == 20
+        # And the common-kwarg slots round-trip as for every other provider.
+        assert embedder.dimension == 4096
+        assert embedder.provider == "llama-cpp"
+
+    def test_llama_cpp_embedder_constructed_without_device(self) -> None:
+        """``LlamaCppEmbedder.__init__`` does not accept ``device``."""
+        from corpus_forge.embedders.llama_cpp import LlamaCppEmbedder
+
+        reg = EmbedderRegistry()
+        cfg = _cfg(
+            "llama-cpp",
+            name="ll-2",
+            model_id="qwen3-embedding:8b",
+            dimension=4096,
+            device="auto",  # set on config — must be filtered out
+        )
+        embedder = register_from_config(reg, cfg)
+        assert isinstance(embedder, LlamaCppEmbedder)
+        assert not hasattr(embedder, "device") or embedder.__dict__.get("device") is None
 
 
 # ── register_from_config — end-to-end with a real EmbedderRegistry ────
