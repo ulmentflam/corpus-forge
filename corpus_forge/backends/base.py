@@ -22,6 +22,37 @@ class IngestRunInProgressError(RuntimeError):
     """
 
 
+def normalize_extensions_filter(extensions: "list[str] | None") -> list[str]:
+    """Normalise an ``extensions=`` allow-list for SQL pushdown.
+
+    Post-PR #81 bugfix: shared helper used by both Postgres and SQLite
+    backends so the ``chunks_missing_embedding`` /
+    ``count_chunks_missing_embedding`` ``extensions=`` filter behaves
+    identically across backends.
+
+    - ``None`` or ``[]`` → ``[]`` (no filter; back-compat behaviour preserved).
+    - Each entry is lowercased and given a leading ``.`` if missing
+      (``"py"`` and ``".PY"`` both → ``".py"``).
+    - Empty strings or non-string entries raise ``ValueError`` /
+      ``TypeError`` (defence in depth — empty string would otherwise
+      yield ``LIKE '%'`` and silently match every row, defeating the
+      filter).
+    """
+    if not extensions:
+        return []
+    out: list[str] = []
+    for ext in extensions:
+        if not isinstance(ext, str):
+            raise TypeError(f"extension entries must be strings; got {type(ext).__name__}: {ext!r}")
+        if not ext:
+            raise ValueError("extension must be a non-empty string")
+        lower = ext.lower()
+        if not lower.startswith("."):
+            lower = "." + lower
+        out.append(lower)
+    return out
+
+
 class StorageBackend(Protocol):
     """Pluggable storage backend. Implementations live behind this Protocol."""
 
@@ -70,7 +101,12 @@ class StorageBackend(Protocol):
     def write_embeddings(self, embedder_id: int, pairs: list[tuple[int, "np.ndarray"]]) -> None: ...
 
     def chunks_missing_embedding(
-        self, embedder_id: int, limit: int = 1024
+        self,
+        embedder_id: int,
+        limit: int = 1024,
+        *,
+        extensions: "list[str] | None" = None,
+        after_id: int | None = None,
     ) -> Iterator[tuple[int, str, str]]:
         """Yield ``(chunk_id, text, source_uri)`` for chunks missing an
         embedding under ``embedder_id``.
@@ -82,6 +118,42 @@ class StorageBackend(Protocol):
         document has no ``source_uri`` (defensively: shouldn't happen,
         the column is ``NOT NULL`` in the schema) get ``""`` so the
         catchall claims them.
+
+        Post-#81 bugfix: ``extensions`` is an optional case-insensitive
+        suffix allow-list. When provided, the backend filters in SQL so the
+        Python caller doesn't have to page through millions of unrelated
+        chunks looking for matches.
+
+        - ``None`` or ``[]`` → unfiltered (back-compat with PR #81 baseline).
+        - Non-empty list → only rows whose source_uri (from documents OR
+          conversations, via COALESCE) ends with one of the lowercased,
+          dot-prefixed extensions are returned. Entries are normalised:
+          ``"py"`` and ``".PY"`` both become ``".py"``.
+        - Empty-string or non-string entries → ``ValueError``.
+
+        ``after_id`` is a forward-progress cursor: when set, only chunks with
+        ``c.id > after_id`` are returned. Combined with ``ORDER BY c.id``,
+        this lets callers iterate the entire pending pool deterministically
+        without re-fetching pages where every row got skipped in-memory
+        (the bug catchall backfills hit when the first page is dominated by
+        specialist-owned chunks the catchall doesn't claim).
+        """
+        ...
+
+    def count_chunks_missing_embedding(
+        self,
+        embedder_id: int,
+        *,
+        extensions: "list[str] | None" = None,
+    ) -> int:
+        """Total number of chunks still missing an embedding under
+        ``embedder_id`` — companion to :meth:`chunks_missing_embedding`.
+
+        ``extensions`` follows the same normalise-and-filter contract as
+        :meth:`chunks_missing_embedding`. With the post-PR #81 fix, the
+        count is filtered by the same SQL allow-list as the paging query
+        so the embed progress bar's ETA reflects the *real* work for a
+        specialist embedder rather than the unfiltered chunks total.
         """
         ...
 

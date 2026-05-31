@@ -758,6 +758,16 @@ def _write_embeddings_for_chunks(
 
     # Get texts for chunks that need embeddings.  PR #81: the backend
     # now yields ``(chunk_id, text, source_uri)`` 3-tuples.
+    #
+    # Post-PR-#81 bugfix note: unlike :func:`corpus_forge.embed.backfill_embedder`
+    # which pages through the entire ``chunks_missing_embedding`` query and
+    # therefore needs the SQL-side ``extensions=`` push to avoid re-fetching
+    # the same non-matching first page forever, this inline writer is invoked
+    # once per active embedder per ingest flush — the chunks it sees come
+    # from the per-file ingest pipeline (already small, already scoped).
+    # The in-memory ``route_for`` filter below is sufficient at batch
+    # granularity; pushing ``extensions=`` to SQL here would be premature
+    # complexity for no measurable win.
     raw_rows = list(backend.chunks_missing_embedding(embedder_id))
 
     if not raw_rows:

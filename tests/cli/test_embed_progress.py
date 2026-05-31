@@ -116,7 +116,8 @@ def test_backfill_embedder_uses_count_helper_for_total(stub_config):
     ):
         embed_module.backfill_embedder("e1")
 
-    backend.count_chunks_missing_embedding.assert_called_once_with(1)
+    # PR #82 threads `extensions=None` for catchall embedders.
+    backend.count_chunks_missing_embedding.assert_called_once_with(1, extensions=None)
 
 
 def _insert_doc(backend, dataset_id: int, source_uri: str, content_hash: str) -> int:

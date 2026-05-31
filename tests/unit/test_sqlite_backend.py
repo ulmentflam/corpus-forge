@@ -2932,6 +2932,235 @@ class TestChunksMissingEmbedding:
 
 
 # ---------------------------------------------------------------------------
+# B-07b — extensions= SQL-push filter (post-PR #81 bugfix)
+# ---------------------------------------------------------------------------
+#
+# PR #81 added per-embedder ``extensions`` allow-list routing but only
+# filtered in Python AFTER fetching a 1000-row page from
+# ``chunks_missing_embedding``. Since the page is non-cursored
+# (``ORDER BY c.id LIMIT 1000``), a specialist whose extensions matched
+# zero rows in the first 1000 would loop-break and skip the rest of the
+# corpus. This bugfix PR pushes the allow-list into SQL so every page
+# is dense with matches.
+
+
+class TestChunksMissingEmbeddingExtensionsFilter:
+    """SQL-push contract for the SQLite backend — mirrors Postgres."""
+
+    def test_filter_excludes_non_matching_extensions(self, tmp_path):
+        """``extensions=[".py"]`` returns only the .py chunk."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cme_ext_filter", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+
+        _, py_id = _insert_doc_and_chunk(backend, 1, "filesystem:///x/a.py", "py code")
+        _, ts_id = _insert_doc_and_chunk(backend, 1, "filesystem:///x/a.ts", "ts code")
+        _, md_id = _insert_doc_and_chunk(backend, 1, "filesystem:///x/a.md", "md text")
+
+        result = list(backend.chunks_missing_embedding(emb_id, extensions=[".py"]))
+        returned_ids = {r[0] for r in result}
+        assert py_id in returned_ids, f"py chunk must match; got {returned_ids}"
+        assert ts_id not in returned_ids, f".ts chunk must be filtered out; got {returned_ids}"
+        assert md_id not in returned_ids, f".md chunk must be filtered out; got {returned_ids}"
+
+    def test_multiple_extensions_match_any(self, tmp_path):
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cme_multi_ext", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+
+        _, py_id = _insert_doc_and_chunk(backend, 1, "filesystem:///x/m.py", "py code")
+        _, ts_id = _insert_doc_and_chunk(backend, 1, "filesystem:///x/m.ts", "ts code")
+        _, md_id = _insert_doc_and_chunk(backend, 1, "filesystem:///x/m.md", "md text")
+
+        result = list(backend.chunks_missing_embedding(emb_id, extensions=[".py", ".ts"]))
+        returned_ids = {r[0] for r in result}
+        assert returned_ids == {py_id, ts_id}, (
+            f"Expected both .py and .ts; got {returned_ids} (md was {md_id})"
+        )
+
+    def test_extensions_none_returns_all_chunks(self, tmp_path):
+        """Back-compat: ``extensions=None`` ⇒ no filter, same as the
+        kwarg-less call."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cme_ext_none", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+
+        _insert_doc_and_chunk(backend, 1, "filesystem:///x/n1.py", "a")
+        _insert_doc_and_chunk(backend, 1, "filesystem:///x/n2.md", "b")
+        _insert_doc_and_chunk(backend, 1, "filesystem:///x/n3.txt", "c")
+
+        result_none = list(backend.chunks_missing_embedding(emb_id, extensions=None))
+        result_default = list(backend.chunks_missing_embedding(emb_id))
+        assert len(result_none) == 3
+        assert {r[0] for r in result_none} == {r[0] for r in result_default}
+
+    def test_extensions_empty_list_returns_all_chunks(self, tmp_path):
+        """``extensions=[]`` behaves the same as ``None`` (no filter)."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cme_ext_empty", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+
+        _insert_doc_and_chunk(backend, 1, "filesystem:///x/e1.py", "a")
+        _insert_doc_and_chunk(backend, 1, "filesystem:///x/e2.md", "b")
+
+        result = list(backend.chunks_missing_embedding(emb_id, extensions=[]))
+        assert len(result) == 2, f"empty list must not filter; got {result}"
+
+    def test_extensions_case_insensitive_match(self, tmp_path):
+        """``extensions=["PY"]`` (no dot, uppercase) still matches ``foo.PY``
+        and ``foo.py``. The implementation normalises both the allow-list
+        AND the stored URI to lowercase before comparing."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cme_case", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+
+        _, py_id = _insert_doc_and_chunk(backend, 1, "filesystem:///x/lc.py", "lc")
+        _, PY_id = _insert_doc_and_chunk(backend, 1, "filesystem:///x/UC.PY", "uc")
+        _insert_doc_and_chunk(backend, 1, "filesystem:///x/x.md", "md")
+
+        # Pass without leading dot AND uppercase to exercise normalisation
+        result = list(backend.chunks_missing_embedding(emb_id, extensions=["PY"]))
+        returned_ids = {r[0] for r in result}
+        assert returned_ids == {py_id, PY_id}, (
+            f"Both .py and .PY URIs must match a normalised allow-list; got {returned_ids}"
+        )
+
+    def test_extensions_uses_coalesce_source_uri_for_chat_chunks(self, tmp_path):
+        """Conversation-sourced chunks (no document parent) use
+        ``conversations.source_uri`` via the COALESCE. They have no file
+        extension so a specialist allow-list correctly excludes them.
+
+        We insert a minimal conversation + message + chunk by hand to avoid
+        depending on RawConversation roundtrips in this unit test.
+        """
+        import json as _json
+
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cme_chat", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+
+        # First the .py document chunk so we have something to match.
+        _, py_id = _insert_doc_and_chunk(backend, 1, "filesystem:///x/c.py", "py code")
+
+        # Then a conversation + chunk pointed at it.
+        conv = backend._execute(
+            "INSERT INTO conversations"
+            " (dataset_id, source_uri, title, content_hash, metadata)"
+            " VALUES (?, ?, ?, ?, ?) RETURNING id",
+            (1, "claude-code://session-1", "t", "conv_hash_1", _json.dumps({})),
+        )
+        conv_id = conv[0]["id"]
+        msg = backend._execute(
+            "INSERT INTO messages (conversation_id, turn_index, role, content, metadata)"
+            " VALUES (?, 0, 'user', ?, ?) RETURNING id",
+            (conv_id, "chat text", _json.dumps({})),
+        )
+        msg_id = msg[0]["id"]
+        chat_chunk = backend._execute(
+            "INSERT INTO chunks"
+            " (conversation_id, message_id, chunk_index, text, metadata, content_hash)"
+            " VALUES (?, ?, 0, ?, '{}', ?) RETURNING id",
+            (conv_id, msg_id, "chat text", "ch_chat_text"),
+        )
+        chat_id = chat_chunk[0]["id"]
+
+        result_py = list(backend.chunks_missing_embedding(emb_id, extensions=[".py"]))
+        returned = {r[0] for r in result_py}
+        assert returned == {py_id}, (
+            f"chat chunk (chat_id={chat_id}) must be excluded by .py filter; got {returned}"
+        )
+
+        result_all = list(backend.chunks_missing_embedding(emb_id, extensions=None))
+        assert {r[0] for r in result_all} == {py_id, chat_id}
+
+    def test_extensions_rejects_empty_string(self, tmp_path):
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cme_reject_empty", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+        with pytest.raises(ValueError, match="extension"):
+            list(backend.chunks_missing_embedding(emb_id, extensions=[""]))
+
+    def test_extensions_rejects_non_string(self, tmp_path):
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cme_reject_nonstr", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+        with pytest.raises((TypeError, ValueError)):
+            list(backend.chunks_missing_embedding(emb_id, extensions=[5]))  # type: ignore[list-item]
+
+
+class TestCountChunksMissingEmbeddingExtensionsFilter:
+    """SQL-push contract for ``count_chunks_missing_embedding`` — without
+    this the progress bar reports the unfiltered total (1.88 M chunks
+    "pending" for nomic-code even when only a few thousand .py rows
+    exist; see PR description)."""
+
+    def test_count_filters_by_extensions(self, tmp_path):
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cce_filter", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+
+        _insert_doc_and_chunk(backend, 1, "filesystem:///x/c1.py", "py")
+        _insert_doc_and_chunk(backend, 1, "filesystem:///x/c2.ts", "ts")
+        _insert_doc_and_chunk(backend, 1, "filesystem:///x/c3.md", "md")
+
+        n_py = backend.count_chunks_missing_embedding(emb_id, extensions=[".py"])
+        n_code = backend.count_chunks_missing_embedding(emb_id, extensions=[".py", ".ts"])
+        n_all = backend.count_chunks_missing_embedding(emb_id, extensions=None)
+        assert n_py == 1, f"expected 1 .py chunk; got {n_py}"
+        assert n_code == 2, f"expected 2 code chunks; got {n_code}"
+        assert n_all == 3, f"expected 3 total chunks; got {n_all}"
+
+    def test_count_extensions_none_equals_default_call(self, tmp_path):
+        """Back-compat: ``count(emb)`` ≡ ``count(emb, extensions=None)``."""
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cce_none", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+        for i in range(4):
+            _insert_doc_and_chunk(backend, 1, f"filesystem:///x/n{i}.py", f"x{i}")
+        assert backend.count_chunks_missing_embedding(
+            emb_id
+        ) == backend.count_chunks_missing_embedding(emb_id, extensions=None)
+
+    def test_count_extensions_empty_list_equals_default(self, tmp_path):
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cce_empty", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+        _insert_doc_and_chunk(backend, 1, "filesystem:///x/x.py", "x")
+        _insert_doc_and_chunk(backend, 1, "filesystem:///x/x.md", "y")
+        assert backend.count_chunks_missing_embedding(
+            emb_id, extensions=[]
+        ) == backend.count_chunks_missing_embedding(emb_id)
+
+    def test_count_extensions_case_insensitive(self, tmp_path):
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cce_case", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+        _insert_doc_and_chunk(backend, 1, "filesystem:///x/UC.PY", "uc")
+        _insert_doc_and_chunk(backend, 1, "filesystem:///x/lc.py", "lc")
+        assert backend.count_chunks_missing_embedding(emb_id, extensions=["PY"]) == 2
+
+    def test_count_extensions_rejects_empty_string(self, tmp_path):
+        backend = _migrated_backend(tmp_path / "corpus.db")
+        _insert_dataset_for_embedding(backend, dataset_id=1)
+        embedder = FakeEmbedder(name="cce_reject", dimension=4)
+        emb_id = backend.register_embedder(embedder)
+        with pytest.raises(ValueError, match="extension"):
+            backend.count_chunks_missing_embedding(emb_id, extensions=[""])
+
+
+# ---------------------------------------------------------------------------
 # B-08 — lock_source(key: str) context manager
 # ---------------------------------------------------------------------------
 # These tests drive the implementation of SQLiteBackend.lock_source, which
