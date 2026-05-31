@@ -181,6 +181,13 @@ def backfill_embedder(
         logger=logger,
     ) as progress:
         task = progress.add_task("Embedding chunks", total=progress_total)
+        # Forward-progress guard for the routing-loop. If a backend silently
+        # ignores ``extensions=`` AND the in-memory route_for filters every row
+        # away, ``continue`` below would re-fetch the same page forever. Abort
+        # after N consecutive empty pages so operators see the issue instead of
+        # the process spinning idle. Reset to 0 whenever we actually embed.
+        _MAX_EMPTY_PAGE_STREAK = 10
+        empty_page_streak = 0
         while True:
             # Get chunks missing this embedder's embedding.  PR #81: the
             # backend now yields ``(chunk_id, text, source_uri)``; the
@@ -231,11 +238,27 @@ def backfill_embedder(
                 # we ``continue`` to the next page so the loop drains the
                 # corpus instead of giving up.  Only ``raw_rows == []``
                 # (handled above) is a real end-of-stream signal.
-                logger.debug(
-                    "Page of %d rows had no matches after in-memory route_for; "
-                    "skipping to next page.",
+                empty_page_streak += 1
+                logger.warning(
+                    "Page of %d rows had no matches after in-memory route_for "
+                    "for embedder %s (streak %d/%d). Likely cause: backend "
+                    "ignores extensions= kwarg and the pending pool's first "
+                    "page is dominated by non-matching chunks.",
                     len(raw_rows),
+                    embedder.name,
+                    empty_page_streak,
+                    _MAX_EMPTY_PAGE_STREAK,
                 )
+                if empty_page_streak >= _MAX_EMPTY_PAGE_STREAK:
+                    raise RuntimeError(
+                        f"Backfill aborted for embedder {embedder.name!r}: "
+                        f"{empty_page_streak} consecutive pages had zero matches "
+                        "after in-memory routing. The backend likely ignores the "
+                        "`extensions=` filter so the same non-matching page keeps "
+                        "coming back. Fix the backend's chunks_missing_embedding "
+                        "to honor extensions, or remove the embedder's extensions "
+                        "list to make it a catchall."
+                    )
                 continue
 
             chunk_ids, texts = zip(*chunks_needing, strict=True) if chunks_needing else ([], [])
@@ -314,6 +337,8 @@ def backfill_embedder(
             backend.write_embeddings(embedder_id, pairs)
             _write_elapsed = _time.perf_counter() - _t1
             processed += len(pairs)
+            # Forward progress — reset the empty-page guard.
+            empty_page_streak = 0
             progress.update(task, completed=processed)
 
             # Wall-clock calibration — record this batch's embed rate

@@ -558,3 +558,56 @@ class TestBackfillContinuesWhenPageEmptiesAfterInMemoryFilter:
         assert not backend.write_embeddings.called, (
             "write_embeddings should not be called when there are no chunks to embed"
         )
+
+    def test_consecutive_empty_pages_abort_with_clear_error(self) -> None:
+        """Hostile backend: ignores ``extensions=`` AND returns the same
+        non-matching page forever. Without a guard, the ``continue`` branch
+        would spin indefinitely. Verify the loop aborts with a clear
+        ``RuntimeError`` after the empty-page streak threshold."""
+        import pytest
+
+        text_cfg = _mk_embedder_config("nomic")
+        code_cfg = _mk_embedder_config("nomic-code", extensions=[".py"])
+        mock_config = MagicMock()
+        mock_config.backend.kind = "postgres"
+        mock_config.backend.dsn = "postgresql://x"
+        mock_config.backend.schema = "corpus"
+        mock_config.embedders = [text_cfg, code_cfg]
+
+        runtime_text = _mk_runtime_embedder("nomic")
+        runtime_code = _mk_runtime_embedder("nomic-code", extensions=[".py"])
+
+        # Broken backend: returns the same all-.md page every call, no
+        # forward progress. Without the abort guard, this is an infinite loop.
+        backend = MagicMock()
+        backend.register_embedder.return_value = 1
+        backend.count_chunks_missing_embedding.return_value = 2
+        backend.chunks_missing_embedding.side_effect = lambda *_a, **_kw: iter(
+            [
+                (10, "md 1", "filesystem://a/a.md"),
+                (11, "md 2", "filesystem://a/b.md"),
+            ]
+        )
+
+        with (  # noqa: SIM117
+            patch.object(Config, "load", return_value=mock_config),
+            patch(
+                "corpus_forge.embed.register_from_config",
+                side_effect=_name_dispatched_register(
+                    {"nomic": runtime_text, "nomic-code": runtime_code}
+                ),
+            ),
+            patch("corpus_forge.embed.PostgresBackend", return_value=backend),
+        ):
+            with pytest.raises(RuntimeError, match=r"consecutive pages had zero matches"):
+                backfill_embedder("nomic-code")
+
+        # Must have called the backend enough times to trip the streak guard
+        # but NOT spun indefinitely.
+        assert 10 <= backend.chunks_missing_embedding.call_count <= 20, (
+            f"Expected loop to abort after ~10 empty pages; got "
+            f"{backend.chunks_missing_embedding.call_count} calls"
+        )
+        assert not backend.write_embeddings.called, (
+            "No matching rows ever appeared; write_embeddings must not be called"
+        )
