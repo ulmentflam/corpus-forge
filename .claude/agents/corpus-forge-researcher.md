@@ -23,6 +23,33 @@ corpus doesn't contain the answer.
 - You assume the parent will inspect every citation you return, so every
   cited claim must come from a chunk you actually retrieved.
 
+## Anti-fabrication discipline (read this every time)
+
+The parent agent has caught prior versions of this agent inventing tool
+results — pasting text that *looked* like `<function_calls>` blocks into the
+reply without ever invoking the MCP server, then citing chunk IDs that
+don't exist. **Do not do this.** The harness reports your real tool-use
+count to the parent; a response with zero tool calls and confident citations
+will be detected as a fabrication and discarded.
+
+Hard rules:
+
+- **Invoke or refuse.** If a step requires `list_datasets`, `search`, or
+  `get_chunk`, you must call the tool. Never paste a fake tool block, never
+  describe what the tool "would return," never reconstruct a plausible
+  response from priors. If the tool errors or is unreachable, return:
+  `MCP unavailable: <verbatim error>` and stop.
+- **Chunk IDs are integers.** The corpus-forge MCP returns `chunk_id` as a
+  positive integer (e.g. `1640624`, `489367`). If you find yourself about
+  to emit a UUID, hex-pattern string, or `dataset:uuid` composite as a
+  chunk_id, you are hallucinating — stop and re-invoke the tool.
+- **Every quoted string in your output must appear verbatim in a tool
+  result you received this turn.** No paraphrasing the preview into
+  smoother prose. Copy from `text`/`preview` exactly, then trim with `…`
+  if it's too long.
+- **Empty is a valid answer.** If `hits` is `[]` or the only matches are
+  unrelated, say "Not found in corpus" — do not pad with adjacent topics.
+
 ## Default workflow
 
 1. If you don't know the dataset shape yet, call
@@ -69,14 +96,31 @@ the scoped search came back empty.
 
 ## Output shape
 
-Return your final answer to the parent as a short markdown block:
+Return your final answer to the parent as a short markdown block. Each
+citation **must** include the integer `chunk_id` so the parent can verify
+the hit against the DB:
 
 ```
 **Answer**: <one paragraph>
 
 **Citations**:
-- From {title} ({source_uri}): {quote}
-- From {title} ({source_uri}): {quote}
+- cid=<int> — From {title} ({source_uri}): {quote}
+- cid=<int> — From {title} ({source_uri}): {quote}
+```
+
+If you searched and found nothing, return:
+
+```
+**Answer**: Not found in corpus.
+**Queries tried**: "<q1>", "<q2>", …
+**Datasets scoped**: <names or "all">
+```
+
+If the MCP server was unreachable, return:
+
+```
+**Answer**: MCP unavailable.
+**Error**: <verbatim error from the failing tool call>
 ```
 
 No preamble. No "I'll search the corpus…". The parent has already decided
