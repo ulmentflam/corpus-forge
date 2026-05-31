@@ -1,276 +1,153 @@
-# TDD Task Board — feat/embedder-routing (PR #81)
+# TDD Task Board — feat/routing-sql-push (post-PR #81 bugfix)
 
 _Owner: tdd-principal. Workers: read freely. Edit only your claimed row's `status` and `claimed_by`._
 
-Worktree: `/Users/evanowen/dev/cf-worktrees/feat-embedder-routing`
-Branch: `feat/embedder-routing`
-Off: `main` (99bdfb0 — PR #79, llama.cpp n_seq_max tuning landed)
+Worktree: `/Users/evanowen/dev/cf-worktrees/feat-routing-sql-push`
+Branch: `feat/routing-sql-push`
+Off: `main` @ 982787a (PR #81 — extension routing landed; this PR fixes the prod regression it caused)
 
-## Follow-up context (read first)
+## The bug we're fixing (concise)
 
-PRs #78/#79/#80 landed the in-process llama.cpp embedder. The user now wants a *dual-tower* setup: `nomic-embed-text-v1.5` for text + `nomic-embed-code` (Qwen2.5-Coder-7B, Apache-2.0, 3584-d) for code. Both run as parallel dense lanes. This PR introduces **extension-based routing** so each chunk is embedded by *exactly one* of the active embedders.
+PR #81 added per-embedder `extensions` allow-list routing but only filtered in **Python** after fetching a 1000-row page from `chunks_missing_embedding`. The SQL paging is non-cursored (`WHERE e.chunk_id IS NULL ORDER BY c.id LIMIT 1000` returns the same first 1000 rows every call). If that first page has zero rows whose `source_uri` extension matches the specialist, `backfill_embedder` hits `if not chunks_needing: break` and gives up — even when tens of thousands of matching code chunks exist deeper in the table.
 
-### The routing rule (locked — don't bikeshed)
+Prod symptom (user's box tonight): 1.88 M chunks "pending" against `nomic-code`, first 1000 are .md / chat / non-code, loop breaks, only 13 chunks ever embed.
 
-1. New optional `extensions: list[str]` on `[[embedders]]`. Values are lowercase, leading-dot extensions: `[".py", ".ts", ".go"]`.
-   - Empty / absent → **catchall** semantics.
-   - Non-empty → **specialist**: only claims chunks whose `documents.source_uri` ends with one of these (case-insensitive).
-2. Routing per chunk (deterministic):
-   - Iterate **active** embedders in **config declaration order**.
-   - First *specialist* whose allow-list matches wins.
-   - Else: first *catchall* claims it.
-   - No catchall + any specialist with no fallback for some chunk → `EmbedderRoutingError` at config-validation time when the catchall is missing.
-3. `corpus-forge embed -e <name>` runs only chunks claimed by `<name>` under the rule. "Pending" is now filtered by the route.
-4. **Backwards-compat**: when *no* embedder declares `extensions`, every active embedder still embeds every chunk (today's behaviour — no routing rule fires because there are no specialists).
+A wheel-only hotfix is currently keeping the user's backfill running at ~3 chunks/sec. This PR lands the proper fix: push the extension allow-list into SQL (both backends, both `chunks_missing_embedding` AND `count_chunks_missing_embedding`), drop the broken `break`, keep `route_for` as defense-in-depth.
 
-### Where routing must apply
+## Project gates (discovered)
 
-- `corpus_forge/config.py` — new `extensions` field on `EmbedderConfig`; validation (leading dot, lowercase normalise, reject bare names) + `Config`-level invariant (specialist with no catchall → error).
-- `corpus_forge/embedders/registry.py` — surface `extensions` on the loaded `Embedder` (so downstream code can read it without going back to config).
-- `corpus_forge/embed.py` — filter the `chunks_missing_embedding` stream by the routing rule before encoding.
-- `corpus_forge/ingest.py` — `_write_embeddings_for_chunks` runs once per active embedder per flush; apply the same per-embedder filter there.
-- `config.example.toml` — append a commented dual-tower block (nomic catchall + nomic-code specialist).
-- `README.md` — short subsection on dual-tower retrieval.
+- lint:        `ruff check`
+- format:      `ruff format --check`
+- typecheck:   `./scripts/check-pyrefly.sh corpus_forge`
+- test:        `pytest -q`
+- focused:     `pytest tests/unit/test_embed_routing_filter.py tests/unit/test_embedder_routing.py tests/unit/test_postgres_backend.py tests/unit/test_sqlite_backend.py`
+- integration: `pytest -m integration tests/integration/test_postgres_backend_routing_filter.py tests/integration/test_sqlite_backend_routing_filter.py` (new files)
+- coverage-min: 80
+- smoke: (deferred — user will exercise `corpus-forge embed -e <specialist>` after reinstall)
 
-### Routing seam (decision — single source of truth)
+## Hard constraints (from requirements)
 
-Centralise the rule in **one** helper:
-
-```python
-# corpus_forge/embedders/routing.py
-class EmbedderRoutingError(ValueError): ...
-
-def extension_for(source_uri: str) -> str: ...
-    """'.../foo.PY' → '.py'; URIs with no extension → ''."""
-
-def route_for(extension: str, active_embedders: Sequence[Embedder]) -> Embedder | None: ...
-    """First specialist match (declaration order), else first catchall, else None."""
-
-def claims(embedder: Embedder, source_uri: str) -> bool: ...
-    """True when `embedder` is the one `route_for` picks for `source_uri`."""
-
-def validate_routing_invariant(embedder_configs: Sequence[EmbedderConfig]) -> None: ...
-    """Raise EmbedderRoutingError if active specialists exist but no active catchall."""
-```
-
-`embed.py` and `ingest.py` filter pending chunks with `[(cid, text) for (cid, text, uri) in rows if claims(embedder, uri)]` after extending the backend query to surface `documents.source_uri` alongside `chunk_id` + `text`.
-
-### Backend signature evolution (smallest possible change)
-
-`backend.chunks_missing_embedding(embedder_id, limit)` currently yields `(chunk_id, text)`. Two options were considered:
-- **(A)** Extend it to yield `(chunk_id, text, source_uri)` and update both backends + all call sites.
-- **(B)** Add a sibling `chunks_missing_embedding_with_uri(embedder_id, limit)` and keep the old method untouched.
-
-**Pick (A)**: chunks have at most one source_uri (the parent document's), the join is cheap, and we don't want two near-duplicate methods drifting. The Protocol in `corpus_forge/backends/base.py` gains the new tuple shape; existing call sites unpack two-tuples today, they'll unpack three-tuples after — explicit, mechanical update.
-
-## Project gates
-- format: `uv run ruff format corpus_forge tests`
-- format-check: `uv run ruff format --check corpus_forge tests`
-- lint (CI): `uv run ruff check corpus_forge tests`
-- typecheck: `./scripts/check-pyrefly.sh corpus_forge`
-- focused unit: `uv run pytest tests/unit/test_embedder_config_routing.py tests/unit/test_embedder_routing.py tests/unit/test_embed_routing_filter.py tests/unit/test_ingest_routing_filter.py -v`
-- regression unit: `uv run pytest tests/unit/test_embedder_config_llama_cpp.py tests/unit/test_embedder_register_from_config.py tests/unit/test_embed.py tests/unit/test_embed_backfill.py tests/unit/test_ingest_embedders.py -v`
-- full unit: `uv run pytest tests/unit -v -n auto --timeout=60`
-- coverage-min: 89 (per Makefile `--cov-fail-under=89`)
-
-## Surface map
-
-| File | Touched by |
-|------|-----------|
-| `tests/unit/test_embedder_config_routing.py` | T1 (RED) |
-| `tests/unit/test_embedder_routing.py` | T2 (RED) |
-| `tests/unit/test_embed_routing_filter.py` | T3 (RED) |
-| `tests/unit/test_ingest_routing_filter.py` | T3 (RED) |
-| `corpus_forge/config.py` | T4 (GREEN config schema + validator) |
-| `corpus_forge/embedders/routing.py` | T5 (GREEN routing module — NEW file) |
-| `corpus_forge/embedders/registry.py` | T5 (GREEN — propagate `extensions` to Embedder instances) |
-| `corpus_forge/embedders/base.py` | T5 (GREEN — add `extensions` attr default) |
-| `corpus_forge/backends/base.py` | T6 (GREEN — Protocol tuple shape) |
-| `corpus_forge/backends/postgres.py` | T6 (GREEN — JOIN documents, yield source_uri) |
-| `corpus_forge/backends/sqlite.py` | T6 (GREEN — same) |
-| `corpus_forge/embed.py` | T7 (GREEN — backfill filter) |
-| `corpus_forge/ingest.py` | T7 (GREEN — per-flush filter) |
-| `config.example.toml` | T8 (GREEN docs) |
-| `README.md` | T8 (GREEN docs) |
+- Don't touch JOIN structure of `chunks_missing_embedding` — PR #81 wired `COALESCE(d.source_uri, cv.source_uri, '')` correctly.
+- Don't bump backfill page size (stay at 1000).
+- Don't change `route_for` / `claims` / `EmbedderRoutingError` public API.
+- Don't add the wheel hotfix's `TypeError` fallback in source — source already passes the `extensions=` kwarg directly.
+- Don't touch the inline ingest writer's route filter — chunks come from the pipeline, not a paged query. Only add a one-line comment explaining why.
+- All workers leave changes staged but uncommitted (1Password SSH signing needs TTY; orchestrator commits).
 
 ## Tasks
 
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
-| T1 | RED: `EmbedderConfig.extensions` field validation + `Config` invariant | — | tests/unit/test_embedder_config_routing.py | low | done | principal | 11 tests; RED verified. |
-| T2 | RED: routing helpers (`extension_for`, `route_for`, `claims`, `EmbedderRoutingError`) | — | tests/unit/test_embedder_routing.py | low | done | principal | 19 tests; RED via missing module. |
-| T3 | RED: backfill + ingest filter pending chunks by route | — | tests/unit/test_embed_routing_filter.py, tests/unit/test_ingest_routing_filter.py | med | done | principal | 12 tests across two files; RED. |
-| T4 | GREEN: add `extensions` field to `EmbedderConfig` + `Config`-level invariant validator | T1 | corpus_forge/config.py | low | done | principal | 11/11 tests pass. |
-| T5 | GREEN: new `corpus_forge/embedders/routing.py` + propagate `extensions` to Embedder instances | T2, T4 | corpus_forge/embedders/routing.py, corpus_forge/embedders/registry.py, corpus_forge/embedders/base.py | med | done | principal | 24/24 tests pass. |
-| T6 | GREEN: backends emit `source_uri` alongside chunks_missing_embedding | T3 | corpus_forge/backends/base.py, corpus_forge/backends/postgres.py, corpus_forge/backends/sqlite.py | med | done | principal | JOIN documents + conversations, COALESCE the source_uri. |
-| T7 | GREEN: filter the pending-chunks stream in embed.py + ingest.py using `claims()` | T5, T6 | corpus_forge/embed.py, corpus_forge/ingest.py | med | done | principal | 13/13 filter tests pass. |
-| T8 | GREEN: config.example.toml dual-tower example + README dual-tower subsection | T4 | config.example.toml, README.md | low | done | principal | Annotated dual-tower block + README subsection. |
-| T9 | QA: format + lint + pyrefly + focused suite + full unit shape | T4..T8 | — | low | done | principal | approved — see qa-status.md. 166 baseline failures unchanged. |
+| T1 | Backend interface + SQL push for `extensions` kwarg (both backends, both methods) | — | corpus_forge/backends/base.py, corpus_forge/backends/postgres.py, corpus_forge/backends/sqlite.py, tests/unit/test_postgres_backend.py, tests/unit/test_sqlite_backend.py | med | done | principal | 25 unit tests added (17 Postgres + 8 SQLite); shared `normalize_extensions_filter` helper. |
+| T2 | embed.backfill_embedder passes `extensions=` and drops the broken `break` | T1 | corpus_forge/embed.py, corpus_forge/ingest.py, tests/unit/test_embed_routing_filter.py | med | done | principal | 5 new unit tests; `break` → `continue`; ingest.py doc comment only. |
+| T3 | Integration tests against real Postgres + SQLite | T1 | tests/integration/test_postgres_backend_routing_filter.py, tests/integration/test_sqlite_backend_routing_filter.py | med | done | principal | 10/10 passing (5 Postgres via testcontainers, 5 SQLite via tmp_path). E2E smokes prove SQL filter + no-op route_for. |
 
 ## Acceptance details
 
-### T1 — RED: `EmbedderConfig.extensions` field validation + `Config` invariant
+### T1 — Backend SQL push (the actual bug fix)
 
-In a new file `tests/unit/test_embedder_config_routing.py`, write failing tests against the current code (the field does not exist yet):
+**Surface:**
+- `corpus_forge/backends/base.py` — extend `StorageBackend` Protocol:
+  - `chunks_missing_embedding(self, embedder_id, limit=1024, *, extensions: list[str] | None = None) -> Iterator[tuple[int, str, str]]`
+  - `count_chunks_missing_embedding(self, embedder_id, *, extensions: list[str] | None = None) -> int`
+- `corpus_forge/backends/postgres.py` — implement both with SQL filter.
+- `corpus_forge/backends/sqlite.py` — implement both with SQL filter (mirror Postgres semantics).
+- `corpus_forge/backends/postgres.py` `image_chunks_missing_embedding` — do NOT add `extensions` (image lane not in scope per requirements).
 
-- `extensions` default is an empty list (`EmbedderConfig(..., name="x", provider="sentence_transformers", model_id="m", dimension=64).extensions == []`).
-- `extensions=[".py", ".ts"]` round-trips unchanged.
-- `extensions=[".PY", ".Ts"]` is normalised to `[".py", ".ts"]` at validation time.
-- `extensions=["py"]` (no leading dot) raises `ValidationError` and the error message contains the offending string `"py"`.
-- `extensions=[""]` rejected (must start with a dot).
-- `extensions=[".tar.gz"]` ACCEPTED — multi-dot is fine; the matching uses suffix-comparison (a `.tar.gz` ext claims `foo.tar.gz`, not `foo.gz`).
-- `extensions=[".py", ".PY"]` — after normalisation produces a single `[".py"]` (de-dupe) OR keeps both — pin whichever the implementer chooses by writing the test to whatever the implementation does. **DEFAULT**: accept both into the normalised list (no de-dupe needed — routing is short-circuit).
-- `Config`-level invariant: when a `Config` has two `[[embedders]]` both with `active=True`, one specialist (`extensions=[".py"]`) and **no catchall**, `Config.model_validate(...)` raises `ValidationError` whose message is greppable (contains `"EmbedderRoutingError"` or `"catchall"`). Use the existing `Config` test pattern — see `corpus_forge.config.Config` and the `_check_fast_tier_embedder` validator for the shape.
-- `Config`-level invariant: same setup but with one catchall declared first → passes validation.
-- `Config`-level invariant: when *all* embedders have empty `extensions` (today's single-tower setup) → passes validation (no routing rule applies).
-- Inactive specialists don't trigger the invariant: `active=False` specialist + no active catchall → passes (only active embedders gate routing).
+**Filter semantics (locked):**
+- `None` or empty `[]` → unfiltered (preserves existing behaviour exactly — same SQL emitted).
+- Non-empty → normalise each ext: `.lower()`, ensure leading dot (`"PY"` and `".PY"` and `".py"` all become `".py"`).
+- Emit one SQL clause: `AND (lower(COALESCE(d.source_uri, cv.source_uri, '')) LIKE %s OR lower(COALESCE(d.source_uri, cv.source_uri, '')) LIKE %s OR ...)` with parameter values `f"%{ext}"`.
+- Patterns are suffix matches (`%.py` matches `filesystem://a/foo.py`).
+- COALESCE is reused exactly as PR #81 wired it — don't reorder operands.
+- SQLite uses `lower()` and `LIKE`. Use `?` placeholders, not `%s`.
 
-### T2 — RED: routing helpers
+**Reject:** non-string entries / empty strings in the extension list — raise `ValueError("extension must be a non-empty string")`. (Defense in depth; config-layer already validates.)
 
-New file `tests/unit/test_embedder_routing.py`. The module under test is `corpus_forge.embedders.routing` — does not exist yet, so every import fails RED.
+**Tests (unit, mock-execute):**
+- `chunks_missing_embedding(eid, extensions=None)` — SQL emitted has NO `LIKE` clause; current behaviour unchanged.
+- `chunks_missing_embedding(eid, extensions=[])` — same: no LIKE.
+- `chunks_missing_embedding(eid, extensions=[".py", ".ts"])` — SQL contains 2 `LIKE` clauses joined by `OR`, params include `'%.py'` and `'%.ts'`.
+- Case normalisation: `extensions=["PY", ".TS", ".Md"]` → patterns `'%.py'`, `'%.ts'`, `'%.md'`.
+- `extensions=["", None, 5]` → `ValueError`.
+- `count_chunks_missing_embedding(eid, extensions=[".py"])` — SQL has 1 LIKE clause, param `'%.py'`.
+- Existing tests at `tests/unit/test_postgres_backend.py:482` and `tests/unit/test_sqlite_backend.py:2761` MUST stay green (the `extensions=None` default must not change SQL shape).
 
-Spec:
+### T2 — `embed.backfill_embedder` plumbing
 
-- `extension_for("filesystem://vault/foo/bar.py")` → `".py"`.
-- `extension_for("filesystem://vault/foo/bar.tar.gz")` → `".gz"` (single-suffix). Document this — multi-extension `extensions=[".tar.gz"]` will NOT match through `extension_for`; matching for multi-suffix happens via `claims()` doing a `source_uri.lower().endswith(ext)` check. Phrased differently: `extension_for` is the **single-suffix** lookup; `claims()` does the **endswith** check against the embedder's allow-list, so `.tar.gz` works through the matcher.
-- `extension_for("filesystem://vault/foo/README")` → `""` (no dot).
-- `extension_for("filesystem://vault/foo/.envrc")` → `""` (dotfile, not a suffix).
-- `extension_for("FILE.PY")` → `".py"` (case-folded).
+**Surface:**
+- `corpus_forge/embed.py` — `backfill_embedder`:
+  - Compute `_ext_filter = embedder.extensions or None` once before the loop.
+  - Pass `extensions=_ext_filter` to both `count_chunks_missing_embedding` (around line 155) and `chunks_missing_embedding` (around line 179).
+  - **Delete the `if not chunks_needing: break` block (lines ~207-221).** Replace with `if not chunks_needing: continue`. The real end-of-stream is still `if not raw_rows: break` (line 181) — keep it.
+  - Keep the in-memory `route_for(...)` check as defense-in-depth.
+- `corpus_forge/ingest.py` — `_write_embeddings_for_chunks`:
+  - Add a 2-3 line comment explaining why this site does NOT need the SQL filter (chunks come from per-file ingest pipeline, not a paged scan; in-memory `route_for` is sufficient at batch granularity). No code change.
 
-- `claims(embedder, "x.py")` where `embedder.extensions == []` → `True` (catchall claims everything when consulted in isolation).
-- `claims(embedder, "x.py")` where `embedder.extensions == [".py"]` → `True`.
-- `claims(embedder, "x.md")` where `embedder.extensions == [".py"]` → `False`.
-- `claims(embedder, "X.PY")` where `embedder.extensions == [".py"]` → `True` (case-insensitive).
-- `claims(embedder, "foo.tar.gz")` where `embedder.extensions == [".tar.gz"]` → `True` (endswith).
+**Tests (unit):**
+- Add to `tests/unit/test_embed_routing_filter.py`:
+  - `test_backfill_passes_extensions_kwarg_to_backend` — assert `backend.chunks_missing_embedding` and `backend.count_chunks_missing_embedding` were called with `extensions=embedder.extensions or None`.
+  - `test_backfill_no_extensions_passes_none` — catchall with no `extensions` → both backend calls receive `extensions=None`.
+  - `test_backfill_with_extensions_route_for_filters_nothing` — when the backend already filters (mock returns only-matching rows), `route_for` filter is a no-op (no chunk removed); processed count equals fetched count.
+  - **Regression test for the bug**: `test_backfill_does_not_break_when_in_memory_filter_would_have_emptied_page` — simulate a backend that (incorrectly) ignores `extensions=` and returns a page of all-non-matching rows on iter 1, then matching rows on iter 2, then empty on iter 3. Verify backfill calls `chunks_missing_embedding` AT LEAST 3 times (does not break on iter 1) — proves the `continue` semantics.
 
-- `route_for(".py", [text_catchall, code_specialist])` where text has `extensions=[]` and code has `[".py"]` → returns `code_specialist` (specialist beats catchall regardless of order).
-- `route_for(".md", [text_catchall, code_specialist])` → returns `text_catchall`.
-- `route_for(".py", [code_specialist_A, code_specialist_B])` where both `extensions=[".py"]` → returns the FIRST (declaration order).
-- `route_for(".py", [code_specialist])` (no catchall, `.py` matches the specialist) → returns `code_specialist`.
-- `route_for(".md", [code_specialist])` (no catchall, no match) → returns `None`.
-- `route_for("", [text_catchall, code_specialist])` (no extension) → returns `text_catchall`.
+### T3 — Integration tests against real Postgres + SQLite
 
-- `validate_routing_invariant([code_specialist_cfg])` (only an active specialist, no catchall) → raises `EmbedderRoutingError` with a message that names the missing catchall.
-- `validate_routing_invariant([text_catchall_cfg, code_specialist_cfg])` → does not raise.
-- `validate_routing_invariant([code_specialist_cfg_inactive])` (specialist `active=False`) → does not raise.
-- `validate_routing_invariant([])` → does not raise (no embedders, nothing to route — config-load-time other validators handle that).
+**Surface:**
+- `tests/integration/test_postgres_backend_routing_filter.py` (new)
+- `tests/integration/test_sqlite_backend_routing_filter.py` (new)
 
-- `EmbedderRoutingError` is a subclass of `ValueError` (so pydantic's validator wrapping is clean).
+**Per backend — seed and assert:**
+1. Register a dataset; ingest 4 chunks via the backend's normal upsert path:
+   - chunk 1: source `filesystem:///x/a.py`, text `"py code"`
+   - chunk 2: source `filesystem:///x/a.ts`, text `"ts code"`
+   - chunk 3: source `filesystem:///x/a.md`, text `"md text"`
+   - chunk 4: from a conversation upsert (source `claude-code://session-1`), text `"chat"`
+2. Register an embedder `nomic-code` (dim=4, fake — no model calls).
+3. Assertions:
+   - `chunks_missing_embedding(eid, extensions=[".py", ".ts"])` → exactly 2 rows; chunk_ids = py + ts.
+   - `chunks_missing_embedding(eid, extensions=None)` → all 4.
+   - `chunks_missing_embedding(eid, extensions=[".PY"])` (case normalisation) → 1 row (the .py one).
+   - `count_chunks_missing_embedding(eid, extensions=[".py"])` → 1.
+   - `count_chunks_missing_embedding(eid, extensions=None)` → 4.
+4. **End-to-end smoke** (Postgres only — SQLite mirror optional but encouraged):
+   - Register both `nomic` (catchall) and `nomic-code` (specialist `.py`/`.ts`) embedders.
+   - Stub the embedder runtime (no model calls) — patch `register_from_config` to hand back a fake that returns 4-d vectors.
+   - Call `backfill_embedder("nomic-code")` end-to-end.
+   - Assert `embeddings_nomic_code` table contains rows ONLY for chunk_ids of `.py` + `.ts` (no `.md`, no conversation).
+   - Assert the in-memory `route_for` filter dropped zero rows (instrument via spy on `route_for` or assert `len(fetched) == len(written)`).
 
-Use a tiny stand-in for `Embedder`/`EmbedderConfig` in the tests — `types.SimpleNamespace(extensions=[".py"], active=True, name="code")` is fine; the routing helpers should access `.extensions` only.
+**Use existing fixtures:**
+- Postgres: see `tests/integration/conftest.py`, `test_postgres_backend_helpers.py` for the live-DSN fixture pattern.
+- SQLite: in-memory or tmp file via `tmp_path`; see `test_backend_sqlite.py`.
 
-### T3 — RED: backfill + ingest filter
+## DAG (waves)
 
-Two new files:
+- **Wave 0 (parallel)**: T1-tester, T2-tester, T3-tester (the test files don't overlap; T2/T3 tests can be written against the planned (not-yet-existing) signature).
+- **Wave 1**: T1-coder (implements backend SQL push to green its tests + the existing PR #81 baseline tests).
+- **Wave 2 (parallel)**: T2-coder, T3-coder (T2 needs T1's signature; T3 needs T1's SQL filter to actually run). Both can run together — disjoint surfaces.
+- **Wave 3 (parallel)**: T1-qa, T2-qa, T3-qa.
 
-**`tests/unit/test_embed_routing_filter.py`**: monkeypatches `Config.load` to return a config with a text catchall + code specialist, monkeypatches the backend with a stub whose `chunks_missing_embedding` yields a mix of `(chunk_id, text, source_uri)` rows (e.g. `(1, "py text", "filesystem://a/foo.py")`, `(2, "md text", "filesystem://a/foo.md")`). Calls `backfill_embedder("nomic-code")` and asserts:
-- Only chunk_id 1 was sent into `embedder.encode`.
-- The chunk-id-2 `.md` chunk was not seen by the code embedder.
-- Conversely, `backfill_embedder("nomic")` (catchall) sees only chunk 2 (because chunk 1 is claimed by `nomic-code`).
-- When no embedder declares `extensions`, both embedders see every chunk (back-compat: today's behaviour preserved).
-- A `MagicMock` embedder via `register_from_config`-style returns: assert `encode.call_args[0][0]` is the filtered text list.
-- `backend.write_embeddings` was called with only the routed pairs.
+## Status
 
-**`tests/unit/test_ingest_routing_filter.py`**: targets `corpus_forge.ingest._write_embeddings_for_chunks`. Stubs a backend whose `chunks_missing_embedding` returns the same mixed `(cid, text, source_uri)` triples. Asserts:
-- For `embedder.extensions=[".py"]` only chunk 1 reaches `embedder.encode`; `write_embeddings` writes (chunk_id=1, …).
-- For catchall embedder, only chunk 2 reaches `encode` (because chunk 1 is claimed by the specialist registered alongside it).
-- The returned int count (return value of `_write_embeddings_for_chunks`) matches the number of pairs actually written.
-- When `active_embedders` contains only a single catchall (no specialists active), every chunk reaches every active embedder (back-compat).
-
-For both files, the active-embedders list MUST be threaded into the filter — either via an argument the production code now accepts, OR via the registry. Pick the simplest seam: in `embed.backfill_embedder`, read `config.embedders` directly to build the `active_embedders` list, then call `claims(embedder, source_uri, active_embedders)`. In `ingest._write_embeddings_for_chunks`, pass `active_embedders` (already in scope as `embedders`) into the filter.
-
-### T4 — GREEN: `EmbedderConfig.extensions` + `Config` invariant
-
-- Add `extensions: list[str] = Field(default_factory=list)` on `EmbedderConfig`.
-- Add a `@field_validator("extensions")` that lowercases every entry, rejects empty strings + entries without a leading dot. Error message names the offending value.
-- Add a `@model_validator(mode="after")` on `Config` (alongside `_check_fast_tier_embedder`) named `_check_routing_invariant` that calls `validate_routing_invariant(self.embedders)` — re-raises with a clear message.
-- All T1 tests pass.
-
-### T5 — GREEN: routing module + propagate `extensions`
-
-- New file `corpus_forge/embedders/routing.py` implementing the spec from T2.
-- `BaseEmbedder.__init__` accepts an optional `extensions: list[str] | None = None` kwarg, defaults to `[]`.
-- `EmbedderRegistry.register` forwards the kwarg.
-- `_per_provider_extras` in `embedders/registry.py` always includes `extensions` (from `embedder_config.extensions`).
-- Every concrete embedder class (`SentenceTransformersEmbedder`, `OpenAIEmbedder`, `Model2VecEmbedder`, `LlamaCppEmbedder`) accepts the new kwarg without breaking existing constructors — pass through via `**kwargs` if needed, or add the param explicitly. **Prefer explicit** — extend each `__init__` to accept `extensions: list[str] | None = None` and forward to super.
-- All T2 tests pass.
-
-### T6 — GREEN: backends yield `source_uri`
-
-- `StorageBackend.chunks_missing_embedding` Protocol updated to `Iterator[tuple[int, str, str]]` (`(chunk_id, text, source_uri)`).
-- `PostgresBackend.chunks_missing_embedding`: JOIN `corpus.documents` so the SELECT yields `c.id, c.text, d.source_uri` — and `JOIN corpus.documents d ON d.id = c.document_id`. Order by `c.id` preserved.
-- `SQLiteBackend.chunks_missing_embedding`: same JOIN against `documents`.
-- Image embeddings unchanged (`image_chunks_missing_embedding` retains its `(chunk_id, metadata_dict)` shape — text-embedding routing only touches the text path).
-- Existing tests that consume `chunks_missing_embedding` MUST be updated to unpack three-tuples. Grep for callers (the ingest + embed paths above + any test stubs) and tighten. Treat this as part of the GREEN — if it breaks an existing test, fix the call site.
-
-### T7 — GREEN: filter the stream in embed.py + ingest.py
-
-- `corpus_forge.embed.backfill_embedder` builds `active_embedders` via `register_from_config` over `config.embedders` where `active=True`. After fetching `chunks_needing` it filters to only triples where `claims(embedder, source_uri, active_embedders)` (route returns `embedder`).
-- `corpus_forge.ingest._write_embeddings_for_chunks` accepts the `embedders` list in its caller (already in scope via `_flush_all_pending_embeddings`) and uses the same filter.
-- `count_chunks_missing_embedding` is left untouched for now — the progress-bar total may slightly over-count when routing is on; document in the docstring + log a one-time INFO if the routed count differs at first iter. (Not strictly required for this PR.)
-- All T3 tests pass.
-
-### T8 — GREEN: docs
-
-- `config.example.toml`: append a commented `# ── Dual-tower retrieval (nomic + nomic-code) ──` block under the existing embedders section. Use `provider = "llama-cpp"` for both (since that's the user's setup). Include:
-  - `nomic-embed-text-v1.5` as catchall (no `extensions` field shown; comment notes "absent = catchall").
-  - `nomic-embed-code` with `extensions = [".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt", ".swift", ".c", ".cc", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php", ".scala", ".sh", ".sql", ".lua", ".pl", ".pm", ".r", ".m", ".mm", ".dart", ".ex", ".exs", ".clj", ".cljs", ".hs", ".ml", ".fs", ".jl", ".nim", ".zig", ".v"]` (a reasonable code-extension list — pull a sensible default; the user can prune).
-- `README.md`: short "Dual-tower retrieval" subsection (3-6 lines + the routing-rule bullet, no marketing copy). Link to `config.example.toml`.
-
-### T9 — QA: gate sweep
-
-- `make format-check` clean
-- `make lint` clean
-- `make typecheck` clean
-- focused unit (see Project gates) all green
-- regression unit (see Project gates) all green
-- full unit suite: assert no NEW failures vs the PR-#80 baseline (any pre-existing failures inherited from main are OK and must be enumerated in `qa-status.md`).
-- Coverage must remain ≥89 (Makefile gate).
-
-Verdict format: `approved` / `rework` with one-paragraph rationale in `qa-status.md`.
-
-## DAG
-- Wave 0 (parallel RED): T1, T2, T3 (three testers in one dispatch).
-- Wave 1 (parallel GREEN): T4 (config), T8 (docs only — does not depend on code).
-- Wave 2 (parallel GREEN): T5 (routing module + Embedder.extensions), T6 (backend triples).
-- Wave 3: T7 (filter wired into embed + ingest — needs both T5 and T6).
-- Wave 4: T9 (QA — needs T4..T8).
+All tasks `done`. See `qa-status.md` for the gate-by-gate verdict.
 
 ## Summary
 
-**Branch**: `feat/embedder-routing` (worktree `/Users/evanowen/dev/cf-worktrees/feat-embedder-routing`), off `main` @ `99bdfb0`.
+Files changed (source):
+- `corpus_forge/backends/base.py` — added `normalize_extensions_filter()` helper + extended Protocol signatures for `chunks_missing_embedding` (kwarg) and `count_chunks_missing_embedding` (new method on Protocol).
+- `corpus_forge/backends/postgres.py` — SQL push for both methods.
+- `corpus_forge/backends/sqlite.py` — SQL push for both methods (added LEFT JOIN documents/conversations to the count query so its LIKE can reference COALESCE).
+- `corpus_forge/embed.py` — `_ext_filter` plumbing + `break` → `continue`.
+- `corpus_forge/ingest.py` — doc-only comment.
 
-**Files changed**:
-- Production
-  - `corpus_forge/config.py` — `EmbedderConfig.extensions` field + validator + `Config._check_routing_invariant` model validator.
-  - `corpus_forge/embedders/routing.py` — NEW. `EmbedderRoutingError`, `extension_for`, `claims`, `route_for`, `validate_routing_invariant`.
-  - `corpus_forge/embedders/base.py` — `BaseEmbedder.extensions` attr.
-  - `corpus_forge/embedders/registry.py` — `_per_provider_extras` forwards `extensions` for every provider.
-  - `corpus_forge/embedders/{sentence_transformers,openai,model2vec,llama_cpp}.py` — accept `extensions` kwarg.
-  - `corpus_forge/backends/base.py` — Protocol widened to `Iterator[tuple[int, str, str]]`.
-  - `corpus_forge/backends/postgres.py` — `chunks_missing_embedding` JOINs `documents` + `conversations`, yields `source_uri`.
-  - `corpus_forge/backends/sqlite.py` — same.
-  - `corpus_forge/embed.py` — backfill filters per-batch via `route_for`; builds the full active-embedder list.
-  - `corpus_forge/ingest.py` — `_write_embeddings_for_chunks(active_embedders=...)` filter; `_flush_all_pending_embeddings` threads the list through.
-  - `corpus_forge/cli.py` — `corpus-forge eval embedders` strips source_uri from `chunks_missing_embedding` output to keep the evaluator signature unchanged.
-- Docs
-  - `config.example.toml` — annotated dual-tower block.
-  - `README.md` — "Dual-tower retrieval (extension-based routing)" subsection.
-- Tests added (RED → GREEN)
-  - `tests/unit/test_embedder_config_routing.py` (11)
-  - `tests/unit/test_embedder_routing.py` (24)
-  - `tests/unit/test_embed_routing_filter.py` (4)
-  - `tests/unit/test_ingest_routing_filter.py` (9)
-- Tests updated for 3-tuple shape (back-compat sweep)
-  - `tests/unit/test_embed_backfill.py`, `test_ingest_embedders.py`, `test_remaining.py`, `test_ingest_extended.py`, `test_embed_extended.py`, `test_cli_eval_embedders.py`, `test_postgres_backend.py`, `test_sqlite_backend.py`, `test_eval_runner.py`, `tests/cli/test_embed_progress.py`.
+Files changed (tests):
+- `tests/unit/test_postgres_backend.py` — added `TestChunksMissingEmbeddingExtensionsFilter` (7) + `TestCountChunksMissingEmbeddingExtensionsFilter` (5).
+- `tests/unit/test_sqlite_backend.py` — added `TestChunksMissingEmbeddingExtensionsFilter` (8) + `TestCountChunksMissingEmbeddingExtensionsFilter` (5).
+- `tests/unit/test_embed_routing_filter.py` — added 5 tests across 3 new test classes.
+- `tests/integration/test_postgres_backend_routing_filter.py` — new file (5 tests).
+- `tests/integration/test_sqlite_backend_routing_filter.py` — new file (5 tests).
 
-**Gates run** (worktree-local):
-- `ruff format --check corpus_forge tests` — clean (783 files).
-- `ruff check corpus_forge tests` — clean.
-- `./scripts/check-pyrefly.sh corpus_forge` — 0 errors.
-- Focused suite (`test_embedder_config_routing`, `test_embedder_routing`, `test_embed_routing_filter`, `test_ingest_routing_filter`, plus regression on embed_backfill / ingest_embedders / embed / embedder_register_from_config / embedder_config_llama_cpp): **127/127 green**.
-- Full `tests/unit` suite: 166 failed, 5529 passed, 35 errors — **identical failure set to baseline (main @ 99bdfb0)**, +48 net new passing tests.
+Gates: lint ✓ format ✓ pyrefly ✓ focused suite ✓ (1 pre-existing failure on `main`, unrelated) integration ✓.
 
-**Smoke** (Postgres dual-tower integration) — not run locally (requires running Postgres + GGUF models). Logic-verified via unit-level routing-filter tests covering specialist/catchall split, declaration-order tiebreaker, single-tower back-compat, no-claim short-circuit.
-
-**Override**: none. QA approved.
+Smoke (deferred per scope): user will reinstall the wheel and run `corpus-forge embed -e nomic-code` against the live 1.88M-row corpus after this PR merges.

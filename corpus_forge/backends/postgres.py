@@ -22,7 +22,7 @@ from psycopg_pool import ConnectionPool
 
 from ..chunkers.base import TextChunk
 from ..identity import advisory_lock_key, chunk_content_hash
-from .base import IngestRunInProgressError, StorageBackend
+from .base import IngestRunInProgressError, StorageBackend, normalize_extensions_filter
 
 if TYPE_CHECKING:
     from corpus_forge.classifiers.base import ClassifiableDocument
@@ -1167,7 +1167,11 @@ class PostgresBackend(StorageBackend):
             )
 
     def chunks_missing_embedding(
-        self, embedder_id: int, limit: int = 1024
+        self,
+        embedder_id: int,
+        limit: int = 1024,
+        *,
+        extensions: list[str] | None = None,
     ) -> Iterator[tuple[int, str, str]]:
         """Yield ``(chunk_id, text, source_uri)`` for chunks missing an
         embedding under ``embedder_id``.
@@ -1176,6 +1180,15 @@ class PostgresBackend(StorageBackend):
         ``documents`` row so the routing layer can pick the right
         specialist / catchall per chunk via
         :func:`corpus_forge.embedders.routing.claims`.
+
+        Post-#81 bugfix: ``extensions`` pushes the specialist allow-list
+        into SQL so a 1000-row page is dense with matches. Without this,
+        the non-cursored ``ORDER BY c.id LIMIT 1000`` always returns the
+        same first page; a specialist whose extensions matched zero rows
+        in that first page would loop-break in the Python caller and
+        skip the remaining millions of rows. See
+        :func:`corpus_forge.backends.base.normalize_extensions_filter`
+        for the normalisation contract.
         """
         # Get embedder info
         embedder_info = self._execute(
@@ -1194,6 +1207,20 @@ class PostgresBackend(StorageBackend):
         # whichever side is set.  Conversation source URIs (``claude-code://...``)
         # have no meaningful file extension and therefore always route to
         # the catchall — that's the correct behaviour.
+        norm_exts = normalize_extensions_filter(extensions)
+        ext_clause = ""
+        ext_params: tuple = ()
+        if norm_exts:
+            # One ``lower(COALESCE(...)) LIKE %s`` per extension, OR-joined.
+            # The COALESCE expression must match the SELECT projection so
+            # chat chunks (whose document_id is NULL) still consult
+            # conversations.source_uri.
+            like_clauses = " OR ".join(
+                "lower(COALESCE(d.source_uri, cv.source_uri, '')) LIKE %s" for _ in norm_exts
+            )
+            ext_clause = f" AND ({like_clauses})"
+            ext_params = tuple(f"%{e}" for e in norm_exts)
+
         query = f"""
         SELECT
             c.id,
@@ -1203,21 +1230,33 @@ class PostgresBackend(StorageBackend):
         LEFT JOIN corpus.documents d ON d.id = c.document_id
         LEFT JOIN corpus.conversations cv ON cv.id = c.conversation_id
         LEFT JOIN corpus.{table_name} e ON e.chunk_id = c.id
-        WHERE e.chunk_id IS NULL
+        WHERE e.chunk_id IS NULL{ext_clause}
         ORDER BY c.id
         LIMIT %s
         """
 
-        results = self._execute(query, (limit,))
+        results = self._execute(query, (*ext_params, limit))
         for row in results:
             yield (row["id"], row["text"], row["source_uri"] or "")
 
-    def count_chunks_missing_embedding(self, embedder_id: int) -> int:
+    def count_chunks_missing_embedding(
+        self,
+        embedder_id: int,
+        *,
+        extensions: list[str] | None = None,
+    ) -> int:
         """Total number of chunks missing an embedding for ``embedder_id``.
 
         Phase L Wave 4 — companion to :meth:`chunks_missing_embedding`
         (no limit, no row payload). Powers the embed-command progress
         bar's ``total`` argument so the user sees an ETA.
+
+        Post-PR-#81 bugfix: accepts the same ``extensions=`` allow-list
+        as :meth:`chunks_missing_embedding` so the count reported in the
+        progress bar reflects the *filtered* work for a specialist
+        embedder (not the unfiltered chunks total — which would say
+        "1.88 M pending" for ``nomic-code`` even when only a few
+        thousand .py chunks actually qualify).
         """
         embedder_info = self._execute(
             "SELECT name FROM corpus.embedders WHERE id = %s", (embedder_id,)
@@ -1226,11 +1265,29 @@ class PostgresBackend(StorageBackend):
             return 0
         embedder_name = embedder_info[0]["name"]
         table_name = f"embeddings_{embedder_name.replace('-', '_')}"
-        rows = self._execute(
+
+        norm_exts = normalize_extensions_filter(extensions)
+        # The count query joins documents + conversations (LEFT JOIN) so
+        # the same COALESCE-based extension allow-list as
+        # :meth:`chunks_missing_embedding` can be applied — and crucially,
+        # so the count matches what that method would yield.
+        ext_clause = ""
+        ext_params: tuple = ()
+        if norm_exts:
+            like_clauses = " OR ".join(
+                "lower(COALESCE(d.source_uri, cv.source_uri, '')) LIKE %s" for _ in norm_exts
+            )
+            ext_clause = f" AND ({like_clauses})"
+            ext_params = tuple(f"%{e}" for e in norm_exts)
+
+        query = (
             f"SELECT COUNT(*) AS n FROM corpus.chunks c "
+            f"LEFT JOIN corpus.documents d ON d.id = c.document_id "
+            f"LEFT JOIN corpus.conversations cv ON cv.id = c.conversation_id "
             f"LEFT JOIN corpus.{table_name} e ON e.chunk_id = c.id "
-            f"WHERE e.chunk_id IS NULL"
+            f"WHERE e.chunk_id IS NULL{ext_clause}"
         )
+        rows = self._execute(query, ext_params) if ext_params else self._execute(query)
         return int(rows[0]["n"]) if rows else 0
 
     # ── Phase L Wave 6 — embedder-fingerprint helpers ─────────────────────

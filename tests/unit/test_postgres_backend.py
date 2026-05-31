@@ -510,6 +510,174 @@ class TestChunksMissingEmbedding:
             assert results == []
 
 
+class TestChunksMissingEmbeddingExtensionsFilter:
+    """Post-PR #81 bugfix — SQL-side extension allow-list push.
+
+    The Python-side ``route_for`` filter in ``embed.backfill_embedder`` was
+    applied AFTER the backend fetched a 1000-row page. The first page is
+    deterministic (``ORDER BY c.id``) so a specialist whose extensions
+    matched zero rows in the first 1000 would loop-break and skip the
+    rest of the corpus. These tests pin the SQL filter that pushes the
+    allow-list into the backend so every fetched page is dense with
+    matches.
+    """
+
+    def _backend_with_capturing_execute(self) -> tuple[PostgresBackend, MagicMock]:
+        with patch.object(PostgresBackend, "__init__", lambda self, dsn, schema="corpus": None):
+            backend = PostgresBackend.__new__(PostgresBackend)
+            backend._execute = MagicMock(
+                side_effect=[
+                    [{"name": "nomic-code"}],  # embedder info lookup
+                    [],  # second call returns the empty result set
+                ]
+            )
+            return backend, backend._execute
+
+    def test_extensions_none_emits_no_like_clause(self) -> None:
+        """Back-compat: ``extensions=None`` must NOT add a LIKE clause."""
+        backend, exec_mock = self._backend_with_capturing_execute()
+        list(backend.chunks_missing_embedding(1, extensions=None))
+        # exec_mock.call_args_list[0] is the embedder lookup; [1] is the chunks query
+        chunks_query_sql = exec_mock.call_args_list[1][0][0]
+        assert "LIKE" not in chunks_query_sql.upper(), (
+            f"extensions=None must not emit a LIKE clause; got SQL:\n{chunks_query_sql}"
+        )
+
+    def test_extensions_empty_list_emits_no_like_clause(self) -> None:
+        """Back-compat: ``extensions=[]`` must behave like ``extensions=None``."""
+        backend, exec_mock = self._backend_with_capturing_execute()
+        list(backend.chunks_missing_embedding(1, extensions=[]))
+        chunks_query_sql = exec_mock.call_args_list[1][0][0]
+        assert "LIKE" not in chunks_query_sql.upper(), (
+            f"extensions=[] must not emit a LIKE clause; got SQL:\n{chunks_query_sql}"
+        )
+
+    def test_extensions_non_empty_emits_one_like_per_extension(self) -> None:
+        """Two extensions → two ``LIKE`` clauses joined by OR.
+
+        Params end with ``%.py`` / ``%.ts`` for suffix-match semantics.
+        """
+        backend, exec_mock = self._backend_with_capturing_execute()
+        list(backend.chunks_missing_embedding(1, extensions=[".py", ".ts"]))
+        chunks_query_sql = exec_mock.call_args_list[1][0][0]
+        chunks_query_params = exec_mock.call_args_list[1][0][1]
+        # Two LIKE %s clauses, joined by OR
+        assert chunks_query_sql.upper().count(" LIKE ") == 2, (
+            f"Expected exactly 2 LIKE clauses; SQL:\n{chunks_query_sql}"
+        )
+        assert " OR " in chunks_query_sql.upper(), (
+            f"Multiple extensions must be OR-joined; SQL:\n{chunks_query_sql}"
+        )
+        # Params contain the suffix patterns (plus limit)
+        assert "%.py" in chunks_query_params, (
+            f"params must include '%.py'; got {chunks_query_params!r}"
+        )
+        assert "%.ts" in chunks_query_params, (
+            f"params must include '%.ts'; got {chunks_query_params!r}"
+        )
+
+    def test_extensions_case_normalised_and_leading_dot_added(self) -> None:
+        """``["PY", ".TS", ".Md"]`` → patterns ``'%.py'``, ``'%.ts'``, ``'%.md'``."""
+        backend, exec_mock = self._backend_with_capturing_execute()
+        list(backend.chunks_missing_embedding(1, extensions=["PY", ".TS", ".Md"]))
+        chunks_query_params = exec_mock.call_args_list[1][0][1]
+        assert "%.py" in chunks_query_params, f"params: {chunks_query_params!r}"
+        assert "%.ts" in chunks_query_params, f"params: {chunks_query_params!r}"
+        assert "%.md" in chunks_query_params, f"params: {chunks_query_params!r}"
+
+    def test_extensions_reuses_coalesce_source_uri(self) -> None:
+        """The LIKE clause must reference the same COALESCE expression PR #81 wired up
+        (``COALESCE(d.source_uri, cv.source_uri, '')``) — don't re-derive it from
+        documents.source_uri alone, or chat chunks won't match."""
+        backend, exec_mock = self._backend_with_capturing_execute()
+        list(backend.chunks_missing_embedding(1, extensions=[".py"]))
+        chunks_query_sql = exec_mock.call_args_list[1][0][0]
+        # The LIKE comparator must be lower(COALESCE(...)) so case-insensitive
+        # match works against uppercase URIs.
+        assert "COALESCE" in chunks_query_sql, (
+            f"LIKE must compare COALESCE source uri; SQL:\n{chunks_query_sql}"
+        )
+        assert "LOWER" in chunks_query_sql.upper(), (
+            f"LIKE must be case-insensitive (lower(COALESCE(...))); SQL:\n{chunks_query_sql}"
+        )
+
+    def test_extensions_rejects_empty_string_entry(self) -> None:
+        """Defense in depth: empty-string extensions blow up — they would otherwise
+        match every row (``LIKE '%'``) which silently defeats the filter."""
+        backend, _exec_mock = self._backend_with_capturing_execute()
+        with pytest.raises(ValueError, match="extension"):
+            list(backend.chunks_missing_embedding(1, extensions=[""]))
+
+    def test_extensions_rejects_non_string_entry(self) -> None:
+        backend, _exec_mock = self._backend_with_capturing_execute()
+        with pytest.raises((TypeError, ValueError)):
+            list(backend.chunks_missing_embedding(1, extensions=[5]))  # type: ignore[list-item]
+
+
+class TestCountChunksMissingEmbeddingExtensionsFilter:
+    """Same SQL-push contract for the count helper. Without it, the progress
+    bar lies (1.88 M chunks "pending" for nomic-code when only a few thousand
+    .py / .ts rows actually exist — see PR description)."""
+
+    def _backend_with_capturing_execute(
+        self, count_result: int = 0
+    ) -> tuple[PostgresBackend, MagicMock]:
+        with patch.object(PostgresBackend, "__init__", lambda self, dsn, schema="corpus": None):
+            backend = PostgresBackend.__new__(PostgresBackend)
+            backend._execute = MagicMock(
+                side_effect=[
+                    [{"name": "nomic-code"}],  # embedder info lookup
+                    [{"n": count_result}],  # COUNT(*) result
+                ]
+            )
+            return backend, backend._execute
+
+    def test_count_extensions_none_emits_no_like(self) -> None:
+        backend, exec_mock = self._backend_with_capturing_execute()
+        backend.count_chunks_missing_embedding(1, extensions=None)
+        count_sql = exec_mock.call_args_list[1][0][0]
+        assert "LIKE" not in count_sql.upper(), (
+            f"count extensions=None must not emit LIKE; SQL:\n{count_sql}"
+        )
+
+    def test_count_extensions_emits_like_per_extension(self) -> None:
+        backend, exec_mock = self._backend_with_capturing_execute()
+        backend.count_chunks_missing_embedding(1, extensions=[".py", ".ts"])
+        call = exec_mock.call_args_list[1]
+        count_sql = call[0][0]
+        count_params = call[0][1] if len(call[0]) > 1 else ()
+        assert count_sql.upper().count(" LIKE ") == 2, f"Expected 2 LIKE clauses; SQL:\n{count_sql}"
+        assert "%.py" in count_params, f"params: {count_params!r}"
+        assert "%.ts" in count_params, f"params: {count_params!r}"
+
+    def test_count_extensions_case_normalised(self) -> None:
+        backend, exec_mock = self._backend_with_capturing_execute()
+        backend.count_chunks_missing_embedding(1, extensions=["PY"])
+        call = exec_mock.call_args_list[1]
+        count_params = call[0][1] if len(call[0]) > 1 else ()
+        assert "%.py" in count_params, f"params: {count_params!r}"
+
+    def test_count_extensions_reuses_coalesce(self) -> None:
+        """COUNT(*) must JOIN documents + conversations and apply the LIKE
+        against the COALESCE'd source_uri — same as ``chunks_missing_embedding``.
+
+        Without the JOIN the count query can't reference source_uri at all,
+        so the SQL push fails silently and the progress bar over-reports.
+        """
+        backend, exec_mock = self._backend_with_capturing_execute()
+        backend.count_chunks_missing_embedding(1, extensions=[".py"])
+        count_sql = exec_mock.call_args_list[1][0][0]
+        assert "COALESCE" in count_sql, (
+            f"count LIKE must reference COALESCE(d.source_uri, cv.source_uri, ''); "
+            f"SQL:\n{count_sql}"
+        )
+
+    def test_count_extensions_rejects_empty_string(self) -> None:
+        backend, _exec_mock = self._backend_with_capturing_execute()
+        with pytest.raises(ValueError, match="extension"):
+            backend.count_chunks_missing_embedding(1, extensions=[""])
+
+
 class TestLockSource:
     """Tests for lock_source context manager."""
 

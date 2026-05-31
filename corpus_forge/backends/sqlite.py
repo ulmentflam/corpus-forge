@@ -22,7 +22,7 @@ from ..chunkers.base import TextChunk
 from ..identity import chunk_content_hash
 from ..schema import migrate as _migrate_module
 from ..sources.base import RawDocument
-from .base import IngestRunInProgressError
+from .base import IngestRunInProgressError, normalize_extensions_filter
 from .sqlite_vec_loader import SQLITE_VEC_AVAILABLE, load_sqlite_vec
 
 # Width of the legacy ``(heading, text)`` chunk shape accepted by
@@ -1217,7 +1217,11 @@ class SQLiteBackend:
                 )
 
     def chunks_missing_embedding(
-        self, embedder_id: int, limit: int = 1024
+        self,
+        embedder_id: int,
+        limit: int = 1024,
+        *,
+        extensions: list[str] | None = None,
     ) -> "Iterator[tuple[int, str, str]]":
         """Return chunks that have no embedding for the given embedder.
 
@@ -1226,12 +1230,18 @@ class SQLiteBackend:
         routing layer can pick the right specialist / catchall per chunk
         via :func:`corpus_forge.embedders.routing.claims`.
 
+        Post-#81 bugfix: ``extensions`` pushes a case-insensitive suffix
+        allow-list into SQL so the paging caller doesn't re-fetch the
+        same non-matching first page forever. See
+        :func:`corpus_forge.backends.base.normalize_extensions_filter`.
+
         - Unknown ``embedder_id`` → returns empty (no table to query).
         - Results are ordered by ``chunks.id`` and capped by ``limit``.
 
         Args:
             embedder_id: Primary key from the ``embedders`` table.
             limit: Maximum number of rows to return (default 1024).
+            extensions: Optional case-insensitive suffix allow-list.
         """
         embedder_rows = self._execute(
             "SELECT table_name FROM embedders WHERE id = ?",
@@ -1245,6 +1255,20 @@ class SQLiteBackend:
         # JOIN documents AND conversations (chunks XOR the two parents)
         # so the route layer has source_uri without a second query.
         # COALESCE falls through to '' for the (defensive) orphan case.
+        norm_exts = normalize_extensions_filter(extensions)
+        ext_clause = ""
+        ext_params: tuple = ()
+        if norm_exts:
+            # SQLite ``LIKE`` is ASCII case-insensitive by default but we
+            # wrap both sides in ``lower()`` for explicit parity with the
+            # Postgres implementation.  ``LIKE`` patterns use ``?``
+            # placeholders here (vs. ``%s`` on psycopg).
+            like_clauses = " OR ".join(
+                "lower(COALESCE(d.source_uri, cv.source_uri, '')) LIKE ?" for _ in norm_exts
+            )
+            ext_clause = f" AND ({like_clauses})"
+            ext_params = tuple(f"%{e}" for e in norm_exts)
+
         rows = self._execute(
             f"SELECT c.id, c.text, "
             f"  COALESCE(d.source_uri, cv.source_uri, '') AS source_uri "
@@ -1254,9 +1278,9 @@ class SQLiteBackend:
             f"WHERE NOT EXISTS ("
             f"  SELECT 1 FROM {table_name} e"
             f"  WHERE e.chunk_id = c.id AND e.embedder_id = ?"
-            f") "
+            f"){ext_clause} "
             f"ORDER BY c.id LIMIT ?",
-            (embedder_id, limit),
+            (embedder_id, *ext_params, limit),
         )
         for row in rows:
             yield (row["id"], row["text"], row["source_uri"] or "")
@@ -1345,11 +1369,22 @@ class SQLiteBackend:
                 (config_json, embedder),
             )
 
-    def count_chunks_missing_embedding(self, embedder_id: int) -> int:
+    def count_chunks_missing_embedding(
+        self,
+        embedder_id: int,
+        *,
+        extensions: list[str] | None = None,
+    ) -> int:
         """Total number of chunks missing an embedding for ``embedder_id``.
 
         Phase L Wave 4 — mirrors :meth:`PostgresBackend.count_chunks_missing_embedding`.
         Unknown ``embedder_id`` → 0 (no table to count).
+
+        Post-PR-#81 bugfix: accepts ``extensions=`` for symmetry with
+        :meth:`chunks_missing_embedding`.  Counts only chunks whose
+        ``COALESCE(documents.source_uri, conversations.source_uri, '')``
+        ends with one of the normalised extensions; without this the
+        embed progress bar over-reports work for specialist embedders.
         """
         embedder_rows = self._execute(
             "SELECT table_name FROM embedders WHERE id = ?",
@@ -1358,13 +1393,31 @@ class SQLiteBackend:
         if not embedder_rows:
             return 0
         table_name = embedder_rows[0]["table_name"]
+
+        norm_exts = normalize_extensions_filter(extensions)
+        # The count query JOINs documents + conversations so the LIKE
+        # filter can reference the same COALESCE expression as
+        # :meth:`chunks_missing_embedding` — keep the two queries in
+        # lockstep or the progress bar lies.
+        if norm_exts:
+            like_clauses = " OR ".join(
+                "lower(COALESCE(d.source_uri, cv.source_uri, '')) LIKE ?" for _ in norm_exts
+            )
+            ext_clause = f" AND ({like_clauses})"
+            ext_params = tuple(f"%{e}" for e in norm_exts)
+        else:
+            ext_clause = ""
+            ext_params = ()
+
         rows = self._execute(
             f"SELECT COUNT(*) AS n FROM chunks c"
+            f" LEFT JOIN documents d ON d.id = c.document_id"
+            f" LEFT JOIN conversations cv ON cv.id = c.conversation_id"
             f" WHERE NOT EXISTS ("
             f"   SELECT 1 FROM {table_name} e"
             f"   WHERE e.chunk_id = c.id AND e.embedder_id = ?"
-            f" )",
-            (embedder_id,),
+            f" ){ext_clause}",
+            (embedder_id, *ext_params),
         )
         return int(rows[0]["n"]) if rows else 0
 

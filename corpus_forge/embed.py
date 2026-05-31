@@ -146,13 +146,22 @@ def backfill_embedder(
             raise ValueError(f"Dataset '{dataset_name}' not found")
         logger.info(f"Limiting backfill to dataset: {dataset_name} (ID: {dataset_id})")
 
+    # Post-PR #81 bugfix — push the embedder's extension allow-list into
+    # SQL so the backend filters at query time. Without this the paging
+    # caller would re-fetch the same non-matching first 1000 rows
+    # forever for a specialist whose chunks live deeper in the table.
+    # ``None`` (not ``[]``) keeps the back-compat SQL fast-path.
+    _ext_filter: list[str] | None = list(embedder.extensions) if embedder.extensions else None
+
     # Backfill embeddings — Phase L Wave 4: pre-count the work so the
     # progress bar carries an ETA, and wrap the loop in the shared
     # ``make_progress`` factory which auto-emits INFO bookends + ~every-
     # 10% milestones to the rotating log. Coerce to int defensively so
     # mock backends returning MagicMock() don't crash the wrapper.
     try:
-        total_missing = int(backend.count_chunks_missing_embedding(embedder_id))
+        total_missing = int(
+            backend.count_chunks_missing_embedding(embedder_id, extensions=_ext_filter)
+        )
     except (TypeError, AttributeError):
         total_missing = 0
     logger.info(f"Backfilling {embedder_name}: {total_missing} chunks pending")
@@ -176,7 +185,15 @@ def backfill_embedder(
             # Get chunks missing this embedder's embedding.  PR #81: the
             # backend now yields ``(chunk_id, text, source_uri)``; the
             # extra column is used by the routing filter below.
-            raw_rows = list(backend.chunks_missing_embedding(embedder_id, limit=1000))
+            #
+            # Post-#81 bugfix: pass ``extensions=`` so the backend
+            # filters in SQL.  With the SQL push the in-memory
+            # ``route_for`` filter below becomes a no-op on every page;
+            # it's kept as defense-in-depth in case a custom backend
+            # ignores the kwarg.
+            raw_rows = list(
+                backend.chunks_missing_embedding(embedder_id, limit=1000, extensions=_ext_filter)
+            )
 
             if not raw_rows:
                 logger.debug("No more chunks need embedding")
@@ -205,20 +222,21 @@ def backfill_embedder(
             ]
 
             if not chunks_needing:
-                # Every row in this page is claimed by a DIFFERENT
-                # embedder under the routing rule, and a backfill against
-                # this embedder will never write embeddings for those
-                # rows — so the backend will keep returning the same
-                # page indefinitely if we loop.  Break and let the
-                # complementary ``corpus-forge embed -e <other-name>``
-                # invocation drain those chunks.
-                logger.info(
-                    "All %d pending rows routed away from %s — stopping "
-                    "(another active embedder claims them).",
+                # Post-PR-#81 bugfix: the original code did ``break`` here,
+                # which gave up the entire backfill when the first page
+                # happened to contain zero matches — the exact bug this
+                # PR fixes.  With the SQL push above the backend should
+                # never return a page of all-non-matching rows, but if it
+                # does (e.g. a custom backend that ignores ``extensions=``),
+                # we ``continue`` to the next page so the loop drains the
+                # corpus instead of giving up.  Only ``raw_rows == []``
+                # (handled above) is a real end-of-stream signal.
+                logger.debug(
+                    "Page of %d rows had no matches after in-memory route_for; "
+                    "skipping to next page.",
                     len(raw_rows),
-                    embedder.name,
                 )
-                break
+                continue
 
             chunk_ids, texts = zip(*chunks_needing, strict=True) if chunks_needing else ([], [])
 
