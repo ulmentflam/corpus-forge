@@ -133,8 +133,10 @@ class TestResolverExplicitGgufPath:
         """``~``-prefixed paths must be expanded."""
         from corpus_forge.embedders.llama_cpp import resolve_gguf_path
 
-        # Stand up a fake $HOME with the GGUF inside.
+        # Stand up a fake home dir with the GGUF inside. expanduser reads HOME
+        # on POSIX and USERPROFILE on Windows — set both so the test is portable.
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         explicit = tmp_path / "model.gguf"
         explicit.write_bytes(b"x")
         out = resolve_gguf_path(gguf_path="~/model.gguf", model_id=None)
