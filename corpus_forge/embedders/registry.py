@@ -26,10 +26,13 @@ def _per_provider_extras(embedder_config) -> dict[str, Any]:
     - ``llama-cpp``: in-process llama.cpp binding. Accepts the
       llama.cpp-specific knobs ``n_ctx`` + ``n_gpu_layers``, and
       optionally ``gguf_path`` when the user wants to bypass Ollama
-      auto-discover. Rejects ``device`` / ``api_key_env`` /
-      ``base_url`` — the binding is in-process, not HTTP, and the
-      Metal/CUDA offload is controlled via ``n_gpu_layers`` instead
-      of a ``device`` string.
+      auto-discover. Plus the PR #79 follow-up: ``n_seq_max``
+      (default 1 → single-sequence-per-call → full ``n_ctx`` window),
+      and optional ``n_batch`` / ``n_ubatch`` (default ``None`` →
+      embedder resolves to ``n_ctx`` at construction time). Rejects
+      ``device`` / ``api_key_env`` / ``base_url`` — the binding is
+      in-process, not HTTP, and the Metal/CUDA offload is controlled
+      via ``n_gpu_layers`` instead of a ``device`` string.
 
     Pulled into a single helper so the three call sites
     (``corpus_forge.ingest.get_active_embedders``,
@@ -67,6 +70,20 @@ def _per_provider_extras(embedder_config) -> dict[str, Any]:
         gguf_path = getattr(embedder_config, "gguf_path", None)
         if gguf_path:
             extras["gguf_path"] = gguf_path
+        # Follow-up to PR #78: tune the n_seq_max / n_batch / n_ubatch
+        # knobs that gate ``n_ctx_seq = n_ctx / n_seq_max`` inside
+        # llama-cpp-python. ``n_seq_max`` always forwarded (default 1
+        # = single-sequence-per-call, full n_ctx window). The two
+        # batch knobs forward only when explicitly set; ``None`` lets
+        # the embedder constructor resolve them to ``n_ctx`` so the
+        # physical batch buffer stays >= n_ctx by default.
+        extras["n_seq_max"] = getattr(embedder_config, "n_seq_max", 1)
+        n_batch = getattr(embedder_config, "n_batch", None)
+        if n_batch is not None:
+            extras["n_batch"] = n_batch
+        n_ubatch = getattr(embedder_config, "n_ubatch", None)
+        if n_ubatch is not None:
+            extras["n_ubatch"] = n_ubatch
     # ``model2vec`` and any future CPU-only / static providers fall
     # through with just the common kwargs.
     return extras

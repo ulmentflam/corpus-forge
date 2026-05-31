@@ -340,3 +340,98 @@ class TestCallSiteRouting:
             "`corpus-forge embed -e <openai-provider>` will crash "
             "with a 'device kwarg' TypeError again."
         )
+
+
+# ── llama-cpp tuning kwargs (n_seq_max / n_batch / n_ubatch) ──────────
+
+
+class TestPerProviderExtrasLlamaCppTuning:
+    """The follow-up to PR #78 adds three new llama-cpp config keys.
+
+    - ``n_seq_max``: always forwarded with default ``1`` so the
+      embedder constructor's default fires when the config omits it.
+    - ``n_batch`` / ``n_ubatch``: optional. Only forwarded when the
+      config has set a non-None value. ``None`` means "let the
+      embedder default to ``n_ctx`` at construction time".
+    """
+
+    def test_llama_cpp_n_seq_max_default_one(self) -> None:
+        extras = _per_provider_extras(_cfg("llama-cpp", n_seq_max=1))
+        assert extras["n_seq_max"] == 1
+
+    def test_llama_cpp_n_seq_max_round_trips(self) -> None:
+        extras = _per_provider_extras(_cfg("llama-cpp", n_seq_max=4))
+        assert extras["n_seq_max"] == 4
+
+    def test_llama_cpp_n_batch_forwarded_when_set(self) -> None:
+        extras = _per_provider_extras(_cfg("llama-cpp", n_batch=4096))
+        assert extras["n_batch"] == 4096
+
+    def test_llama_cpp_n_batch_dropped_when_none(self) -> None:
+        """``n_batch=None`` MUST NOT forward — otherwise the embedder
+        cannot resolve its own default of ``n_ctx`` at construction
+        time. Same rationale as ``gguf_path``: forward only when truthy.
+        """
+        extras = _per_provider_extras(_cfg("llama-cpp", n_batch=None))
+        assert "n_batch" not in extras
+
+    def test_llama_cpp_n_ubatch_forwarded_when_set(self) -> None:
+        extras = _per_provider_extras(_cfg("llama-cpp", n_ubatch=4096))
+        assert extras["n_ubatch"] == 4096
+
+    def test_llama_cpp_n_ubatch_dropped_when_none(self) -> None:
+        extras = _per_provider_extras(_cfg("llama-cpp", n_ubatch=None))
+        assert "n_ubatch" not in extras
+
+
+class TestRegisterFromConfigLlamaCppTuning:
+    """End-to-end: a ``provider="llama-cpp"`` config with the three new
+    fields round-trips onto a real :class:`LlamaCppEmbedder`.
+    """
+
+    def test_llama_cpp_tuning_kwargs_round_trip(self) -> None:
+        from corpus_forge.embedders.llama_cpp import LlamaCppEmbedder
+
+        reg = EmbedderRegistry()
+        cfg = _cfg(
+            "llama-cpp",
+            name="qwen3-llama-cpp-tuned",
+            model_id="qwen3-embedding:8b",
+            dimension=4096,
+            n_ctx=8192,
+            n_seq_max=1,
+            n_batch=8192,
+            n_ubatch=8192,
+        )
+        embedder = register_from_config(reg, cfg)
+        assert isinstance(embedder, LlamaCppEmbedder)
+        assert embedder.n_seq_max == 1
+        assert embedder.n_batch == 8192
+        assert embedder.n_ubatch == 8192
+        assert embedder.n_ctx == 8192
+
+    def test_llama_cpp_n_batch_default_resolves_to_n_ctx(self) -> None:
+        """When ``n_batch`` is omitted from the config, the embedder
+        constructor's default (``n_batch=None`` → resolve to ``n_ctx``)
+        must fire.
+        """
+        from corpus_forge.embedders.llama_cpp import LlamaCppEmbedder
+
+        reg = EmbedderRegistry()
+        cfg = _cfg(
+            "llama-cpp",
+            name="qwen3-llama-cpp-defaults",
+            model_id="qwen3-embedding:8b",
+            dimension=4096,
+            n_ctx=4096,
+            n_batch=None,
+            n_ubatch=None,
+        )
+        embedder = register_from_config(reg, cfg)
+        assert isinstance(embedder, LlamaCppEmbedder)
+        # The embedder must have resolved both physical-batch knobs to
+        # the configured n_ctx. This is the user-facing relationship:
+        # bumping ``n_ctx`` also bumps ``n_batch`` / ``n_ubatch`` unless
+        # the user overrode them.
+        assert embedder.n_batch == 4096
+        assert embedder.n_ubatch == 4096

@@ -353,6 +353,24 @@ class EmbedderConfig(BaseModel):
     # Number of layers offloaded to GPU.  -1 = all (Metal on Apple
     # Silicon, CUDA on Linux); 0 forces CPU-only.
     n_gpu_layers: int = Field(default=-1)
+    # Per-sequence context cap is ``n_ctx_seq = n_ctx / n_seq_max``.
+    # llama-cpp-python's embedding-mode initialiser silently sets
+    # ``n_seq_max = min(n_batch, llama_max_parallel_sequences())`` —
+    # which can be 256 on a stock install and squeezes ``n_ctx_seq``
+    # down to a few hundred tokens even when the user configured a
+    # generous ``n_ctx``. Default ``1`` here means "single sequence
+    # per call, give me the full ``n_ctx`` window". See the
+    # ``LlamaCppEmbedder.encode`` truncation path for the matching
+    # client-side guard.
+    n_seq_max: int = Field(default=1, gt=0)
+    # llama.cpp physical batch buffer sizes. ``None`` is the sentinel
+    # for "resolve to ``n_ctx`` at construction time", which keeps
+    # the buffer >= ``n_ctx`` and sidesteps the
+    # ``llama_context: n_ctx is not divisible by n_seq_max`` warning.
+    # Override explicitly when you want a smaller buffer to save
+    # memory at the cost of accepting more "round down" warnings.
+    n_batch: int | None = Field(default=None, gt=0)
+    n_ubatch: int | None = Field(default=None, gt=0)
 
 
 class RerankerConfig(BaseModel):

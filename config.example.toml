@@ -247,8 +247,24 @@ device    = "auto"  # 'auto'|'mps'|'cuda'|'cpu'
 # distance     = "cosine"
 # active       = false                  # opt-in; see header comment
 # batch_size   = 16
-# n_ctx        = 512                    # llama.cpp context window
+# n_ctx        = 8192                   # llama.cpp context window (qwen3 native is 32 K)
 # n_gpu_layers = -1                     # -1 = all layers on Metal/CUDA; 0 = CPU-only
+# # Per-sequence context cap is `n_ctx_seq = n_ctx / n_seq_max`. Keep
+# # `n_seq_max = 1` so each chunk gets the FULL `n_ctx` window —
+# # otherwise llama-cpp-python defaults to `min(n_batch,
+# # llama_max_parallel_sequences())` (often 256), squeezing
+# # `n_ctx_seq` down to a few hundred tokens and crashing on bigger
+# # chunks with `decode: failed to find a memory slot`. The embedder
+# # ALSO pre-truncates each input client-side to `n_ctx_seq` tokens
+# # so the C call never sees an oversized batch — see the loader
+# # DEBUG logs for `LlamaCppEmbedder truncated`.
+# n_seq_max    = 1
+# # Physical batch buffers. Omit to default to `n_ctx` (the recommended
+# # relationship — sidesteps the
+# # `llama_context: n_ctx is not divisible by n_seq_max` warning).
+# # Override down for memory-constrained installs.
+# n_batch      = 8192
+# n_ubatch     = 8192
 
 [[embedders]]
 name      = "openai_3l"
