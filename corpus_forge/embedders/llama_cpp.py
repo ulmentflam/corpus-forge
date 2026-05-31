@@ -66,6 +66,7 @@ embedder. Same contract as the ``model2vec`` fast-tier addition.
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import json
 import logging
 import time
@@ -615,7 +616,7 @@ class LlamaCppEmbedder(BaseEmbedder):
             # bindings (e.g. an uninitialised context handle).
             n_ctx_seq = max(_runtime_n_ctx // max(_runtime_n_seq_max, 1) - 4, 64)
             _runtime_lookup_ok = True
-        except (AttributeError, TypeError, ImportError):
+        except (AttributeError, TypeError, ImportError, ctypes.ArgumentError, OSError):
             # Older bindings or test fakes without ``_ctx.ctx`` → fall
             # back to the configured-value math from PR #79. Still
             # honest for installs where post-construction mutation
