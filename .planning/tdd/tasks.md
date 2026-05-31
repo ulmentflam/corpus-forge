@@ -1,178 +1,90 @@
-# TDD Task Board — feat/llama-cpp-tuning
+# TDD Task Board — feat/llama-cpp-runtime-n-ctx-seq
 
 _Owner: tdd-principal. Workers: read freely. Edit only your claimed row's `status` and `claimed_by`._
 
-Worktree: `/Users/evanowen/dev/cf-worktrees/feat-llama-cpp-tuning`
-Branch: `feat/llama-cpp-tuning`
-Off: `origin/main` (1dc7cb9 — PR #78, llama.cpp embedder backend)
-
-## Follow-up context (read first)
-
-PR #78 shipped the llama.cpp in-process embedder. Architecturally it works (registry dispatch, GGUF resolver, lazy import). But running `corpus-forge embed -e qwen3-4096` against qwen3-embedding:8b with `n_ctx=8192, n_gpu_layers=-1` crashes with:
-
-```
-llama_context: n_ctx is not divisible by n_seq_max - rounding down to 65536
-llama_context: n_ctx_seq (256) < n_ctx_train (40960) — full capacity will not be utilized
-decode: failed to find a memory slot for batch of size 382
-RuntimeError: llama_decode returned 1
-```
-
-Root cause inside llama-cpp-python: `n_seq_max` defaults to `min(n_batch, llama_max_parallel_sequences())` — for the install on this machine that's `min(8192, 256) = 256`. Per-sequence context is then `n_ctx_seq = n_ctx / n_seq_max = 8192 / 32 ≈ 256` (rounded). Any chunk above 256 tokens fails llama_decode.
-
-### Important llama-cpp-python source facts (verified locally against v0.3.23)
-- `n_seq_max` is **NOT** a kwarg on `Llama.__init__` in v0.3.23. It IS in `llama_context_default_params()` → `context_params.n_seq_max` (`uint32_t`).
-- `Llama.__init__` accepts `**kwargs  # type: ignore` (line 121 in `llama_cpp/llama.py` of v0.3.23) and swallows unknown kwargs silently — passing `n_seq_max=1` via constructor is forward-safe (newer versions may consume it; this version drops it).
-- When `embedding=True`, the constructor unconditionally sets:
-  `self.context_params.n_seq_max = min(self.n_batch, llama_cpp.llama_max_parallel_sequences())`
-  (line 400-404). This means: to influence n_seq_max in v0.3.23 we must mutate `context_params.n_seq_max` POST-construction. The context itself is built earlier and won't pick up the new value within the same handle, but we mutate anyway so:
-   (a) future versions that read it dynamically will honour it;
-   (b) introspection / doctor / debug logs see the configured intent;
-   (c) we pass it as a constructor kwarg AND post-set context_params, so the moment llama-cpp-python adds the kwarg support our config flows through.
-- `create_embedding(input: Union[str, List[str]])` does NOT accept a pre-tokenised list. `Llama.embed()` does internal `truncate=True` but that defends only the C-side path — the per-sequence cap (`n_ctx_seq`) is what fails with memory-slot allocation. So Python-side pre-truncation is the actual user-facing fix.
-- `Llama.tokenize(text: bytes, add_bos: bool = True, special: bool = False) -> List[int]` and `Llama.detokenize(tokens, prev_tokens=None, special=False) -> bytes` are the tokenize seam we patch in tests.
-
-### What this PR delivers
-1. Three new config keys on `provider = "llama-cpp"`: `n_seq_max` (default **1**), `n_batch` (default `n_ctx`), `n_ubatch` (default `n_ctx`).
-2. Token-aware truncation inside `LlamaCppEmbedder.encode()`: pre-tokenise each input, slice to `n_ctx_seq = n_ctx // max(n_seq_max, 1)` tokens, detokenize back to bytes/string, then call `create_embedding`. DEBUG-log when truncation actually fires.
-3. `encode_query` inherits truncation (it delegates to `encode` already).
-4. `config.example.toml` block: add the three new commented keys with explanatory one-liner.
-5. `README.md` `[llama-cpp]` row: extend the "gotchas" sentence to mention n_seq_max + per-chunk truncation.
+Worktree: `/Users/evanowen/dev/cf-worktrees/feat-llama-cpp-runtime-n-ctx-seq`
+Branch: `feat/llama-cpp-runtime-n-ctx-seq` (off `main` @ 99bdfb0)
 
 ## Project gates
-- format: `uv run ruff format corpus_forge tests`
-- format-check: `uv run ruff format --check corpus_forge tests`
-- lint (CI): `uv run ruff check corpus_forge tests`
-- typecheck: `./scripts/check-pyrefly.sh corpus_forge`
-- focused unit: `uv run pytest tests/unit/test_embedder_llama_cpp.py tests/unit/test_embedder_config_llama_cpp.py tests/unit/test_pyproject_llama_cpp_extra.py tests/unit/test_embedder_register_from_config.py -v`
-- full unit: `uv run pytest tests/unit -v -n auto --timeout=60`
-- coverage-min: 89 (per Makefile `--cov-fail-under=89`)
-- smoke (gated): `CORPUS_FORGE_TEST_LLAMA_CPP=1 uv run pytest tests/unit/test_embedder_llama_cpp.py::test_smoke_real_qwen3_embedding -v`
+- format: `uv run ruff format --check corpus_forge tests`
+- lint: `uv run ruff check corpus_forge tests`
+- typecheck: `uv run pyrefly check`
+- test (focused): `uv run pytest tests/unit/test_embedder_llama_cpp.py tests/unit/test_embedder_config_llama_cpp.py tests/unit/test_embedder_register_from_config.py -v`
+- test (full unit, regression gate): `uv run pytest tests/unit -q` (same shape as PR #79 baseline — only pre-existing optional-extra ModuleNotFoundError failures permitted)
+- coverage-min: existing baseline (no new gate)
+- smoke: n/a (test ingest already verified by user — 50 chunks nomic-embed-code → 50 vectors)
 
-## Surface map
+## Background
 
-| File | Touched by |
-|------|-----------|
-| `tests/unit/test_embedder_llama_cpp.py` | T1 (RED tests), T4 (extends if needed) |
-| `tests/unit/test_embedder_config_llama_cpp.py` | T2 (RED tests) |
-| `tests/unit/test_embedder_register_from_config.py` | T3 (RED tests) |
-| `corpus_forge/embedders/llama_cpp.py` | T4 (GREEN) |
-| `corpus_forge/config.py` | T5 (GREEN config schema) |
-| `corpus_forge/embedders/registry.py` | T5 (GREEN registry dispatch) |
-| `config.example.toml` | T6 (GREEN docs) |
-| `README.md` | T6 (GREEN docs) |
+PR #79 (commit 99bdfb0) added per-sequence truncation via `n_ctx_seq = self.n_ctx // max(self.n_seq_max, 1)`. Problem: llama-cpp-python's `embedding=True` initialiser overrides `n_seq_max` post-construction to ~32, so the configured value is a lie. Decoder accepted ~256 tokens; truncation sliced to 8192 → `decode: failed to find a memory slot for batch of size N`. Fix: introspect the *actual* runtime `n_ctx` / `n_seq_max` via `llama_cpp.llama_n_ctx(ctx)` / `llama_cpp.llama_n_seq_max(ctx)` against `self._llama._ctx.ctx`.
 
 ## Tasks
-
 | id | title | depends_on | surface | risk | status | claimed_by | notes |
 |----|-------|------------|---------|------|--------|------------|-------|
-| T1 | RED: encode-time truncation + n_seq_max/n_batch/n_ubatch identity tests | — | tests/unit/test_embedder_llama_cpp.py | med | done | principal | TestTuningIdentity (6 tests), TestTruncation (8 tests), TestLoaderForwardsTuningKwargs (1 test), +1 gated smoke. |
-| T2 | RED: EmbedderConfig n_seq_max + n_batch + n_ubatch field pins | — | tests/unit/test_embedder_config_llama_cpp.py | low | done | principal | 9 new tests. |
-| T3 | RED: registry `_per_provider_extras` policy for new llama-cpp kwargs | — | tests/unit/test_embedder_register_from_config.py | low | done | principal | TestPerProviderExtrasLlamaCppTuning (6 tests) + TestRegisterFromConfigLlamaCppTuning (2 tests). |
-| T4 | GREEN: LlamaCppEmbedder accepts n_seq_max/n_batch/n_ubatch, truncates pre-call | T1 | corpus_forge/embedders/llama_cpp.py | med | done | principal | Constructor + `_maybe_truncate` helper + DEBUG logging + `_load_llama_handle` forwards new kwargs + post-mutates context_params.n_seq_max with `contextlib.suppress`. |
-| T5 | GREEN: config schema + registry dispatch for new keys | T2, T3 | corpus_forge/config.py, corpus_forge/embedders/registry.py | low | done | principal | EmbedderConfig adds three new fields; registry always forwards n_seq_max and forwards n_batch / n_ubatch only when set. |
-| T6 | GREEN: config.example.toml + README gotchas | T5 | config.example.toml, README.md | low | done | principal | Three new lines under the `[llama-cpp]` commented block with explanatory header. README `[llama-cpp]` row gains a Gotchas sentence. |
-| T7 | QA: full sweep — format/lint/pyrefly/full-unit | T4, T5, T6 | — | low | done | principal | approved — see qa-status.md. Identical failure count vs baseline (166); +32 passing, +1 skipped. |
+| T1 | Runtime n_ctx_seq introspection + once-per-instance log | — | corpus_forge/embedders/llama_cpp.py, tests/unit/test_embedder_llama_cpp.py | med | done | principal-as-worker | OVERRIDE: no Agent tool in session, principal executed loop directly. RED→GREEN→QA all complete. |
 
 ## Acceptance details
 
-### T1 — RED truncation + new field tests
-- **Identity tests** (one assertion each, matching existing T1-style):
-  - `n_seq_max` default is 1.
-  - `n_seq_max` round-trips when set.
-  - `n_batch` default is None (sentinel meaning "match n_ctx at load time"); when None the resolved-on-construction value is `n_ctx`.
-  - `n_batch` round-trips when explicitly set.
-  - `n_ubatch` default same shape as `n_batch`.
-- **Truncation tests** (use MagicMock on `_llama` like existing `TestEncode`):
-  - Given `n_ctx=512`, `n_seq_max=1`, a text whose tokenized length is 600, `encode` must call `_llama.tokenize(...)` then `_llama.detokenize(<list of length 512>)` then `_llama.create_embedding(<list of detokenized strings>)`. Spy verifies the detokenize call's token-list length is exactly 512.
-  - Given `n_ctx=512`, `n_seq_max=4`, n_ctx_seq=128, a 200-token text truncates to 128 tokens.
-  - Short text (50 tokens) passes through unchanged — no truncation path fired.
-  - Empty list short-circuits before tokenize.
-  - Multi-text batch: only the oversized ones get truncated; short ones don't.
-  - DEBUG log assertion via `caplog` when truncation fires (greppable phrase, e.g. `"LlamaCppEmbedder truncated"`).
-- **`encode_query` smoke**: a single call goes through the same truncation path (delegation pin).
-- **Smoke test extension** (gated by `CORPUS_FORGE_TEST_LLAMA_CPP=1`): construct with `n_ctx=4096, n_seq_max=1, n_batch=4096, n_ubatch=4096`, embed a ~6000-character text, assert (1, 4096) shape + finite. Skips on minimal install.
+### T1 — Runtime n_ctx_seq introspection
 
-### T2 — RED EmbedderConfig field pins
-- `n_seq_max` default = 1, round-trip when set.
-- `n_seq_max <= 0` rejected by `gt=0` constraint.
-- `n_batch` default = None.
-- `n_batch=4096` round-trips.
-- `n_ubatch` default = None.
-- `n_ubatch=4096` round-trips.
-- Existing pins (`gguf_path`, `n_ctx`, `n_gpu_layers`) unchanged.
+**Code change** (in `corpus_forge/embedders/llama_cpp.py` `encode()`):
 
-### T3 — RED registry dispatch
-- `_per_provider_extras` for `llama-cpp`:
-  - `n_seq_max` always present (default 1).
-  - `n_batch` absent when config has `n_batch=None`.
-  - `n_batch=4096` forwards as 4096.
-  - `n_ubatch` same shape as `n_batch`.
-- End-to-end via `register_from_config`: a `provider="llama-cpp"` config with all three new fields round-trips onto a real `LlamaCppEmbedder`.
+Replace:
+```python
+n_ctx_seq = self.n_ctx // max(self.n_seq_max, 1)
+```
 
-### T4 — GREEN LlamaCppEmbedder
-- Constructor: add `n_seq_max: int = 1`, `n_batch: int | None = None`, `n_ubatch: int | None = None`. Store on self. Resolve n_batch / n_ubatch defaults from `n_ctx` at construction time.
-- `_load_llama_handle`: forward `n_seq_max`, `n_batch`, `n_ubatch` to `Llama()` via kwargs (v0.3.23 swallows via `**kwargs`; v≥future may consume). Post-construction: if handle has `.context_params`, `handle.context_params.n_seq_max = n_seq_max` for forward-compat / introspection.
-- `encode`: before each batch's `create_embedding` call, for each text:
-  1. `tokens = self._llama.tokenize(text.encode("utf-8"), add_bos=False, special=False)`
-  2. `n_ctx_seq = self.n_ctx // max(self.n_seq_max, 1)`
-  3. If `len(tokens) > n_ctx_seq`: slice to `n_ctx_seq`, DEBUG-log once per truncated text with the greppable phrase, then `text = self._llama.detokenize(tokens).decode("utf-8", errors="replace")`
-  4. Pass the (possibly truncated) text into the per-batch list.
-- Empty list still short-circuits at function top.
-- Dim guard + row count guard preserved.
-- Normalised guard preserved.
+With:
+```python
+import llama_cpp as _lcpp
+try:
+    _ctx_ptr = self._llama._ctx.ctx
+    _runtime_n_ctx = int(_lcpp.llama_n_ctx(_ctx_ptr))
+    _runtime_n_seq_max = int(_lcpp.llama_n_seq_max(_ctx_ptr))
+    n_ctx_seq = max(_runtime_n_ctx // max(_runtime_n_seq_max, 1) - 4, 64)
+except (AttributeError, TypeError):
+    n_ctx_seq = self.n_ctx // max(self.n_seq_max, 1)
+```
 
-### T5 — GREEN config + registry
-- `EmbedderConfig`:
-  - `n_seq_max: int = Field(default=1, gt=0)`.
-  - `n_batch: int | None = Field(default=None, gt=0)`.
-  - `n_ubatch: int | None = Field(default=None, gt=0)`.
-- Registry `_per_provider_extras` (llama-cpp branch):
-  - `extras["n_seq_max"] = getattr(embedder_config, "n_seq_max", 1)`.
-  - `n_batch = getattr(embedder_config, "n_batch", None)` — forward only when not None.
-  - `n_ubatch` same shape.
+Plus a **once-per-instance** INFO log line containing the greppable phrase `"LlamaCppEmbedder runtime n_ctx_seq"`, payload includes runtime `(n_ctx, n_seq_max, n_ctx_seq)` AND the configured `(n_ctx, n_seq_max)`. Track "already logged" state on the instance (e.g. `self._runtime_logged: bool` initialised in `__init__`).
 
-### T6 — GREEN docs
-- `config.example.toml`: under the existing commented `[llama-cpp]` block, append three commented lines for `n_seq_max`, `n_batch`, `n_ubatch` with a one-liner above explaining: "n_ctx_seq = n_ctx / n_seq_max — keep n_seq_max=1 so every chunk gets the full n_ctx window".
-- `README.md` `[llama-cpp]` extras-table row: extend the last sentence of "gotchas" to add: "Default `n_seq_max=1` so each chunk gets the full `n_ctx` window; inputs longer than `n_ctx // n_seq_max` tokens are pre-truncated client-side."
+**Acceptance bullets**:
+- `4` is the safety margin for BOS/EOS/pooling — do not change it.
+- `64` is the floor — protects against pathological zero from the bindings.
+- Fallback path covers `_ctx is None`, `_ctx.ctx` missing, or `llama_n_ctx`/`llama_n_seq_max` unbound on older bindings.
+- Log fires exactly once per `LlamaCppEmbedder` instance — encoding twice on the same instance produces exactly one `"LlamaCppEmbedder runtime n_ctx_seq"` line.
+- Existing PR #79 config keys (`n_seq_max`, `n_batch`, `n_ubatch`) remain. They feed the fallback path and stay valid knobs for older binding versions.
 
-### T7 — QA
-- All gates pass.
-- Focused suite: `pytest tests/unit/test_embedder_llama_cpp.py tests/unit/test_embedder_config_llama_cpp.py tests/unit/test_pyproject_llama_cpp_extra.py tests/unit/test_embedder_register_from_config.py -v` — every test green.
-- Full unit: any failures must be identical to PR #78's QA-allowed list (optional extras not installed — `[ocr]`, `[whisper]`, `[code]` etc.). No NEW failures.
-- pyrefly + ruff + ruff format all clean.
-- No scope creep: only the surface listed above is modified.
+**Tests** (new, in `tests/unit/test_embedder_llama_cpp.py`):
+1. **Runtime lookup happy path**: patch `llama_cpp.llama_n_ctx` + `llama_cpp.llama_n_seq_max` to return `(8192, 32)`; mock `self._llama._ctx.ctx` to a sentinel. Assert `_maybe_truncate` is called with `n_ctx_seq == 252` (= `8192 // 32 - 4`). Spy via `patch.object(LlamaCppEmbedder, "_maybe_truncate", ...)` to capture the arg.
+2. **Fallback path (no `_ctx.ctx`)**: fake `self._llama` whose `_ctx` is `None` (or lacks `.ctx`) → assert truncation uses `self.n_ctx // max(self.n_seq_max, 1)`. Use config values `n_ctx=512, n_seq_max=1` → fallback yields `512`.
+3. **Floor guard**: bindings return `(0, 32)` → `n_ctx_seq == 64`, not `-4`.
+4. **Single-log-per-instance**: capture logger (`caplog` on `corpus_forge.embedders.loader` at INFO) — call `encode()` twice on the same instance → exactly one `"LlamaCppEmbedder runtime n_ctx_seq"` line.
+5. **No regression**: existing PR #79 tests for `n_seq_max` / `n_batch` / `n_ubatch` config keys still pass unchanged.
+
+**Don'ts** (from user brief):
+- Don't remove `n_seq_max` / `n_batch` / `n_ubatch` config keys.
+- Don't change the GGUF resolver, warmup path, or `encode_query` delegation.
+- Don't add `pytest.importorskip("llama_cpp")` to existing non-smoke tests — new tests mock bindings.
+- Don't bump the safety margin from 4.
+- Don't touch the user's `~/.config/corpus-forge/config.toml`.
 
 ## DAG
-- Wave 0 (parallel testers): T1, T2, T3 — disjoint test files.
-- Wave 1 (parallel coders): T4 (after T1 RED). T5 (after T2 + T3 RED).
-- Wave 2 (docs): T6 (after T5).
-- Wave 3 (QA): T7 (after T4, T5, T6).
+- Wave 0: T1 (tester → coder → qa, serial)
 
 ## Summary
 
-All gates pass on `feat/llama-cpp-tuning` off `origin/main` @ `1dc7cb9`.
-
-### Files changed (production)
-- `corpus_forge/embedders/llama_cpp.py` — constructor accepts `n_seq_max=1`, `n_batch=None`, `n_ubatch=None` (None resolves to `n_ctx`); new `_maybe_truncate` helper does per-chunk tokenize+slice+detokenize with a greppable DEBUG log; `_load_llama_handle` forwards new kwargs to `Llama()` AND post-mutates `handle.context_params.n_seq_max` for forward-compat. `contextlib.suppress(AttributeError, TypeError)` guards the post-mutation.
-- `corpus_forge/config.py` — `EmbedderConfig` gains `n_seq_max: int = Field(default=1, gt=0)`, `n_batch: int | None = Field(default=None, gt=0)`, `n_ubatch: int | None = Field(default=None, gt=0)`.
-- `corpus_forge/embedders/registry.py` — `_per_provider_extras` always forwards `n_seq_max`; forwards `n_batch` / `n_ubatch` only when set (None → embedder constructor's default-to-n_ctx fires).
-
-### Files changed (tests)
-- `tests/unit/test_embedder_llama_cpp.py` — +TestTuningIdentity (6 tests), +TestTruncation (8 tests), +TestLoaderForwardsTuningKwargs (1 test), +1 gated smoke. Total +16 tests + 1 gated skip.
-- `tests/unit/test_embedder_config_llama_cpp.py` — +9 tests pinning the new field defaults / round-trips / validation.
-- `tests/unit/test_embedder_register_from_config.py` — +TestPerProviderExtrasLlamaCppTuning (6 tests) + TestRegisterFromConfigLlamaCppTuning (2 tests). Total +8 tests.
-
-### Files changed (docs)
-- `config.example.toml` — commented `[llama-cpp]` block gains 3 new commented config lines + explanatory multi-line comment.
-- `README.md` — `[llama-cpp]` extras-table row gains a "Gotchas" sentence.
-
-### Gates
-- `uv run ruff format --check corpus_forge tests` — 778 files clean.
-- `uv run ruff check corpus_forge tests` — All checks passed.
-- `./scripts/check-pyrefly.sh corpus_forge` — 0 errors (71 suppressed, 105 warnings; same shape as baseline).
-- Focused suite (4 files listed in the PR): 103 passed + 2 skipped.
-- Full unit suite (`pytest tests/unit -n auto --timeout=60 --no-cov`):
-  - Branch: 166 failed, 5481 passed, 41 skipped, 1 xfailed, 35 errors.
-  - Baseline (origin/main, this same machine): 166 failed, 5449 passed, 40 skipped, 1 xfailed, 35 errors.
-  - Failure count IDENTICAL — all failures pre-existing on baseline (optional-extra modules not installed in the worktree venv).
-
+- **Files changed**:
+  - `corpus_forge/embedders/llama_cpp.py` — added `_runtime_logged` latch in `__init__`; replaced `n_ctx_seq = self.n_ctx // max(self.n_seq_max, 1)` in `encode()` with runtime C-bindings introspection (`llama_cpp.llama_n_ctx` / `llama_n_seq_max` against `self._llama._ctx.ctx`); safety margin `-4`, floor `64`; once-per-instance INFO log line `"LlamaCppEmbedder runtime n_ctx_seq"`.
+  - `tests/unit/test_embedder_llama_cpp.py` — appended `TestRuntimeNCtxSeqIntrospection` (4 cases: happy path, no-_ctx fallback, zero-runtime floor, once-per-instance log).
+- **Spec deviation (documented)**: widened exception tuple from `(AttributeError, TypeError)` to `(AttributeError, TypeError, ImportError)`. `llama_cpp` is an optional extra; existing tests inject a fake `self._llama` without the import being available. Without `ImportError` in the catch, the new `import llama_cpp as _lcpp` inside `encode()` crashes every test that pre-attaches a fake handle (the entire `TestEncode`, `TestTruncation`, `TestWarmup`, `TestEncodeQuery` classes). The widened catch preserves the user-spec intent — fall back to the configured-value math when the runtime path isn't available — and is the only honest way to keep the existing 87+ tests green on a minimal install.
+- **Gates run**:
+  - format: `ruff format --check` → 778 files already formatted.
+  - lint: `ruff check` → All checks passed.
+  - typecheck: `pyrefly check` → 40 errors, all `missing-import` on optional extras (`mcp`, etc.) — the Makefile gate explicitly tolerates this class.
+  - focused: 105 passed, 2 smoke skipped.
+  - full unit regression: 5485 passed / 166 failed / 41 skipped / 1 xfailed / 35 errors. Identical shape to PR #79 baseline (5481 passed / 166 failed); +4 passes = the new tests. Failures are all pre-existing optional-extra ModuleNotFoundError.
+- **Smoke**: n/a in TDD loop — user already verified live (50 chunks nomic-embed-code → 50 vectors, no crashes).
+- **Worktree**: `/Users/evanowen/dev/cf-worktrees/feat-llama-cpp-runtime-n-ctx-seq`
+- **Branch**: `feat/llama-cpp-runtime-n-ctx-seq` (off `main` @ 99bdfb0)
+- **Commit status**: changes staged on worktree branch, not committed (orchestrator policy: principal hands back to user for commit/PR; iCloud / SSH-signing concerns documented in memory).

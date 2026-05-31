@@ -955,3 +955,242 @@ class TestLoaderForwardsTuningKwargs:
         # Post-mutation forces the configured n_seq_max even if the
         # binding silently dropped the constructor kwarg.
         assert handle.context_params.n_seq_max == 1
+
+
+# ── Runtime n_ctx_seq introspection (PR #80) ─────────────────────────
+
+
+class TestRuntimeNCtxSeqIntrospection:
+    """``encode()`` consults ``llama_cpp.llama_n_ctx`` / ``llama_n_seq_max``
+    on the *actual* loaded context to compute the truncation budget.
+
+    Why this exists
+    ---------------
+    PR #79 (commit 99bdfb0) computed ``n_ctx_seq = self.n_ctx //
+    max(self.n_seq_max, 1)`` from the *configured* values. But
+    llama-cpp-python's ``embedding=True`` initialiser overrides
+    ``n_seq_max`` post-construction to up to ``llama_max_parallel_sequences()``
+    (~32 on a stock install). The real per-sequence budget is therefore
+    much smaller than configured — slicing to 8192 tokens while the
+    decoder accepts only ~256 → ``decode: failed to find a memory slot
+    for batch of size N`` / ``RuntimeError: llama_decode returned 1``
+    on the first real input.
+
+    Fix: read the runtime values directly off the loaded context and
+    derive ``n_ctx_seq = max(runtime_n_ctx // max(runtime_n_seq_max, 1) - 4, 64)``.
+    The ``- 4`` is a safety margin for BOS / EOS / pooling tokens; the
+    ``max(..., 64)`` is a floor for pathological zeros from the
+    bindings. Fall back to the configured-value path when introspection
+    fails (older bindings without ``_ctx.ctx`` / unbound C functions).
+    """
+
+    def _build(
+        self,
+        *,
+        dim: int = 16,
+        n_ctx: int = 512,
+        n_seq_max: int = 1,
+        token_lengths: dict[str, int] | None = None,
+        ctx_ptr: object = None,
+    ):
+        from corpus_forge.embedders.llama_cpp import LlamaCppEmbedder
+
+        e = LlamaCppEmbedder(
+            name="rt",
+            model_id="x:y",
+            dimension=dim,
+            n_ctx=n_ctx,
+            n_seq_max=n_seq_max,
+        )
+        fake = MagicMock()
+        fake.create_embedding.side_effect = _fake_create_embedding(dim)
+        tok, detok = _build_tokenizer_mock(token_lengths or {})
+        fake.tokenize.side_effect = tok
+        fake.detokenize.side_effect = detok
+        # Attach a ``_ctx`` substructure mirroring llama-cpp-python's
+        # ``LlamaContext`` shape so the runtime introspection happy
+        # path has somewhere to read from. Tests that want to exercise
+        # the fallback can override or null this attribute.
+        if ctx_ptr is not None:
+            fake._ctx = MagicMock()
+            fake._ctx.ctx = ctx_ptr
+        else:
+            fake._ctx = None
+        e._llama = fake
+        return e, fake
+
+    def test_runtime_lookup_drives_truncation_budget(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Happy path: ``(runtime_n_ctx=8192, runtime_n_seq_max=32)`` →
+        ``n_ctx_seq = 8192 // 32 - 4 = 252``.
+
+        Spy on ``_maybe_truncate`` to capture the budget arg.
+        """
+        from corpus_forge.embedders import llama_cpp as mod
+
+        # Force the runtime C-bindings to return our pinned values.
+        ctx_ptr_sentinel = object()
+        # The module's ``import llama_cpp as _lcpp`` is local to
+        # ``encode()``. Stub it in ``sys.modules`` so the lookup picks
+        # up our mocks regardless of whether the real extra is
+        # installed.
+        import sys
+
+        fake_lcpp = MagicMock()
+        fake_lcpp.llama_n_ctx = MagicMock(return_value=8192)
+        fake_lcpp.llama_n_seq_max = MagicMock(return_value=32)
+        monkeypatch.setitem(sys.modules, "llama_cpp", fake_lcpp)
+
+        e, _fake = self._build(
+            n_ctx=512,  # configured value is intentionally a LIE
+            n_seq_max=1,  # configured value is intentionally a LIE
+            token_lengths={"x": 1},
+            ctx_ptr=ctx_ptr_sentinel,
+        )
+
+        captured: dict[str, int] = {}
+        original = mod.LlamaCppEmbedder._maybe_truncate
+
+        def _spy(self, text: str, n_ctx_seq: int) -> str:
+            captured["n_ctx_seq"] = n_ctx_seq
+            return original(self, text, n_ctx_seq)
+
+        monkeypatch.setattr(mod.LlamaCppEmbedder, "_maybe_truncate", _spy)
+
+        e.encode(["x"])
+        # 8192 // 32 - 4 = 256 - 4 = 252
+        assert captured["n_ctx_seq"] == 252, (
+            f"Expected runtime-derived n_ctx_seq=252, got {captured.get('n_ctx_seq')!r}"
+        )
+        # And the C-bindings got the actual loaded context pointer.
+        fake_lcpp.llama_n_ctx.assert_called_once_with(ctx_ptr_sentinel)
+        fake_lcpp.llama_n_seq_max.assert_called_once_with(ctx_ptr_sentinel)
+
+    def test_fallback_when_ctx_ptr_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Older bindings: ``self._llama._ctx`` is ``None`` (or lacks
+        ``.ctx``). Falls back to ``self.n_ctx // max(self.n_seq_max, 1)``.
+
+        Configured ``n_ctx=512, n_seq_max=1`` → fallback budget 512.
+        Token length 600 → truncate to 512.
+        """
+        # Even though the C-bindings would return wild values, the
+        # fallback path MUST NOT invoke them — gate by leaving _ctx=None.
+        import sys
+
+        from corpus_forge.embedders import llama_cpp as mod
+
+        fake_lcpp = MagicMock()
+        fake_lcpp.llama_n_ctx = MagicMock(return_value=999_999)
+        fake_lcpp.llama_n_seq_max = MagicMock(return_value=1)
+        monkeypatch.setitem(sys.modules, "llama_cpp", fake_lcpp)
+
+        e, fake = self._build(
+            n_ctx=512,
+            n_seq_max=1,
+            token_lengths={"long": 600},
+            ctx_ptr=None,  # → fake._ctx = None → AttributeError on .ctx
+        )
+
+        captured: dict[str, int] = {}
+        original = mod.LlamaCppEmbedder._maybe_truncate
+
+        def _spy(self, text: str, n_ctx_seq: int) -> str:
+            captured["n_ctx_seq"] = n_ctx_seq
+            return original(self, text, n_ctx_seq)
+
+        monkeypatch.setattr(mod.LlamaCppEmbedder, "_maybe_truncate", _spy)
+
+        e.encode(["long"])
+        assert captured["n_ctx_seq"] == 512, (
+            f"Fallback should use configured 512 // 1 = 512, got {captured.get('n_ctx_seq')!r}"
+        )
+        # The detokenize slice must reflect the fallback budget.
+        detok_tokens = fake.detokenize.call_args.args[0]
+        assert len(detok_tokens) == 512
+
+    def test_floor_protects_against_zero_runtime_n_ctx(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bindings return ``(0, 32)`` → naive math gives ``0 // 32 - 4 = -4``.
+        The ``max(..., 64)`` floor must kick in.
+        """
+        import sys
+
+        from corpus_forge.embedders import llama_cpp as mod
+
+        fake_lcpp = MagicMock()
+        fake_lcpp.llama_n_ctx = MagicMock(return_value=0)
+        fake_lcpp.llama_n_seq_max = MagicMock(return_value=32)
+        monkeypatch.setitem(sys.modules, "llama_cpp", fake_lcpp)
+
+        ctx_ptr_sentinel = object()
+        e, _ = self._build(
+            n_ctx=512,
+            n_seq_max=1,
+            token_lengths={"x": 1},
+            ctx_ptr=ctx_ptr_sentinel,
+        )
+
+        captured: dict[str, int] = {}
+        original = mod.LlamaCppEmbedder._maybe_truncate
+
+        def _spy(self, text: str, n_ctx_seq: int) -> str:
+            captured["n_ctx_seq"] = n_ctx_seq
+            return original(self, text, n_ctx_seq)
+
+        monkeypatch.setattr(mod.LlamaCppEmbedder, "_maybe_truncate", _spy)
+
+        e.encode(["x"])
+        assert captured["n_ctx_seq"] == 64, (
+            f"Floor of 64 should override pathological 0 // 32 - 4 = -4; got "
+            f"{captured.get('n_ctx_seq')!r}"
+        )
+
+    def test_runtime_introspection_logs_once_per_instance(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """``"LlamaCppEmbedder runtime n_ctx_seq"`` line fires exactly once
+        per instance, even across multiple ``encode()`` calls.
+
+        This is the debug signal future-maintainer will grep when
+        triaging the next model — it must be cheap (single line per
+        load) so logs don't drown.
+        """
+        import logging
+        import sys
+
+        fake_lcpp = MagicMock()
+        fake_lcpp.llama_n_ctx = MagicMock(return_value=8192)
+        fake_lcpp.llama_n_seq_max = MagicMock(return_value=32)
+        monkeypatch.setitem(sys.modules, "llama_cpp", fake_lcpp)
+
+        ctx_ptr_sentinel = object()
+        e, _ = self._build(
+            n_ctx=512,
+            n_seq_max=1,
+            token_lengths={"a": 1, "b": 1},
+            ctx_ptr=ctx_ptr_sentinel,
+        )
+
+        with caplog.at_level(logging.INFO, logger="corpus_forge.embedders.loader"):
+            e.encode(["a"])
+            e.encode(["b"])
+
+        messages = [r.getMessage() for r in caplog.records]
+        runtime_hits = [m for m in messages if "LlamaCppEmbedder runtime n_ctx_seq" in m]
+        assert len(runtime_hits) == 1, (
+            f"Expected exactly one runtime-introspection log per instance; got "
+            f"{len(runtime_hits)}: {runtime_hits!r}"
+        )
+        # And the payload mentions the runtime AND configured values so
+        # future triage can spot the lie.
+        single = runtime_hits[0]
+        # Runtime values surfaced.
+        assert "8192" in single and "32" in single, (
+            f"Log must surface runtime (n_ctx, n_seq_max); got: {single!r}"
+        )
+        # Configured values surfaced for comparison.
+        assert "512" in single and "1" in single, (
+            f"Log must surface configured (n_ctx, n_seq_max); got: {single!r}"
+        )
