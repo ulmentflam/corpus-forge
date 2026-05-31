@@ -1172,6 +1172,7 @@ class PostgresBackend(StorageBackend):
         limit: int = 1024,
         *,
         extensions: list[str] | None = None,
+        after_id: int | None = None,
     ) -> Iterator[tuple[int, str, str]]:
         """Yield ``(chunk_id, text, source_uri)`` for chunks missing an
         embedding under ``embedder_id``.
@@ -1221,6 +1222,16 @@ class PostgresBackend(StorageBackend):
             ext_clause = f" AND ({like_clauses})"
             ext_params = tuple(f"%{e}" for e in norm_exts)
 
+        # Forward-progress cursor — see docstring on
+        # ``StorageBackend.chunks_missing_embedding`` for why this matters
+        # for catchall backfills where ``extensions`` is unset and the
+        # in-memory router may filter a whole page out.
+        cursor_clause = ""
+        cursor_params: tuple = ()
+        if after_id is not None:
+            cursor_clause = " AND c.id > %s"
+            cursor_params = (after_id,)
+
         query = f"""
         SELECT
             c.id,
@@ -1230,12 +1241,12 @@ class PostgresBackend(StorageBackend):
         LEFT JOIN corpus.documents d ON d.id = c.document_id
         LEFT JOIN corpus.conversations cv ON cv.id = c.conversation_id
         LEFT JOIN corpus.{table_name} e ON e.chunk_id = c.id
-        WHERE e.chunk_id IS NULL{ext_clause}
+        WHERE e.chunk_id IS NULL{ext_clause}{cursor_clause}
         ORDER BY c.id
         LIMIT %s
         """
 
-        results = self._execute(query, (*ext_params, limit))
+        results = self._execute(query, (*ext_params, *cursor_params, limit))
         for row in results:
             yield (row["id"], row["text"], row["source_uri"] or "")
 

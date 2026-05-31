@@ -1222,6 +1222,7 @@ class SQLiteBackend:
         limit: int = 1024,
         *,
         extensions: list[str] | None = None,
+        after_id: int | None = None,
     ) -> "Iterator[tuple[int, str, str]]":
         """Return chunks that have no embedding for the given embedder.
 
@@ -1269,6 +1270,13 @@ class SQLiteBackend:
             ext_clause = f" AND ({like_clauses})"
             ext_params = tuple(f"%{e}" for e in norm_exts)
 
+        # Forward-progress cursor (see base.py docstring).
+        cursor_clause = ""
+        cursor_params: tuple = ()
+        if after_id is not None:
+            cursor_clause = " AND c.id > ?"
+            cursor_params = (after_id,)
+
         rows = self._execute(
             f"SELECT c.id, c.text, "
             f"  COALESCE(d.source_uri, cv.source_uri, '') AS source_uri "
@@ -1278,9 +1286,9 @@ class SQLiteBackend:
             f"WHERE NOT EXISTS ("
             f"  SELECT 1 FROM {table_name} e"
             f"  WHERE e.chunk_id = c.id AND e.embedder_id = ?"
-            f"){ext_clause} "
+            f"){ext_clause}{cursor_clause} "
             f"ORDER BY c.id LIMIT ?",
-            (embedder_id, *ext_params, limit),
+            (embedder_id, *ext_params, *cursor_params, limit),
         )
         for row in rows:
             yield (row["id"], row["text"], row["source_uri"] or "")

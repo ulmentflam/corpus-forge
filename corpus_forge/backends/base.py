@@ -106,6 +106,7 @@ class StorageBackend(Protocol):
         limit: int = 1024,
         *,
         extensions: "list[str] | None" = None,
+        after_id: int | None = None,
     ) -> Iterator[tuple[int, str, str]]:
         """Yield ``(chunk_id, text, source_uri)`` for chunks missing an
         embedding under ``embedder_id``.
@@ -129,6 +130,13 @@ class StorageBackend(Protocol):
           dot-prefixed extensions are returned. Entries are normalised:
           ``"py"`` and ``".PY"`` both become ``".py"``.
         - Empty-string or non-string entries → ``ValueError``.
+
+        ``after_id`` is a forward-progress cursor: when set, only chunks with
+        ``c.id > after_id`` are returned. Combined with ``ORDER BY c.id``,
+        this lets callers iterate the entire pending pool deterministically
+        without re-fetching pages where every row got skipped in-memory
+        (the bug catchall backfills hit when the first page is dominated by
+        specialist-owned chunks the catchall doesn't claim).
         """
         ...
 

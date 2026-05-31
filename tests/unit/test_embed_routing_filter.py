@@ -559,6 +559,71 @@ class TestBackfillContinuesWhenPageEmptiesAfterInMemoryFilter:
             "write_embeddings should not be called when there are no chunks to embed"
         )
 
+    def test_catchall_advances_past_specialist_owned_pages_without_aborting(self) -> None:
+        """Catchall backfill must not be aborted by all-skip pages.
+
+        Scenario the previous abort guard mis-handled: a catchall embedder
+        (``extensions=None``) backfills while many pending chunks are
+        specialist-owned (route_for sends them to the specialist). With
+        the SQL ``after_id`` cursor in place, each empty-after-routing
+        page advances ``last_seen_id`` and the loop terminates naturally
+        when the backend returns ``[]`` — without raising RuntimeError.
+        """
+        text_cfg = _mk_embedder_config("nomic")
+        code_cfg = _mk_embedder_config("nomic-code", extensions=[".py"])
+        mock_config = MagicMock()
+        mock_config.backend.kind = "postgres"
+        mock_config.backend.dsn = "postgresql://x"
+        mock_config.backend.schema = "corpus"
+        mock_config.embedders = [text_cfg, code_cfg]
+
+        runtime_text = _mk_runtime_embedder("nomic")
+        runtime_code = _mk_runtime_embedder("nomic-code", extensions=[".py"])
+
+        backend = MagicMock()
+        backend.register_embedder.return_value = 1
+        backend.count_chunks_missing_embedding.return_value = 30
+
+        # Simulate a real backend that honors ``after_id``: 3 pages of
+        # all-.py rows the catchall must skip, then the cursor walks past
+        # the end and the next fetch returns []. Without the cursor, the
+        # first page would come back on every iter and the old abort
+        # guard would have fired.
+        pages = [
+            [(1, "a", "filesystem://x/a.py"), (2, "b", "filesystem://x/b.py")],
+            [(3, "c", "filesystem://x/c.py"), (4, "d", "filesystem://x/d.py")],
+            [(5, "e", "filesystem://x/e.py"), (6, "f", "filesystem://x/f.py")],
+        ]
+
+        def _yielder(*_a, after_id=None, **_kw):
+            cutoff = after_id or 0
+            for p in pages:
+                if p[-1][0] > cutoff:
+                    return iter(p)
+            return iter([])
+
+        backend.chunks_missing_embedding.side_effect = _yielder
+
+        with (
+            patch.object(Config, "load", return_value=mock_config),
+            patch(
+                "corpus_forge.embed.register_from_config",
+                side_effect=_name_dispatched_register(
+                    {"nomic": runtime_text, "nomic-code": runtime_code}
+                ),
+            ),
+            patch("corpus_forge.embed.PostgresBackend", return_value=backend),
+        ):
+            # Must return cleanly — no RuntimeError despite 3 all-skip pages.
+            backfill_embedder("nomic")
+
+        assert backend.chunks_missing_embedding.call_count == 4, (
+            "Expected 3 paged fetches + 1 terminal empty fetch; got "
+            f"{backend.chunks_missing_embedding.call_count}"
+        )
+        # The catchall never owned any of these chunks → no writes.
+        assert not backend.write_embeddings.called
+
     def test_consecutive_empty_pages_abort_with_clear_error(self) -> None:
         """Hostile backend: ignores ``extensions=`` AND returns the same
         non-matching page forever. Without a guard, the ``continue`` branch

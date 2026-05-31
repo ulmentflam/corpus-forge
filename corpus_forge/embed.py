@@ -181,11 +181,19 @@ def backfill_embedder(
         logger=logger,
     ) as progress:
         task = progress.add_task("Embedding chunks", total=progress_total)
-        # Forward-progress guard for the routing-loop. If a backend silently
-        # ignores ``extensions=`` AND the in-memory route_for filters every row
-        # away, ``continue`` below would re-fetch the same page forever. Abort
-        # after N consecutive empty pages so operators see the issue instead of
-        # the process spinning idle. Reset to 0 whenever we actually embed.
+        # Forward-progress cursor. Advances by ``max(c.id)`` of each page so
+        # the next fetch skips chunks we already considered (whether or not
+        # they routed to this embedder). This is the structural fix that
+        # makes catchall backfills correct when the pending pool is
+        # dominated by specialist-owned chunks — without it, ``continue``
+        # would re-fetch the same non-matching first page forever.
+        last_seen_id: int | None = None
+        # Defense-in-depth alarm for the *specialist* path only: when a
+        # backend honors ``extensions=`` correctly every page is dense with
+        # matches, so a run of empty pages signals the SQL filter is
+        # broken. Catchall runs legitimately see all-skip pages while the
+        # cursor walks past specialist-owned rows, so the guard would false-
+        # fire there.
         _MAX_EMPTY_PAGE_STREAK = 10
         empty_page_streak = 0
         while True:
@@ -199,12 +207,23 @@ def backfill_embedder(
             # it's kept as defense-in-depth in case a custom backend
             # ignores the kwarg.
             raw_rows = list(
-                backend.chunks_missing_embedding(embedder_id, limit=1000, extensions=_ext_filter)
+                backend.chunks_missing_embedding(
+                    embedder_id,
+                    limit=1000,
+                    extensions=_ext_filter,
+                    after_id=last_seen_id,
+                )
             )
 
             if not raw_rows:
                 logger.debug("No more chunks need embedding")
                 break
+
+            # Advance the cursor before the in-memory router has a chance to
+            # drop rows. The cursor must track the LAST chunk_id the backend
+            # returned, regardless of whether route_for claimed any of them
+            # — otherwise we re-fetch the same page on the next iteration.
+            last_seen_id = max(row[0] for row in raw_rows)
 
             # Defend against legacy 2-tuple stubs left over from old test
             # fixtures — surface a clear error rather than silently
@@ -229,36 +248,39 @@ def backfill_embedder(
             ]
 
             if not chunks_needing:
-                # Post-PR-#81 bugfix: the original code did ``break`` here,
-                # which gave up the entire backfill when the first page
-                # happened to contain zero matches — the exact bug this
-                # PR fixes.  With the SQL push above the backend should
-                # never return a page of all-non-matching rows, but if it
-                # does (e.g. a custom backend that ignores ``extensions=``),
-                # we ``continue`` to the next page so the loop drains the
-                # corpus instead of giving up.  Only ``raw_rows == []``
-                # (handled above) is a real end-of-stream signal.
-                empty_page_streak += 1
-                logger.warning(
-                    "Page of %d rows had no matches after in-memory route_for "
-                    "for embedder %s (streak %d/%d). Likely cause: backend "
-                    "ignores extensions= kwarg and the pending pool's first "
-                    "page is dominated by non-matching chunks.",
-                    len(raw_rows),
-                    embedder.name,
-                    empty_page_streak,
-                    _MAX_EMPTY_PAGE_STREAK,
-                )
-                if empty_page_streak >= _MAX_EMPTY_PAGE_STREAK:
-                    raise RuntimeError(
-                        f"Backfill aborted for embedder {embedder.name!r}: "
-                        f"{empty_page_streak} consecutive pages had zero matches "
-                        "after in-memory routing. The backend likely ignores the "
-                        "`extensions=` filter so the same non-matching page keeps "
-                        "coming back. Fix the backend's chunks_missing_embedding "
-                        "to honor extensions, or remove the embedder's extensions "
-                        "list to make it a catchall."
+                # Cursor (``last_seen_id``) has already advanced above, so
+                # ``continue`` is safe — next iteration will fetch the next
+                # page rather than re-fetching this one.
+                #
+                # Defense-in-depth alarm: only specialists expect every
+                # page to be dense with matches (because the SQL filter is
+                # supposed to do the work). A streak of empty pages in
+                # that path means the backend ignored ``extensions=``.
+                # Catchall runs legitimately walk over all-skip pages
+                # while the cursor advances past specialist-owned rows,
+                # so don't trip the alarm for them.
+                if _ext_filter is not None:
+                    empty_page_streak += 1
+                    logger.warning(
+                        "Page of %d rows had no matches after in-memory "
+                        "route_for for specialist embedder %s (streak %d/%d). "
+                        "Likely cause: backend ignored extensions= and the "
+                        "page is dominated by non-matching chunks.",
+                        len(raw_rows),
+                        embedder.name,
+                        empty_page_streak,
+                        _MAX_EMPTY_PAGE_STREAK,
                     )
+                    if empty_page_streak >= _MAX_EMPTY_PAGE_STREAK:
+                        raise RuntimeError(
+                            f"Backfill aborted for specialist embedder "
+                            f"{embedder.name!r}: {empty_page_streak} consecutive "
+                            "pages had zero matches after in-memory routing. "
+                            "The backend likely ignores the `extensions=` "
+                            "filter. Fix the backend's chunks_missing_embedding "
+                            "to honor extensions, or remove the embedder's "
+                            "extensions list to make it a catchall."
+                        )
                 continue
 
             chunk_ids, texts = zip(*chunks_needing, strict=True) if chunks_needing else ([], [])
