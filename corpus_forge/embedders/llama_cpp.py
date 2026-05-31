@@ -605,6 +605,7 @@ class LlamaCppEmbedder(BaseEmbedder):
         # take the fallback path cleanly (``ImportError`` covers the
         # ``ModuleNotFoundError`` raised on minimal installs).
         try:
+            # pyrefly: ignore[missing-import]  # optional dep
             import llama_cpp as _lcpp  # noqa: PLC0415  (optional extra)
 
             _ctx_ptr = self._llama._ctx.ctx  # type: ignore[union-attr]
@@ -615,8 +616,8 @@ class LlamaCppEmbedder(BaseEmbedder):
             # we actually got a real pointer-shaped value back.
             if not isinstance(_ctx_ptr, (int, ctypes.c_void_p)):
                 raise TypeError("not a real ctx pointer")
-            _runtime_n_ctx = int(_lcpp.llama_n_ctx(_ctx_ptr))
-            _runtime_n_seq_max = int(_lcpp.llama_n_seq_max(_ctx_ptr))
+            _runtime_n_ctx = int(_lcpp.llama_n_ctx(_ctx_ptr))  # type: ignore[arg-type]
+            _runtime_n_seq_max = int(_lcpp.llama_n_seq_max(_ctx_ptr))  # type: ignore[arg-type]
             # The ``- 4`` is empirically enough headroom for the BOS /
             # EOS / pooling tokens llama.cpp prepends. The ``max(..., 64)``
             # floor protects against a pathological zero from the
