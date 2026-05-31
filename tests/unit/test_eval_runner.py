@@ -160,9 +160,11 @@ def _seed_corpus(tmp_path: Path) -> tuple[object, int, list[int], list[str]]:
     )
     backend.upsert_document(ds_id, raw, [(None, ct) for ct in chunk_texts])
 
+    # PR #81 — chunks_missing_embedding yields 3-tuples
+    # ``(chunk_id, text, source_uri)``; only chunk_ids are needed here.
     missing = list(backend.chunks_missing_embedding(eid))
     missing.sort(key=lambda t: t[0])
-    chunk_ids = [cid for cid, _ in missing]
+    chunk_ids = [row[0] for row in missing]
     chunk_vecs = [embedder._vec(t) for t in chunk_texts]
     backend.write_embeddings(eid, list(zip(chunk_ids, chunk_vecs, strict=True)))
 

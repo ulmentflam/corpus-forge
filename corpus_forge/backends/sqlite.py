@@ -1218,13 +1218,15 @@ class SQLiteBackend:
 
     def chunks_missing_embedding(
         self, embedder_id: int, limit: int = 1024
-    ) -> "Iterator[tuple[int, str]]":
+    ) -> "Iterator[tuple[int, str, str]]":
         """Return chunks that have no embedding for the given embedder.
 
-        Mirrors ``PostgresBackend.chunks_missing_embedding``:
+        Mirrors ``PostgresBackend.chunks_missing_embedding`` — PR #81
+        widened the tuple to ``(chunk_id, text, source_uri)`` so the
+        routing layer can pick the right specialist / catchall per chunk
+        via :func:`corpus_forge.embedders.routing.claims`.
 
         - Unknown ``embedder_id`` → returns empty (no table to query).
-        - Returns a generator of ``(chunk_id: int, text: str)`` tuples.
         - Results are ordered by ``chunks.id`` and capped by ``limit``.
 
         Args:
@@ -1240,17 +1242,24 @@ class SQLiteBackend:
 
         table_name = embedder_rows[0]["table_name"]
 
+        # JOIN documents AND conversations (chunks XOR the two parents)
+        # so the route layer has source_uri without a second query.
+        # COALESCE falls through to '' for the (defensive) orphan case.
         rows = self._execute(
-            f"SELECT c.id, c.text FROM chunks c"
-            f" WHERE NOT EXISTS ("
-            f"   SELECT 1 FROM {table_name} e"
-            f"   WHERE e.chunk_id = c.id AND e.embedder_id = ?"
-            f" )"
-            f" ORDER BY c.id LIMIT ?",
+            f"SELECT c.id, c.text, "
+            f"  COALESCE(d.source_uri, cv.source_uri, '') AS source_uri "
+            f"FROM chunks c "
+            f"LEFT JOIN documents d ON d.id = c.document_id "
+            f"LEFT JOIN conversations cv ON cv.id = c.conversation_id "
+            f"WHERE NOT EXISTS ("
+            f"  SELECT 1 FROM {table_name} e"
+            f"  WHERE e.chunk_id = c.id AND e.embedder_id = ?"
+            f") "
+            f"ORDER BY c.id LIMIT ?",
             (embedder_id, limit),
         )
         for row in rows:
-            yield (row["id"], row["text"])
+            yield (row["id"], row["text"], row["source_uri"] or "")
 
     # ── Phase L Wave 6 — embedder-fingerprint helpers ─────────────────────
 

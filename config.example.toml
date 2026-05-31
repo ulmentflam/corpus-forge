@@ -266,6 +266,67 @@ device    = "auto"  # 'auto'|'mps'|'cuda'|'cpu'
 # n_batch      = 8192
 # n_ubatch     = 8192
 
+# ─────────────────────────────────────────────────────────────────────
+# Dual-tower retrieval (PR #81) — text + code lanes side by side.
+# ─────────────────────────────────────────────────────────────────────
+# Extension-based routing assigns each chunk to exactly one embedder:
+#
+#   1. Iterate active [[embedders]] in declaration order.
+#   2. First specialist (non-empty `extensions`) whose allow-list matches
+#      the chunk's `documents.source_uri` (case-insensitive `endswith`)
+#      claims it.
+#   3. Else the first catchall (empty/absent `extensions`) claims it.
+#   4. If no embedder claims a chunk AND no catchall is configured,
+#      corpus-forge refuses to load the config (EmbedderRoutingError).
+#
+# Backwards-compat: when no embedder declares `extensions`, every active
+# embedder still embeds every chunk — single-tower setups don't change.
+#
+# Reference setup: nomic-embed-text-v1.5 for text + nomic-embed-code
+# (Qwen2.5-Coder-7B, Apache-2.0, 3584-dim) for code, both via llama-cpp.
+# Code chunks land in `corpus.embeddings_nomic_code`; everything else in
+# `corpus.embeddings_nomic`. Search builds dense hits per-lane and the
+# retriever fuses them per the [retrieval] block.
+#
+# [[embedders]]
+# name         = "nomic"
+# provider     = "llama-cpp"
+# model_id     = "nomic-embed-text:v1.5"
+# dimension    = 768
+# normalize    = true
+# distance     = "cosine"
+# active       = false                       # opt-in
+# batch_size   = 64
+# n_ctx        = 8192
+# # No `extensions` field → catchall. Claims any chunk not picked up by a
+# # specialist below.
+#
+# [[embedders]]
+# name         = "nomic-code"
+# provider     = "llama-cpp"
+# model_id     = "nomic-embed-code:7b"       # Qwen2.5-Coder-7B base
+# dimension    = 3584
+# normalize    = true
+# distance     = "cosine"
+# active       = false                       # opt-in
+# batch_size   = 32
+# n_ctx        = 8192
+# # Specialist: matches chunks whose source_uri ends with any of these
+# # (case-insensitive). Tune to your corpus — these are reasonable
+# # mainstream defaults; prune to taste.
+# extensions   = [
+#   ".py", ".pyi",
+#   ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+#   ".go", ".rs", ".java", ".kt", ".swift",
+#   ".c", ".h", ".cc", ".cpp", ".hh", ".hpp", ".cxx", ".hxx",
+#   ".cs", ".rb", ".php", ".scala",
+#   ".sh", ".bash", ".zsh", ".fish",
+#   ".sql", ".lua", ".pl", ".pm", ".r", ".m", ".mm",
+#   ".dart", ".ex", ".exs", ".erl", ".hrl",
+#   ".clj", ".cljs", ".hs", ".ml", ".fs", ".jl",
+#   ".nim", ".zig", ".v",
+# ]
+
 [[embedders]]
 name      = "openai_3l"
 provider  = "openai"

@@ -487,14 +487,19 @@ class TestChunksMissingEmbedding:
             backend._execute = MagicMock(
                 side_effect=[
                     [{"name": "test-embed"}],  # embedder info
-                    [{"id": 1, "text": "chunk1"}, {"id": 2, "text": "chunk2"}],  # missing chunks
+                    # PR #81 — chunks_missing_embedding now SELECTs source_uri
+                    # from the parent documents row via LEFT JOIN.
+                    [
+                        {"id": 1, "text": "chunk1", "source_uri": "filesystem://v/a.md"},
+                        {"id": 2, "text": "chunk2", "source_uri": ""},
+                    ],
                 ]
             )
 
             results = list(backend.chunks_missing_embedding(1))
             assert len(results) == 2
-            assert results[0] == (1, "chunk1")
-            assert results[1] == (2, "chunk2")
+            assert results[0] == (1, "chunk1", "filesystem://v/a.md")
+            assert results[1] == (2, "chunk2", "")
 
     def test_returns_empty_generator_when_embedder_not_found(self):
         with patch.object(PostgresBackend, "__init__", lambda self, dsn, schema="corpus": None):

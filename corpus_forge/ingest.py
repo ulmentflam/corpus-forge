@@ -711,10 +711,22 @@ def _flush_all_pending_embeddings(
     terminates naturally. Same contract on the wedge path: the
     bisecting embedder raises :class:`EmbedderWedged` and we let it
     propagate — same as the per-file path.
+
+    PR #81 — pass the full ``embedders`` list to the writer as
+    ``active_embedders`` so the routing rule can filter each
+    embedder's pending pool to only the chunks it actually claims.
     """
     for embedder in embedders:
         embedder_id = backend.register_embedder(embedder)
-        while _write_embeddings_for_chunks(backend, embedder_id, embedder) > 0:
+        while (
+            _write_embeddings_for_chunks(
+                backend,
+                embedder_id,
+                embedder,
+                active_embedders=embedders,
+            )
+            > 0
+        ):
             pass
 
 
@@ -722,18 +734,66 @@ def _write_embeddings_for_chunks(
     backend: StorageBackend,
     embedder_id: int,
     embedder: Embedder,
+    *,
+    active_embedders: "list[Embedder] | None" = None,
 ) -> int:
     """Write embeddings for chunks. Returns the number of embeddings
     persisted (0 when there's nothing pending or every chunk was
     bisected out), which lets :func:`_flush_all_pending_embeddings`
     loop until the queue is fully drained without an extra
     ``count_chunks_missing_embedding`` round-trip per iteration.
+
+    PR #81 — ``active_embedders`` (default ``[embedder]``) drives the
+    extension-based routing filter.  When the caller provides the full
+    active list, the writer skips chunks claimed by a different
+    embedder under :func:`corpus_forge.embedders.routing.route_for`.
+    Default treats this embedder as a sole catchall (preserving the
+    legacy single-tower behaviour for any caller that hasn't migrated).
     """
-    # Get texts for chunks that need embeddings
-    chunks_needing_embedding = list(backend.chunks_missing_embedding(embedder_id))
+    # Default the active-embedder list to this embedder alone — that
+    # means "no specialists exist", i.e. catchall semantics, which is
+    # exactly the back-compat behaviour we want when the caller hasn't
+    # threaded the full list through.
+    routing_pool = active_embedders if active_embedders is not None else [embedder]
+
+    # Get texts for chunks that need embeddings.  PR #81: the backend
+    # now yields ``(chunk_id, text, source_uri)`` 3-tuples.
+    raw_rows = list(backend.chunks_missing_embedding(embedder_id))
+
+    if not raw_rows:
+        logger.debug(f"No chunks need embedding for {embedder.name}")
+        return 0
+
+    # PR #81 expects ``(chunk_id, text, source_uri)``; the matching pin
+    # lives in ``corpus_forge.embed._CHUNKS_MISSING_TUPLE_WIDTH``. Inline
+    # the constant here to keep this module free of an embed.py import.
+    _expected_tuple_width = 3
+    if len(raw_rows[0]) != _expected_tuple_width:
+        raise ValueError(
+            "backend.chunks_missing_embedding must yield "
+            "(chunk_id, text, source_uri) 3-tuples after PR #81; got "
+            f"{len(raw_rows[0])}-tuple — update the backend (or test "
+            "stub) to include source_uri."
+        )
+
+    # PR #81 — filter pending rows down to those THIS embedder claims
+    # under the routing rule.
+    from .embedders.routing import route_for  # noqa: PLC0415
+
+    chunks_needing_embedding = [
+        (cid, text)
+        for (cid, text, src_uri) in raw_rows
+        if route_for(src_uri, routing_pool) is embedder
+    ]
 
     if not chunks_needing_embedding:
-        logger.debug(f"No chunks need embedding for {embedder.name}")
+        # Every pending row routed to a different embedder — no work for
+        # this one. Return 0 so the caller doesn't spin.
+        logger.debug(
+            "All %d pending rows for %s routed elsewhere; nothing to write.",
+            len(raw_rows),
+            embedder.name,
+        )
         return 0
 
     chunk_ids_needing, texts = (

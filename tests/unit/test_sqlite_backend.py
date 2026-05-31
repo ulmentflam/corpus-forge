@@ -2839,8 +2839,12 @@ class TestChunksMissingEmbedding:
 
     # ------------------------------------------------------------------ return shape
 
-    def test_returns_tuple_of_chunk_id_and_text(self, tmp_path):
-        """Each returned item is a (chunk_id: int, text: str) tuple."""
+    def test_returns_tuple_of_chunk_id_text_and_source_uri(self, tmp_path):
+        """PR #81 — each returned item is a ``(chunk_id, text, source_uri)``
+        3-tuple. The third element comes from the parent ``documents.source_uri``
+        (or ``conversations.source_uri`` for chat-message chunks) so the
+        routing layer can pick the right specialist / catchall.
+        """
         backend = _migrated_backend(tmp_path / "corpus.db")
         _insert_dataset_for_embedding(backend, dataset_id=1)
         embedder = FakeEmbedder(name="cme_shape", dimension=4)
@@ -2850,12 +2854,14 @@ class TestChunksMissingEmbedding:
         result = list(backend.chunks_missing_embedding(emb_id))
         assert len(result) == 1
         item = result[0]
-        assert len(item) == 2, f"Each item must be a 2-tuple; got {item!r}"
-        cid, text = item
+        assert len(item) == 3, f"Each item must be a 3-tuple; got {item!r}"
+        cid, text, source_uri = item
         assert isinstance(cid, int), f"chunk_id must be int, got {type(cid)}"
         assert isinstance(text, str), f"text must be str, got {type(text)}"
+        assert isinstance(source_uri, str), f"source_uri must be str, got {type(source_uri)}"
         assert cid == chunk_id
         assert text == "shape test text"
+        assert source_uri == "vault://cme/shape.md"
 
     # ------------------------------------------------------------------ limit honored
 

@@ -390,6 +390,7 @@ class LlamaCppEmbedder(BaseEmbedder):
         n_batch: int | None = None,
         n_ubatch: int | None = None,
         batch_size: int = 32,
+        extensions: list[str] | None = None,
         **_unused_kwargs: Any,
     ):
         super().__init__(
@@ -399,6 +400,7 @@ class LlamaCppEmbedder(BaseEmbedder):
             dimension=dimension,
             normalized=normalized,
             distance=distance,
+            extensions=extensions,
         )
         # ``_unused_kwargs`` keeps the registry's generic dispatch
         # tolerant of callers that pass-through fields that don't apply

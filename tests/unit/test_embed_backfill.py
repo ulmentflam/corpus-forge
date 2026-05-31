@@ -23,6 +23,9 @@ def _make_embedder_config_mock() -> MagicMock:
     cfg.batch_size = 32
     cfg.device = "auto"
     cfg.api_key_env = "OPENAI_API_KEY"
+    # PR #81 — empty allow-list = catchall; the routing filter keeps
+    # every chunk for this embedder under the rule.
+    cfg.extensions = []
     return cfg
 
 
@@ -185,15 +188,26 @@ active = true
 
             mock_embedder = MagicMock()
             mock_embedder.name = "test-embedder"
+            # PR #81 — empty `extensions` marks the mock as catchall so
+            # the routing filter keeps every chunk.
+            mock_embedder.extensions = []
+            mock_embedder_config.extensions = []
+            mock_embedder_config.active = True
 
             with patch("corpus_forge.embed.registry.register", return_value=mock_embedder):  # noqa: SIM117
-                with patch("corpus_forge.embed.PostgresBackend") as mock_backend_cls:
+                with (
+                    patch("corpus_forge.embed.register_from_config", return_value=mock_embedder),
+                    patch("corpus_forge.embed.PostgresBackend") as mock_backend_cls,
+                ):
                     mock_backend = MagicMock()
                     mock_backend.register_embedder.return_value = 1
+                    # PR #81 — chunks_missing_embedding yields 3-tuples
+                    # ``(chunk_id, text, source_uri)``. Use empty source_uri
+                    # so the routing rule treats every chunk as catchall.
                     mock_backend.chunks_missing_embedding.return_value = [
-                        (1, "text1"),
-                        (2, "text2"),
-                        (3, "text3"),
+                        (1, "text1", ""),
+                        (2, "text2", ""),
+                        (3, "text3", ""),
                     ]
 
                     # Make encode return a list of embeddings matching input length
@@ -283,6 +297,7 @@ class TestBackfillAllSkippedLoopGuard:
             # embedder when the model is fully wedged.
             mock_embedder = MagicMock()
             mock_embedder.name = "test-embedder"
+            mock_embedder.extensions = []  # PR #81: catchall
 
             def fake_encode(texts):  # type: ignore[no-untyped-def]
                 # Bisecting embedder returns (M, dim) where M < len(texts)
@@ -312,9 +327,9 @@ class TestBackfillAllSkippedLoopGuard:
                 # the same return value, never advancing — the
                 # ``@pytest.mark.timeout(15)`` would fire.
                 mock_backend.chunks_missing_embedding.return_value = [
-                    (1, "text-1"),
-                    (2, "text-2"),
-                    (3, "text-3"),
+                    (1, "text-1", ""),
+                    (2, "text-2", ""),
+                    (3, "text-3", ""),
                 ]
                 mock_backend.count_chunks_missing_embedding.return_value = 3
                 mock_backend_cls.return_value = mock_backend
@@ -444,8 +459,13 @@ class TestWriteEmbeddingsForChunksReturnCount:
         # 3 chunks come back from chunks_missing_embedding; embedder
         # encodes all 3 without skipping → pair count = 3.
         backend = MagicMock()
-        backend.chunks_missing_embedding.return_value = iter([(1, "a"), (2, "b"), (3, "c")])
+        backend.chunks_missing_embedding.return_value = iter(
+            [(1, "a", ""), (2, "b", ""), (3, "c", "")]
+        )
         embedder = MagicMock(name="emb")
+        # PR #81 — `extensions=[]` marks the mock as a catchall so the
+        # routing filter keeps every row.
+        embedder.extensions = []
         embedder.encode.return_value = [[0.1] * 4, [0.2] * 4, [0.3] * 4]
         embedder.last_failed_indices = []
         result = _write_embeddings_for_chunks(backend, 1, embedder)
@@ -462,8 +482,9 @@ class TestWriteEmbeddingsForChunksReturnCount:
         from corpus_forge.ingest import _write_embeddings_for_chunks
 
         backend = MagicMock()
-        backend.chunks_missing_embedding.return_value = iter([(1, "a"), (2, "b")])
+        backend.chunks_missing_embedding.return_value = iter([(1, "a", ""), (2, "b", "")])
         embedder = MagicMock(name="emb")
+        embedder.extensions = []  # catchall, PR #81
         # Encode returns nothing usable; embedder flags both as failed.
         embedder.encode.return_value = []
         embedder.last_failed_indices = [0, 1]

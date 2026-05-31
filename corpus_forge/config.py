@@ -371,6 +371,42 @@ class EmbedderConfig(BaseModel):
     # memory at the cost of accepting more "round down" warnings.
     n_batch: int | None = Field(default=None, gt=0)
     n_ubatch: int | None = Field(default=None, gt=0)
+    # ── Routing (PR #81) ────────────────────────────────────────────────
+    # Optional allow-list of file extensions (leading-dot, lowercase) that
+    # mark this embedder as a *specialist*. When non-empty, this embedder
+    # claims chunks whose ``documents.source_uri`` ends with one of these
+    # suffixes (case-insensitive endswith).  When empty/absent, the
+    # embedder is a *catchall* — see
+    # ``corpus_forge.embedders.routing.route_for`` for the resolution
+    # rule (first matching specialist beats catchalls; ties broken by
+    # declaration order).  Pairs with the ``Config``-level
+    # ``_check_routing_invariant`` validator below which rejects
+    # specialist-only configs that have no active catchall.
+    extensions: list[str] = Field(default_factory=list)
+
+    @field_validator("extensions")
+    @classmethod
+    def _normalise_extensions(cls, value: list[str]) -> list[str]:
+        """Lowercase and reject malformed entries.
+
+        Valid entries: leading-dot strings (``".py"``, ``".tar.gz"``).
+        Empty strings and bare names (``"py"``) are user errors — surface
+        the bad value in the message so the fix is obvious.
+        """
+        normalised: list[str] = []
+        for raw in value:
+            if not isinstance(raw, str) or not raw:
+                raise ValueError(
+                    "extensions entries must be non-empty strings starting with a dot "
+                    f"(got {raw!r}); examples: '.py', '.ts', '.tar.gz'."
+                )
+            if not raw.startswith("."):
+                raise ValueError(
+                    "extensions entries must start with a leading dot "
+                    f"(got {raw!r}); did you mean '.{raw}'?"
+                )
+            normalised.append(raw.lower())
+        return normalised
 
 
 class RerankerConfig(BaseModel):
@@ -1126,6 +1162,30 @@ class Config(BaseModel):
                 "Cross-host sync requires the postgres backend; SQLite is single-host. "
                 "Set sync_enabled = false or switch backend.kind to 'postgres'."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _check_routing_invariant(self) -> "Config":
+        """PR #81 — reject configs that declare active specialist embedders
+        without an active catchall.
+
+        Delegates to :func:`corpus_forge.embedders.routing.validate_routing_invariant`
+        — the routing helper is the single source of truth for the rule.
+        Re-raises as a clear ``ValueError`` so Pydantic surfaces it through
+        the standard ``ValidationError`` wrapping at config-load time.
+        """
+        from corpus_forge.embedders.routing import (  # noqa: PLC0415
+            EmbedderRoutingError,
+            validate_routing_invariant,
+        )
+
+        try:
+            validate_routing_invariant(self.embedders)
+        except EmbedderRoutingError as exc:
+            # Keep the original class in the message so test pins +
+            # users grep on ``EmbedderRoutingError`` (the helper's
+            # public name) and not just the substring ``catchall``.
+            raise ValueError(f"EmbedderRoutingError: {exc}") from exc
         return self
 
     @model_validator(mode="after")

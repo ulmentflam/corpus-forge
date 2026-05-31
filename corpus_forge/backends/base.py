@@ -71,7 +71,19 @@ class StorageBackend(Protocol):
 
     def chunks_missing_embedding(
         self, embedder_id: int, limit: int = 1024
-    ) -> Iterator[tuple[int, str]]: ...
+    ) -> Iterator[tuple[int, str, str]]:
+        """Yield ``(chunk_id, text, source_uri)`` for chunks missing an
+        embedding under ``embedder_id``.
+
+        PR #81 widened the tuple to include ``source_uri`` (taken from the
+        parent ``documents`` row) so the caller can route each chunk to
+        exactly one of the active embedders via
+        :func:`corpus_forge.embedders.routing.claims`.  Chunks whose
+        document has no ``source_uri`` (defensively: shouldn't happen,
+        the column is ``NOT NULL`` in the schema) get ``""`` so the
+        catchall claims them.
+        """
+        ...
 
     # --- Phase L Wave 6 — embedder-fingerprint helpers --------------------
 

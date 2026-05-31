@@ -48,6 +48,11 @@ def _per_provider_extras(embedder_config) -> dict[str, Any]:
         "normalized": getattr(embedder_config, "normalize", True),
         "distance": getattr(embedder_config, "distance", "cosine"),
         "batch_size": getattr(embedder_config, "batch_size", 32),
+        # PR #81 routing — every provider accepts the allow-list (forwarded
+        # as ``extensions`` to ``BaseEmbedder.__init__``).  Default ``[]``
+        # marks the embedder as a catchall; non-empty makes it a specialist
+        # over those file suffixes.
+        "extensions": list(getattr(embedder_config, "extensions", []) or []),
     }
     provider = getattr(embedder_config, "provider", "")
     if provider == "sentence_transformers":

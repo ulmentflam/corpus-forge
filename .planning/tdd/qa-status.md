@@ -1,6 +1,6 @@
-# QA Status — owned by tdd-qa (feat/llama-cpp-runtime-n-ctx-seq)
+# QA Status — owned by tdd-qa (feat/embedder-routing)
 _Append-only per task._
 
 | task-id | verdict | notes |
 |---------|---------|-------|
-| T1 | approved | Gates: `ruff format --check` clean (778 files). `ruff check` clean (All checks passed). `pyrefly check` clean (only missing-import on optional extras — `mcp`, etc. — which the Makefile gate explicitly tolerates). Focused suite: 105 passed, 2 smoke skipped. Full unit suite: 5485 passed / 166 failed / 41 skipped / 1 xfailed / 35 errors — identical shape to PR #79 baseline at 99bdfb0 (which is 5481 passed / 166 failed; +4 passes correspond exactly to the new TestRuntimeNCtxSeqIntrospection cases). All failures are pre-existing optional-extra ModuleNotFoundError (`mcp`, `pymupdf`, `fastcdc`, `pandas`, `nbformat`, `markdownify`, etc.). Zero llama-cpp / embedder regressions. |
+| T9 | approved | `ruff format --check`: clean (783 files). `ruff check`: clean. `pyrefly`: 0 errors (73 suppressed, 105 warnings — same as baseline). Focused routing+regression suite: 127/127 green. Full unit suite: 166 failed, 5529 passed, 35 errors — **identical failure set to baseline (main @ 99bdfb0)** (166 failed, 5481 passed, 35 errors). +48 net new passing tests from routing additions. Coverage gate not re-measured (full-suite baseline failures predate this PR); the focused suite is clean. |

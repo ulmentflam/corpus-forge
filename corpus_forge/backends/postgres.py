@@ -1168,8 +1168,15 @@ class PostgresBackend(StorageBackend):
 
     def chunks_missing_embedding(
         self, embedder_id: int, limit: int = 1024
-    ) -> Iterator[tuple[int, str]]:
-        """Get chunks that are missing embeddings for the given embedder."""
+    ) -> Iterator[tuple[int, str, str]]:
+        """Yield ``(chunk_id, text, source_uri)`` for chunks missing an
+        embedding under ``embedder_id``.
+
+        PR #81: the third element ``source_uri`` is read from the parent
+        ``documents`` row so the routing layer can pick the right
+        specialist / catchall per chunk via
+        :func:`corpus_forge.embedders.routing.claims`.
+        """
         # Get embedder info
         embedder_info = self._execute(
             "SELECT name FROM corpus.embedders WHERE id = %s", (embedder_id,)
@@ -1181,10 +1188,20 @@ class PostgresBackend(StorageBackend):
         embedder_name = embedder_info[0]["name"]
         table_name = f"embeddings_{embedder_name.replace('-', '_')}"
 
-        # Query for chunks missing this embedder's embedding
+        # JOIN documents/conversations so the route layer has source_uri
+        # in hand without a second round-trip per batch.  Chunks XOR the
+        # two parents (CHECK constraint in the schema), so COALESCE picks
+        # whichever side is set.  Conversation source URIs (``claude-code://...``)
+        # have no meaningful file extension and therefore always route to
+        # the catchall — that's the correct behaviour.
         query = f"""
-        SELECT c.id, c.text
+        SELECT
+            c.id,
+            c.text,
+            COALESCE(d.source_uri, cv.source_uri, '') AS source_uri
         FROM corpus.chunks c
+        LEFT JOIN corpus.documents d ON d.id = c.document_id
+        LEFT JOIN corpus.conversations cv ON cv.id = c.conversation_id
         LEFT JOIN corpus.{table_name} e ON e.chunk_id = c.id
         WHERE e.chunk_id IS NULL
         ORDER BY c.id
@@ -1193,7 +1210,7 @@ class PostgresBackend(StorageBackend):
 
         results = self._execute(query, (limit,))
         for row in results:
-            yield (row["id"], row["text"])
+            yield (row["id"], row["text"], row["source_uri"] or "")
 
     def count_chunks_missing_embedding(self, embedder_id: int) -> int:
         """Total number of chunks missing an embedding for ``embedder_id``.

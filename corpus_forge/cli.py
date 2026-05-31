@@ -1985,7 +1985,10 @@ def eval_embedders(
             "(and `embed`) before ranking embedders."
         )
         raise typer.Exit(code=2)
-    corpus = list(backend.chunks_missing_embedding(probe_id, limit=total))
+    # PR #81 — the backend now yields ``(chunk_id, text, source_uri)``.
+    # The eval evaluator only needs ``(chunk_id, text)``; drop the third
+    # element here so the existing 2-tuple signature stays clean.
+    corpus = [(row[0], row[1]) for row in backend.chunks_missing_embedding(probe_id, limit=total)]
 
     # Each candidate is embedded + scored via the real-wiring evaluator over a
     # throwaway registry, so the global registry is never poisoned.
