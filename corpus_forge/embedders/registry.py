@@ -3,6 +3,7 @@
 from typing import Any
 
 from .base import Embedder
+from .llama_cpp import LlamaCppEmbedder
 from .model2vec import Model2VecEmbedder
 from .openai import OpenAIEmbedder
 from .sentence_transformers import SentenceTransformersEmbedder
@@ -22,6 +23,13 @@ def _per_provider_extras(embedder_config) -> dict[str, Any]:
       ingest against Ollama's OpenAI-compatible endpoint.
     - ``model2vec``: CPU-only static embeddings; same "no device"
       story as openai.
+    - ``llama-cpp``: in-process llama.cpp binding. Accepts the
+      llama.cpp-specific knobs ``n_ctx`` + ``n_gpu_layers``, and
+      optionally ``gguf_path`` when the user wants to bypass Ollama
+      auto-discover. Rejects ``device`` / ``api_key_env`` /
+      ``base_url`` — the binding is in-process, not HTTP, and the
+      Metal/CUDA offload is controlled via ``n_gpu_layers`` instead
+      of a ``device`` string.
 
     Pulled into a single helper so the three call sites
     (``corpus_forge.ingest.get_active_embedders``,
@@ -49,6 +57,16 @@ def _per_provider_extras(embedder_config) -> dict[str, Any]:
             # and strip the trailing slash so the OpenAI SDK accepts
             # it unchanged.
             extras["base_url"] = str(base_url).rstrip("/")
+    elif provider == "llama-cpp":
+        # Forward llama.cpp-specific knobs to the constructor.
+        # ``gguf_path`` is forwarded ONLY when truthy so the
+        # LlamaCppEmbedder constructor default (``None``) fires when
+        # the user wants Ollama auto-discover via ``model_id``.
+        extras["n_ctx"] = getattr(embedder_config, "n_ctx", 512)
+        extras["n_gpu_layers"] = getattr(embedder_config, "n_gpu_layers", -1)
+        gguf_path = getattr(embedder_config, "gguf_path", None)
+        if gguf_path:
+            extras["gguf_path"] = gguf_path
     # ``model2vec`` and any future CPU-only / static providers fall
     # through with just the common kwargs.
     return extras
@@ -82,6 +100,13 @@ class EmbedderRegistry:
             # provider module is importable without the extra (encode
             # raises ImportError lazily).
             "model2vec": Model2VecEmbedder,
+            # In-process llama.cpp embedder for GGUF models — added to
+            # unblock qwen3-embedding on Apple Silicon when Ollama's
+            # OpenAI-compatible endpoint returns HTTP 500 with
+            # ``failed to encode response: json: unsupported value: NaN``
+            # for ~30 % of code chunks. Optional ``[llama-cpp]`` extra;
+            # same lazy-import policy as ``model2vec`` above.
+            "llama-cpp": LlamaCppEmbedder,
         }
         self._instances: dict[str, Embedder] = {}
 

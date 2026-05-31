@@ -204,6 +204,52 @@ active    = true
 batch_size = 16
 device    = "auto"  # 'auto'|'mps'|'cuda'|'cpu'
 
+# ─────────────────────────────────────────────────────────────────────
+# In-process llama.cpp embedder (qwen3-embedding via GGUF).
+# ─────────────────────────────────────────────────────────────────────
+# Why this exists: the `provider = "openai"` path pointed at a local
+# Ollama at :11434/v1 returns HTTP 500 with
+#     failed to encode response: json: unsupported value: NaN
+# for ~30 % of Python-code chunks against qwen3-embedding:8b (2026-05-26
+# incident). Ollama's Go JSON encoder rejects NaN floats, so a single
+# bad row drops the whole HTTP response. The in-process llama.cpp
+# embedder avoids the Ollama JSON encoder entirely — vectors come out
+# of the C library as float32 and we never round-trip through JSON.
+#
+# GGUF resolution rule:
+#   1. If `gguf_path` is set, that wins (must exist on disk).
+#   2. Else `model_id` is parsed as `<name>:<tag>` and looked up under
+#      ~/.ollama/models/manifests/registry.ollama.ai/library/<name>/<tag>;
+#      the model-layer digest names the blob under .../blobs/sha256-<hex>.
+#   3. Else corpus-forge raises with both knob names in the message.
+#
+# Metal GPU acceleration on Apple Silicon requires `llama-cpp-python`
+# built with `CMAKE_ARGS="-DGGML_METAL=on"` — see the README's
+# `[llama-cpp]` row in the extras table. Default `n_gpu_layers = -1`
+# offloads every layer to Metal/CUDA; set to `0` to force CPU-only.
+#
+# This block is intentionally commented + `active = false`. Opt in by
+# uncommenting AND setting `active = true` once you have:
+#   - installed the [llama-cpp] extra (with the Metal CMAKE_ARGS prefix),
+#   - run `ollama pull qwen3-embedding:8b` (or set `gguf_path` directly),
+#   - verified `corpus-forge doctor` reports the embedder healthy.
+# Cross-reference: the maintainer's own ~/.config/corpus-forge/config.toml
+# has had the sentence-transformers `qwen3-4096` provider deactivated
+# since 2026-05-26 for the same reason this exists.
+#
+# [[embedders]]
+# name         = "qwen3-llama-cpp"
+# provider     = "llama-cpp"
+# model_id     = "qwen3-embedding:8b"   # used for Ollama auto-discover
+# # gguf_path  = "/path/to/qwen3-embedding-8b-Q8_0.gguf"   # wins if set
+# dimension    = 4096
+# normalize    = true
+# distance     = "cosine"
+# active       = false                  # opt-in; see header comment
+# batch_size   = 16
+# n_ctx        = 512                    # llama.cpp context window
+# n_gpu_layers = -1                     # -1 = all layers on Metal/CUDA; 0 = CPU-only
+
 [[embedders]]
 name      = "openai_3l"
 provider  = "openai"

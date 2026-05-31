@@ -326,7 +326,12 @@ class EmbedderConfig(BaseModel):
     # Phase N Wave 3 added ``"model2vec"`` for the static fast-tier
     # provider (potion-code-16M).  Optional ``[fast-tier]`` extra at
     # install time; the dispatch lives in ``embedders/registry.py``.
-    provider: str = Field(pattern="^(sentence_transformers|openai|model2vec)$")
+    # ``llama-cpp`` was added to unblock qwen3-embedding on Apple
+    # Silicon: the Ollama-served OpenAI path returns HTTP 500 with
+    # ``failed to encode response: json: unsupported value: NaN`` for
+    # ~30% of Python-code chunks, and in-process llama.cpp avoids
+    # Ollama's JSON encoder entirely.  Optional ``[llama-cpp]`` extra.
+    provider: str = Field(pattern=r"^(sentence_transformers|openai|model2vec|llama\-cpp)$")
     model_id: str
     dimension: int = Field(gt=0)
     normalize: bool = Field(default=True)
@@ -336,6 +341,18 @@ class EmbedderConfig(BaseModel):
     device: str = Field(default="auto")
     api_key_env: str = Field(default="OPENAI_API_KEY")
     base_url: AnyHttpUrl | None = Field(default=None)
+    # ── llama-cpp provider knobs (ignored by other providers) ────────
+    # Optional explicit GGUF file path.  Wins over the Ollama
+    # ``~/.ollama/models/manifests/...`` auto-discover path keyed off
+    # ``model_id``.  See :func:`corpus_forge.embedders.llama_cpp.resolve_gguf_path`.
+    gguf_path: str | None = Field(default=None)
+    # llama.cpp context window.  Default 512 keeps the per-chunk
+    # memory cost small; raise it when ingesting docs that routinely
+    # exceed 512 tokens (qwen3-embedding's native context is 32 K).
+    n_ctx: int = Field(default=512, gt=0)
+    # Number of layers offloaded to GPU.  -1 = all (Metal on Apple
+    # Silicon, CUDA on Linux); 0 forces CPU-only.
+    n_gpu_layers: int = Field(default=-1)
 
 
 class RerankerConfig(BaseModel):
