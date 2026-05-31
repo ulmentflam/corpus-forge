@@ -108,11 +108,11 @@ def test_two_embedders_serve_independent_dense_search(
 
     # Embed each chunk in BOTH tables using the embedder's own vectors.
     missing_main = list(storage_backend.chunks_missing_embedding(main_id))
-    main_pairs = [(cid, main._encode_one(text)) for cid, text in missing_main]
+    main_pairs = [(cid, main._encode_one(text)) for cid, text, _ in missing_main]
     storage_backend.write_embeddings(main_id, main_pairs)
 
     missing_fast = list(storage_backend.chunks_missing_embedding(fast_id))
-    fast_pairs = [(cid, fast._encode_one(text)) for cid, text in missing_fast]
+    fast_pairs = [(cid, fast._encode_one(text)) for cid, text, _ in missing_fast]
     storage_backend.write_embeddings(fast_id, fast_pairs)
 
     # The first chunk in each.

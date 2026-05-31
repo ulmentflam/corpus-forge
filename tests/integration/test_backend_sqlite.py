@@ -476,7 +476,7 @@ class TestChunkReuse:
 
         # The stable chunk's embedding should now exist on the new chunk id too
         missing = list(backend.chunks_missing_embedding(eid))
-        missing_ids = {cid for cid, _ in missing}
+        missing_ids = {cid for cid, _, _ in missing}
 
         # After re-ingest, stable content chunk should have an embedding
         # (either the original id was preserved, or the new one has a copied embedding).
@@ -763,7 +763,7 @@ class TestChunksMissingEmbedding:
         backend.write_embeddings(eid, [(chunk_id1, np.ones(8, dtype=np.float32))])
 
         missing = list(backend.chunks_missing_embedding(eid))
-        missing_ids = {cid for cid, _ in missing}
+        missing_ids = {cid for cid, _, _ in missing}
 
         assert chunk_id1 not in missing_ids, "doc1's chunk was embedded; should NOT be missing"
         assert chunk_id2 in missing_ids, "doc2's chunk was NOT embedded; should be missing"

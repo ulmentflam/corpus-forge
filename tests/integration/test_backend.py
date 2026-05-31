@@ -507,7 +507,7 @@ class TestEmbedderOps:
         backend.write_embeddings(embedder_id, [(chunk_ids1[0], embedding)])
 
         missing = list(backend.chunks_missing_embedding(embedder_id))
-        missing_ids = {cid for cid, _ in missing}
+        missing_ids = {cid for cid, _, _ in missing}
         assert chunk_ids1[0] not in missing_ids  # doc1's chunk was embedded
         assert chunk_ids2[0] in missing_ids  # doc2's chunk is still missing
 
