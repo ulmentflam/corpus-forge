@@ -1,6 +1,8 @@
-# Test Status — owned by tdd-tester (feat/llama-cpp-runtime-n-ctx-seq)
+# Test Status — owned by tdd-tester (feat/embedder-routing)
 _Append-only per task._
 
 | task-id | status | notes |
 |---------|--------|-------|
-| T1 | red | 4 new tests in TestRuntimeNCtxSeqIntrospection: runtime-lookup (FAIL — current code uses configured 512, not 252), fallback (PASS — current code IS the fallback shape), floor (FAIL), once-per-instance log (FAIL — no such log yet). RED confirmed; ready for coder. |
+| T1 | red | tests/unit/test_embedder_config_routing.py — 11 tests; verified RED via `AttributeError: 'EmbedderConfig' object has no attribute 'extensions'`. |
+| T2 | red | tests/unit/test_embedder_routing.py — 19 tests; module `corpus_forge.embedders.routing` does not exist yet → ImportError on every test. |
+| T3 | red | tests/unit/test_embed_routing_filter.py (4 tests) + tests/unit/test_ingest_routing_filter.py (8 tests). All RED — `chunks_missing_embedding` 3-tuple shape + `active_embedders` kwarg not implemented yet. |

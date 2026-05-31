@@ -202,6 +202,7 @@ class OpenAIEmbedder(BaseEmbedder):
         api_key_env: str = "OPENAI_API_KEY",
         base_url: str | None = None,
         batch_size: int = 256,
+        extensions: list[str] | None = None,
     ):
         super().__init__(
             name=name,
@@ -210,6 +211,7 @@ class OpenAIEmbedder(BaseEmbedder):
             dimension=dimension,
             normalized=normalized,
             distance=distance,
+            extensions=extensions,
         )
         self.api_key_env = api_key_env
         self.base_url = base_url

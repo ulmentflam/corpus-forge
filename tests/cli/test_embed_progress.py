@@ -30,6 +30,7 @@ def stub_config():
     embedder_cfg.device = "cpu"
     embedder_cfg.api_key_env = "OPENAI_API_KEY"
     embedder_cfg.active = True
+    embedder_cfg.extensions = []  # PR #81 — catchall
 
     backend_cfg = MagicMock()
     backend_cfg.kind = "sqlite"
@@ -46,6 +47,8 @@ def _stub_embedder(dim: int = 4):
     """Embedder mock whose ``encode`` returns a tensor of the right shape."""
 
     emb = MagicMock()
+    emb.extensions = []  # PR #81 — catchall
+    emb.last_failed_indices = []
 
     def _encode(texts):
         return np.zeros((len(list(texts)), dim), dtype=np.float32)
@@ -64,7 +67,8 @@ def test_backfill_embedder_emits_bookend_logs(stub_config, caplog):
     backend.register_embedder.return_value = 1
     backend.count_chunks_missing_embedding.return_value = 2
     backend.chunks_missing_embedding.side_effect = [
-        [(1, "alpha"), (2, "beta")],
+        # PR #81 — (chunk_id, text, source_uri) 3-tuples.
+        [(1, "alpha", ""), (2, "beta", "")],
         [],
     ]
     backend.write_embeddings = MagicMock()

@@ -51,6 +51,7 @@ class SentenceTransformersEmbedder(BaseEmbedder):
         distance: str = "cosine",
         device: str = "auto",
         batch_size: int = 32,
+        extensions: list[str] | None = None,
     ):
         super().__init__(
             name=name,
@@ -59,6 +60,7 @@ class SentenceTransformersEmbedder(BaseEmbedder):
             dimension=dimension,
             normalized=normalized,
             distance=distance,
+            extensions=extensions,
         )
         self.device = device
         self.batch_size = batch_size

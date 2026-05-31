@@ -333,6 +333,46 @@ api_key_env = "OPENAI_API_KEY"
 Add a block, keep existing embedders `active`, then
 `corpus-forge embed --embedder <name>` encodes only the missing vectors.
 
+### Dual-tower retrieval (extension-based routing)
+
+Pair a text embedder with a code embedder and route chunks deterministically
+by file extension — code goes to the code lane, everything else to text. Add
+an `extensions` allow-list (leading-dot, lowercase) to any `[[embedders]]`
+block to mark it a **specialist**; embedders without the field are
+**catchalls**. The routing rule is:
+
+1. Iterate active embedders in declaration order.
+2. First specialist whose allow-list matches the chunk's source URI
+   (case-insensitive `endswith`) wins.
+3. Else the first catchall claims it.
+4. No active catchall + any active specialist → config-load error
+   (`EmbedderRoutingError`); add a catchall to fix.
+
+```toml
+[[embedders]]
+name      = "nomic"            # text catchall — no `extensions` field
+provider  = "llama-cpp"
+model_id  = "nomic-embed-text:v1.5"
+dimension = 768
+active    = true
+
+[[embedders]]
+name       = "nomic-code"      # code specialist
+provider   = "llama-cpp"
+model_id   = "nomic-embed-code:7b"     # Qwen2.5-Coder-7B, Apache-2.0
+dimension  = 3584
+active     = true
+extensions = [".py", ".ts", ".tsx", ".go", ".rs", ".java", ".cpp"]
+```
+
+A `.py` chunk lands in `embeddings_nomic_code` only; a `.md` chunk lands in
+`embeddings_nomic` only. `corpus-forge embed -e nomic-code` filters its
+pending pool to chunks the route assigns to it; the complementary
+`corpus-forge embed -e nomic` drains the rest. Backwards-compat: when no
+embedder declares `extensions`, every active embedder still embeds every
+chunk (today's single-tower behaviour). See
+[`config.example.toml`](config.example.toml) for the full annotated block.
+
 ## Optional extras
 
 ```bash

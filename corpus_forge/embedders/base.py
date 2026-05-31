@@ -13,6 +13,11 @@ class Embedder(Protocol):
     (the majority) can leave the default-impl path on ``BaseEmbedder`` which
     just delegates to ``encode``.  Models with documented asymmetric
     instruction prompts (Qwen3-Embedding, E5, GTE, etc.) override.
+
+    PR #81 adds ``extensions``: when non-empty, this embedder is a
+    *specialist* claiming chunks whose ``documents.source_uri`` ends with
+    one of the listed lowercase suffixes; empty marks the embedder as a
+    *catchall*.  See ``corpus_forge.embedders.routing`` for the rule.
     """
 
     name: str
@@ -21,6 +26,7 @@ class Embedder(Protocol):
     dimension: int
     normalized: bool
     distance: str
+    extensions: list[str]
 
     def encode(self, texts: Sequence[str], *, batch_size: int = 32) -> np.ndarray: ...
     def encode_query(self, texts: Sequence[str], *, batch_size: int = 32) -> np.ndarray: ...
@@ -38,6 +44,7 @@ class BaseEmbedder:
         dimension: int,
         normalized: bool = True,
         distance: str = "cosine",
+        extensions: list[str] | None = None,
     ):
         self.name = name
         self.provider = provider
@@ -45,6 +52,10 @@ class BaseEmbedder:
         self.dimension = dimension
         self.normalized = normalized
         self.distance = distance
+        # PR #81 — routing allow-list.  ``None`` and ``[]`` both mark the
+        # embedder as a catchall (no extension filter); see
+        # ``corpus_forge.embedders.routing`` for the resolution rule.
+        self.extensions: list[str] = list(extensions or [])
 
     def warmup(self) -> None:
         """Warm up the embedder (e.g., load model)."""

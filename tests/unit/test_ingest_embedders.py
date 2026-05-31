@@ -41,6 +41,9 @@ _EXPECTED_BASE_KEYS = {
     "normalized",
     "distance",
     "batch_size",
+    # PR #81 — every provider's BaseEmbedder accepts the routing
+    # allow-list (defaults to ``[]`` for catchall semantics).
+    "extensions",
 }
 
 

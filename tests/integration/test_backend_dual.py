@@ -246,12 +246,12 @@ class TestUpsertDocumentSmoke:
         assert len(all_missing) >= 2, "Expected at least 2 unembedded chunks (one per doc)"
 
         # Embed the first chunk only
-        first_chunk_id, _ = all_missing[0]
+        first_chunk_id, _, _ = all_missing[0]
         vec = np.random.default_rng(42).random(_FAKE_EMBEDDER_DIM).astype(np.float32)
         storage_backend.write_embeddings(eid, [(first_chunk_id, vec)])
 
         remaining = list(storage_backend.chunks_missing_embedding(eid))
-        remaining_ids = {cid for cid, _ in remaining}
+        remaining_ids = {cid for cid, _, _ in remaining}
         assert first_chunk_id not in remaining_ids, (
             "After write_embeddings, embedded chunk should not appear in missing list"
         )
@@ -688,7 +688,7 @@ class TestSearchDense:
 
         missing = list(storage_backend.chunks_missing_embedding(eid))
         vec = _norm_vec_from_seed(42)
-        storage_backend.write_embeddings(eid, [(cid, vec) for cid, _ in missing])
+        storage_backend.write_embeddings(eid, [(cid, vec) for cid, _, _ in missing])
 
         hits = storage_backend.search_dense(eid, vec, k=10, dataset_id=ds_a)
         chunk_dataset_ids = {h.dataset_id for h in hits}
@@ -940,7 +940,7 @@ class TestHybridSearch:
         assert len(missing) == 3
         # Order missing by chunk id so we can pin which chunk gets which vector.
         missing.sort(key=lambda t: t[0])
-        chunk_ids = [cid for cid, _ in missing]
+        chunk_ids = [cid for cid, _, _ in missing]
         chunk_vecs = [_norm_vec_from_text(t) for t in chunk_texts]
         storage_backend.write_embeddings(eid, list(zip(chunk_ids, chunk_vecs, strict=True)))
 
@@ -1002,7 +1002,7 @@ class TestHybridSearch:
 
         missing = list(storage_backend.chunks_missing_embedding(eid))
         missing.sort(key=lambda t: t[0])
-        chunk_ids = [cid for cid, _ in missing]
+        chunk_ids = [cid for cid, _, _ in missing]
         chunk_vecs = [_norm_vec_from_text(t) for t in chunk_texts]
         storage_backend.write_embeddings(eid, list(zip(chunk_ids, chunk_vecs, strict=True)))
 
@@ -1069,7 +1069,7 @@ class TestHybridSearch:
 
         missing = list(storage_backend.chunks_missing_embedding(eid))
         vec = _norm_vec_from_seed(7)
-        storage_backend.write_embeddings(eid, [(cid, vec) for cid, _ in missing])
+        storage_backend.write_embeddings(eid, [(cid, vec) for cid, _, _ in missing])
 
         class _StaticEmbedder(_FakeEmbedder):
             def encode_query(
@@ -1179,7 +1179,7 @@ class TestHybridSearchRerank:
         # Embed each chunk with its own deterministic vector.
         missing = list(storage_backend.chunks_missing_embedding(eid))
         missing.sort(key=lambda t: t[0])
-        chunk_ids = [cid for cid, _ in missing]
+        chunk_ids = [cid for cid, _, _ in missing]
         chunk_vecs = [_norm_vec_from_text(t) for t in chunk_texts]
         storage_backend.write_embeddings(eid, list(zip(chunk_ids, chunk_vecs, strict=True)))
 
@@ -1258,7 +1258,7 @@ class TestHybridSearchRerank:
         )
         missing = list(storage_backend.chunks_missing_embedding(eid))
         vec = _norm_vec_from_seed(9)
-        storage_backend.write_embeddings(eid, [(cid, vec) for cid, _ in missing])
+        storage_backend.write_embeddings(eid, [(cid, vec) for cid, _, _ in missing])
 
         class _QueryAwareEmbedder(_FakeEmbedder):
             def encode_query(

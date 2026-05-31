@@ -21,10 +21,17 @@ from pathlib import Path
 
 from .backends.postgres import PostgresBackend
 from .config import Config
-from .embedders.registry import registry
+from .embedders.registry import register_from_config, registry
+from .embedders.routing import route_for
 from .ui.progress import make_progress
 
 logger = logging.getLogger(__name__)
+
+#: PR #81 — backend.chunks_missing_embedding now yields a
+#: ``(chunk_id, text, source_uri)`` 3-tuple. Pinned as a named constant so
+#: the legacy-2-tuple defensive check (and the matching ingest-side check)
+#: don't trip ruff's ``PLR2004 magic-value-in-comparison`` rule.
+_CHUNKS_MISSING_TUPLE_WIDTH = 3
 
 
 def _resolve_image_bytes(metadata: dict) -> bytes | None:
@@ -112,9 +119,15 @@ def backfill_embedder(
     # ``TypeError: OpenAIEmbedder.__init__() got an unexpected
     # keyword argument 'device'`` — a fourth instance of the bug
     # ``register_from_config`` was created to eliminate.
-    from corpus_forge.embedders.registry import register_from_config  # noqa: PLC0415
-
     embedder = register_from_config(registry, embedder_config)
+
+    # Build the active-embedder list (used by the routing filter below).
+    # We register every active embedder so ``route_for`` sees the same
+    # set the ingest path would have created.  Calling
+    # ``register_from_config`` is idempotent per name (the registry
+    # updates attributes in-place when the name already exists), so
+    # re-registering the target embedder above is a no-op.
+    active_embedders = [register_from_config(registry, ec) for ec in config.embedders if ec.active]
 
     # Warm up the embedder
     logger.info(f"Warming up embedder: {embedder_name}")
@@ -160,11 +173,51 @@ def backfill_embedder(
     ) as progress:
         task = progress.add_task("Embedding chunks", total=progress_total)
         while True:
-            # Get chunks missing this embedder's embedding
-            chunks_needing = list(backend.chunks_missing_embedding(embedder_id, limit=1000))
+            # Get chunks missing this embedder's embedding.  PR #81: the
+            # backend now yields ``(chunk_id, text, source_uri)``; the
+            # extra column is used by the routing filter below.
+            raw_rows = list(backend.chunks_missing_embedding(embedder_id, limit=1000))
+
+            if not raw_rows:
+                logger.debug("No more chunks need embedding")
+                break
+
+            # Defend against legacy 2-tuple stubs left over from old test
+            # fixtures — surface a clear error rather than silently
+            # routing every chunk to the catchall.
+            if raw_rows and len(raw_rows[0]) != _CHUNKS_MISSING_TUPLE_WIDTH:
+                raise ValueError(
+                    "backend.chunks_missing_embedding must yield "
+                    "(chunk_id, text, source_uri) 3-tuples after PR #81; got "
+                    f"{len(raw_rows[0])}-tuple — update the backend (or stub) "
+                    "to include source_uri."
+                )
+
+            # PR #81 — extension-based routing.  Filter rows down to those
+            # that the routing rule assigns to *this* embedder under the
+            # set of currently-active embedders.  When no specialist is
+            # in play (single-tower configs), every row passes through
+            # (the catchall claims everything by definition).
+            chunks_needing = [
+                (cid, text)
+                for (cid, text, src_uri) in raw_rows
+                if route_for(src_uri, active_embedders) is embedder
+            ]
 
             if not chunks_needing:
-                logger.debug("No more chunks need embedding")
+                # Every row in this page is claimed by a DIFFERENT
+                # embedder under the routing rule, and a backfill against
+                # this embedder will never write embeddings for those
+                # rows — so the backend will keep returning the same
+                # page indefinitely if we loop.  Break and let the
+                # complementary ``corpus-forge embed -e <other-name>``
+                # invocation drain those chunks.
+                logger.info(
+                    "All %d pending rows routed away from %s — stopping "
+                    "(another active embedder claims them).",
+                    len(raw_rows),
+                    embedder.name,
+                )
                 break
 
             chunk_ids, texts = zip(*chunks_needing, strict=True) if chunks_needing else ([], [])

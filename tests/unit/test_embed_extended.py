@@ -160,22 +160,26 @@ active = true
             mock_embedder_config.batch_size = 32
             mock_embedder_config.device = "auto"
             mock_embedder_config.api_key_env = "OPENAI_API_KEY"
+            mock_embedder_config.extensions = []  # PR #81: catchall
             mock_config.embedders = [mock_embedder_config]
             mock_load.return_value = mock_config
 
             mock_embedder = MagicMock()
             mock_embedder.name = "test-embedder"
+            mock_embedder.extensions = []  # PR #81: catchall
 
             with (
                 patch("corpus_forge.embed.registry.register", return_value=mock_embedder),
+                patch("corpus_forge.embed.register_from_config", return_value=mock_embedder),
                 patch("corpus_forge.embed.PostgresBackend") as mock_backend_cls,
             ):
                 mock_backend = MagicMock()
                 mock_backend.register_embedder.return_value = 1
                 # First call returns 5 chunks, second returns 5 more
                 mock_backend.chunks_missing_embedding.side_effect = [
-                    [(i, f"text{i}") for i in range(1, 6)],
-                    [(i, f"text{i}") for i in range(6, 11)],
+                    # PR #81 — (chunk_id, text, source_uri) 3-tuples.
+                    [(i, f"text{i}", "") for i in range(1, 6)],
+                    [(i, f"text{i}", "") for i in range(6, 11)],
                     [],
                 ]
 

@@ -112,6 +112,7 @@ class Model2VecEmbedder(BaseEmbedder):
         dimension: int,
         normalized: bool = True,
         distance: str = "cosine",
+        extensions: list[str] | None = None,
         **_unused_kwargs: Any,
     ):
         super().__init__(
@@ -121,6 +122,7 @@ class Model2VecEmbedder(BaseEmbedder):
             dimension=dimension,
             normalized=normalized,
             distance=distance,
+            extensions=extensions,
         )
         # ``_unused_kwargs`` keeps the registry's generic
         # ``embedder_class(name=..., **kwargs)`` dispatch tolerant of

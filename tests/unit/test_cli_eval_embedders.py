@@ -80,8 +80,9 @@ def _fake_backend(*, chunk_count: int):
     backend = MagicMock(name="backend")
     backend.register_embedder.return_value = 1
     backend.count_chunks_missing_embedding.return_value = chunk_count
+    # PR #81 — (chunk_id, text, source_uri) 3-tuple shape.
     backend.chunks_missing_embedding.return_value = [
-        (i, f"chunk {i}") for i in range(1, chunk_count + 1)
+        (i, f"chunk {i}", "") for i in range(1, chunk_count + 1)
     ]
     return backend
 

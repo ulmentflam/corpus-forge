@@ -131,10 +131,15 @@ class TestWriteEmbeddings:
     def test_write_embeddings_with_chunks(self):
         """Test writing embeddings for chunks that need them."""
         mock_backend = MagicMock()
-        mock_backend.chunks_missing_embedding.return_value = [(1, "text1"), (2, "text2")]
+        # PR #81 — 3-tuple shape: (chunk_id, text, source_uri).
+        mock_backend.chunks_missing_embedding.return_value = [
+            (1, "text1", ""),
+            (2, "text2", ""),
+        ]
 
         mock_embedder = MagicMock()
         mock_embedder.name = "test-embedder"
+        mock_embedder.extensions = []  # catchall
         mock_embedder.encode.return_value = [[0.1, 0.2], [0.3, 0.4]]
 
         with patch("corpus_forge.ingest.logger"):

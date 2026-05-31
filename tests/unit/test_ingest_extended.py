@@ -179,10 +179,12 @@ class TestWriteEmbeddings:
     def test_write_embeddings_with_chunks(self):
         """Test that embeddings are written when chunks need them."""
         backend = MagicMock()
-        backend.chunks_missing_embedding.return_value = [(1, "text1"), (2, "text2")]
+        # PR #81 — 3-tuple shape: (chunk_id, text, source_uri).
+        backend.chunks_missing_embedding.return_value = [(1, "text1", ""), (2, "text2", "")]
 
         embedder = MagicMock()
         embedder.name = "test-embed"
+        embedder.extensions = []  # catchall
         embedder.encode.return_value = [[0.1] * 384, [0.2] * 384]
 
         _write_embeddings_for_chunks(backend, 1, embedder)
