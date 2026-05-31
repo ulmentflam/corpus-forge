@@ -65,6 +65,7 @@ embedder. Same contract as the ``model2vec`` fast-tier addition.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import time
@@ -209,6 +210,9 @@ def _load_llama_handle(
     model_id: str | None,
     n_ctx: int,
     n_gpu_layers: int,
+    n_seq_max: int = 1,
+    n_batch: int | None = None,
+    n_ubatch: int | None = None,
 ) -> Any:
     """Resolve the GGUF and construct a ``llama_cpp.Llama`` for embeddings.
 
@@ -223,6 +227,30 @@ def _load_llama_handle(
     happens here — keeping it inside the patched seam means tests
     that swap in a fake ``Llama`` handle don't need to stand up a
     fake GGUF file on disk.
+
+    The tuning knobs (``n_seq_max`` / ``n_batch`` / ``n_ubatch``)
+    are the follow-up to PR #78: ``n_ctx_seq = n_ctx // max(n_seq_max, 1)``
+    determines the per-sequence context cap that llama-cpp-python's
+    decoder respects. Default ``n_seq_max=1`` means "single sequence
+    per call, give me the full ``n_ctx`` window". ``n_batch`` /
+    ``n_ubatch`` default to ``n_ctx`` (computed by the caller) so the
+    physical batch buffer stays >= ``n_ctx`` and the
+    ``llama_context: n_ctx is not divisible by n_seq_max`` warning
+    doesn't fire on stock installs.
+
+    Forward-compat note: on llama-cpp-python ``< 0.4.x`` the ``Llama``
+    constructor does NOT accept ``n_seq_max`` as a kwarg — it's set
+    inside the constructor as
+    ``min(self.n_batch, llama_max_parallel_sequences())`` during the
+    ``embedding=True`` initialiser. The constructor's ``**kwargs`` tail
+    silently swallows our extra kwarg. We THEN post-mutate
+    ``handle.context_params.n_seq_max`` so future binding versions that
+    read it dynamically (and introspection / doctor / debug log paths
+    that read the value off the handle) see the configured intent.
+
+    The real user-facing fix lives in :meth:`LlamaCppEmbedder.encode`:
+    Python-side per-chunk token truncation to ``n_ctx_seq`` BEFORE the
+    C call, so the decoder never sees an over-sized batch.
 
     Raises:
         ImportError: when ``llama_cpp`` is not installed. The message
@@ -243,13 +271,48 @@ def _load_llama_handle(
     from llama_cpp import Llama  # noqa: PLC0415
 
     path = resolve_gguf_path(gguf_path=gguf_path, model_id=model_id)
-    return Llama(
-        model_path=str(path),
-        embedding=True,
-        n_ctx=n_ctx,
-        n_gpu_layers=n_gpu_layers,
-        verbose=False,
-    )
+
+    # Build kwargs in two layers so we can keep the call site readable
+    # AND forward the tuning knobs only when explicitly set (None
+    # sentinels let the binding's own defaults apply for installations
+    # where the kwargs are unknown).
+    llama_kwargs: dict[str, Any] = {
+        "model_path": str(path),
+        "embedding": True,
+        "n_ctx": n_ctx,
+        "n_gpu_layers": n_gpu_layers,
+        "verbose": False,
+        # Always forward n_seq_max — newer binding versions (>= 0.4.x)
+        # consume it as a constructor kwarg; older versions swallow via
+        # ``**kwargs`` and we post-mutate below.
+        "n_seq_max": n_seq_max,
+    }
+    if n_batch is not None:
+        llama_kwargs["n_batch"] = n_batch
+    if n_ubatch is not None:
+        llama_kwargs["n_ubatch"] = n_ubatch
+
+    handle = Llama(**llama_kwargs)
+
+    # Forward-compat / introspection: mutate context_params.n_seq_max
+    # post-construction. On llama-cpp-python 0.3.x the
+    # ``embedding=True`` initialiser hard-codes
+    # ``n_seq_max = min(n_batch, llama_max_parallel_sequences())``
+    # AFTER the constructor returns — pinning it here means doctor /
+    # debug-log introspection sees the configured intent, and any
+    # future binding version that re-reads ``context_params.n_seq_max``
+    # dynamically (rather than at LlamaContext construction time)
+    # picks up the user's value.
+    context_params = getattr(handle, "context_params", None)
+    if context_params is not None:
+        # The struct field may be missing on a very old binding.
+        # Falling through is harmless — the Python-side truncation
+        # path is what actually protects against the memory-slot
+        # crash.
+        with contextlib.suppress(AttributeError, TypeError):
+            context_params.n_seq_max = n_seq_max
+
+    return handle
 
 
 class LlamaCppEmbedder(BaseEmbedder):
@@ -275,6 +338,19 @@ class LlamaCppEmbedder(BaseEmbedder):
         n_gpu_layers: number of layers to offload to GPU. ``-1``
             means "all" (Metal on Apple Silicon, CUDA on Linux).
             ``0`` forces CPU-only.
+        n_seq_max: per-call sequence cap that gates
+            ``n_ctx_seq = n_ctx // max(n_seq_max, 1)`` inside
+            llama-cpp-python. Default ``1`` so each chunk gets the
+            full ``n_ctx`` window. See the truncation path in
+            :meth:`encode` and the module docstring for the binding-
+            version compatibility notes.
+        n_batch: physical batch buffer (prompt-processing max). Default
+            ``None`` resolves to ``n_ctx`` at construction time so the
+            buffer stays >= the configured window and the
+            ``llama_context: n_ctx is not divisible by n_seq_max``
+            warning doesn't fire. Override explicitly to save memory.
+        n_ubatch: physical micro-batch buffer. Same default shape as
+            ``n_batch``.
         batch_size: ``encode`` mini-batch size. Default ``32``;
             tune up for higher throughput on a beefier GPU.
         **_unused_kwargs: tolerated so the registry's generic
@@ -309,6 +385,9 @@ class LlamaCppEmbedder(BaseEmbedder):
         gguf_path: str | None = None,
         n_ctx: int = 512,
         n_gpu_layers: int = -1,
+        n_seq_max: int = 1,
+        n_batch: int | None = None,
+        n_ubatch: int | None = None,
         batch_size: int = 32,
         **_unused_kwargs: Any,
     ):
@@ -326,6 +405,15 @@ class LlamaCppEmbedder(BaseEmbedder):
         self.gguf_path = gguf_path
         self.n_ctx = n_ctx
         self.n_gpu_layers = n_gpu_layers
+        self.n_seq_max = n_seq_max
+        # ``n_batch`` / ``n_ubatch`` default to ``n_ctx`` so the
+        # physical batch buffer stays >= the configured context. This
+        # is the relationship that sidesteps llama.cpp's
+        # ``n_ctx is not divisible by n_seq_max`` rounding warning and
+        # keeps the per-sequence context honest. Overriding either
+        # explicitly is supported for memory-constrained installs.
+        self.n_batch = n_batch if n_batch is not None else n_ctx
+        self.n_ubatch = n_ubatch if n_ubatch is not None else n_ctx
         self.batch_size = batch_size
         self._llama: Any | None = None
 
@@ -339,13 +427,17 @@ class LlamaCppEmbedder(BaseEmbedder):
             return
         loader_logger.info(
             "Loading embedder %s (llama-cpp, %d-dim, model_id=%s, "
-            "gguf_path=%s, n_ctx=%d, n_gpu_layers=%d)",
+            "gguf_path=%s, n_ctx=%d, n_gpu_layers=%d, n_seq_max=%d, "
+            "n_batch=%d, n_ubatch=%d)",
             self.name,
             self.dimension,
             self.model_id,
             self.gguf_path or "<auto-discover>",
             self.n_ctx,
             self.n_gpu_layers,
+            self.n_seq_max,
+            self.n_batch,
+            self.n_ubatch,
         )
         started = time.perf_counter()
         # ``_load_llama_handle`` resolves the GGUF internally so unit
@@ -356,12 +448,74 @@ class LlamaCppEmbedder(BaseEmbedder):
             model_id=self.model_id,
             n_ctx=self.n_ctx,
             n_gpu_layers=self.n_gpu_layers,
+            n_seq_max=self.n_seq_max,
+            n_batch=self.n_batch,
+            n_ubatch=self.n_ubatch,
         )
         loader_logger.info(
             "Embedder %s ready in %.1fs",
             self.name,
             time.perf_counter() - started,
         )
+
+    # ── helpers ────────────────────────────────────────────────────────
+
+    def _maybe_truncate(self, text: str, n_ctx_seq: int) -> str:
+        """Truncate ``text`` to at most ``n_ctx_seq`` tokens.
+
+        Returns the input unchanged when it fits. When it doesn't,
+        tokenise via ``self._llama.tokenize(text.encode("utf-8"))``,
+        slice to ``n_ctx_seq`` tokens, detokenise back to a UTF-8
+        string, and DEBUG-log so doctor / introspection can surface
+        truncation rates later.
+
+        The DEBUG log uses the greppable phrase ``"LlamaCppEmbedder
+        truncated"`` — search for that to count how often the corpus
+        is hitting the per-sequence context cap.
+
+        Why not delegate to llama.cpp's internal ``truncate=True``:
+        :meth:`llama_cpp.Llama.embed` accepts ``truncate=True`` but
+        that defends only against the *total* context (``n_ctx``) —
+        it does NOT slice down to the per-sequence cap (``n_ctx_seq``)
+        that the decoder actually allocates against. The result on a
+        v0.3.x install with ``embedding=True`` is the ``decode: failed
+        to find a memory slot for batch of size N`` crash that this
+        PR fixes. Client-side truncation is the only safe guard.
+
+        On short inputs we MUST NOT round-trip through detokenize —
+        the qwen3 tokenizer is not perfectly reversible on already-
+        detokenized strings, so a needless tokenize+detokenize would
+        corrupt corpus rows that fit cleanly.
+
+        Called only from :meth:`encode` after the lazy-load guard
+        guarantees ``self._llama is not None``; the local rebind
+        narrows the type for pyrefly.
+        """
+        llama_handle = self._llama
+        assert llama_handle is not None, (
+            "_maybe_truncate called before _load_model populated self._llama; "
+            "this is a bug in LlamaCppEmbedder's encode() control flow."
+        )
+        # We tokenise WITHOUT a BOS so the per-sequence budget covers
+        # the user's content only. llama-cpp-python's embed() path
+        # adds the BOS internally, so prepending here would double-
+        # count it against ``n_ctx_seq``.
+        tokens = llama_handle.tokenize(
+            text.encode("utf-8"),
+            add_bos=False,
+            special=False,
+        )
+        if len(tokens) <= n_ctx_seq:
+            return text
+        truncated_tokens = tokens[:n_ctx_seq]
+        loader_logger.debug(
+            "LlamaCppEmbedder truncated %d → %d tokens (n_ctx=%d, n_seq_max=%d)",
+            len(tokens),
+            n_ctx_seq,
+            self.n_ctx,
+            self.n_seq_max,
+        )
+        return llama_handle.detokenize(truncated_tokens).decode("utf-8", errors="replace")
 
     # ── public API ────────────────────────────────────────────────────
 
@@ -422,7 +576,16 @@ class LlamaCppEmbedder(BaseEmbedder):
             batch_size if batch_size != _PROTOCOL_DEFAULT_BATCH_SIZE else self.batch_size
         )
 
-        texts_list = list(texts)
+        # Per-sequence context cap. llama-cpp-python's decoder will
+        # fail with ``decode: failed to find a memory slot for batch
+        # of size N`` when any single input tokenises past this many
+        # tokens (the root cause of the bug this PR fixes). Defensive
+        # truncation client-side keeps the C call within the per-call
+        # sequence budget regardless of which binding version is
+        # installed.
+        n_ctx_seq = self.n_ctx // max(self.n_seq_max, 1)
+
+        texts_list = [self._maybe_truncate(t, n_ctx_seq) for t in texts]
         all_rows: list[list[float]] = []
         for start in range(0, len(texts_list), actual_batch_size):
             batch = texts_list[start : start + actual_batch_size]

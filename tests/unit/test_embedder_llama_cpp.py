@@ -615,3 +615,343 @@ def test_smoke_real_qwen3_embedding() -> None:
     out = embedder.encode(["hello"])
     assert out.shape == (1, 4096)
     assert np.isfinite(out).all(), "Smoke embedding contained NaN/Inf"
+
+
+@pytest.mark.skipif(
+    not os.environ.get("CORPUS_FORGE_TEST_LLAMA_CPP"),
+    reason=_SMOKE_SKIP_REASON,
+)
+def test_smoke_real_qwen3_embedding_long_input_truncates() -> None:
+    """Real end-to-end smoke that exercises the truncation path.
+
+    A multi-thousand-character payload would otherwise blow past
+    ``n_ctx_seq`` and crash llama_decode with ``failed to find a memory
+    slot``. With ``n_seq_max=1`` and ``n_batch=n_ctx=4096``, the
+    Python-side truncation slices the tokenised payload to 4096 tokens
+    BEFORE the C call, so the embedding succeeds without RuntimeError.
+    """
+
+    pytest.importorskip("llama_cpp")
+    from corpus_forge.embedders.llama_cpp import LlamaCppEmbedder
+
+    explicit = os.environ.get("CORPUS_FORGE_LLAMA_CPP_GGUF")
+    embedder = LlamaCppEmbedder(
+        name="qwen3-llama-cpp-smoke-long",
+        model_id="qwen3-embedding:8b",
+        dimension=4096,
+        gguf_path=explicit,
+        n_ctx=4096,
+        n_seq_max=1,
+        n_batch=4096,
+        n_ubatch=4096,
+        n_gpu_layers=-1,
+        batch_size=1,
+    )
+    # ~32 KB payload — order-of-magnitude past n_ctx for qwen3-embedding.
+    payload = "def example_function():\n    return 'hello world'\n" * 800
+    out = embedder.encode([payload])
+    assert out.shape == (1, 4096)
+    assert np.isfinite(out).all(), "Long-input smoke embedding contained NaN/Inf"
+
+
+# ── New config-knobs identity tests (n_seq_max / n_batch / n_ubatch) ─
+
+
+class TestTuningIdentity:
+    """``LlamaCppEmbedder`` exposes three new knobs: ``n_seq_max``,
+    ``n_batch``, ``n_ubatch``. These pin defaults + round-trip.
+    """
+
+    def _make(self, **kw):
+        from corpus_forge.embedders.llama_cpp import LlamaCppEmbedder
+
+        defaults: dict = {
+            "name": "qwen3-llama-cpp",
+            "model_id": "qwen3-embedding:8b",
+            "dimension": 4096,
+        }
+        defaults.update(kw)
+        return LlamaCppEmbedder(**defaults)
+
+    def test_n_seq_max_default_one(self) -> None:
+        """Default ``n_seq_max`` is 1 so each chunk gets the full ``n_ctx`` window.
+
+        llama-cpp-python clamps ``n_ctx_seq = n_ctx / n_seq_max``; the
+        embedding-mode initialiser silently sets ``n_seq_max`` up to
+        ``llama_max_parallel_sequences()`` (256 on a stock install).
+        Defaulting our knob to 1 documents intent and is what the
+        post-construction mutation pins on the context params.
+        """
+        e = self._make()
+        assert e.n_seq_max == 1
+
+    def test_n_seq_max_round_trips(self) -> None:
+        e = self._make(n_seq_max=4)
+        assert e.n_seq_max == 4
+
+    def test_n_batch_default_resolves_to_n_ctx(self) -> None:
+        """When ``n_batch`` is omitted, the embedder resolves it to ``n_ctx``.
+
+        The relationship "physical batch buffer >= n_ctx" sidesteps the
+        ``llama_context: n_ctx is not divisible by n_seq_max`` warning
+        and keeps the per-sequence context honest.
+        """
+        e = self._make(n_ctx=4096)
+        assert e.n_batch == 4096
+
+    def test_n_batch_explicit_round_trips(self) -> None:
+        e = self._make(n_ctx=1024, n_batch=8192)
+        assert e.n_batch == 8192
+
+    def test_n_ubatch_default_resolves_to_n_ctx(self) -> None:
+        e = self._make(n_ctx=2048)
+        assert e.n_ubatch == 2048
+
+    def test_n_ubatch_explicit_round_trips(self) -> None:
+        e = self._make(n_ctx=1024, n_ubatch=8192)
+        assert e.n_ubatch == 8192
+
+
+# ── Truncation path ───────────────────────────────────────────────────
+
+
+def _build_tokenizer_mock(token_lengths: dict[str, int]):
+    """Build mock ``tokenize`` / ``detokenize`` callables.
+
+    ``token_lengths``: mapping from input text → "true" token count.
+    ``tokenize(text_bytes, ...)`` returns ``list(range(token_lengths[text]))``.
+    ``detokenize(tokens, ...)`` returns ``f"<detok-{len(tokens)}>".encode()`` so
+    the caller can verify the slice length.
+    """
+
+    def _tokenize(text_bytes, add_bos=True, special=False):
+        text = text_bytes.decode("utf-8") if isinstance(text_bytes, bytes) else str(text_bytes)
+        n = token_lengths.get(text, len(text.split()))
+        return list(range(n))
+
+    def _detokenize(tokens, prev_tokens=None, special=False):
+        return f"<detok-{len(tokens)}>".encode()
+
+    return _tokenize, _detokenize
+
+
+class TestTruncation:
+    """Per-chunk token-aware truncation before ``create_embedding``."""
+
+    def _build(
+        self,
+        *,
+        dim: int = 16,
+        n_ctx: int = 512,
+        n_seq_max: int = 1,
+        token_lengths: dict[str, int] | None = None,
+    ):
+        from corpus_forge.embedders.llama_cpp import LlamaCppEmbedder
+
+        e = LlamaCppEmbedder(
+            name="trunc",
+            model_id="x:y",
+            dimension=dim,
+            n_ctx=n_ctx,
+            n_seq_max=n_seq_max,
+        )
+        fake = MagicMock()
+        fake.create_embedding.side_effect = _fake_create_embedding(dim)
+        tok, detok = _build_tokenizer_mock(token_lengths or {})
+        fake.tokenize.side_effect = tok
+        fake.detokenize.side_effect = detok
+        e._llama = fake
+        return e, fake
+
+    def test_oversized_text_is_truncated_to_n_ctx_seq(self) -> None:
+        """600-token text with n_ctx=512, n_seq_max=1 → slice to 512."""
+        e, fake = self._build(
+            n_ctx=512,
+            n_seq_max=1,
+            token_lengths={"long": 600},
+        )
+        e.encode(["long"])
+        # tokenize was called on the input bytes.
+        fake.tokenize.assert_called_once()
+        called_arg = fake.tokenize.call_args.args[0]
+        assert called_arg == b"long"
+        # detokenize was called with a 512-token slice.
+        fake.detokenize.assert_called_once()
+        detok_tokens = fake.detokenize.call_args.args[0]
+        assert len(detok_tokens) == 512
+        # The downstream create_embedding got the detokenized string.
+        sent_batch = fake.create_embedding.call_args.args[0]
+        assert sent_batch == ["<detok-512>"]
+
+    def test_n_ctx_seq_math_with_n_seq_max_gt_one(self) -> None:
+        """``n_ctx_seq = n_ctx // max(n_seq_max, 1)``. 512/4 → 128."""
+        e, fake = self._build(
+            n_ctx=512,
+            n_seq_max=4,
+            token_lengths={"long": 200},
+        )
+        e.encode(["long"])
+        detok_tokens = fake.detokenize.call_args.args[0]
+        assert len(detok_tokens) == 128
+
+    def test_short_text_is_not_truncated(self) -> None:
+        """50-token text with n_ctx=512 → no truncation, no detokenize call."""
+        e, fake = self._build(
+            n_ctx=512,
+            n_seq_max=1,
+            token_lengths={"short": 50},
+        )
+        e.encode(["short"])
+        # tokenize still fires (we have to measure length).
+        fake.tokenize.assert_called_once()
+        # detokenize MUST NOT be called when no truncation happens —
+        # otherwise we pay tokenize+detokenize round-trip cost for
+        # every short chunk in the corpus.
+        fake.detokenize.assert_not_called()
+        # The downstream create_embedding got the ORIGINAL text.
+        sent_batch = fake.create_embedding.call_args.args[0]
+        assert sent_batch == ["short"]
+
+    def test_empty_list_short_circuits_before_tokenize(self) -> None:
+        e, fake = self._build()
+        out = e.encode([])
+        assert out.shape == (0, 16)
+        fake.tokenize.assert_not_called()
+        fake.detokenize.assert_not_called()
+        fake.create_embedding.assert_not_called()
+
+    def test_mixed_batch_only_truncates_oversized(self) -> None:
+        """In a 3-text batch [short, long, short], only the middle text
+        passes through truncate+detok. The short ones MUST NOT be
+        detokenized — that would corrupt them (qwen3's tokenizer is
+        not perfectly round-trip on already-detokenized strings).
+        """
+        e, fake = self._build(
+            n_ctx=128,
+            n_seq_max=1,
+            token_lengths={"s1": 10, "long": 500, "s2": 20},
+        )
+        e.encode(["s1", "long", "s2"])
+        # Three tokenize calls (one per input).
+        assert fake.tokenize.call_count == 3
+        # Exactly one detokenize call for the 500-token input.
+        assert fake.detokenize.call_count == 1
+        detok_tokens = fake.detokenize.call_args.args[0]
+        assert len(detok_tokens) == 128
+        # The downstream batch order is preserved.
+        sent_batch = fake.create_embedding.call_args.args[0]
+        assert sent_batch == ["s1", "<detok-128>", "s2"]
+
+    def test_truncation_emits_debug_log(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A truncation event MUST hit the loader logger at DEBUG with a
+        greppable phrase so ``corpus-forge doctor`` can surface
+        truncation rates later.
+        """
+        import logging
+
+        e, _ = self._build(
+            n_ctx=128,
+            n_seq_max=1,
+            token_lengths={"big": 500},
+        )
+        with caplog.at_level(logging.DEBUG, logger="corpus_forge.embedders.loader"):
+            e.encode(["big"])
+        joined = " ".join(rec.getMessage() for rec in caplog.records)
+        records = [r.getMessage() for r in caplog.records]
+        assert "LlamaCppEmbedder truncated" in joined, (
+            f"Expected a DEBUG-level truncation log; got records: {records!r}"
+        )
+
+    def test_no_truncation_no_debug_log(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The DEBUG truncation message MUST NOT fire on short inputs."""
+        import logging
+
+        e, _ = self._build(
+            n_ctx=512,
+            n_seq_max=1,
+            token_lengths={"tiny": 5},
+        )
+        with caplog.at_level(logging.DEBUG, logger="corpus_forge.embedders.loader"):
+            e.encode(["tiny"])
+        joined = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "LlamaCppEmbedder truncated" not in joined
+
+    def test_encode_query_inherits_truncation(self) -> None:
+        """``encode_query`` delegates to ``encode`` — pin that it gets
+        the truncation behaviour too (the maintainer's vault has thin
+        chat-history rows that occasionally blow past ``n_ctx`` even
+        on the query side).
+        """
+        e, fake = self._build(
+            n_ctx=64,
+            n_seq_max=1,
+            token_lengths={"long query": 100},
+        )
+        e.encode_query(["long query"])
+        fake.tokenize.assert_called_once()
+        fake.detokenize.assert_called_once()
+        detok_tokens = fake.detokenize.call_args.args[0]
+        assert len(detok_tokens) == 64
+
+
+# ── Loader forwarding of new kwargs ──────────────────────────────────
+
+
+class TestLoaderForwardsTuningKwargs:
+    """``_load_llama_handle`` forwards ``n_seq_max`` / ``n_batch`` /
+    ``n_ubatch`` to ``llama_cpp.Llama``.
+
+    On llama-cpp-python 0.3.23, ``Llama.__init__`` swallows unknown
+    kwargs via its ``**kwargs`` tail (so the call doesn't TypeError),
+    AND we post-mutate ``handle.context_params.n_seq_max`` so future
+    versions that read it dynamically pick up the config.
+    """
+
+    def test_load_llama_handle_passes_new_kwargs_through(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pin: the call into ``llama_cpp.Llama(...)`` receives all three
+        new kwargs.
+        """
+        from corpus_forge.embedders import llama_cpp as mod
+
+        captured_kwargs: dict = {}
+
+        class _FakeLlama:
+            def __init__(self, **kwargs):
+                captured_kwargs.update(kwargs)
+                # Mimic the real Llama's ``context_params`` so the
+                # post-mutation hook has somewhere to write.
+                self.context_params = MagicMock()
+                self.context_params.n_seq_max = 999  # default to detect overwrite
+
+        # Stub the real llama_cpp import inside ``_load_llama_handle``.
+        import sys
+
+        fake_module = MagicMock()
+        fake_module.Llama = _FakeLlama
+        monkeypatch.setitem(sys.modules, "llama_cpp", fake_module)
+        monkeypatch.setattr(mod, "LLAMA_CPP_AVAILABLE", True)
+
+        # Stand up a temp file so ``resolve_gguf_path`` succeeds.
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".gguf", delete=False) as tf:
+            tf.write(b"fake")
+            gguf_path = tf.name
+
+        handle = mod._load_llama_handle(
+            gguf_path=gguf_path,
+            model_id="x:y",
+            n_ctx=8192,
+            n_gpu_layers=-1,
+            n_seq_max=1,
+            n_batch=8192,
+            n_ubatch=8192,
+        )
+        assert captured_kwargs.get("n_seq_max") == 1
+        assert captured_kwargs.get("n_batch") == 8192
+        assert captured_kwargs.get("n_ubatch") == 8192
+        # Post-mutation forces the configured n_seq_max even if the
+        # binding silently dropped the constructor kwarg.
+        assert handle.context_params.n_seq_max == 1
