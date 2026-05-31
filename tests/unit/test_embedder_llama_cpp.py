@@ -1028,7 +1028,9 @@ class TestRuntimeNCtxSeqIntrospection:
         from corpus_forge.embedders import llama_cpp as mod
 
         # Force the runtime C-bindings to return our pinned values.
-        ctx_ptr_sentinel = object()
+        # Use a real int — production guards `isinstance(_ctx_ptr, (int, ctypes.c_void_p))`
+        # to avoid SIGSEGV when ctypes tries to dereference a Mock pointer.
+        ctx_ptr_sentinel = 0x1234567890ABCDEF
         # The module's ``import llama_cpp as _lcpp`` is local to
         # ``encode()``. Stub it in ``sys.modules`` so the lookup picks
         # up our mocks regardless of whether the real extra is
@@ -1122,7 +1124,9 @@ class TestRuntimeNCtxSeqIntrospection:
         fake_lcpp.llama_n_seq_max = MagicMock(return_value=32)
         monkeypatch.setitem(sys.modules, "llama_cpp", fake_lcpp)
 
-        ctx_ptr_sentinel = object()
+        # Use a real int — production guards `isinstance(_ctx_ptr, (int, ctypes.c_void_p))`
+        # to avoid SIGSEGV when ctypes tries to dereference a Mock pointer.
+        ctx_ptr_sentinel = 0x1234567890ABCDEF
         e, _ = self._build(
             n_ctx=512,
             n_seq_max=1,
@@ -1165,7 +1169,9 @@ class TestRuntimeNCtxSeqIntrospection:
         fake_lcpp.llama_n_seq_max = MagicMock(return_value=32)
         monkeypatch.setitem(sys.modules, "llama_cpp", fake_lcpp)
 
-        ctx_ptr_sentinel = object()
+        # Use a real int — production guards `isinstance(_ctx_ptr, (int, ctypes.c_void_p))`
+        # to avoid SIGSEGV when ctypes tries to dereference a Mock pointer.
+        ctx_ptr_sentinel = 0x1234567890ABCDEF
         e, _ = self._build(
             n_ctx=512,
             n_seq_max=1,
