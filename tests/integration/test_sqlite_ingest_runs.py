@@ -969,11 +969,18 @@ class TestFindSourceLastScannedAt:
         # Note: run_new is still 'running' — do NOT call finish_ingest_run
 
         result = backend.find_source_last_scanned_at(prefix)
-        # Should return old_ts (from completed run), not new_ts (from still-running)
-        assert result is not None
-        result_str = str(result)
-        assert "2026-01-01" in result_str or "2026-06" not in result_str, (
-            f"Running run's last_scanned_at should not be returned; got {result}"
+        # Should reflect the old completed run only — the still-running one
+        # has finished_at=NULL and must be excluded. The original assertion
+        # was a string-match against "2026-06" that became a calendar bomb
+        # once the wall clock crossed into June 2026 (the running run's
+        # finish_ingest_run timestamp now contains "2026-06"). Switch to
+        # a structural check: the result must predate the running run's
+        # creation (which happened inside this test, so anything earlier
+        # is the old completed row).
+        assert result is not None, "Old completed run should yield a result"
+        assert result < new_ts, (
+            f"Running run's timestamp should not be returned; "
+            f"result={result!r} new_ts={new_ts!r}"
         )
 
 
