@@ -56,6 +56,9 @@ _READ_TOOL_NAMES = {
     "find_duplicates",
     "cluster_topics",
     "score_quality",
+    # agent-chunk-explorer — chunk navigation read tools
+    "chunk_neighbors",
+    "get_document",
 }
 
 _WRITE_TOOL_NAMES = {

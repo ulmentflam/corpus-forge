@@ -956,7 +956,16 @@ class TestFindSourceLastScannedAt:
         )
         backend.finish_ingest_run(run_old, status="completed")
 
-        # New still-running run (not finished)
+        # Baseline measurement BEFORE adding the running run. The
+        # function returns MAX(finished_at) over runs in
+        # ('completed', 'interrupted') — finish_ingest_run set that to
+        # wall-clock NOW, so the value is non-deterministic but stable
+        # across the next call.
+        baseline = backend.find_source_last_scanned_at(prefix)
+        assert baseline is not None, "Old completed run should yield a result"
+
+        # New still-running run (not finished). Its finished_at is NULL,
+        # so it must NOT change the function's output.
         run_new = _run_id("fsl-new-running")
         backend.start_ingest_run(run_id=run_new, host=_HOST, pid=_PID, config_digest=_DIGEST)
         new_ts = datetime(2026, 6, 1, tzinfo=UTC)
@@ -968,12 +977,14 @@ class TestFindSourceLastScannedAt:
         )
         # Note: run_new is still 'running' — do NOT call finish_ingest_run
 
-        result = backend.find_source_last_scanned_at(prefix)
-        # Should return old_ts (from completed run), not new_ts (from still-running)
-        assert result is not None
-        result_str = str(result)
-        assert "2026-01-01" in result_str or "2026-06" not in result_str, (
-            f"Running run's last_scanned_at should not be returned; got {result}"
+        # Structural / calendar-agnostic check: adding the running run
+        # must not change the function's output. The pre-PR assertion
+        # was a string-match against "2026-06" that became a calendar
+        # bomb once the wall clock crossed into June 2026.
+        result_after_running = backend.find_source_last_scanned_at(prefix)
+        assert result_after_running == baseline, (
+            "Adding a still-running run changed find_source_last_scanned_at; "
+            f"baseline={baseline!r} after_running={result_after_running!r}"
         )
 
 

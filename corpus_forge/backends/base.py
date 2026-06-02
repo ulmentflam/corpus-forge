@@ -298,7 +298,45 @@ class StorageBackend(Protocol):
         :meth:`search_dense` (Phase N Wave 3)."""
         ...
 
-    def get_chunk(self, chunk_id: int) -> "dict | None": ...
+    def get_chunk(self, chunk_id: int) -> "dict | None":
+        """Return chunk row joined to documents + conversations (LEFT JOIN).
+
+        Additive (agent-chunk-explorer): the returned dict ALSO includes
+        ``prev_chunk_id`` and ``next_chunk_id`` (``int | None``) so the
+        caller can chain follow-up lookups without an extra query.  For
+        document chunks these are computed against ``(document_id,
+        chunk_index)``; for conversation chunks against
+        ``(conversation_id, message_id, chunk_index)``.  Existing keys
+        are preserved.
+        """
+        ...
+
+    def get_chunk_neighbors(
+        self,
+        chunk_id: int,
+        *,
+        before: int = 1,
+        after: int = 1,
+    ) -> "list[dict]":
+        """Return up to ``before`` preceding + ``after`` following neighbor chunks.
+
+        Same row shape as :meth:`get_chunk`. Ordered by ``chunk_index``
+        ascending (for document chunks) or by ``(message_id,
+        chunk_index)`` (for conversation chunks).  Does NOT include the
+        anchor chunk itself.  Returns ``[]`` if the anchor doesn't
+        exist.  ``before=0`` or ``after=0`` is valid.
+        """
+        ...
+
+    def get_document_chunks(self, document_id: int) -> "list[dict]":
+        """Return every chunk of a document ordered by ``chunk_index``.
+
+        Same row shape as :meth:`get_chunk`. Returns ``[]`` if the
+        document has no chunks or doesn't exist.  Distinct from
+        :meth:`get_document_chunk_texts` (which returns only the text
+        strings) — this surfaces every column the CLI/MCP layers need.
+        """
+        ...
 
     def get_chunk_by_content_hash(self, content_hash: str) -> "dict | None": ...
 

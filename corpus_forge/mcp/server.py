@@ -150,6 +150,56 @@ _LIST_DATASETS_INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+# ── agent-chunk-explorer: chunk navigation read tools ───────────────────
+
+
+_CHUNK_NEIGHBORS_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "chunk_id": {
+            "type": "integer",
+            "description": "Anchor chunk primary key.",
+        },
+        "before": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of preceding chunks to include (default: 1).",
+            "default": 1,
+        },
+        "after": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of following chunks to include (default: 1).",
+            "default": 1,
+        },
+    },
+    "required": ["chunk_id"],
+    "additionalProperties": False,
+}
+
+
+_GET_DOCUMENT_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "document_id": {
+            "type": "integer",
+            "description": "Document primary key.",
+        },
+        "reassemble": {
+            "type": "boolean",
+            "description": (
+                "If true, concatenate chunk texts and return as `text` "
+                "instead of the per-chunk `chunks` array.  Chunker overlap "
+                "may cause non-byte-exact reproduction of the source file."
+            ),
+            "default": False,
+        },
+    },
+    "required": ["document_id"],
+    "additionalProperties": False,
+}
+
+
 _ESTIMATE_SYNC_SIZE_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -948,6 +998,28 @@ def build_server(
                 ),
                 inputSchema=_LIST_DATASETS_INPUT_SCHEMA,
             ),
+            # agent-chunk-explorer chunk navigation tools (always-on, read-only).
+            mt.Tool(
+                name="chunk_neighbors",
+                description=(
+                    "Fetch chunks adjacent to a given anchor chunk in the same "
+                    "document or conversation.  Returns "
+                    "{anchor_chunk_id, before: [...], after: [...]}; each entry "
+                    "includes text, source_uri, chunk_index, role, heading, "
+                    "token_count, and the absolute disk path when resolvable."
+                ),
+                inputSchema=_CHUNK_NEIGHBORS_INPUT_SCHEMA,
+            ),
+            mt.Tool(
+                name="get_document",
+                description=(
+                    "Fetch every chunk of a document, ordered by chunk_index.  "
+                    "With reassemble=true, returns the concatenated text under "
+                    "a `text` key instead of the per-chunk `chunks` array.  "
+                    "Read-only."
+                ),
+                inputSchema=_GET_DOCUMENT_INPUT_SCHEMA,
+            ),
             # J1 read tool (always available — no backend writes)
             mt.Tool(
                 name="estimate_sync_size",
@@ -1232,6 +1304,10 @@ def build_server(
             return await _dispatch_get_chunk(arguments)
         if name == "list_datasets":
             return await _dispatch_list_datasets(arguments)
+        if name == "chunk_neighbors":
+            return await _dispatch_chunk_neighbors(arguments)
+        if name == "get_document":
+            return await _dispatch_get_document(arguments)
         if name == "estimate_sync_size":
             return await _dispatch_estimate_sync_size(arguments)
         # J4 curation read tools — always available (read-only)
@@ -1445,6 +1521,10 @@ def build_server(
             return _error_result(f"chunk_id={chunk_id} not found")
         # Normalize: backend.get_chunk may return a Mapping; ensure JSON-safe.
         result: dict[str, Any] = dict(chunk)
+        # agent-chunk-explorer: surface the abs_path so callers don't have
+        # to remap <root_name> manually.  Best-effort — None if no Config
+        # or non-filesystem URI.
+        result["abs_path"] = _resolve_chunk_abs_path_for_mcp(result.get("source_uri"))
 
         # Enrichment via hydrate_hit_metadata (single-element bulk call).
         enrichment_wanted = include_labels or include_description or include_feedback
@@ -1499,6 +1579,99 @@ def build_server(
             return {"datasets": []}
         catalogue = backend.list_datasets()
         return {"datasets": [dict(d) for d in catalogue]}
+
+    def _resolve_chunk_abs_path_for_mcp(source_uri: str | None) -> str | None:
+        """Resolve source_uri -> abs path string for MCP responses.
+
+        Loads :class:`Config` lazily; returns None for any failure (no
+        config on disk, non-filesystem URI, unknown root, malformed).
+        Never raises — MCP dispatchers must stay clean.
+        """
+        if not source_uri:
+            return None
+        try:
+            from corpus_forge.config import Config
+            from corpus_forge.sources.path_resolve import resolve_abs_path
+
+            cfg = Config.load()
+            resolved = resolve_abs_path(source_uri, cfg)
+            return str(resolved) if resolved is not None else None
+        except Exception:
+            return None
+
+    def _chunk_row_to_mcp_dict(chunk: dict) -> dict:
+        """Shape a backend chunk row for MCP responses (chunk_neighbors / get_document)."""
+        return {
+            "chunk_id": int(chunk["id"]),
+            "document_id": chunk.get("document_id"),
+            "conversation_id": chunk.get("conversation_id"),
+            "message_id": chunk.get("message_id"),
+            "chunk_index": chunk.get("chunk_index"),
+            "text": chunk.get("text"),
+            "heading": chunk.get("heading"),
+            "role": chunk.get("role"),
+            "token_count": chunk.get("token_count"),
+            "source_uri": chunk.get("source_uri"),
+            "title": chunk.get("title"),
+            "dataset_id": chunk.get("dataset_id"),
+            "abs_path": _resolve_chunk_abs_path_for_mcp(chunk.get("source_uri")),
+        }
+
+    async def _dispatch_chunk_neighbors(arguments: dict[str, Any]) -> Any:
+        chunk_id = int(arguments["chunk_id"])
+        before = int(arguments.get("before", 1))
+        after = int(arguments.get("after", 1))
+        if before < 0 or after < 0:
+            return _error_result("`before` and `after` must be >= 0")
+
+        retriever = _get_retriever()
+        backend = getattr(retriever, "backend", None)
+        if backend is None:
+            return _error_result("retriever has no backend; cannot fetch neighbors")
+
+        anchor = backend.get_chunk(chunk_id)
+        if anchor is None:
+            # Empty envelope — preferred over an error so the agent can
+            # branch on `before=[] and after=[]` without exception handling.
+            return {"anchor_chunk_id": chunk_id, "before": [], "after": []}
+
+        neighbors = backend.get_chunk_neighbors(chunk_id, before=before, after=after)
+        anchor_idx = anchor.get("chunk_index") or 0
+        before_rows = [c for c in neighbors if (c.get("chunk_index") or 0) < anchor_idx]
+        after_rows = [c for c in neighbors if (c.get("chunk_index") or 0) > anchor_idx]
+        return {
+            "anchor_chunk_id": chunk_id,
+            "before": [_chunk_row_to_mcp_dict(c) for c in before_rows],
+            "after": [_chunk_row_to_mcp_dict(c) for c in after_rows],
+        }
+
+    async def _dispatch_get_document(arguments: dict[str, Any]) -> Any:
+        document_id = int(arguments["document_id"])
+        reassemble = bool(arguments.get("reassemble", False))
+
+        retriever = _get_retriever()
+        backend = getattr(retriever, "backend", None)
+        if backend is None:
+            return _error_result("retriever has no backend; cannot fetch document")
+
+        rows = backend.get_document_chunks(document_id)
+        first = rows[0] if rows else None
+        document_block = {
+            "id": document_id,
+            "source_uri": first.get("source_uri") if first else None,
+            "abs_path": _resolve_chunk_abs_path_for_mcp(first.get("source_uri") if first else None),
+            "dataset_id": first.get("dataset_id") if first else None,
+            "title": first.get("title") if first else None,
+        }
+
+        if reassemble:
+            full_text = "".join((r.get("text") or "") for r in rows)
+            return {"document": document_block, "text": full_text}
+
+        return {
+            "document": document_block,
+            "chunks": [_chunk_row_to_mcp_dict(r) for r in rows],
+        }
 
     async def _dispatch_estimate_sync_size(arguments: dict[str, Any]) -> Any:
         """Pure-prediction storage estimator (Phase J / J1).
