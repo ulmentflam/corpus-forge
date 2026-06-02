@@ -8,6 +8,33 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+## [0.1.0b12] - 2026-06-02
+
+### Added
+
+- **`corpus-forge agents init`** (PR #85) — corpus-grounded `/init` that
+  synthesizes project conventions by combining (a) local project
+  inspection, (b) cross-corpus retrieval over the user's indexed
+  corpus, and (c) a two-pass LLM synthesis. **Two-output split** so
+  private corpus signal never leaks into shared projects' git history:
+  - `<project-root>/.corpus-agents/AGENTS.md` — private, corpus-grounded,
+    chunk_id citations. Gitignored automatically.
+  - `<project-root>/.corpus-agents/shareable.md` — sanitized subset,
+    citation-free, intended for manual review + selective lift into a
+    team `AGENTS.md`.
+  - `<project-root>/AGENTS.md` — created from shareable content **only
+    when absent**. `--force` NEVER overwrites it (sacred-file
+    contract; pinned by three independent tests).
+  - `<project-root>/.gitignore` — `.corpus-agents/` appended
+    idempotently.
+  New flags: `--project-root`, `--output-dir`, `--no-root-write`,
+  `--gitignore/--no-gitignore`, `--no-ingest`, `--force`, `--diff`,
+  `--json`. Auto-ingests the project root if not covered by any active
+  source. New `/corpus-agents` skill wraps the CLI for Claude Code.
+  Defensive regex sanitization on the shareable output rejects any
+  `chunk_id=N`, `filesystem://`, or `vault://` markers the LLM might
+  leak past the sanitization prompt.
+
 ## [0.1.0b11] - 2026-06-02
 
 ### Added
