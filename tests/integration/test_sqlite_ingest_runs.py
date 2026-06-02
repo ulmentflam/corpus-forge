@@ -979,8 +979,7 @@ class TestFindSourceLastScannedAt:
         # is the old completed row).
         assert result is not None, "Old completed run should yield a result"
         assert result < new_ts, (
-            f"Running run's timestamp should not be returned; "
-            f"result={result!r} new_ts={new_ts!r}"
+            f"Running run's timestamp should not be returned; result={result!r} new_ts={new_ts!r}"
         )
 
 
