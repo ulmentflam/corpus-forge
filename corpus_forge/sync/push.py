@@ -130,14 +130,58 @@ class PushPipeline:
         # ``.corpusignore`` block excludes at scan time would still
         # trigger ``read_text`` here and crash on ``UnicodeDecodeError``.
         self._ignore_stack = None
+        # Prefix that ``_compute_source_uri`` prepends to the
+        # relative path so the URI matches what the source plugin
+        # writes into ``corpus.documents`` (e.g.
+        # ``filesystem://Workspace/`` for ``FilesystemSource``,
+        # ``vault://Workspace/`` for ``MarkdownVaultSource``).  Empty
+        # string preserves the legacy bare-relpath behaviour used by
+        # the cross-host integration tests, which seed the documents
+        # row with bare relpaths and never round-trip through
+        # ``Source.parse``.
+        self._source_uri_prefix: str = ""
+
+    def _invoke_discovery_callback(self, path: Path) -> None:
+        """Call ``discovery_callback`` and swallow + log any error.
+
+        Centralised so both the new-file and content-change branches
+        of ``_handle_change_inner`` share identical
+        exception-handling behaviour.  A buggy callback must NEVER
+        kill the watchdog Timer thread it runs on; the rotating log
+        captures the traceback for triage instead.
+        """
+        try:
+            self._discovery_callback(path)
+        except Exception:  # noqa: BLE001 — defensive in a worker thread
+            logger.exception(
+                "Discovery callback raised for %s; new file not ingested",
+                path,
+            )
 
     def _compute_source_uri(self, path: Path) -> str:
-        """Return source_uri relative to source_root if known, else absolute."""
+        """Return source_uri matching what ``Source.parse`` writes.
+
+        Production callers (run_daemon) set ``_source_uri_prefix`` to
+        the plugin's URI scheme + root.name (e.g.
+        ``filesystem://Workspace/``).  We append the relative path
+        below to round-trip exactly the value
+        ``FilesystemSource.parse`` / ``MarkdownVaultSource.parse``
+        wrote into ``corpus.documents`` — that's what
+        ``find_document`` looks up.  Without the prefix,
+        ``find_document`` never matches and every modification fires
+        the discovery callback (re-runs embedders) instead of the
+        cheap revision-insert replication path.
+        """
         if self._source_root is not None:
             try:
-                return str(path.resolve().relative_to(self._source_root.resolve()))
+                rel = path.resolve().relative_to(self._source_root.resolve())
             except ValueError:
                 pass
+            else:
+                rel_posix = rel.as_posix()
+                if self._source_uri_prefix:
+                    return f"{self._source_uri_prefix}{rel_posix}"
+                return rel_posix
         return str(path.resolve())
 
     def handle_change(self, path: Path) -> None:
@@ -193,19 +237,27 @@ class PushPipeline:
         if self._echo_suppressor.was_just_written(path, content_hash):
             return
 
-        # 3. Discovery branch — fire the callback BEFORE the replication
-        # path's ``resolve_document`` call.  ``resolve_document`` is a
-        # lookup-OR-CREATE (see ``PostgresBackend.resolve_document``)
-        # which silently inserts an empty stub for any unknown
-        # ``source_uri`` and returns the stub.  That makes a "doc is
-        # None" check downstream unreachable for brand-new files.
-        # We instead use ``find_document`` (lookup-only) up front: a
-        # ``None`` here means there is no row at all, so hand the path
-        # to the discovery callback (the daemon-supplied ingest hook)
-        # and skip the replication path entirely.  ingest_one's own
-        # ``upsert_document`` will create the row with chunks + the
-        # right content_hash; the next push event will see it via
-        # ``find_document`` and take the replication path.
+        # 3. Discovery branch — fire the callback for any *content
+        # change*, whether the file is brand-new (no row in
+        # ``corpus.documents``) OR an existing file whose stored
+        # ``content_hash`` no longer matches what's on disk.
+        #
+        # ``find_document`` (lookup-only — *not* ``resolve_document``,
+        # which auto-creates an empty stub for unknown URIs) tells us
+        # which case we're in: ``None`` → new file; row with a
+        # different content_hash → modification.  Either way, the
+        # canonical update path is the discovery callback (which runs
+        # ``ingest_one`` → ``backend.upsert_document``, the same path
+        # ``corpus-forge ingest --once`` uses).  ``upsert_document``
+        # carries the BUG-3 fix that preserves chunks + embeddings
+        # whose content_hash didn't change, so the cost is bounded by
+        # the actually-changed chunks.
+        #
+        # If the URIs already line up (``_source_uri_prefix`` set to
+        # match ``Source.parse``'s output) AND content_hash equals
+        # the stored value, we no-op cheaply — that's the common
+        # case for mtime-touched-but-unmodified events (saves on
+        # disk, IDE format-on-save).
         source_uri = self._compute_source_uri(path)
         if self._discovery_callback is not None:
             existing = self._backend.find_document(self._dataset_id, source_uri)
@@ -214,16 +266,34 @@ class PushPipeline:
                     "Discovery: new file %s — routing to ingest callback",
                     path,
                 )
-                try:
-                    self._discovery_callback(path)
-                except Exception:  # noqa: BLE001 — defensive in a worker thread
-                    logger.exception(
-                        "Discovery callback raised for %s; new file not ingested",
-                        path,
-                    )
+                self._invoke_discovery_callback(path)
+                return
+            if existing.get("content_hash") != content_hash:
+                logger.info(
+                    "Discovery: content changed for %s (was=%s now=%s) — "
+                    "routing to ingest callback",
+                    path,
+                    str(existing.get("content_hash"))[:8],
+                    content_hash[:8],
+                )
+                self._invoke_discovery_callback(path)
+                # Replication trail (insert_revision) is preserved
+                # below so multi-machine setups get the per-revision
+                # cross-host history.  Callers without a multi-host
+                # setup can ignore the rows.
+            else:
+                # No content change — nothing to do, regardless of
+                # whether mtime moved.  Skip the lock + revision
+                # query path entirely.
                 return
 
-        # 4. Lock + revision logic (replication path)
+        # 4. Lock + revision logic (replication path — cross-host
+        # revision history).  Runs ONLY when ``discovery_callback``
+        # is unset (legacy / integration-test path) OR content has
+        # changed and we've already triggered the discovery
+        # callback above.  Keeping the revision insert here makes the
+        # PullPipeline's fast-forward replication available without
+        # forcing every modification through the slow path.
         with self._backend.lock_source(source_uri):
             doc = self._backend.resolve_document(self._dataset_id, source_uri)
             if doc is None:
@@ -268,9 +338,11 @@ class PushPipeline:
         *,
         exclude_globs: tuple[str, ...] | list[str] | None = None,
         debounce_seconds: float = 1.0,
+        source_uri_prefix: str = "",
     ) -> None:
         self._source_root = source_root
         self._exclude_globs = tuple(exclude_globs) if exclude_globs is not None else ()
+        self._source_uri_prefix = source_uri_prefix
         self._debounce_seconds = debounce_seconds
         self._ignore_stack = _build_ignore_stack(source_root, self._exclude_globs)
         self._handler = _DebouncedHandler(self, debounce_seconds)

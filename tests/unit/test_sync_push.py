@@ -863,6 +863,82 @@ class TestHandleDeleteICloudSibling:
 # ── Binary-file robustness ─────────────────────────────────────────────
 
 
+class TestSourceUriPrefix:
+    """``PushPipeline`` must produce the same URI scheme ``Source.parse`` writes.
+
+    Filesystem sources land documents in ``corpus.documents`` with
+    ``source_uri = "filesystem://<root.name>/<relpath>"`` (see
+    ``corpus_forge.sources.filesystem.FilesystemSource.parse``).
+    Markdown-vault sources use ``"vault://<root.name>/<relpath>"``.
+    Without a matching prefix, ``PushPipeline._compute_source_uri``
+    returns a bare relative path and ``find_document`` never matches —
+    every file modification fires the discovery callback again,
+    re-running the entire embedder pipeline (~2 min) for what should
+    be a fast revision insert.
+    """
+
+    def test_default_prefix_is_relative_path(self, tmp_path):
+        """No prefix → legacy bare-relpath behaviour (back-compat for integration tests)."""
+        pipeline = _make_pipeline()
+        pipeline._source_root = tmp_path
+        pipeline._source_uri_prefix = ""
+
+        file_path = tmp_path / "notes" / "foo.md"
+        file_path.parent.mkdir()
+        file_path.write_text("hi", encoding="utf-8")
+
+        assert pipeline._compute_source_uri(file_path) == "notes/foo.md"
+
+    def test_filesystem_prefix_matches_source_parse(self, tmp_path):
+        """``filesystem://<root>/<rel>`` matches ``FilesystemSource.parse``."""
+        root = tmp_path / "Workspace"
+        root.mkdir()
+        pipeline = _make_pipeline()
+        pipeline._source_root = root
+        pipeline._source_uri_prefix = f"filesystem://{root.name}/"
+
+        file_path = root / "notes" / "foo.md"
+        file_path.parent.mkdir()
+        file_path.write_text("hi", encoding="utf-8")
+
+        assert pipeline._compute_source_uri(file_path) == "filesystem://Workspace/notes/foo.md"
+
+    def test_vault_prefix_matches_markdown_vault_parse(self, tmp_path):
+        """``vault://<root>/<rel>`` matches ``MarkdownVaultSource.parse``."""
+        root = tmp_path / "Vault"
+        root.mkdir()
+        pipeline = _make_pipeline()
+        pipeline._source_root = root
+        pipeline._source_uri_prefix = f"vault://{root.name}/"
+
+        file_path = root / "daily" / "2026-06-02.md"
+        file_path.parent.mkdir()
+        file_path.write_text("hi", encoding="utf-8")
+
+        assert pipeline._compute_source_uri(file_path) == "vault://Vault/daily/2026-06-02.md"
+
+    def test_pipeline_start_accepts_source_uri_prefix(self, tmp_path):
+        """``PushPipeline.start`` plumbs the prefix into the instance."""
+        backend = MagicMock()
+        pipeline = PushPipeline(
+            backend=backend,
+            dataset_id=1,
+            echo_suppressor=MagicMock(),
+            host_id="h",
+        )
+        with patch("corpus_forge.sync.push.observers.Observer"):
+            pipeline.start(
+                source_root=tmp_path,
+                exclude_globs=[],
+                source_uri_prefix=f"filesystem://{tmp_path.name}/",
+            )
+        try:
+            assert pipeline._source_uri_prefix == f"filesystem://{tmp_path.name}/"
+        finally:
+            pipeline._observer = None
+            pipeline._handler = None
+
+
 class TestBinaryFileHandling:
     """``handle_change`` must survive non-UTF-8 binary files cleanly.
 
@@ -1023,14 +1099,48 @@ class TestDiscoveryCallback:
 
         callback.assert_called_once_with(mock_path)
 
-    def test_callback_not_fired_when_document_exists(self, mock_path, mock_lock):
-        """Known files take the replication path; callback is NOT called."""
+    def test_callback_fires_when_content_hash_differs(self, mock_path, mock_lock):
+        """Existing file with changed content → discovery callback fires.
+
+        Without this, the replication path's ``UPDATE corpus.documents
+        SET text`` would land the new text in the documents row but
+        leave the chunks + embeddings stale, so semantic search
+        would keep returning the OLD content.  ``ingest_one`` (called
+        via the discovery callback) is the only path that re-runs
+        the chunker + embedder + ``upsert_document`` (BUG-3 fix
+        preserves chunks whose hash didn't change).
+        """
         callback = MagicMock()
         pipeline, _backend = self._arm_pipeline(
-            callback, mock_path, mock_lock, {"id": 1, "content_hash": "other"}
+            callback,
+            mock_path,
+            mock_lock,
+            {"id": 1, "content_hash": "old-hash"},
         )
 
         with _patch_chunk_hash("new-hash"):
+            pipeline.handle_change(mock_path)
+
+        callback.assert_called_once_with(mock_path)
+
+    def test_callback_skipped_when_content_hash_matches(self, mock_path, mock_lock):
+        """Existing file with matching content_hash → no-op, no callback.
+
+        Watchdog mtime-touch / IDE format-on-save fires events for
+        files whose content didn't actually change.  Routing those
+        through the discovery callback would waste embedder cycles
+        on no-ops.  ``find_document`` returning the matching hash
+        is the cheap pre-check.
+        """
+        callback = MagicMock()
+        pipeline, _backend = self._arm_pipeline(
+            callback,
+            mock_path,
+            mock_lock,
+            {"id": 1, "content_hash": "h1"},
+        )
+
+        with _patch_chunk_hash("h1"):
             pipeline.handle_change(mock_path)
 
         callback.assert_not_called()

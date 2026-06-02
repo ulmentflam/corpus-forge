@@ -51,6 +51,35 @@ def _source_root(source):
     return _impl(source)
 
 
+# Per-plugin URI scheme used by ``Source.parse`` when it writes a
+# document into ``corpus.documents``.  Mirrors
+# ``FilesystemSource.parse`` (``filesystem://``) and
+# ``MarkdownVaultSource.parse`` (``vault://``).  When a new
+# filesystem-watchable source plugin lands, its scheme goes here so
+# ``PushPipeline`` keeps round-tripping the right URI.
+_PUSH_SOURCE_URI_SCHEMES: dict[str, str] = {
+    "filesystem": "filesystem",
+    "markdown_vault": "vault",
+}
+
+
+def _source_uri_prefix_for_push(source_config, root: Path) -> str:
+    """Build the prefix ``PushPipeline._compute_source_uri`` prepends.
+
+    Returns e.g. ``"filesystem://Workspace/"`` so the URI for a path
+    like ``<root>/notes/foo.md`` becomes
+    ``"filesystem://Workspace/notes/foo.md"`` — exactly what
+    ``FilesystemSource.parse`` writes into ``corpus.documents``.
+    Empty string for unrecognised plugins (rare; the watchable-plugin
+    allow-list in ``ignore_lifecycle._source_root`` would have already
+    skipped the source).
+    """
+    scheme = _PUSH_SOURCE_URI_SCHEMES.get(source_config.plugin, "")
+    if not scheme:
+        return ""
+    return f"{scheme}://{root.name}/"
+
+
 def _build_discovery_callback(
     config, backend, dataset_id: int, source_config
 ) -> Callable[[Path], None]:
@@ -201,6 +230,16 @@ def run_daemon(config) -> None:
                 discovery_cb = _build_discovery_callback(
                     config, backend, dataset_id, source_config
                 )
+                # URI prefix MUST match what ``Source.parse`` writes
+                # into ``corpus.documents.source_uri`` so PushPipeline's
+                # ``find_document`` lookup hits.  Without this, every
+                # file modification falls through to the discovery
+                # callback again and re-runs the (~2 min) embedder
+                # pipeline instead of taking the cheap revision-insert
+                # replication path.  Mapping is per-plugin and mirrors
+                # the constants in ``corpus_forge.sources.filesystem``
+                # / ``corpus_forge.sources.markdown_vault``.
+                source_uri_prefix = _source_uri_prefix_for_push(source_config, root)
                 engine = SyncEngine(
                     dataset_id=dataset_id,
                     dataset_config=dataset,
@@ -211,6 +250,7 @@ def run_daemon(config) -> None:
                     host_id=config.host_id(),
                     daemon_config=config.daemon,
                     discovery_callback=discovery_cb,
+                    source_uri_prefix=source_uri_prefix,
                 )
                 engine.start()
                 engines.append(engine)

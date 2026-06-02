@@ -372,6 +372,36 @@ class TestDaemonOrchestrator:
             run_daemon(config)
             mock_cls.assert_not_called()
 
+    def test_source_uri_prefix_passed_to_sync_engine(self):
+        """``run_daemon`` derives the source_uri_prefix from the plugin.
+
+        ``FilesystemSource.parse`` writes
+        ``filesystem://<root.name>/<rel>``; ``MarkdownVaultSource.parse``
+        writes ``vault://<root.name>/<rel>``.  ``PushPipeline`` must use
+        the same scheme so ``find_document`` matches and modifications
+        take the cheap replication path instead of re-discovering.
+        """
+        for plugin_name, expected_scheme in (("filesystem", "filesystem"), ("markdown_vault", "vault")):
+            ds = MagicMock(sync_enabled=True)
+            ds.name = "vault"
+            source = MagicMock()
+            source.plugin = plugin_name
+            ds.sources = [source]
+            config = self._config_with([ds])
+            backend = self._backend_with({"vault": 1})
+
+            with (
+                patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+                patch("corpus_forge.daemon._source_root", return_value=Path("/data/Workspace")),
+                patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+            ):
+                run_daemon(config)
+
+            kwargs = mock_cls.call_args.kwargs
+            assert kwargs["source_uri_prefix"] == f"{expected_scheme}://Workspace/", (
+                f"plugin={plugin_name}: got prefix={kwargs.get('source_uri_prefix')!r}"
+            )
+
     def test_discovery_callback_swallows_lock_contention(self, caplog):
         """``IngestRunInProgressError`` from ingest_one logs DEBUG, not ERROR.
 

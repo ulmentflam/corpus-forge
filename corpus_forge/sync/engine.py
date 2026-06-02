@@ -22,6 +22,7 @@ class SyncEngine:
         daemon_config,
         source_root: Path | None = None,
         discovery_callback=None,
+        source_uri_prefix: str = "",
     ) -> None:
         # ``dataset_id`` is the backend row id, resolved by the caller
         # (typically ``run_daemon``) via
@@ -40,6 +41,13 @@ class SyncEngine:
         # ingest path.  PullPipeline does not need it — pulls are
         # driven off revisions a remote host already pushed.
         self._discovery_callback = discovery_callback
+        # ``source_uri_prefix`` aligns PushPipeline's lookup URI with
+        # the value ``Source.parse`` writes into ``corpus.documents``
+        # (e.g. ``filesystem://Workspace/``).  Without it,
+        # ``find_document`` never matches and modifications fall
+        # through to discovery every time, paying the full embedder
+        # cost on every save.
+        self._source_uri_prefix = source_uri_prefix
         self._echo_suppressor = EchoSuppressor()
         self._push_pipeline = None
         self._pull_pipeline = None
@@ -70,6 +78,7 @@ class SyncEngine:
             # exclusion patterns.  Empty list when the source has none.
             exclude_globs=getattr(self._source, "exclude_globs", None) or [],
             debounce_seconds=self._daemon_config.debounce_seconds,
+            source_uri_prefix=self._source_uri_prefix,
         )
         self._push_pipeline = push
 
