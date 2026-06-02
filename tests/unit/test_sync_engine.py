@@ -13,6 +13,7 @@ def _make_engine(
     embedders=None,
     host_id: str = "test-host",
     daemon_config=None,
+    discovery_callback=None,
 ) -> SyncEngine:
     return SyncEngine(
         dataset_id=dataset_id,
@@ -22,6 +23,7 @@ def _make_engine(
         embedders=embedders or [],
         host_id=host_id,
         daemon_config=daemon_config or MagicMock(),
+        discovery_callback=discovery_callback,
     )
 
 
@@ -104,6 +106,23 @@ class TestStart:
         ):
             engine.start()
         mock_pl.return_value.start.assert_called_once()
+
+    def test_push_pipeline_receives_discovery_callback(self):
+        """SyncEngine forwards ``discovery_callback`` to PushPipeline.
+
+        The callback turns ``handle_change`` calls for brand-new files
+        into discovery-and-ingest invocations.  PullPipeline does not
+        need it (it consumes revisions written by another host).
+        """
+        callback = MagicMock()
+        engine = _make_engine(dataset_id=1, discovery_callback=callback)
+        with (
+            patch("corpus_forge.sync.engine.PushPipeline") as mock_push,
+            patch("corpus_forge.sync.engine.PullPipeline"),
+        ):
+            engine.start()
+        kwargs = mock_push.call_args.kwargs
+        assert kwargs.get("discovery_callback") is callback
 
     def test_pipelines_receive_resolved_dataset_id(self):
         """Both pipelines must be constructed with the int dataset_id.

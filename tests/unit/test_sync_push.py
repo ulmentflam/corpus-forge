@@ -16,6 +16,7 @@ def _make_pipeline(
     dataset_id: int = 1,
     echo_suppressor=None,
     host_id: str = "test-host",
+    discovery_callback=None,
 ) -> PushPipeline:
     backend = backend or MagicMock()
     echo_suppressor = echo_suppressor or MagicMock()
@@ -24,6 +25,7 @@ def _make_pipeline(
         dataset_id=dataset_id,
         echo_suppressor=echo_suppressor,
         host_id=host_id,
+        discovery_callback=discovery_callback,
     )
 
 
@@ -269,8 +271,19 @@ class TestLockSourceContext:
         mock_lock.__enter__.assert_called_once()
         mock_lock.__exit__.assert_called_once()
 
-    def test_lock_source_released_on_exception(self, mock_path, mock_lock):
-        """When insert_revision raises, lock_source is still released."""
+    def test_lock_source_released_on_exception(self, mock_path, mock_lock, caplog):
+        """When insert_revision raises, lock_source is still released.
+
+        ``handle_change`` runs inside a ``threading.Timer`` callback, so
+        it now catches and logs exceptions instead of re-raising — a
+        bare propagation would land on stderr (``/dev/null`` for the
+        LaunchAgent) and silently kill watchdog event delivery.  The
+        ``with backend.lock_source(...):`` block still releases the
+        lock because Python's context manager semantics fire ``__exit__``
+        on the exception path regardless.
+        """
+        import logging as _logging  # noqa: PLC0415
+
         pipeline = _make_pipeline()
         pipeline._echo_suppressor.was_just_written.return_value = False
         type(mock_path.stat.return_value).st_mtime = PropertyMock(return_value=1000.0)
@@ -282,10 +295,16 @@ class TestLockSourceContext:
         }
         pipeline._backend.insert_revision.side_effect = RuntimeError("db error")
 
-        with _patch_chunk_hash("new_hash"), pytest.raises(RuntimeError):
+        with (
+            _patch_chunk_hash("new_hash"),
+            caplog.at_level(_logging.ERROR, logger="corpus_forge.sync.push"),
+        ):
+            # Must NOT propagate — watchdog thread must survive.
             pipeline.handle_change(mock_path)
 
         mock_lock.__exit__.assert_called_once()
+        # The exception is captured in the rotating log.
+        assert any("db error" in r.message or "handle_change raised" in r.message for r in caplog.records), caplog.records
 
     def test_lock_source_not_acquired_when_echo_suppressor_matches(self, mock_path):
         """No lock acquisition when echo suppressor short-circuits."""
@@ -839,6 +858,87 @@ class TestHandleDeleteICloudSibling:
         pipeline.handle_delete(path)
 
         pipeline._backend.lock_source.assert_called_once()
+
+
+# ── New-file discovery callback ─────────────────────────────────────────
+
+
+class TestDiscoveryCallback:
+    """``handle_change`` invokes ``discovery_callback`` for brand-new files.
+
+    Without the callback, the pipeline silently drops files that have no
+    backing ``corpus.documents`` row — by design, since PushPipeline is
+    a *replication* pipeline.  ``run_daemon`` injects a callback that
+    runs the per-file ingest path (extract → chunk → upsert → embed)
+    so brand-new files on disk enter the corpus on first watchdog
+    event rather than waiting for a manual ``corpus-forge ingest --once``.
+    """
+
+    @staticmethod
+    def _arm_pipeline(callback, mock_path, mock_lock, find_returns, resolve_returns=None):
+        """Build a pipeline whose echo suppressor + stat are happy.
+
+        ``find_returns`` controls the new-file branch (None → discovery).
+        ``resolve_returns`` controls the replication branch (used when
+        the discovery path is skipped — i.e. the doc already exists).
+        """
+        backend = MagicMock()
+        backend.find_document.return_value = find_returns
+        backend.resolve_document.return_value = resolve_returns or find_returns
+        backend.latest_revision.return_value = None
+        backend.lock_source.return_value = mock_lock
+        pipeline = _make_pipeline(backend=backend, discovery_callback=callback)
+        pipeline._echo_suppressor.was_just_written.return_value = False
+        pipeline._source_root = Path("/vault")
+        type(mock_path.stat.return_value).st_mtime = PropertyMock(return_value=1000.0)
+        return pipeline, backend
+
+    def test_callback_fires_when_document_not_in_backend(self, mock_path, mock_lock):
+        """``resolve_document`` returns None → discovery callback called."""
+        callback = MagicMock()
+        pipeline, _backend = self._arm_pipeline(callback, mock_path, mock_lock, None)
+
+        with _patch_chunk_hash("h1"):
+            pipeline.handle_change(mock_path)
+
+        callback.assert_called_once_with(mock_path)
+
+    def test_callback_not_fired_when_document_exists(self, mock_path, mock_lock):
+        """Known files take the replication path; callback is NOT called."""
+        callback = MagicMock()
+        pipeline, _backend = self._arm_pipeline(
+            callback, mock_path, mock_lock, {"id": 1, "content_hash": "other"}
+        )
+
+        with _patch_chunk_hash("new-hash"):
+            pipeline.handle_change(mock_path)
+
+        callback.assert_not_called()
+
+    def test_no_callback_preserves_silent_drop(self, mock_path, mock_lock):
+        """``discovery_callback=None`` keeps legacy behavior: silent return."""
+        pipeline, backend = self._arm_pipeline(None, mock_path, mock_lock, None)
+
+        # Must not raise.  No further backend calls past resolve_document.
+        with _patch_chunk_hash("h1"):
+            pipeline.handle_change(mock_path)
+
+        backend.insert_revision.assert_not_called()
+        backend.upsert_document.assert_not_called()
+
+    def test_callback_exception_does_not_kill_pipeline(self, mock_path, mock_lock):
+        """A buggy discovery callback must not crash the watchdog thread.
+
+        Exceptions inside the callback are logged + swallowed.  The
+        next file event proceeds normally.
+        """
+        callback = MagicMock(side_effect=RuntimeError("callback bug"))
+        pipeline, _backend = self._arm_pipeline(callback, mock_path, mock_lock, None)
+
+        # Should not raise.
+        with _patch_chunk_hash("h1"):
+            pipeline.handle_change(mock_path)
+        callback.assert_called_once()
 
 
 # ── helpers (private) ───────────────────────────────────────────────────

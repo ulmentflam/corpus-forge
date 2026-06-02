@@ -3,8 +3,10 @@
 import logging
 import signal
 import sys
+import threading
 import time
-from typing import NoReturn
+from pathlib import Path
+from typing import Callable, NoReturn
 
 from .sync.engine import SyncEngine
 
@@ -40,6 +42,85 @@ def _source_root(source):
     from corpus_forge.ignore_lifecycle import _source_root as _impl  # noqa: PLC0415
 
     return _impl(source)
+
+
+def _build_discovery_callback(
+    config, backend, dataset_id: int, source_config
+) -> Callable[[Path], None]:
+    """Return a per-source callback that ingests one brand-new file.
+
+    The callback is wired into ``PushPipeline`` via ``SyncEngine``.
+    When the watchdog handler sees a path with no row in
+    ``corpus.documents``, it hands the path here; we extract it
+    through the source plugin, chunk it, upsert it, and embed it —
+    the same path ``corpus-forge ingest --once`` walks, but for a
+    single file.
+
+    The expensive bits (source instantiation, chunker dispatcher,
+    embedder loading — qwen3-4096 is ~4 GB resident) are deferred
+    until the first new file actually appears so an idle daemon
+    stays light.  Re-init is guarded by a lock so concurrent
+    watchdog events don't race.
+    """
+
+    state: dict = {}
+    state_lock = threading.Lock()
+
+    def _ensure_pipeline_state() -> None:
+        if "source" in state:
+            return
+        with state_lock:
+            if "source" in state:  # double-checked under lock
+                return
+            # Lazy imports: ``corpus_forge.ingest`` pulls in a lot
+            # of optional plugins; we don't want to pay that cost
+            # at daemon startup if no new files appear.
+            from corpus_forge.ingest import (  # noqa: PLC0415
+                _instantiate_source,
+                get_active_embedders,
+                get_chunker_for_source,
+            )
+
+            source = _instantiate_source(source_config, config=config)
+            state["source"] = source
+            state["chunker"] = get_chunker_for_source(source, config)
+            state["embedders"] = get_active_embedders(config)
+            logger.info(
+                "Discovery callback warmed up for dataset_id=%d / %s "
+                "(embedders=%d)",
+                dataset_id,
+                getattr(source_config, "plugin", "?"),
+                len(state["embedders"]),
+            )
+
+    def _on_new_file(path: Path) -> None:
+        _ensure_pipeline_state()
+        from corpus_forge.ingest import ingest_one  # noqa: PLC0415
+
+        source = state["source"]
+        chunker = state["chunker"]
+        embedders = state["embedders"]
+        raw = source.parse(Path(path))
+        if raw is None:
+            logger.debug(
+                "Discovery: source.parse returned None for %s; skipping", path
+            )
+            return
+        ingest_one(
+            backend=backend,
+            raw=raw,
+            chunker=chunker,
+            embedders=embedders,
+            dataset_id=dataset_id,
+            source=source,
+        )
+        logger.info(
+            "Discovery: ingested new file %s into dataset_id=%d",
+            path,
+            dataset_id,
+        )
+
+    return _on_new_file
 
 
 def run_daemon(config) -> None:
@@ -94,6 +175,9 @@ def run_daemon(config) -> None:
                     )
                     continue
 
+                discovery_cb = _build_discovery_callback(
+                    config, backend, dataset_id, source_config
+                )
                 engine = SyncEngine(
                     dataset_id=dataset_id,
                     dataset_config=dataset,
@@ -103,6 +187,7 @@ def run_daemon(config) -> None:
                     embedders=[],
                     host_id=config.host_id(),
                     daemon_config=config.daemon,
+                    discovery_callback=discovery_cb,
                 )
                 engine.start()
                 engines.append(engine)

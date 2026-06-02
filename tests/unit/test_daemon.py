@@ -322,6 +322,29 @@ class TestDaemonOrchestrator:
             run_daemon(config)
             mock_cls.assert_not_called()
 
+    def test_discovery_callback_wired_into_sync_engine(self):
+        """``run_daemon`` builds a discovery callback and passes it to SyncEngine.
+
+        The callback turns watchdog ``on_created`` events for brand-new
+        files into per-file ingest invocations, so the daemon picks up
+        new content without waiting for a manual ``ingest --once``.
+        """
+        dataset = MagicMock(sync_enabled=True, sources=[MagicMock()])
+        dataset.name = "vault"
+        config = self._config_with([dataset])
+        backend = self._backend_with({"vault": 7})
+
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake")),
+            patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+        ):
+            run_daemon(config)
+
+        kwargs = mock_cls.call_args.kwargs
+        assert "discovery_callback" in kwargs
+        assert callable(kwargs["discovery_callback"])
+
     def test_dataset_id_passed_to_sync_engine(self):
         """Pin the SyncEngine kwargs contract — dataset_id is an explicit kw arg.
 

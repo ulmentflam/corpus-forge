@@ -64,11 +64,19 @@ class PushPipeline:
         dataset_id: int,
         echo_suppressor,
         host_id: str,
+        discovery_callback=None,
     ) -> None:
         self._backend = backend
         self._dataset_id = dataset_id
         self._echo_suppressor = echo_suppressor
         self._host_id = host_id
+        # Brand-new files (no row in ``corpus.documents``) take the
+        # discovery path: ``handle_change`` invokes this callable with
+        # the path so the caller (typically ``run_daemon``) can route
+        # it through the per-file ingest pipeline.  ``None`` keeps
+        # the legacy replication-only behavior — new files are
+        # silently dropped, as they were before this hook existed.
+        self._discovery_callback = discovery_callback
         self._mtime_cache: dict[str, float] = {}
         self._observer: observers.Observer | None = None  # pyrefly: ignore[unsupported-operation]  # watchdog's Observer is a callable factory; runtime annotation works
         self._handler: _DebouncedHandler | None = None
@@ -86,6 +94,19 @@ class PushPipeline:
         return str(path.resolve())
 
     def handle_change(self, path: Path) -> None:
+        # Wrap the whole body so any exception surfaces in the rotating
+        # log file.  Without this, the ``threading.Timer`` in the
+        # debounce handler swallows tracebacks to stderr — which the
+        # LaunchAgent / systemd unit redirects to ``/dev/null``, making
+        # watchdog-stage crashes invisible to operators.
+        try:
+            self._handle_change_inner(path)
+        except Exception:  # noqa: BLE001 — defensive in a worker thread
+            logger.exception("handle_change raised for %s", path)
+
+    def _handle_change_inner(self, path: Path) -> None:
+        logger.debug("handle_change: %s", path)
+
         # Cloud-duplicate early exit (BUG-7 fix: wire in before main logic)
         if self._handle_cloud_duplicate(path):
             return
@@ -108,11 +129,42 @@ class PushPipeline:
         if self._echo_suppressor.was_just_written(path, content_hash):
             return
 
-        # 3. Lock + revision logic
+        # 3. Discovery branch — fire the callback BEFORE the replication
+        # path's ``resolve_document`` call.  ``resolve_document`` is a
+        # lookup-OR-CREATE (see ``PostgresBackend.resolve_document``)
+        # which silently inserts an empty stub for any unknown
+        # ``source_uri`` and returns the stub.  That makes a "doc is
+        # None" check downstream unreachable for brand-new files.
+        # We instead use ``find_document`` (lookup-only) up front: a
+        # ``None`` here means there is no row at all, so hand the path
+        # to the discovery callback (the daemon-supplied ingest hook)
+        # and skip the replication path entirely.  ingest_one's own
+        # ``upsert_document`` will create the row with chunks + the
+        # right content_hash; the next push event will see it via
+        # ``find_document`` and take the replication path.
         source_uri = self._compute_source_uri(path)
+        if self._discovery_callback is not None:
+            existing = self._backend.find_document(self._dataset_id, source_uri)
+            if existing is None:
+                logger.info(
+                    "Discovery: new file %s — routing to ingest callback",
+                    path,
+                )
+                try:
+                    self._discovery_callback(path)
+                except Exception:  # noqa: BLE001 — defensive in a worker thread
+                    logger.exception(
+                        "Discovery callback raised for %s; new file not ingested",
+                        path,
+                    )
+                return
+
+        # 4. Lock + revision logic (replication path)
         with self._backend.lock_source(source_uri):
             doc = self._backend.resolve_document(self._dataset_id, source_uri)
             if doc is None:
+                # ``resolve_document`` only returns None for empty
+                # ``source_uri`` — keep the guard as a safety net.
                 return
             latest = self._backend.latest_revision(doc["id"])
 

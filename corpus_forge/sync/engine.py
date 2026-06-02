@@ -21,6 +21,7 @@ class SyncEngine:
         host_id: str,
         daemon_config,
         source_root: Path | None = None,
+        discovery_callback=None,
     ) -> None:
         # ``dataset_id`` is the backend row id, resolved by the caller
         # (typically ``run_daemon``) via
@@ -34,6 +35,11 @@ class SyncEngine:
         self._embedders = embedders
         self._host_id = host_id
         self._daemon_config = daemon_config
+        # ``discovery_callback`` is forwarded to PushPipeline so the
+        # watchdog handler routes brand-new files into the per-file
+        # ingest path.  PullPipeline does not need it — pulls are
+        # driven off revisions a remote host already pushed.
+        self._discovery_callback = discovery_callback
         self._echo_suppressor = EchoSuppressor()
         self._push_pipeline = None
         self._pull_pipeline = None
@@ -50,7 +56,13 @@ class SyncEngine:
 
     def start(self) -> None:
         echo = self._echo_suppressor
-        push = PushPipeline(self._backend, self._dataset_id, echo, self._host_id)
+        push = PushPipeline(
+            self._backend,
+            self._dataset_id,
+            echo,
+            self._host_id,
+            discovery_callback=self._discovery_callback,
+        )
         push.start(
             source_root=self._source_root,
             # ``exclude_globs`` is a field on ``DatasetSourceConfig``,
