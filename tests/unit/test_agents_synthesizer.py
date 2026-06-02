@@ -340,3 +340,32 @@ def test_shareable_pass_distinct_canned_response_from_private() -> None:
     # Crucially: shareable markdown contains no chunk_id leakage.
     assert "chunk_id" not in shareable.markdown
     assert "file:///a/test_fixtures.py" not in shareable.markdown
+
+
+def test_shareable_sanitizer_rejects_chunk_id_leak() -> None:
+    """If the LLM leaks `chunk_id=N` into the shareable response, refuse to emit.
+
+    PR #85 CodeRabbit follow-up: the prompt asks the LLM not to cite, but
+    we can't trust that — the shareable body lands in committable files.
+    Defensive regex guard raises LLMSynthesisError before any disk write.
+    """
+
+    def leaky_llm(prompt: str) -> str:
+        if "Do NOT cite chunk_ids" in prompt:
+            return _good_shareable_md() + "\n\nSee chunk_id=42 for the canonical pattern.\n"
+        return _good_private_md()
+
+    with pytest.raises(LLMSynthesisError, match="chunk_id="):
+        synthesize(_ctx(), _local(), _cross(), llm=leaky_llm)
+
+
+def test_shareable_sanitizer_rejects_filesystem_uri_leak() -> None:
+    """Raw `filesystem://` URIs in shareable output → refuse to emit."""
+
+    def leaky_llm(prompt: str) -> str:
+        if "Do NOT cite chunk_ids" in prompt:
+            return _good_shareable_md() + "\n\nSee filesystem://OtherRepo/x.py\n"
+        return _good_private_md()
+
+    with pytest.raises(LLMSynthesisError, match="filesystem://"):
+        synthesize(_ctx(), _local(), _cross(), llm=leaky_llm)

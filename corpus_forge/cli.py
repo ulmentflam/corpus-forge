@@ -3914,6 +3914,10 @@ _AGENT_SELF_EMITTING: frozenset[str] = frozenset(
         "chunk show",
         "chunk neighbors",
         "chunk doc",
+        # PR #85 — agents init self-emits a structured `result` event so
+        # the wrapper must skip; otherwise consumers see two terminal
+        # events with mismatched command names.
+        "agents init",
         # mcp serve: stdio carve-out — DO NOT emit anything to stdout.
         # The JSON-RPC peer owns the wire.  The command is added to the
         # self-emitting set so the wrapper's auto-emission is bypassed;

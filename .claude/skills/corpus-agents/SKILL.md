@@ -113,7 +113,7 @@ The flow is:
 
 ## CLI flag summary
 
-```
+```text
 corpus-forge agents init
   [--project-root PATH]      default: cwd
   [--output-dir PATH]        default: <root>/.corpus-agents/

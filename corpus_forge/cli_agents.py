@@ -243,18 +243,17 @@ def _project_covered_by_active_dataset(config: Any, project_root: Path) -> bool:
                     continue
                 if candidate == target:
                     return True
-                # candidate contains target?
+                # candidate contains target? (the indexed source root is
+                # an ancestor of the project root → project is covered)
                 try:
                     target.relative_to(candidate)
                     return True
                 except ValueError:
                     pass
-                # target contains candidate?
-                try:
-                    candidate.relative_to(target)
-                    return True
-                except ValueError:
-                    pass
+                # The reverse direction (candidate.relative_to(target)) was
+                # removed: it would treat the project as "covered" when only
+                # a subdirectory is indexed, which is wrong — synthesis would
+                # then run on partial corpus data without triggering ingest.
     return False
 
 
@@ -353,7 +352,9 @@ def _emit_result(payload: dict[str, Any], *, json_flag: bool) -> None:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
     if ui_agent.is_agent_mode():
-        ui_agent.emit("result", cmd="agents.init", status="ok", data=payload)
+        # Use the same cmd name shape the agent wrapper would generate
+        # (space-joined) so agent consumers see one consistent identifier.
+        ui_agent.emit("result", cmd="agents init", status="ok", data=payload)
         return
     ui_ok("agents init complete")
     for path in payload["paths_written"]:
@@ -524,6 +525,15 @@ def agents_init(
     corpus_agents_dir = (
         output_dir.expanduser().resolve() if output_dir is not None else (root / ".corpus-agents")
     )
+    # Reject up-front when --output-dir points at an existing file —
+    # otherwise `write_corpus_agents_dir`'s `mkdir(..., exist_ok=True)`
+    # would crash with NotADirectoryError and surface as a traceback.
+    if corpus_agents_dir.exists() and not corpus_agents_dir.is_dir():
+        ui_error(
+            f"--output-dir {corpus_agents_dir!s} exists and is not a directory; "
+            "point it at a directory (or a not-yet-existing path)."
+        )
+        raise typer.Exit(code=1)
     meta = _build_meta(project_root=root, context=context)
 
     write_result: WriteResult = write_corpus_agents_dir(

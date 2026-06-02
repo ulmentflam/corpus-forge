@@ -171,11 +171,12 @@ def _detect_test_framework(root: Path) -> str | None:
             ):
                 return "pytest"
             if candidate.is_dir():
-                # one-level nested
+                # one-level nested — scan ALL entries (not just first; iterdir
+                # order is unspecified, so `__init__.py` or `conftest.py`
+                # leading would mask real test_*.py files).
                 for inner in candidate.iterdir():
                     if inner.is_file() and inner.name.startswith("test_") and inner.suffix == ".py":
                         return "pytest"
-                    break
     if any(root.glob("jest.config.*")):
         return "jest"
     if any(root.glob("vitest.config.*")):

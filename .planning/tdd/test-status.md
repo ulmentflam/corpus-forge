@@ -2,7 +2,7 @@
 _Append-only per task._
 
 ## Schema per entry
-```
+```md
 ### T<id> — <title>
 - claimed_at: <ISO>
 - finished_at: <ISO>

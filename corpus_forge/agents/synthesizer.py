@@ -21,6 +21,7 @@ this module.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -320,6 +321,21 @@ def synthesize(
     shareable_prompt = build_shareable_prompt(context, local)
     shareable_raw = _call_llm(llm, shareable_prompt, label="shareable")
     _validate_required_sections(shareable_raw, label="shareable")
+    # Defensive sanitization: enforce the shareable contract instead of
+    # trusting the prompt. The shareable body lands in `<root>/AGENTS.md`
+    # (committable) and `.corpus-agents/shareable.md`, so any leaked
+    # citation-shaped content would persist into shared git history.
+    _SHAREABLE_FORBIDDEN_PATTERNS = (
+        (r"chunk_id\s*=\s*\d+", "chunk_id= citation marker"),
+        (r"\bfilesystem://", "raw filesystem:// source_uri"),
+        (r"\bvault://", "raw vault:// source_uri"),
+    )
+    for _pattern, _description in _SHAREABLE_FORBIDDEN_PATTERNS:
+        if re.search(_pattern, shareable_raw):
+            raise LLMSynthesisError(
+                f"shareable response leaked {_description}; refusing to emit "
+                "(would persist into shared git history)"
+            )
     shareable = SynthesisResult(
         markdown=shareable_raw,
         sections=_sections_in(shareable_raw, include_cross=False),

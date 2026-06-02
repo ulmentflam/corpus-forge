@@ -2,7 +2,7 @@
 _Append-only per task._
 
 ## Schema per entry
-```
+```md
 ### T<id> — <title>
 - reviewed_at: <ISO>
 - verdict: approved | rework
