@@ -17,10 +17,11 @@ findings:
   - All 6 tasks GREEN. Combined new + touched suite: 349 passing.
   - ruff format, ruff check, pyrefly: 0 errors / 0 warnings (108
     suppressed warnings are pre-existing, unrelated to this change).
-  - Wider unit suite (5448 tests collected) matches main baseline
-    exactly — no new regressions, only the 121 pre-existing failures
-    caused by missing optional extras (hdbscan, pyarrow, datasets,
-    pdf2image, tree_sitter_language_pack) in this venv.
+  - Wider unit suite (5568 collected: 5447 passing + 121 pre-existing
+    failures) matches main baseline exactly — no new regressions, only
+    the 121 pre-existing failures caused by missing optional extras
+    (hdbscan, pyarrow, datasets, pdf2image, tree_sitter_language_pack)
+    in this venv.
   - Back-compat verified:
       * `search --json <PATH>` still writes JSON file
         (test_cli_search.py::test_search_json_writes_payload_to_file)

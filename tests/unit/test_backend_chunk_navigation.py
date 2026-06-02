@@ -290,7 +290,7 @@ class TestBackendABCContract:
         assert callable(backend.get_document_chunks)
 
     def test_postgres_implements_get_chunk_neighbors(self) -> None:
-        pg = pytest.importorskip("psycopg")  # noqa: F841
+        pytest.importorskip("psycopg")
         from corpus_forge.backends.postgres import PostgresBackend
 
         # Defined on the class itself (not inherited Protocol stub) — proves
@@ -298,7 +298,7 @@ class TestBackendABCContract:
         assert "get_chunk_neighbors" in PostgresBackend.__dict__
 
     def test_postgres_implements_get_document_chunks(self) -> None:
-        pg = pytest.importorskip("psycopg")  # noqa: F841
+        pytest.importorskip("psycopg")
         from corpus_forge.backends.postgres import PostgresBackend
 
         assert "get_document_chunks" in PostgresBackend.__dict__

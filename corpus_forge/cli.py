@@ -2171,14 +2171,24 @@ def search(
 
     # Agent-chunk-explorer T4: `--json -` is the clean-stdout sentinel.
     json_stdout_mode = json_out == "-"
+    _noisy_loggers = ("alembic", "alembic.runtime.migration", "corpus_forge")
+    _saved_log_levels: dict[str, int] = {}
     if json_stdout_mode:
         # Suppress alembic INFO / plugin chatter on stdout for the duration
         # of this command — the user wants ONE JSON object on stdout, period.
         # init_logging() routes Rich output to stderr already, but library
         # loggers may have been seeded at INFO; clamp them to WARNING so
-        # they don't leak into stdout via any errant print sites.
-        for noisy in ("alembic", "alembic.runtime.migration", "corpus_forge"):
+        # they don't leak into stdout via any errant print sites. Saved
+        # levels are restored in the try/finally that wraps the command
+        # body so suppression doesn't leak into later in-process calls
+        # (e.g. pytest invocations running search() repeatedly).
+        for noisy in _noisy_loggers:
+            _saved_log_levels[noisy] = _logging.getLogger(noisy).level
             _logging.getLogger(noisy).setLevel(_logging.WARNING)
+
+    def _restore_log_levels() -> None:
+        for _name, _level in _saved_log_levels.items():
+            _logging.getLogger(_name).setLevel(_level)
 
     # Build the reranker FIRST (lazy; default-off) so we can pass it to
     # the retriever builder.  Mirrors `eval`'s wiring exactly.
@@ -2188,6 +2198,7 @@ def search(
         try:
             reranker, rerank_top_n = _build_reranker_for_eval(fusion=fusion, alpha=alpha)
         except FileNotFoundError:
+            _restore_log_levels()
             ui_error("No configuration found; run `corpus-forge setup` to create one.")
             raise typer.Exit(code=2) from None
 
@@ -2220,6 +2231,7 @@ def search(
             "hits": [_hit_to_jsonable(h) for h in hits],
         }
         print(_json.dumps(payload, ensure_ascii=False))
+        _restore_log_levels()
         return
 
     # Phase L Wave 9 — agent mode emits a single structured result event.
@@ -3894,6 +3906,12 @@ _AGENT_SELF_EMITTING: frozenset[str] = frozenset(
         "prune",
         "bug-report",
         "capabilities",
+        # PR #83 — chunk subcommands print a single JSON object on
+        # stdout when --json is set; the agent wrapper's auto-emission
+        # would inject extra start/result events around it. Suppress.
+        "chunk show",
+        "chunk neighbors",
+        "chunk doc",
         # mcp serve: stdio carve-out — DO NOT emit anything to stdout.
         # The JSON-RPC peer owns the wire.  The command is added to the
         # self-emitting set so the wrapper's auto-emission is bypassed;

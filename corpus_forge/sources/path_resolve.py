@@ -58,6 +58,9 @@ def resolve_abs_path(source_uri: str | None, config: Config) -> Path | None:
     """
     if not source_uri or not isinstance(source_uri, str):
         return None
+    # Fast-reject schemes we don't claim — `claude-code://`, `https://`, etc.
+    if not source_uri.startswith(_FS_SCHEMES):
+        return None
 
     # Pick the right scheme + field.
     if source_uri.startswith("filesystem://"):

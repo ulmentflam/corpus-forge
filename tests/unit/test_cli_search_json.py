@@ -68,7 +68,8 @@ def test_search_json_stdout_emits_single_object(
     payload = json.loads(result.stdout)
     assert payload["query"] == "q"
     assert payload["k"] == 2
-    assert isinstance(payload["took_ms"], int | float)
+    # `took_ms` is the `int(...)` cast of perf_counter() — enforce int-only.
+    assert isinstance(payload["took_ms"], int)
     assert payload["took_ms"] >= 0
     assert isinstance(payload["hits"], list)
     assert len(payload["hits"]) == 2
@@ -107,8 +108,12 @@ def test_search_json_file_path_backcompat(tmp_path, monkeypatch: pytest.MonkeyPa
     assert result.exit_code == 0, result.output
     assert out_path.exists()
     payload = json.loads(out_path.read_text(encoding="utf-8"))
+    # Enforce the same schema for both --json - (stdout) and --json <PATH>.
     assert payload["query"] == "q"
-    assert "hits" in payload
+    assert payload["k"] == 10  # default
+    assert isinstance(payload["took_ms"], int)
+    assert payload["took_ms"] >= 0
+    assert isinstance(payload["hits"], list)
 
 
 def test_search_without_json_keeps_human_output(

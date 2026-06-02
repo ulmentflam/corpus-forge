@@ -74,6 +74,17 @@ def test_resolve_filesystem_uri_returns_root_when_rel_empty(tmp_path: Path) -> N
     assert out == root.resolve()
 
 
+def test_resolve_filesystem_uri_no_trailing_slash_returns_root(tmp_path: Path) -> None:
+    """A URI with NO trailing slash (``filesystem://Vault``) also returns the root."""
+    from corpus_forge.sources.path_resolve import resolve_abs_path
+
+    root = tmp_path / "Vault"
+    root.mkdir()
+    cfg = _make_config({"plugin": "filesystem", "root": str(root), "chunker": "markdown"})
+    out = resolve_abs_path("filesystem://Vault", cfg)
+    assert out == root.resolve()
+
+
 def test_resolve_filesystem_uri_multi_source_disambiguates(tmp_path: Path) -> None:
     """Two filesystem sources — only the one with matching ``.name`` is chosen."""
     from corpus_forge.sources.path_resolve import resolve_abs_path
