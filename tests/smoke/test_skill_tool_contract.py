@@ -98,6 +98,9 @@ _READ_TOOLS = {
     "find_duplicates",
     "cluster_topics",
     "score_quality",
+    # PR #83 — agent-friendly chunk navigation (read-only)
+    "chunk_neighbors",
+    "get_document",
 }
 _ALL_TOOLS = _READ_TOOLS | _WRITE_TOOLS
 
