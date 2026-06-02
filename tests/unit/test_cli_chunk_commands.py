@@ -98,6 +98,13 @@ def patched_backend(monkeypatch: pytest.MonkeyPatch):
 
     from corpus_forge import cli
 
+    # CI runs without ~/.config/corpus-forge/config.toml, so the eager
+    # `_load_config_quietly()` returns None and the command exits with
+    # code 2 ("No configuration found") before reaching the patched
+    # backend builder. Stub it with a sentinel — the chunk commands
+    # only pass it through to `_build_backend_from_config` which we
+    # already stub to ignore its arg.
+    monkeypatch.setattr(cli, "_load_config_quietly", lambda *_a, **_kw: object())
     monkeypatch.setattr(cli, "_build_backend_from_config", _builder)
     return backend
 
