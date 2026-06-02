@@ -270,7 +270,10 @@ class TestWritesEnabledGate:
             "find_duplicates",
             "cluster_topics",
             "score_quality",
-        }, f"Expected exactly 14 read tools; got: {sorted(tools)}"
+            # agent-chunk-explorer read tools
+            "chunk_neighbors",
+            "get_document",
+        }, f"Expected exactly 16 read tools; got: {sorted(tools)}"
 
     def test_writes_enabled_exposes_all_11_tools(
         self, backend: SQLiteBackend, seeded: dict
@@ -308,6 +311,9 @@ class TestWritesEnabledGate:
             "find_duplicates",
             "cluster_topics",
             "score_quality",
+            # agent-chunk-explorer read tools
+            "chunk_neighbors",
+            "get_document",
             # F-03 write tools
             "add_label",
             "remove_label",

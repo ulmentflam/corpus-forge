@@ -162,6 +162,7 @@ class TestRegisteredTools:
         # J4:   next_curation_target + next_curation_batch are always-available read tools.
         # Phase M Wave 3: list_ignore + validate_ignore are always-available read tools.
         # Phase O Wave 4: analyze_corpus + find_duplicates + cluster_topics + score_quality.
+        # agent-chunk-explorer: chunk_neighbors + get_document are always-available read tools.
         server, _ = self._build()
         tools = _list_tools_via_handler(server)
         names = {t.name for t in tools}
@@ -181,11 +182,15 @@ class TestRegisteredTools:
             "find_duplicates",
             "cluster_topics",
             "score_quality",
+            # agent-chunk-explorer read tools
+            "chunk_neighbors",
+            "get_document",
         }, (
-            f"Expected fourteen read tools (search/get_chunk/list_datasets/"
+            f"Expected sixteen read tools (search/get_chunk/list_datasets/"
             f"render_conversation/list_chat_templates/estimate_sync_size/"
             f"next_curation_target/next_curation_batch/list_ignore/validate_ignore/"
-            f"analyze_corpus/find_duplicates/cluster_topics/score_quality); "
+            f"analyze_corpus/find_duplicates/cluster_topics/score_quality/"
+            f"chunk_neighbors/get_document); "
             f"got {names}"
         )
 

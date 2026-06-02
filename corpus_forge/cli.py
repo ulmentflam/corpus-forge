@@ -2147,10 +2147,14 @@ def search(
         "--rerank/--no-rerank",
         help="Apply the configured cross-encoder reranker after fusion (opt-in; default off).",
     ),
-    json_out: Path = typer.Option(
+    json_out: str = typer.Option(
         None,
         "--json",
-        help="Write {'query': ..., 'hits': [...]} JSON to this path.",
+        help=(
+            "Emit machine-readable JSON.  Pass a PATH to write to a file "
+            "(back-compat); pass `-` to write one JSON object to stdout "
+            "with no log chatter (single object: {query, k, took_ms, hits})."
+        ),
     ),
 ) -> None:
     """Search the corpus over the configured backend.
@@ -2160,8 +2164,21 @@ def search(
     Default-off reranker — pass ``--rerank`` to opt in.
     """
     import json as _json
+    import logging as _logging
+    import time as _time
 
     from corpus_forge.retrieval.types import SearchOptions
+
+    # Agent-chunk-explorer T4: `--json -` is the clean-stdout sentinel.
+    json_stdout_mode = json_out == "-"
+    if json_stdout_mode:
+        # Suppress alembic INFO / plugin chatter on stdout for the duration
+        # of this command — the user wants ONE JSON object on stdout, period.
+        # init_logging() routes Rich output to stderr already, but library
+        # loggers may have been seeded at INFO; clamp them to WARNING so
+        # they don't leak into stdout via any errant print sites.
+        for noisy in ("alembic", "alembic.runtime.migration", "corpus_forge"):
+            _logging.getLogger(noisy).setLevel(_logging.WARNING)
 
     # Build the reranker FIRST (lazy; default-off) so we can pass it to
     # the retriever builder.  Mirrors `eval`'s wiring exactly.
@@ -2188,7 +2205,22 @@ def search(
         rerank_top_n=rerank_top_n,
     )
 
+    _t0 = _time.perf_counter()
     hits = retriever.search(query, options)
+    took_ms = int((_time.perf_counter() - _t0) * 1000)
+
+    # T4: `--json -` short-circuits everything — suppress agent-mode
+    # events, suppress human output, suppress alembic/plugin INFO chatter.
+    # ONE JSON object to stdout, exit 0.
+    if json_stdout_mode:
+        payload = {
+            "query": query,
+            "k": k,
+            "took_ms": took_ms,
+            "hits": [_hit_to_jsonable(h) for h in hits],
+        }
+        print(_json.dumps(payload, ensure_ascii=False))
+        return
 
     # Phase L Wave 9 — agent mode emits a single structured result event.
     if ui_agent.is_agent_mode():
@@ -2217,12 +2249,17 @@ def search(
         return
 
     if json_out is not None:
+        # Back-compat: `--json <PATH>` writes to a file. Includes the new
+        # `k` + `took_ms` fields so the file payload matches stdout mode.
         payload = {
             "query": query,
+            "k": k,
+            "took_ms": took_ms,
             "hits": [_hit_to_jsonable(h) for h in hits],
         }
-        json_out.write_text(_json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        ui_info(f"Wrote {len(hits)} hits -> {json_out}")
+        out_path = Path(json_out)
+        out_path.write_text(_json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        ui_info(f"Wrote {len(hits)} hits -> {out_path}")
         return
 
     if not hits:
@@ -2247,6 +2284,332 @@ def search(
         print("  ".join(header_bits))
         print(f"    {body}")
         print("")
+
+
+# ── chunk subcommand group (agent-chunk-explorer) ───────────────────────
+#
+# Three subcommands let agents explore chunks without raw SQL:
+#   chunk show <id>       — full text + metadata
+#   chunk neighbors <id>  — N preceding + N following in the same doc/convo
+#   chunk doc <doc_id>    — every chunk of a document, ordered
+#
+# All three honour --json for clean machine-readable output (no log
+# chatter), suitable for piping into an agent's next tool call.
+
+
+chunk_app = typer.Typer(
+    name="chunk",
+    help=(
+        "Inspect individual chunks and their surrounding context.  "
+        "Designed for agents — every command supports --json for a "
+        "single clean JSON object on stdout."
+    ),
+    add_completion=False,
+)
+app.add_typer(chunk_app, name="chunk")
+
+
+def _quiet_logs_for_chunk_json() -> None:
+    """Clamp noisy library loggers so stdout stays JSON-only."""
+    import logging as _logging
+
+    for noisy in ("alembic", "alembic.runtime.migration", "corpus_forge"):
+        _logging.getLogger(noisy).setLevel(_logging.WARNING)
+
+
+def _chunk_to_jsonable(chunk: dict, *, abs_path: "Path | None" = None) -> dict:
+    """Convert a backend chunk row to a JSON-safe dict for CLI/MCP output."""
+    md = chunk.get("metadata") or {}
+    if not isinstance(md, dict):
+        # Defensive — postgres may surface as Json wrapper.
+        try:
+            md = dict(md)
+        except Exception:  # pragma: no cover — defensive
+            md = {}
+    out: dict = {
+        "chunk_id": int(chunk["id"]),
+        "document_id": chunk.get("document_id"),
+        "conversation_id": chunk.get("conversation_id"),
+        "message_id": chunk.get("message_id"),
+        "chunk_index": chunk.get("chunk_index"),
+        "text": chunk.get("text"),
+        "heading": chunk.get("heading"),
+        "role": chunk.get("role"),
+        "token_count": chunk.get("token_count"),
+        "source_uri": chunk.get("source_uri"),
+        "title": chunk.get("title"),
+        "dataset_id": chunk.get("dataset_id"),
+        "abs_path": str(abs_path) if abs_path is not None else None,
+        "metadata": md,
+    }
+    # line_start / line_end live in metadata for some extractors — surface
+    # them at the top level for the agent's convenience.
+    if "line_start" in md:
+        out["line_start"] = md["line_start"]
+    if "line_end" in md:
+        out["line_end"] = md["line_end"]
+    # Pre/next ids only present if the backend computed them (get_chunk).
+    if "prev_chunk_id" in chunk:
+        out["prev_chunk_id"] = chunk.get("prev_chunk_id")
+    if "next_chunk_id" in chunk:
+        out["next_chunk_id"] = chunk.get("next_chunk_id")
+    return out
+
+
+def _resolve_chunk_abs_path(source_uri: "str | None", config: "object | None") -> "Path | None":
+    """Best-effort source_uri -> abs path via path_resolve, never raises."""
+    if not source_uri or config is None:
+        return None
+    try:
+        from corpus_forge.sources.path_resolve import resolve_abs_path
+
+        return resolve_abs_path(source_uri, config)  # type: ignore[arg-type]
+    except Exception:  # pragma: no cover — defensive
+        return None
+
+
+def _load_config_quietly() -> "object | None":
+    """Load Config; return None on any failure (CLI must not crash on missing config)."""
+    try:
+        from .config import Config
+
+        return Config.load()
+    except Exception:  # pragma: no cover — defensive
+        return None
+
+
+@chunk_app.command("show")
+def chunk_show_cmd(
+    chunk_id: int = typer.Argument(..., help="Primary key of the chunk."),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit one JSON object on stdout, no log chatter, exit 0/2.",
+    ),
+    neighbors_hint: bool = typer.Option(
+        None,
+        "--neighbors-hint/--no-neighbors-hint",
+        help=(
+            "Include prev_chunk_id + next_chunk_id in the output.  Defaults "
+            "to ON for --json, OFF for human output."
+        ),
+    ),
+) -> None:
+    """Print a chunk's full text and metadata.
+
+    Useful for the post-search "show me the whole chunk" follow-up.
+    With ``--json``, emits one JSON object on stdout with zero log noise.
+    """
+    import json as _json
+
+    if json_output:
+        _quiet_logs_for_chunk_json()
+
+    config = _load_config_quietly()
+    if config is None:
+        ui_error("No configuration found; run `corpus-forge setup` to create one.")
+        raise typer.Exit(code=2)
+
+    backend = _build_backend_from_config(config)
+    chunk = backend.get_chunk(chunk_id)
+    if chunk is None:
+        if json_output:
+            print(_json.dumps({"error": f"chunk_id={chunk_id} not found", "code": "NOT_FOUND"}))
+        else:
+            ui_error(f"chunk_id={chunk_id} not found")
+        raise typer.Exit(code=2)
+
+    abs_path = _resolve_chunk_abs_path(chunk.get("source_uri"), config)
+    payload = _chunk_to_jsonable(chunk, abs_path=abs_path)
+
+    # Default for --neighbors-hint: on for JSON, off for human.
+    hint_on = neighbors_hint if neighbors_hint is not None else bool(json_output)
+    if not hint_on:
+        payload.pop("prev_chunk_id", None)
+        payload.pop("next_chunk_id", None)
+
+    if json_output:
+        print(_json.dumps(payload, ensure_ascii=False))
+        return
+
+    # Human render: simple header + text block.
+    print(f"chunk_id={payload['chunk_id']}  dataset={payload.get('dataset_id')}")
+    if payload.get("source_uri"):
+        print(f"source_uri={payload['source_uri']}")
+    if payload.get("abs_path"):
+        print(f"abs_path={payload['abs_path']}")
+    if payload.get("document_id") is not None:
+        print(f"document_id={payload['document_id']}  chunk_index={payload['chunk_index']}")
+    if payload.get("heading"):
+        print(f"heading={payload['heading']!r}")
+    if payload.get("role"):
+        print(f"role={payload['role']}")
+    if payload.get("token_count") is not None:
+        print(f"token_count={payload['token_count']}")
+    if hint_on:
+        print(
+            f"prev_chunk_id={payload.get('prev_chunk_id')}  "
+            f"next_chunk_id={payload.get('next_chunk_id')}"
+        )
+    print("---")
+    print(payload.get("text", ""))
+
+
+@chunk_app.command("neighbors")
+def chunk_neighbors_cmd(
+    chunk_id: int = typer.Argument(..., help="Anchor chunk id."),
+    before: int = typer.Option(1, "--before", help="Number of preceding chunks."),
+    after: int = typer.Option(1, "--after", help="Number of following chunks."),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit one JSON envelope on stdout, no log chatter."
+    ),
+) -> None:
+    """Print chunks adjacent to ``chunk_id`` in the same document or conversation.
+
+    JSON envelope: ``{"anchor_chunk_id": <id>, "before": [...], "after": [...]}``
+    where the two arrays are ordered by ``chunk_index`` ascending.
+    """
+    import json as _json
+
+    if json_output:
+        _quiet_logs_for_chunk_json()
+    if before < 0 or after < 0:
+        raise typer.BadParameter("--before and --after must be >= 0")
+
+    config = _load_config_quietly()
+    if config is None:
+        ui_error("No configuration found; run `corpus-forge setup` to create one.")
+        raise typer.Exit(code=2)
+
+    backend = _build_backend_from_config(config)
+    anchor = backend.get_chunk(chunk_id)
+    if anchor is None:
+        if json_output:
+            print(_json.dumps({"error": f"chunk_id={chunk_id} not found", "code": "NOT_FOUND"}))
+        else:
+            ui_error(f"chunk_id={chunk_id} not found")
+        raise typer.Exit(code=2)
+
+    neighbors = backend.get_chunk_neighbors(chunk_id, before=before, after=after)
+    anchor_idx = anchor.get("chunk_index")
+    before_rows = [c for c in neighbors if (c.get("chunk_index") or 0) < (anchor_idx or 0)]
+    after_rows = [c for c in neighbors if (c.get("chunk_index") or 0) > (anchor_idx or 0)]
+
+    def _row(c: dict) -> dict:
+        abs_path = _resolve_chunk_abs_path(c.get("source_uri"), config)
+        return _chunk_to_jsonable(c, abs_path=abs_path)
+
+    payload = {
+        "anchor_chunk_id": int(chunk_id),
+        "before": [_row(c) for c in before_rows],
+        "after": [_row(c) for c in after_rows],
+    }
+    if json_output:
+        print(_json.dumps(payload, ensure_ascii=False))
+        return
+
+    # Human render: list each neighbor with a separator.
+    print(f"anchor_chunk_id={chunk_id}  (before={len(before_rows)}, after={len(after_rows)})")
+    for c in payload["before"] + payload["after"]:
+        print("---")
+        print(
+            f"[chunk_index={c.get('chunk_index')} chunk_id={c['chunk_id']}"
+            f" heading={c.get('heading')!r}]"
+        )
+        print(c.get("text") or "")
+
+
+@chunk_app.command("doc")
+def chunk_doc_cmd(
+    document_id: int = typer.Argument(..., help="Document primary key."),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit one JSON object on stdout, no log chatter."
+    ),
+    reassemble: bool = typer.Option(
+        False,
+        "--reassemble",
+        help=(
+            "Concatenate chunk texts (best-effort full-file repro). "
+            "Chunkers may insert overlap — won't always byte-match the source."
+        ),
+    ),
+) -> None:
+    """Print every chunk of a document, ordered by chunk_index.
+
+    With ``--reassemble``, concatenates chunk texts (no separators). A
+    caveat about overlap is written to **stderr** so it doesn't pollute
+    the reassembled text on stdout.
+    """
+    import json as _json
+    import sys as _sys
+
+    if json_output:
+        _quiet_logs_for_chunk_json()
+
+    config = _load_config_quietly()
+    if config is None:
+        ui_error("No configuration found; run `corpus-forge setup` to create one.")
+        raise typer.Exit(code=2)
+
+    backend = _build_backend_from_config(config)
+    rows = backend.get_document_chunks(document_id)
+    if not rows:
+        if json_output:
+            print(
+                _json.dumps(
+                    {
+                        "error": f"document_id={document_id} has no chunks (or doesn't exist)",
+                        "code": "NOT_FOUND",
+                    }
+                )
+            )
+        else:
+            ui_error(f"document_id={document_id} has no chunks (or doesn't exist)")
+        raise typer.Exit(code=2)
+
+    first = rows[0]
+    abs_path = _resolve_chunk_abs_path(first.get("source_uri"), config)
+    doc_block = {
+        "id": int(document_id),
+        "source_uri": first.get("source_uri"),
+        "abs_path": str(abs_path) if abs_path is not None else None,
+        "dataset_id": first.get("dataset_id"),
+        "title": first.get("title"),
+    }
+
+    if reassemble:
+        full_text = "".join((r.get("text") or "") for r in rows)
+        if json_output:
+            payload = {"document": doc_block, "text": full_text}
+            print(_json.dumps(payload, ensure_ascii=False))
+            return
+        print(
+            "NOTE: --reassemble concatenates chunk texts; chunker overlap may "
+            "cause non-byte-exact reproduction.",
+            file=_sys.stderr,
+        )
+        print(full_text)
+        return
+
+    if json_output:
+        payload = {
+            "document": doc_block,
+            "chunks": [_chunk_to_jsonable(r) for r in rows],
+        }
+        print(_json.dumps(payload, ensure_ascii=False))
+        return
+
+    # Human render: header + each chunk separated by `---`.
+    print(f"document_id={document_id}  source_uri={doc_block['source_uri']!r}")
+    if doc_block["abs_path"]:
+        print(f"abs_path={doc_block['abs_path']}")
+    for r in rows:
+        print("---")
+        print(
+            f"[chunk_index={r.get('chunk_index')} chunk_id={r.get('id')}"
+            f" heading={r.get('heading')!r}]"
+        )
+        print(r.get("text") or "")
 
 
 # ── classify command (Phase E / C-05) ───────────────────────────────────

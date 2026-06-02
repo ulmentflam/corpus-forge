@@ -2169,6 +2169,10 @@ class SQLiteBackend:
 
         LEFT JOIN documents because message chunks have ``document_id IS NULL``;
         the joined ``source_uri`` / ``title`` are then None on the returned dict.
+
+        Additive (agent-chunk-explorer): also includes ``prev_chunk_id``
+        and ``next_chunk_id`` (``int | None``) so callers can chain
+        follow-up lookups without an extra query.
         """
         rows = self._execute(
             """
@@ -2184,7 +2188,157 @@ class SQLiteBackend:
             """,
             (chunk_id,),
         )
-        return rows[0] if rows else None
+        if not rows:
+            return None
+        row = dict(rows[0])
+        row["prev_chunk_id"], row["next_chunk_id"] = self._chunk_prev_next_ids(row)
+        return row
+
+    def _chunk_prev_next_ids(self, row: dict) -> tuple[int | None, int | None]:
+        """Compute (prev_chunk_id, next_chunk_id) for a chunk row.
+
+        Defensive: missing ``chunk_index`` (test mocks, partial rows)
+        short-circuits to ``(None, None)`` rather than raising.
+        """
+        idx = row.get("chunk_index")
+        if idx is None:
+            return None, None
+        if row.get("document_id") is not None:
+            doc_id = row["document_id"]
+            prev = self._execute(
+                "SELECT id FROM chunks "
+                "WHERE document_id = ? AND chunk_index < ? "
+                "ORDER BY chunk_index DESC LIMIT 1",
+                (doc_id, idx),
+            )
+            nxt = self._execute(
+                "SELECT id FROM chunks "
+                "WHERE document_id = ? AND chunk_index > ? "
+                "ORDER BY chunk_index ASC LIMIT 1",
+                (doc_id, idx),
+            )
+            return (
+                int(prev[0]["id"]) if prev else None,
+                int(nxt[0]["id"]) if nxt else None,
+            )
+        if row.get("conversation_id") is not None:
+            convo_id = row["conversation_id"]
+            msg_id = row.get("message_id")
+            prev = self._execute(
+                "SELECT id FROM chunks "
+                "WHERE conversation_id = ? "
+                "  AND (message_id < ? OR (message_id = ? AND chunk_index < ?)) "
+                "ORDER BY message_id DESC, chunk_index DESC LIMIT 1",
+                (convo_id, msg_id, msg_id, idx),
+            )
+            nxt = self._execute(
+                "SELECT id FROM chunks "
+                "WHERE conversation_id = ? "
+                "  AND (message_id > ? OR (message_id = ? AND chunk_index > ?)) "
+                "ORDER BY message_id ASC, chunk_index ASC LIMIT 1",
+                (convo_id, msg_id, msg_id, idx),
+            )
+            return (
+                int(prev[0]["id"]) if prev else None,
+                int(nxt[0]["id"]) if nxt else None,
+            )
+        return None, None
+
+    def get_chunk_neighbors(
+        self,
+        chunk_id: int,
+        *,
+        before: int = 1,
+        after: int = 1,
+    ) -> "list[dict]":
+        """Return ``before`` preceding + ``after`` following neighbor chunks.
+
+        Same row shape as :meth:`get_chunk` (minus prev/next ids — they
+        only make sense for the anchor). Returns ``[]`` if the anchor
+        chunk doesn't exist. ``before=0`` and/or ``after=0`` is valid.
+        """
+        if before < 0 or after < 0:
+            raise ValueError("`before` and `after` must be >= 0")
+        anchor_rows = self._execute(
+            "SELECT id, document_id, conversation_id, message_id, chunk_index "
+            "FROM chunks WHERE id = ?",
+            (chunk_id,),
+        )
+        if not anchor_rows:
+            return []
+        anchor = anchor_rows[0]
+        select_cols = (
+            "c.id, c.document_id, c.conversation_id, c.message_id, "
+            "c.chunk_index, c.text, c.heading, c.role, c.token_count, "
+            "c.metadata, c.content_hash, "
+            "COALESCE(d.dataset_id, cv.dataset_id) AS dataset_id, "
+            "d.source_uri, d.title"
+        )
+        joins = (
+            "FROM chunks c "
+            "LEFT JOIN documents d ON d.id = c.document_id "
+            "LEFT JOIN conversations cv ON cv.id = c.conversation_id"
+        )
+        out: list[dict] = []
+        if anchor["document_id"] is not None:
+            doc_id = anchor["document_id"]
+            idx = anchor["chunk_index"]
+            if before > 0:
+                prev_rows = self._execute(
+                    f"SELECT {select_cols} {joins} "
+                    f"WHERE c.document_id = ? AND c.chunk_index < ? "
+                    f"ORDER BY c.chunk_index DESC LIMIT ?",
+                    (doc_id, idx, before),
+                )
+                out.extend(reversed([dict(r) for r in prev_rows]))
+            if after > 0:
+                next_rows = self._execute(
+                    f"SELECT {select_cols} {joins} "
+                    f"WHERE c.document_id = ? AND c.chunk_index > ? "
+                    f"ORDER BY c.chunk_index ASC LIMIT ?",
+                    (doc_id, idx, after),
+                )
+                out.extend(dict(r) for r in next_rows)
+        elif anchor["conversation_id"] is not None:
+            convo_id = anchor["conversation_id"]
+            msg_id = anchor["message_id"]
+            idx = anchor["chunk_index"]
+            if before > 0:
+                prev_rows = self._execute(
+                    f"SELECT {select_cols} {joins} "
+                    f"WHERE c.conversation_id = ? "
+                    f"  AND (c.message_id < ? OR (c.message_id = ? AND c.chunk_index < ?)) "
+                    f"ORDER BY c.message_id DESC, c.chunk_index DESC LIMIT ?",
+                    (convo_id, msg_id, msg_id, idx, before),
+                )
+                out.extend(reversed([dict(r) for r in prev_rows]))
+            if after > 0:
+                next_rows = self._execute(
+                    f"SELECT {select_cols} {joins} "
+                    f"WHERE c.conversation_id = ? "
+                    f"  AND (c.message_id > ? OR (c.message_id = ? AND c.chunk_index > ?)) "
+                    f"ORDER BY c.message_id ASC, c.chunk_index ASC LIMIT ?",
+                    (convo_id, msg_id, msg_id, idx, after),
+                )
+                out.extend(dict(r) for r in next_rows)
+        return out
+
+    def get_document_chunks(self, document_id: int) -> "list[dict]":
+        """Return every chunk of a document ordered by ``chunk_index``."""
+        rows = self._execute(
+            """
+            SELECT c.id, c.document_id, c.conversation_id, c.message_id,
+                   c.chunk_index, c.text, c.heading, c.role, c.token_count,
+                   c.metadata, c.content_hash,
+                   d.dataset_id, d.source_uri, d.title
+            FROM chunks c
+            LEFT JOIN documents d ON d.id = c.document_id
+            WHERE c.document_id = ?
+            ORDER BY c.chunk_index ASC
+            """,
+            (document_id,),
+        )
+        return [dict(r) for r in rows]
 
     def replace_document_chunks(
         self,
