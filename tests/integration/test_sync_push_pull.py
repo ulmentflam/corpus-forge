@@ -190,6 +190,7 @@ def test_edit_on_a_appears_on_b(pg_dsn: str, tmp_path: Path) -> None:
     daemon_cfg = _make_daemon_config(poll_interval_s=0.5)
 
     engine_a = SyncEngine(
+        dataset_id=dataset_id,
         dataset_config=_make_dataset_config(dataset_id),
         source=_make_source(root_a),
         backend=backend,
@@ -198,6 +199,7 @@ def test_edit_on_a_appears_on_b(pg_dsn: str, tmp_path: Path) -> None:
         daemon_config=daemon_cfg,
     )
     engine_b = SyncEngine(
+        dataset_id=dataset_id,
         dataset_config=_make_dataset_config(dataset_id),
         source=_make_source(root_b),
         backend=backend,
@@ -259,6 +261,7 @@ def test_edit_on_b_appears_on_a(pg_dsn: str, tmp_path: Path) -> None:
     daemon_cfg = _make_daemon_config(poll_interval_s=0.5)
 
     engine_a = SyncEngine(
+        dataset_id=dataset_id,
         dataset_config=_make_dataset_config(dataset_id),
         source=_make_source(root_a),
         backend=backend,
@@ -267,6 +270,7 @@ def test_edit_on_b_appears_on_a(pg_dsn: str, tmp_path: Path) -> None:
         daemon_config=daemon_cfg,
     )
     engine_b = SyncEngine(
+        dataset_id=dataset_id,
         dataset_config=_make_dataset_config(dataset_id),
         source=_make_source(root_b),
         backend=backend,
@@ -327,6 +331,7 @@ def test_revision_numbers_monotonic(pg_dsn: str, tmp_path: Path) -> None:
     daemon_cfg = _make_daemon_config(poll_interval_s=0.5)
 
     engine_a = SyncEngine(
+        dataset_id=dataset_id,
         dataset_config=_make_dataset_config(dataset_id),
         source=_make_source(root_a),
         backend=backend,
@@ -409,6 +414,7 @@ def test_hash_equality_after_convergence(pg_dsn: str, tmp_path: Path) -> None:
     daemon_cfg = _make_daemon_config(poll_interval_s=0.5)
 
     engine_a = SyncEngine(
+        dataset_id=dataset_id,
         dataset_config=_make_dataset_config(dataset_id),
         source=_make_source(root_a),
         backend=backend,
@@ -417,6 +423,7 @@ def test_hash_equality_after_convergence(pg_dsn: str, tmp_path: Path) -> None:
         daemon_config=daemon_cfg,
     )
     engine_b = SyncEngine(
+        dataset_id=dataset_id,
         dataset_config=_make_dataset_config(dataset_id),
         source=_make_source(root_b),
         backend=backend,

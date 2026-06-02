@@ -1,5 +1,6 @@
 """Unit tests for daemon module."""
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -143,50 +144,86 @@ class TestDaemonSignalHandling:
 class TestDaemonOrchestrator:
     """Tests for daemon sync engine orchestration via run_daemon."""
 
-    def test_sync_enabled_starts_engine(self):
-        """sync_enabled dataset — SyncEngine constructed and started."""
+    @staticmethod
+    def _config_with(dataset_mocks):
+        """Build a config mock whose ``host_id()`` and ``backend`` are concrete."""
         config = MagicMock()
-        dataset = MagicMock(sync_enabled=True)
-        dataset.sources = [MagicMock()]
-        config.datasets = [dataset]
+        config.datasets = dataset_mocks
+        config.host_id.return_value = "test-host"
+        return config
 
-        with patch("corpus_forge.daemon.SyncEngine") as mock_cls:
+    @staticmethod
+    def _backend_with(id_map):
+        """Build a backend mock whose ``find_dataset_id_by_name`` maps name → id."""
+        backend = MagicMock()
+        backend.find_dataset_id_by_name.side_effect = lambda name: id_map.get(name)
+        return backend
+
+    def test_sync_enabled_starts_engine(self):
+        """sync_enabled dataset — SyncEngine constructed with resolved id and started."""
+        dataset = MagicMock(sync_enabled=True, name="vault")
+        dataset.name = "vault"  # MagicMock(name=...) sets the mock's own name attr
+        dataset.sources = [MagicMock()]
+        config = self._config_with([dataset])
+        backend = self._backend_with({"vault": 42})
+
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake/vault")),
+            patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+        ):
             run_daemon(config)
             mock_cls.assert_called_once()
+            kwargs = mock_cls.call_args.kwargs
+            assert kwargs["dataset_id"] == 42
+            assert kwargs["source_root"] == Path("/fake/vault")
             mock_cls.return_value.start.assert_called_once()
 
     def test_sync_disabled_skips_engine(self):
         """sync_enabled=False — no SyncEngine created."""
-        config = MagicMock()
         dataset = MagicMock(sync_enabled=False)
         dataset.sources = [MagicMock()]
-        config.datasets = [dataset]
+        config = self._config_with([dataset])
+        backend = self._backend_with({"vault": 42})
 
-        with patch("corpus_forge.daemon.SyncEngine") as mock_cls:
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake/vault")),
+            patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+        ):
             run_daemon(config)
             mock_cls.assert_not_called()
 
     def test_multiple_sync_datasets_all_started(self):
-        """Multiple sync-enabled datasets — all get engines."""
-        config = MagicMock()
+        """Multiple sync-enabled datasets — each gets the right id."""
         d1 = MagicMock(sync_enabled=True, sources=[MagicMock()])
+        d1.name = "vault"
         d2 = MagicMock(sync_enabled=True, sources=[MagicMock()])
-        config.datasets = [d1, d2]
+        d2.name = "chats"
+        config = self._config_with([d1, d2])
+        backend = self._backend_with({"vault": 1, "chats": 7})
 
-        with patch("corpus_forge.daemon.SyncEngine") as mock_cls:
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake")),
+            patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+        ):
             run_daemon(config)
             assert mock_cls.call_count == 2
-            assert mock_cls.return_value.start.call_count == 2
+            ids_passed = [c.kwargs["dataset_id"] for c in mock_cls.call_args_list]
+            assert sorted(ids_passed) == [1, 7]
 
     def test_signal_stops_all_engines(self):
         """SIGINT/SIGTERM handler calls stop() on every engine."""
-        config = MagicMock()
         d1 = MagicMock(sync_enabled=True, sources=[MagicMock()])
-        config.datasets = [d1]
-
+        d1.name = "vault"
+        config = self._config_with([d1])
+        backend = self._backend_with({"vault": 1})
         engine = MagicMock()
 
         with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake")),
             patch("corpus_forge.daemon.SyncEngine", return_value=engine),
             patch("corpus_forge.daemon.signal.signal") as mock_signal,
             patch("corpus_forge.daemon.sys.exit"),
@@ -198,14 +235,17 @@ class TestDaemonOrchestrator:
 
     def test_signal_does_not_stop_disabled_engines(self):
         """Only running engines are stopped on signal (disabled skipped)."""
-        config = MagicMock()
         enabled = MagicMock(sync_enabled=True, sources=[MagicMock()])
+        enabled.name = "vault"
         disabled = MagicMock(sync_enabled=False, sources=[MagicMock()])
-        config.datasets = [enabled, disabled]
-
+        disabled.name = "chats"
+        config = self._config_with([enabled, disabled])
+        backend = self._backend_with({"vault": 1})
         engine = MagicMock()
 
         with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake")),
             patch("corpus_forge.daemon.SyncEngine", return_value=engine),
             patch("corpus_forge.daemon.signal.signal") as mock_signal,
             patch("corpus_forge.daemon.sys.exit"),
@@ -214,6 +254,102 @@ class TestDaemonOrchestrator:
             handler = mock_signal.call_args_list[0][0][1]
             handler(None, None)
             engine.stop.assert_called_once()
+
+    def test_source_without_fs_root_skipped(self):
+        """Sources whose plugin has no watchable root → engine skipped, no crash.
+
+        ``_source_root`` returns ``None`` for plugins like ``zotero`` or
+        the chat ingesters.  ``run_daemon`` must skip those sources
+        cleanly rather than feed ``None`` into ``SyncEngine`` and crash
+        on the first watchdog call.
+        """
+        dataset = MagicMock(sync_enabled=True, sources=[MagicMock()])
+        dataset.name = "vault"
+        config = self._config_with([dataset])
+        backend = self._backend_with({"vault": 5})
+
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=None),
+            patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+        ):
+            run_daemon(config)
+            mock_cls.assert_not_called()
+
+    def test_unknown_dataset_name_skipped_with_warning(self, caplog):
+        """sync_enabled dataset whose name is not in the backend → skip with WARNING.
+
+        Regression for the ``AttributeError: 'DatasetConfig' object has no
+        attribute 'id'`` bug surfaced after PR #86 unblocked the
+        ``run_daemon`` path: when the user sets ``sync_enabled = true`` on
+        a dataset that hasn't been ingested yet, the backend has no row
+        for it, so we cannot resolve a dataset id.  The daemon must skip
+        cleanly with a WARNING rather than crash.
+        """
+        import logging as _logging  # noqa: PLC0415
+
+        dataset = MagicMock(sync_enabled=True, sources=[MagicMock()])
+        dataset.name = "uningested"
+        config = self._config_with([dataset])
+        backend = self._backend_with({})  # empty — no datasets known
+
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake")),
+            patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+            caplog.at_level(_logging.WARNING, logger="corpus_forge.daemon"),
+        ):
+            run_daemon(config)
+            mock_cls.assert_not_called()
+
+        warnings = [r.message for r in caplog.records if r.levelno >= _logging.WARNING]
+        assert any("uningested" in m for m in warnings), warnings
+
+    def test_no_backend_skips_all_engines(self, caplog):
+        """``_get_any_backend`` returns None → run_daemon is a clean no-op.
+
+        Mirrors the same defensive guard ``_log_embedder_drift_warning``
+        uses for setups where the backend isn't reachable at startup.
+        """
+        dataset = MagicMock(sync_enabled=True, sources=[MagicMock()])
+        dataset.name = "vault"
+        config = self._config_with([dataset])
+
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=None),
+            patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+        ):
+            run_daemon(config)
+            mock_cls.assert_not_called()
+
+    def test_dataset_id_passed_to_sync_engine(self):
+        """Pin the SyncEngine kwargs contract — dataset_id is an explicit kw arg.
+
+        Regression for the AttributeError: the broken call site was
+        ``SyncEngine(... dataset_config=dataset ...)`` and SyncEngine
+        read ``self._dataset_config.id``.  The contract now is that
+        ``run_daemon`` passes the int it resolved from the backend.
+        """
+        dataset = MagicMock(sync_enabled=True)
+        dataset.name = "vault"
+        source = MagicMock()
+        dataset.sources = [source]
+        config = self._config_with([dataset])
+        backend = self._backend_with({"vault": 99})
+
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake")),
+            patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+        ):
+            run_daemon(config)
+
+        kwargs = mock_cls.call_args.kwargs
+        assert kwargs["dataset_id"] == 99
+        assert kwargs["backend"] is backend
+        assert kwargs["host_id"] == "test-host"
+        assert kwargs["source"] is source
+        assert kwargs["source_root"] == Path("/fake")
 
 
 class TestDaemonRespectsConfigValidator:

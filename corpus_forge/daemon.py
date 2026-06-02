@@ -11,31 +11,108 @@ from .sync.engine import SyncEngine
 logger = logging.getLogger(__name__)
 
 
+def _get_any_backend(config):
+    """Module-level shim around ``cli._get_any_backend``.
+
+    Defined here as a wrapper (rather than imported at module load)
+    to break the ``cli -> daemon -> cli`` circular import that the
+    Typer command registration path sets up.  Tests patch
+    ``corpus_forge.daemon._get_any_backend`` to stand in for the real
+    backend factory; keeping a module-level definition makes that
+    attribute resolvable at patch time.
+    """
+
+    from corpus_forge.cli import _get_any_backend as _impl  # noqa: PLC0415
+
+    return _impl(config)
+
+
+def _source_root(source):
+    """Module-level shim around ``ignore_lifecycle._source_root``.
+
+    Plugin-aware on-disk root resolution: returns ``Path`` for
+    ``filesystem`` / ``markdown_vault`` sources, ``None`` for
+    sources without a watchable filesystem root (zotero, chat
+    plugins, etc.).  Defined here as a wrapper so tests can patch
+    ``corpus_forge.daemon._source_root`` directly.
+    """
+
+    from corpus_forge.ignore_lifecycle import _source_root as _impl  # noqa: PLC0415
+
+    return _impl(source)
+
+
 def run_daemon(config) -> None:
     """Run daemon with sync engine orchestration.
 
-    For each dataset with sync_enabled=True, constructs a SyncEngine
-    and starts it. Registers SIGINT/SIGTERM handlers that stop all
-    engines before exiting.
+    For each dataset with ``sync_enabled=True``:
+
+    1. Resolve the backend row id via
+       ``backend.find_dataset_id_by_name(name)``.  Skip with a WARNING
+       if the name has never been ingested (no row → no id).
+    2. Construct one ``SyncEngine`` per source with the resolved id.
+
+    Registers SIGINT/SIGTERM handlers that stop all engines before
+    exiting.  No-ops cleanly if the backend can't be reached at
+    startup.
     """
     engines: list[SyncEngine] = []
 
-    for dataset in config.datasets:
-        if not dataset.sync_enabled:
-            continue
+    backend = _get_any_backend(config)
+    if backend is None:
+        logger.warning(
+            "No reachable backend at daemon startup; skipping all sync engines"
+        )
+    else:
+        for dataset in config.datasets:
+            if not dataset.sync_enabled:
+                continue
 
-        for source_config in dataset.sources:
-            engine = SyncEngine(
-                dataset_config=dataset,
-                source=source_config,
-                backend=config.backend,
-                embedders=[],
-                host_id=config.host_id(),
-                daemon_config=config.daemon,
-            )
-            engine.start()
-            engines.append(engine)
-            logger.info(f"Started sync engine for {dataset.name}/{source_config.plugin}")
+            dataset_id = backend.find_dataset_id_by_name(dataset.name)
+            if dataset_id is None:
+                logger.warning(
+                    "Dataset %r is sync_enabled but not yet present in the "
+                    "backend; run `corpus-forge ingest --once` first to "
+                    "register it.  Skipping its sync engine.",
+                    dataset.name,
+                )
+                continue
+
+            for source_config in dataset.sources:
+                # Resolve the per-plugin on-disk root.  ``filesystem``
+                # uses ``source.root``; ``markdown_vault`` uses
+                # ``source.vault_root``.  Skip sources that don't expose
+                # a watchable FS root (zotero, chat plugins, etc.) —
+                # SyncEngine watches files, not API-backed sources.
+                root = _source_root(source_config)
+                if root is None:
+                    logger.info(
+                        "Skipping sync engine for %s/%s — plugin has no "
+                        "watchable filesystem root",
+                        dataset.name,
+                        source_config.plugin,
+                    )
+                    continue
+
+                engine = SyncEngine(
+                    dataset_id=dataset_id,
+                    dataset_config=dataset,
+                    source=source_config,
+                    source_root=root,
+                    backend=backend,
+                    embedders=[],
+                    host_id=config.host_id(),
+                    daemon_config=config.daemon,
+                )
+                engine.start()
+                engines.append(engine)
+                logger.info(
+                    "Started sync engine for %s/%s (dataset_id=%d, root=%s)",
+                    dataset.name,
+                    source_config.plugin,
+                    dataset_id,
+                    root,
+                )
 
     def _shutdown(signum, _frame):
         logger.info(f"Received signal {signum}, stopping {len(engines)} engine(s)")

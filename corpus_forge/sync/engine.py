@@ -1,6 +1,7 @@
 """SyncEngine — orchestrates PushPipeline and PullPipeline."""
 
 import logging
+from pathlib import Path
 
 from corpus_forge.sync.echo import EchoSuppressor
 from corpus_forge.sync.pull import PullPipeline
@@ -12,13 +13,21 @@ logger = logging.getLogger(__name__)
 class SyncEngine:
     def __init__(
         self,
+        dataset_id: int,
         dataset_config,
         source,
         backend,
         embedders,
         host_id: str,
         daemon_config,
+        source_root: Path | None = None,
     ) -> None:
+        # ``dataset_id`` is the backend row id, resolved by the caller
+        # (typically ``run_daemon``) via
+        # ``backend.find_dataset_id_by_name(name)``.  ``DatasetConfig``
+        # (the Pydantic config object) carries no ``id`` — the id
+        # lives only on the backend's ``corpus.datasets`` row.
+        self._dataset_id = dataset_id
         self._dataset_config = dataset_config
         self._source = source
         self._backend = backend
@@ -29,25 +38,38 @@ class SyncEngine:
         self._push_pipeline = None
         self._pull_pipeline = None
 
+        # ``source_root`` is plugin-aware: the on-disk path lives on
+        # ``source.root`` for ``filesystem`` and ``source.vault_root``
+        # for ``markdown_vault``.  When ``run_daemon`` passes it
+        # explicitly we use that; otherwise we fall back to
+        # ``source.root`` for the legacy duck-typed shape used by the
+        # cross-host integration tests (which mock the source object).
+        self._source_root: Path = (
+            Path(source_root) if source_root is not None else Path(source.root)
+        )
+
     def start(self) -> None:
         echo = self._echo_suppressor
-        push = PushPipeline(self._backend, self._dataset_config.id, echo, self._host_id)
+        push = PushPipeline(self._backend, self._dataset_id, echo, self._host_id)
         push.start(
-            source_root=self._source.root,
-            exclude_globs=self._dataset_config.exclude_globs or [],
+            source_root=self._source_root,
+            # ``exclude_globs`` is a field on ``DatasetSourceConfig``,
+            # not ``DatasetConfig`` — each source defines its own
+            # exclusion patterns.  Empty list when the source has none.
+            exclude_globs=getattr(self._source, "exclude_globs", None) or [],
             debounce_seconds=self._daemon_config.debounce_seconds,
         )
         self._push_pipeline = push
 
         pull = PullPipeline(
             self._backend,
-            self._dataset_config.id,
-            self._source.root,
+            self._dataset_id,
+            self._source_root,
             echo,
             self._host_id,
         )
         pull.start(
-            source_root=self._source.root,
+            source_root=self._source_root,
             poll_interval_s=self._daemon_config.sync_poll_interval_s,
         )
         self._pull_pipeline = pull
