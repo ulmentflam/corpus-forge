@@ -52,41 +52,62 @@ class TestSetupSignalHandlers:
 class TestDaemonMain:
     """Tests for daemon main function."""
 
-    def test_main_sets_up_signal_handlers(self):
-        """Test that main calls setup_signal_handlers."""
+    def test_main_loads_config_and_calls_run_daemon(self):
+        """``main`` must load ``Config`` and hand it to ``run_daemon``.
+
+        Regression test for the daemon respawn loop bug where ``main``
+        called the unimplemented ``ingest_main(once=False)`` stub
+        instead of ``run_daemon``, so launchd's ``KeepAlive`` respawned
+        the process every ~10s and no sync engines ever started.
+        """
+        fake_config = MagicMock()
         with (
-            patch("corpus_forge.daemon.setup_signal_handlers") as mock_setup,
-            patch("corpus_forge.daemon.ingest_main") as mock_ingest,
-            patch("corpus_forge.daemon.logging.info"),
-            patch("corpus_forge.daemon.sys.exit"),
+            patch("corpus_forge.config.Config.load", return_value=fake_config) as mock_load,
+            patch("corpus_forge.logging_config.init_logging"),
+            patch("corpus_forge.daemon.run_daemon") as mock_run,
+            patch("corpus_forge.daemon.time.sleep", side_effect=SystemExit(0)),
+            patch("corpus_forge.daemon.logger"),
+            patch("corpus_forge.daemon._log_embedder_drift_warning"),
+            pytest.raises(SystemExit),
         ):
             main()
-            mock_setup.assert_called_once()
-            mock_ingest.assert_called_once_with(once=False)
+            mock_load.assert_called_once()
+            mock_run.assert_called_once_with(fake_config)
 
     def test_main_logs_start(self):
         """Test that main logs startup message."""
         with (
-            patch("corpus_forge.daemon.setup_signal_handlers"),
-            patch("corpus_forge.daemon.ingest_main") as mock_ingest,
-            patch("corpus_forge.daemon.logging.info") as mock_info,
-            patch("corpus_forge.daemon.sys.exit"),
+            patch("corpus_forge.config.Config.load", return_value=MagicMock()),
+            patch("corpus_forge.logging_config.init_logging"),
+            patch("corpus_forge.daemon.run_daemon"),
+            patch("corpus_forge.daemon.time.sleep", side_effect=SystemExit(0)),
+            patch("corpus_forge.daemon.logger") as mock_logger,
+            patch("corpus_forge.daemon._log_embedder_drift_warning"),
+            pytest.raises(SystemExit),
         ):
             main()
-            mock_info.assert_any_call("Starting corpus-forge daemon...")
-            mock_ingest.assert_called_once()
+            mock_logger.info.assert_any_call("Starting corpus-forge daemon...")
 
-    def test_main_exits_after_ingest(self):
-        """Test that main exits after ingest_main returns."""
+    def test_main_blocks_in_sleep_loop_until_signal(self):
+        """``main`` must block after ``run_daemon`` returns.
+
+        ``run_daemon`` is non-blocking — it spawns watcher threads and
+        returns.  ``main`` must keep the process alive until a signal
+        handler raises ``SystemExit``; otherwise the daemon falls
+        through to ``sys.exit(0)`` immediately and launchd / systemd
+        respawn it in a tight loop.
+        """
         with (
-            patch("corpus_forge.daemon.setup_signal_handlers"),
-            patch("corpus_forge.daemon.ingest_main"),
-            patch("corpus_forge.daemon.logging.info"),
-            patch("corpus_forge.daemon.sys.exit") as mock_exit,
+            patch("corpus_forge.config.Config.load", return_value=MagicMock()),
+            patch("corpus_forge.logging_config.init_logging"),
+            patch("corpus_forge.daemon.run_daemon"),
+            patch("corpus_forge.daemon.time.sleep", side_effect=SystemExit(0)) as mock_sleep,
+            patch("corpus_forge.daemon.logger"),
+            patch("corpus_forge.daemon._log_embedder_drift_warning"),
+            pytest.raises(SystemExit),
         ):
             main()
-            # Should exit at the end
-            assert mock_exit.called
+            assert mock_sleep.called
 
 
 class TestDaemonSignalHandling:

@@ -3,9 +3,9 @@
 import logging
 import signal
 import sys
+import time
 from typing import NoReturn
 
-from .ingest import main as ingest_main
 from .sync.engine import SyncEngine
 
 logger = logging.getLogger(__name__)
@@ -59,9 +59,26 @@ def setup_signal_handlers() -> None:
 
 
 def main() -> NoReturn:
-    """Main entry point for daemon mode."""
-    setup_signal_handlers()
-    logging.info("Starting corpus-forge daemon...")
+    """Main entry point for daemon mode.
+
+    Loads the active ``Config``, hands it to ``run_daemon`` (which
+    spawns one PushPipeline/PullPipeline pair per ``sync_enabled``
+    source and registers SIGINT/SIGTERM handlers), then blocks
+    forever.  The signal handler raises ``SystemExit`` which
+    propagates up through ``time.sleep`` and out of ``main``.
+    """
+    from corpus_forge.config import Config  # noqa: PLC0415
+    from corpus_forge.logging_config import init_logging  # noqa: PLC0415
+
+    # Route ``corpus_forge.*`` logging to the rotating ``daemon.log``
+    # file under ``$CACHE/corpus-forge/logs/``.  Without this the
+    # daemon's records would land on stderr — which is redirected to
+    # ``/dev/null`` under the LaunchAgent / systemd unit — making the
+    # process invisible to ``corpus-forge service status`` and to
+    # operators tailing the log.
+    init_logging("daemon", verbose=False, quiet=False)
+
+    logger.info("Starting corpus-forge daemon...")
 
     # Phase L Wave 5 — fire a WARNING for any embedder drift the daemon
     # detects on startup.  Daemons run unattended and don't prompt;
@@ -69,13 +86,15 @@ def main() -> NoReturn:
     # greppable signal.
     _log_embedder_drift_warning()
 
-    # In daemon mode, we run continuous ingestion
-    # For now, we'll just run one-shot and exit
-    # In a real implementation, we'd set up watchdog observers and run indefinitely
-    ingest_main(once=False)
+    config = Config.load()
+    run_daemon(config)
 
-    # This point should never be reached in a real daemon
-    logging.info("Daemon stopped")
+    # Block until ``run_daemon``'s signal handler exits the process.
+    while True:
+        time.sleep(3600)
+
+    # Unreachable — kept for type-checker satisfaction (``NoReturn``).
+    logger.info("Daemon stopped")
     sys.exit(0)
 
 
