@@ -860,6 +860,126 @@ class TestHandleDeleteICloudSibling:
         pipeline._backend.lock_source.assert_called_once()
 
 
+# ── Binary-file robustness ─────────────────────────────────────────────
+
+
+class TestBinaryFileHandling:
+    """``handle_change`` must survive non-UTF-8 binary files cleanly.
+
+    Watchdog fires for every file under the watched root, including
+    binaries (JPEGs in ``tool-results/``, vendored archives, etc.).
+    ``read_text(encoding="utf-8")`` raises ``UnicodeDecodeError`` on
+    these.  Two layers of defense:
+
+    1. ``_should_ignore`` consults the same ``IgnoreStack`` the scanner
+       uses (``load_global_ignore`` + ``load_local_ignore`` + globs),
+       so any file the ``.corpusignore`` managed block excludes is
+       dropped before we touch its bytes.
+    2. ``handle_change`` catches ``UnicodeDecodeError`` for the
+       residual binaries that slip through the ignore stack, logs at
+       DEBUG, and returns cleanly — no ERROR-level noise, no stack
+       trace in ``daemon.log`` on every JPEG event.
+    """
+
+    def test_handle_change_swallows_unicode_decode_error(self, mock_path, mock_lock, caplog):
+        """A non-UTF-8 binary file must not raise to the watchdog timer."""
+        import logging as _logging  # noqa: PLC0415
+
+        # Make read_text simulate a binary file's first byte.
+        mock_path.read_text.side_effect = UnicodeDecodeError(
+            "utf-8", b"\xff", 0, 1, "invalid start byte"
+        )
+        type(mock_path.stat.return_value).st_mtime = PropertyMock(return_value=1000.0)
+        backend = MagicMock()
+        backend.lock_source.return_value = mock_lock
+        pipeline = _make_pipeline(backend=backend)
+        pipeline._echo_suppressor.was_just_written.return_value = False
+        pipeline._source_root = Path("/vault")
+
+        with caplog.at_level(_logging.DEBUG, logger="corpus_forge.sync.push"):
+            # Must not raise.
+            pipeline.handle_change(mock_path)
+
+        # No replication-side calls fired — we bailed before the lock.
+        backend.resolve_document.assert_not_called()
+        backend.insert_revision.assert_not_called()
+        # And the error did NOT escalate to ERROR-level "handle_change raised"
+        # (that path is for genuine bugs; binary files are expected noise).
+        errors = [r for r in caplog.records if r.levelno >= _logging.ERROR]
+        assert not errors, [r.message for r in errors]
+
+    def test_should_ignore_consults_ignore_stack(self, tmp_path):
+        """When an ``IgnoreStack`` is wired, it gates ``_should_ignore``.
+
+        The scanner uses ``IgnoreStack`` (``load_global_ignore +
+        load_local_ignore + exclude_globs``) at scan time; the daemon's
+        watchdog needs the same gate so the two views can't drift.
+        """
+        from corpus_forge.ignore import CorpusIgnore, IgnoreStack
+
+        pipeline = _make_pipeline()
+        pipeline._source_root = tmp_path
+        stack = IgnoreStack(sets=(CorpusIgnore.from_lines(["*.jpg"], root=tmp_path),))
+        pipeline._ignore_stack = stack
+
+        jpg_path = tmp_path / "img" / "cat.jpg"
+        jpg_path.parent.mkdir()
+        jpg_path.write_bytes(b"\xff\xd8\xff")
+
+        assert pipeline._should_ignore(jpg_path) is True
+
+    def test_should_ignore_passes_text_files_through_stack(self, tmp_path):
+        """An ``IgnoreStack`` whose patterns don't match must NOT block."""
+        from corpus_forge.ignore import CorpusIgnore, IgnoreStack
+
+        pipeline = _make_pipeline()
+        pipeline._source_root = tmp_path
+        stack = IgnoreStack(sets=(CorpusIgnore.from_lines(["*.jpg"], root=tmp_path),))
+        pipeline._ignore_stack = stack
+
+        md_path = tmp_path / "notes" / "foo.md"
+        md_path.parent.mkdir()
+        md_path.write_text("# hello", encoding="utf-8")
+
+        assert pipeline._should_ignore(md_path) is False
+
+    def test_pipeline_builds_ignore_stack_from_managed_corpusignore(self, tmp_path):
+        """``PushPipeline.start`` composes the same IgnoreStack the scanner uses.
+
+        Walks the same three-layer composition: global ignore +
+        ``<source_root>/.corpusignore`` (the managed block) +
+        ``exclude_globs``.  Whatever ``.corpusignore`` patterns the user's
+        managed block carries (audio/video when whisper is off,
+        RAW images when image_extractor is off, etc.) MUST gate the
+        daemon's watchdog the same way they gate ``ingest --once``.
+        """
+        # Drop a ``.corpusignore`` whose body matches ``*.png``.
+        (tmp_path / ".corpusignore").write_text("*.png\n", encoding="utf-8")
+
+        backend = MagicMock()
+        backend.resolve_document.return_value = None
+        pipeline = PushPipeline(
+            backend=backend,
+            dataset_id=1,
+            echo_suppressor=MagicMock(),
+            host_id="h",
+            discovery_callback=None,
+        )
+        # ``start`` schedules a watchdog Observer — patch it out so the
+        # test doesn't spawn real OS threads.
+        with patch("corpus_forge.sync.push.observers.Observer"):
+            pipeline.start(source_root=tmp_path, exclude_globs=[])
+        try:
+            assert pipeline._ignore_stack is not None
+            png_path = tmp_path / "img.png"
+            png_path.write_bytes(b"\x89PNG\r\n")
+            assert pipeline._should_ignore(png_path) is True
+        finally:
+            # No-op stop (Observer was a MagicMock) — keeps test hermetic.
+            pipeline._observer = None
+            pipeline._handler = None
+
+
 # ── New-file discovery callback ─────────────────────────────────────────
 
 

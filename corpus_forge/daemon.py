@@ -1,6 +1,7 @@
 """Daemon runner for corpus-forge."""
 
 import logging
+import os
 import signal
 import sys
 import threading
@@ -9,6 +10,12 @@ from pathlib import Path
 from typing import Callable, NoReturn
 
 from .sync.engine import SyncEngine
+
+
+# Module-level alias for the hard-exit primitive used by ``_shutdown``.
+# Tests patch ``corpus_forge.daemon._exit_hard`` to avoid terminating
+# the pytest process when they invoke the signal handler directly.
+_exit_hard = os._exit
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +102,7 @@ def _build_discovery_callback(
 
     def _on_new_file(path: Path) -> None:
         _ensure_pipeline_state()
+        from corpus_forge.backends.base import IngestRunInProgressError  # noqa: PLC0415
         from corpus_forge.ingest import ingest_one  # noqa: PLC0415
 
         source = state["source"]
@@ -106,14 +114,29 @@ def _build_discovery_callback(
                 "Discovery: source.parse returned None for %s; skipping", path
             )
             return
-        ingest_one(
-            backend=backend,
-            raw=raw,
-            chunker=chunker,
-            embedders=embedders,
-            dataset_id=dataset_id,
-            source=source,
-        )
+        try:
+            ingest_one(
+                backend=backend,
+                raw=raw,
+                chunker=chunker,
+                embedders=embedders,
+                dataset_id=dataset_id,
+                source=source,
+            )
+        except IngestRunInProgressError:
+            # Per-source lock contention — another in-flight discovery
+            # callback (or ``corpus-forge ingest --once``) is already
+            # processing this file.  Benign for actively-edited files
+            # (Obsidian's autosave fires watchdog events rapidly); the
+            # next debounced event will succeed.  Log at DEBUG so the
+            # rotating log doesn't spam ERROR-level noise on every
+            # save burst.
+            logger.debug(
+                "Discovery: lock_source contention on %s — another "
+                "ingest run holds the lock; next event will retry",
+                path,
+            )
+            return
         logger.info(
             "Discovery: ingested new file %s into dataset_id=%d",
             path,
@@ -200,10 +223,66 @@ def run_daemon(config) -> None:
                 )
 
     def _shutdown(signum, _frame):
-        logger.info(f"Received signal {signum}, stopping {len(engines)} engine(s)")
-        for engine in engines:
-            engine.stop()
-        sys.exit(0)
+        # Parallelise ``engine.stop()`` so the total time is bounded
+        # by the slowest engine, not the sum.  Each PullPipeline.stop
+        # can block up to ~10s on its thread.join; with 12 engines a
+        # serial loop hits ~120s and easily blows past the 30s
+        # SIGTERM→SIGKILL grace window in ``service stop``.
+        import concurrent.futures  # noqa: PLC0415
+
+        from corpus_forge.admin.foreground import clear_pid  # noqa: PLC0415
+
+        logger.info(
+            "Received signal %s, stopping %d engine(s) in parallel",
+            signum,
+            len(engines),
+        )
+        if engines:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=len(engines), thread_name_prefix="cf-shutdown"
+            ) as pool:
+                # ``map`` blocks on context-manager exit until every
+                # task finishes (or raises).  Wrap each stop in a
+                # try/except so one slow engine can't mask others —
+                # we want all of them to TRY to stop even if some hit
+                # an error.
+                def _stop_one(engine):
+                    try:
+                        engine.stop()
+                    except Exception:
+                        logger.exception("engine.stop() raised during shutdown")
+
+                list(pool.map(_stop_one, engines))
+
+        # Use ``os._exit`` instead of ``sys.exit`` so the daemon
+        # actually terminates promptly.  ``sys.exit`` raises
+        # ``SystemExit`` which unwinds through Python interpreter
+        # finalisation — including the wait on every non-daemon thread.
+        # Lazy-loaded llama-cpp embedders + watchdog Observer
+        # internals spawn native + Python threads we don't own, and
+        # waiting on them blew past the 30 s SIGTERM→SIGKILL grace
+        # window in ``corpus-forge service stop`` (12 sources × 10 s
+        # PullPipeline.join).  The daemon's authoritative state lives
+        # in Postgres + the rotating log file (both already durable);
+        # there is nothing to flush, so a hard exit is appropriate.
+        # Clear the pid file first so ``service status`` doesn't
+        # report a phantom process after shutdown — that's the one
+        # bit of state ``start_daemon_foreground``'s ``finally``
+        # block would normally cover.
+        try:
+            clear_pid("daemon")
+        except Exception:
+            logger.exception("daemon: failed to clear pid file on shutdown")
+        logger.info("daemon: shutdown complete, exiting hard")
+        # Force-flush logs so the operator's last view in daemon.log
+        # is the shutdown ack, not whatever was buffered when the
+        # OS started tearing down.
+        for handler in logging.getLogger("corpus_forge").handlers:
+            try:
+                handler.flush()
+            except Exception:
+                pass
+        _exit_hard(0)
 
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)

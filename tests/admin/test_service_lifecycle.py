@@ -164,6 +164,60 @@ def test_stop_daemon_sends_sigterm(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert (fake_pid, signal.SIGTERM) in sent
 
 
+def test_stop_daemon_treats_launchd_respawn_as_clean_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the original pid dies but launchd respawns with a NEW pid,
+    ``stop_daemon`` must treat the pid-replacement as a clean exit
+    instead of polling the (different, also-alive) child to death.
+
+    Without this, the launchd-managed daemon's ``KeepAlive=true``
+    causes ``corpus-forge service stop`` to hang for 30 s — the old
+    daemon exited within milliseconds (verified end-to-end against the
+    daemon's own ``shutdown complete`` log line), but launchd
+    instantly respawned and the polling read_pid kept seeing a live
+    pid value (just a *different* one), so the loop never returned.
+    """
+    _isolate(monkeypatch, tmp_path)
+
+    import os
+
+    original_pid = 11111
+    respawned_pid = 22222
+
+    sent: list[tuple[int, int]] = []
+
+    def _fake_kill(pid: int, sig: int) -> None:
+        sent.append((pid, sig))
+
+    monkeypatch.setattr(os, "kill", _fake_kill)
+
+    monkeypatch.setattr(svc, "_STOP_TIMEOUT_SECS", 2.0)
+    monkeypatch.setattr(svc, "_STOP_POLL_INTERVAL_SECS", 0.01)
+
+    # First read: returns the original pid (the one we SIGTERM'd).
+    # Subsequent reads: launchd has respawned with a different pid.
+    probes = {"n": 0}
+
+    def _fake_read_pid(component: str) -> int | None:
+        if component != "daemon":
+            return None
+        probes["n"] += 1
+        if probes["n"] == 1:
+            return original_pid
+        return respawned_pid
+
+    monkeypatch.setattr(svc._fg, "read_pid", _fake_read_pid)
+
+    rc = svc.stop_daemon()
+
+    # Clean return — we did NOT escalate to SIGKILL.
+    assert rc == 0
+    assert (original_pid, signal.SIGTERM) in sent
+    assert (respawned_pid, svc._SIGKILL) not in sent
+    assert (original_pid, svc._SIGKILL) not in sent
+
+
 def test_stop_daemon_escalates_to_sigkill_after_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

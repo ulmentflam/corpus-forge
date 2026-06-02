@@ -418,12 +418,29 @@ def stop_daemon() -> int:
         ui_error(f"Permission denied sending SIGTERM to pid={pid}")
         return 1
 
-    # Poll for clean exit.
+    # Poll for clean exit.  Two terminal conditions count as success:
+    #   1. The pid file is gone or names a dead process (``read_pid``
+    #      returns ``None``) — the original daemon exited cleanly.
+    #   2. The pid file now names a *different* live pid — launchd's
+    #      ``KeepAlive=true`` (or systemd ``Restart=always``) respawned
+    #      the daemon after the SIGTERM'd one exited.  The pid we
+    #      asked to stop IS dead; the new process is launchd's
+    #      replacement, not the one we were polling.  Without this
+    #      check, the polling loop would re-target the new pid every
+    #      iteration and time out at the 30 s grace before SIGKILLing
+    #      the (newly-spawned) respawn.
     deadline = time.monotonic() + _STOP_TIMEOUT_SECS
     while time.monotonic() < deadline:
-        if _fg.read_pid(DAEMON_COMPONENT) is None:
+        current = _fg.read_pid(DAEMON_COMPONENT)
+        if current is None:
             _fg.clear_pid(DAEMON_COMPONENT)
             ui_ok(f"Stopped daemon (pid={pid})")
+            return 0
+        if current != pid:
+            # The original pid is dead — what's running now is a
+            # respawn.  Leave its pid file alone (the respawn owns it)
+            # and report success against the pid we were asked to stop.
+            ui_ok(f"Stopped daemon (pid={pid}); supervisor respawned new pid={current}")
             return 0
         # `read_pid` returns None when the process has exited; otherwise
         # the pid is still live.  Sleep a bit and re-probe.

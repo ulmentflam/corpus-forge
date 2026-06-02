@@ -226,7 +226,8 @@ class TestDaemonOrchestrator:
             patch("corpus_forge.daemon._source_root", return_value=Path("/fake")),
             patch("corpus_forge.daemon.SyncEngine", return_value=engine),
             patch("corpus_forge.daemon.signal.signal") as mock_signal,
-            patch("corpus_forge.daemon.sys.exit"),
+            patch("corpus_forge.daemon._exit_hard"),
+            patch("corpus_forge.admin.foreground.clear_pid"),
         ):
             run_daemon(config)
             handler = mock_signal.call_args_list[0][0][1]
@@ -248,12 +249,61 @@ class TestDaemonOrchestrator:
             patch("corpus_forge.daemon._source_root", return_value=Path("/fake")),
             patch("corpus_forge.daemon.SyncEngine", return_value=engine),
             patch("corpus_forge.daemon.signal.signal") as mock_signal,
-            patch("corpus_forge.daemon.sys.exit"),
+            patch("corpus_forge.daemon._exit_hard"),
+            patch("corpus_forge.admin.foreground.clear_pid"),
         ):
             run_daemon(config)
             handler = mock_signal.call_args_list[0][0][1]
             handler(None, None)
             engine.stop.assert_called_once()
+
+    def test_signal_stops_engines_in_parallel(self):
+        """``_shutdown`` must stop all engines concurrently.
+
+        With N engines and a per-engine stop cost of T (PullPipeline's
+        thread.join can take up to 10s while it drains its poll loop),
+        a serial loop hits N*T which trivially exceeds the 30s
+        SIGTERM→SIGKILL grace under launchd / systemd.  Parallel
+        shutdown caps total time at max(individual stop times)
+        regardless of N.
+
+        This test pins the parallelism by giving each engine.stop()
+        a 0.5s sleep and asserting the whole handler completes in
+        well under N*0.5s.
+        """
+        import time as _time  # noqa: PLC0415
+
+        n = 6
+        datasets = []
+        for i in range(n):
+            ds = MagicMock(sync_enabled=True, sources=[MagicMock()])
+            ds.name = f"d{i}"
+            datasets.append(ds)
+        config = self._config_with(datasets)
+        backend = self._backend_with({f"d{i}": i + 1 for i in range(n)})
+
+        engine = MagicMock()
+        engine.stop.side_effect = lambda: _time.sleep(0.5)
+
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake")),
+            patch("corpus_forge.daemon.SyncEngine", return_value=engine),
+            patch("corpus_forge.daemon.signal.signal") as mock_signal,
+            patch("corpus_forge.daemon._exit_hard"),
+            patch("corpus_forge.admin.foreground.clear_pid"),
+        ):
+            run_daemon(config)
+            handler = mock_signal.call_args_list[0][0][1]
+
+            t0 = _time.monotonic()
+            handler(None, None)
+            elapsed = _time.monotonic() - t0
+
+        # Serial would take ~n*0.5s = 3.0s.  Parallel should finish
+        # under 1.5s even allowing for ThreadPoolExecutor overhead.
+        assert engine.stop.call_count == n
+        assert elapsed < 1.5, f"expected parallel shutdown, got {elapsed:.2f}s for {n} engines"
 
     def test_source_without_fs_root_skipped(self):
         """Sources whose plugin has no watchable root → engine skipped, no crash.
@@ -321,6 +371,51 @@ class TestDaemonOrchestrator:
         ):
             run_daemon(config)
             mock_cls.assert_not_called()
+
+    def test_discovery_callback_swallows_lock_contention(self, caplog):
+        """``IngestRunInProgressError`` from ingest_one logs DEBUG, not ERROR.
+
+        Actively-edited files (Obsidian autosave, IDE save-on-keystroke)
+        fire watchdog events faster than the debouncer's
+        ``cancel-and-reschedule`` window can collapse them.  When two
+        callbacks race for the per-source advisory lock, the loser
+        raises ``IngestRunInProgressError`` — by design, the file is
+        in flight.  The next debounced event picks it up.  Logging
+        this at ERROR pollutes daemon.log on every save burst; we
+        downgrade to DEBUG and return cleanly.
+        """
+        import logging as _logging  # noqa: PLC0415
+
+        from corpus_forge.backends.base import IngestRunInProgressError  # noqa: PLC0415
+        from corpus_forge.daemon import _build_discovery_callback  # noqa: PLC0415
+
+        backend = MagicMock()
+        config = MagicMock()
+        source_config = MagicMock()
+        cb = _build_discovery_callback(config, backend, dataset_id=1, source_config=source_config)
+
+        fake_source = MagicMock()
+        fake_source.parse.return_value = MagicMock(source_uri="filesystem://Workspace/hot.md")
+
+        with (
+            patch("corpus_forge.ingest._instantiate_source", return_value=fake_source),
+            patch("corpus_forge.ingest.get_chunker_for_source", return_value=MagicMock()),
+            patch("corpus_forge.ingest.get_active_embedders", return_value=[]),
+            patch(
+                "corpus_forge.ingest.ingest_one",
+                side_effect=IngestRunInProgressError("locked"),
+            ),
+            caplog.at_level(_logging.DEBUG, logger="corpus_forge.daemon"),
+        ):
+            cb(Path("/Workspace/hot.md"))
+
+        # No ERROR-level record for the contention case.
+        errors = [r for r in caplog.records if r.levelno >= _logging.ERROR]
+        assert not errors, [r.message for r in errors]
+        # And the skip was logged at DEBUG so future triage can grep it.
+        assert any("lock_source contention" in r.message for r in caplog.records), [
+            r.message for r in caplog.records
+        ]
 
     def test_discovery_callback_wired_into_sync_engine(self):
         """``run_daemon`` builds a discovery callback and passes it to SyncEngine.

@@ -1200,3 +1200,123 @@ class TestRuntimeNCtxSeqIntrospection:
         assert "512" in single and "1" in single, (
             f"Log must surface configured (n_ctx, n_seq_max); got: {single!r}"
         )
+
+
+# ── NaN / non-finite row filter ──────────────────────────────────────
+
+
+def _fake_create_embedding_with_nan_at(dim: int, nan_indices: set[int], value: float = 0.5):
+    """Fake whose data[i].embedding is all-NaN for any ``i`` in ``nan_indices``.
+
+    Mirrors the production failure mode for llama-cpp where the C
+    library returns a row of NaNs for inputs the model can't encode
+    cleanly (e.g. tokens that round-tripped through a numerically
+    unstable softmax).  Without filtering, those rows reach pgvector
+    and fail the daemon's discovery callback with
+    ``psycopg.errors.DataException: NaN not allowed in vector``.
+    """
+
+    def _impl(inputs):
+        texts = inputs if isinstance(inputs, list) else [inputs]
+        rows = []
+        for i in range(len(texts)):
+            if i in nan_indices:
+                rows.append({"embedding": [float("nan")] * dim, "index": i})
+            else:
+                rows.append({"embedding": [value] * dim, "index": i})
+        return {"data": rows}
+
+    return _impl
+
+
+class TestEncodeNanRowFilter:
+    """``encode()`` drops non-finite rows and records their indices.
+
+    The Llama-cpp embedder must honour the same contract OpenAIEmbedder
+    documents (``self.last_failed_indices`` lists every row the caller
+    should skip; the returned array contains ONLY finite rows).  This
+    is the contract ``_write_embeddings_for_chunks`` reads when zipping
+    chunk_ids to embeddings — without it, NaNs leak into the backend's
+    ``write_embeddings`` call and pgvector raises ``DataException``.
+    """
+
+    def _build(self, *, dim: int = 4, nan_indices: set[int] | None = None):
+        from corpus_forge.embedders.llama_cpp import LlamaCppEmbedder
+
+        e = LlamaCppEmbedder(name="fake", model_id="x:y", dimension=dim, normalized=False)
+        fake = MagicMock()
+        fake.create_embedding.side_effect = _fake_create_embedding_with_nan_at(
+            dim, nan_indices or set()
+        )
+        e._llama = fake
+        return e
+
+    def test_returned_array_excludes_nan_rows(self) -> None:
+        e = self._build(dim=4, nan_indices={1})
+        out = e.encode(["a", "b", "c"])
+        # b's row was NaN — must not appear in the output.
+        assert out.shape == (2, 4)
+        assert np.isfinite(out).all()
+
+    def test_last_failed_indices_records_dropped_positions(self) -> None:
+        e = self._build(dim=4, nan_indices={1, 2})
+        e.encode(["a", "b", "c", "d"])
+        # Indices 1 and 2 were the NaN rows in the INPUT batch — those
+        # are what downstream needs to filter chunk_ids against.
+        assert sorted(e.last_failed_indices) == [1, 2]
+
+    def test_clean_batch_leaves_last_failed_indices_empty(self) -> None:
+        e = self._build(dim=4, nan_indices=set())
+        e.encode(["a", "b"])
+        assert e.last_failed_indices == []
+
+    def test_inf_rows_also_dropped(self) -> None:
+        """``+inf`` / ``-inf`` are equally unacceptable to pgvector."""
+        from corpus_forge.embedders.llama_cpp import LlamaCppEmbedder
+
+        e = LlamaCppEmbedder(name="fake", model_id="x:y", dimension=4, normalized=False)
+        fake = MagicMock()
+
+        def _impl(inputs):
+            texts = inputs if isinstance(inputs, list) else [inputs]
+            return {
+                "data": [
+                    {"embedding": [float("inf")] * 4 if i == 0 else [0.5] * 4, "index": i}
+                    for i in range(len(texts))
+                ],
+            }
+
+        fake.create_embedding.side_effect = _impl
+        e._llama = fake
+
+        out = e.encode(["a", "b"])
+        assert out.shape == (1, 4)
+        assert np.isfinite(out).all()
+        assert e.last_failed_indices == [0]
+
+    def test_warning_logged_when_rows_dropped(self, caplog) -> None:
+        import logging as _logging
+
+        e = self._build(dim=4, nan_indices={0})
+        with caplog.at_level(_logging.WARNING, logger="corpus_forge.embedders.loader"):
+            e.encode(["a", "b"])
+
+        # The warning must name the embedder + the number of dropped
+        # rows so operators can grep for it.
+        matches = [r for r in caplog.records if "non-finite" in r.message.lower() or "nan" in r.message.lower()]
+        assert matches, [r.message for r in caplog.records]
+
+    def test_last_failed_indices_reset_per_call(self) -> None:
+        """A clean second call must NOT inherit stale failed indices.
+
+        Same contract as OpenAIEmbedder.encode (line 339:
+        ``self.last_failed_indices = []`` at the top of each call).
+        """
+        e = self._build(dim=4, nan_indices={0})
+        e.encode(["bad"])
+        assert e.last_failed_indices == [0]
+
+        # Swap the side_effect to a clean batch and re-encode.
+        e._llama.create_embedding.side_effect = _fake_create_embedding(4)
+        e.encode(["clean"])
+        assert e.last_failed_indices == []

@@ -21,6 +21,45 @@ from corpus_forge.sync.conflicts import conflict_filename, is_cloud_duplicate
 logger = logging.getLogger(__name__)
 
 
+def _build_ignore_stack(source_root: Path, exclude_globs: tuple[str, ...]):
+    """Compose the same three-layer ``IgnoreStack`` the scanner uses.
+
+    Mirrors ``FilesystemSource.discover`` (corpus_forge/sources/filesystem.py)
+    so the daemon's watchdog gate and the batch scanner agree on which
+    files belong to the corpus.  Without this, files the managed
+    ``.corpusignore`` block excludes at scan time (audio/video when
+    Whisper is off, RAW images when image_extractor is off, archives,
+    build artifacts) would still trigger the watchdog's ``read_text``
+    path and crash on ``UnicodeDecodeError``.
+
+    Returns ``None`` when none of the three layers contribute patterns
+    — callers fall back to the existing ``fnmatch(exclude_globs)``
+    path on a per-name basis.
+    """
+    from corpus_forge.ignore import IgnoreStack, load_global_ignore, load_local_ignore  # noqa: PLC0415
+    from corpus_forge.sources.filesystem import _ignore_from_globs  # noqa: PLC0415
+
+    sets = []
+    try:
+        global_set = load_global_ignore()
+        if global_set.patterns:
+            sets.append(global_set)
+    except (OSError, ValueError) as exc:  # pragma: no cover — defensive
+        logger.debug("PushPipeline: global ignore failed (%s) — skipping layer", exc)
+    try:
+        local_set = load_local_ignore(source_root)
+        if local_set.patterns:
+            sets.append(local_set)
+    except (OSError, ValueError) as exc:  # pragma: no cover — defensive
+        logger.debug("PushPipeline: local ignore failed (%s) — skipping layer", exc)
+
+    glob_stack = _ignore_from_globs(list(exclude_globs), root=source_root)
+    if glob_stack is not None:
+        sets.extend(glob_stack.sets)
+
+    return IgnoreStack(sets=tuple(sets)) if sets else None
+
+
 class _DebouncedHandler(FileSystemEventHandler):
     def __init__(self, pipeline: PushPipeline, debounce_seconds: float) -> None:
         super().__init__()
@@ -83,6 +122,14 @@ class PushPipeline:
         # Set by start(); None when pipeline is used without watchdog (direct calls)
         self._source_root: Path | None = None
         self._exclude_globs: tuple[str, ...] = ()
+        # ``.corpusignore`` matcher built at ``start()`` time from the
+        # same three-layer composition the scanner uses (global +
+        # local + ``exclude_globs``).  Keeps the watchdog's view of
+        # "what's ingestible" in sync with ``ingest --once`` — without
+        # this, audio/video/RAW-image patterns the managed
+        # ``.corpusignore`` block excludes at scan time would still
+        # trigger ``read_text`` here and crash on ``UnicodeDecodeError``.
+        self._ignore_stack = None
 
     def _compute_source_uri(self, path: Path) -> str:
         """Return source_uri relative to source_root if known, else absolute."""
@@ -123,8 +170,25 @@ class PushPipeline:
             return
         self._mtime_cache[resolved] = current_mtime
 
-        # 2. Read text, compute hash, echo check
-        text = path.read_text(encoding="utf-8")
+        # 2. Read text, compute hash, echo check.  Binary files that
+        # slipped past ``_should_ignore`` (no extension match, no
+        # ``.corpusignore`` entry) land here — ``read_text`` raises
+        # ``UnicodeDecodeError``.  Treat as "not text-replicable" and
+        # bail without surfacing a stack trace; the corresponding
+        # binary-aware ingest path (extractors registry inside
+        # ``ingest_one``) is reached only via the discovery branch,
+        # which is taken below ONLY when no row exists yet — so a
+        # known binary file modification is a genuine no-op here.
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            logger.debug(
+                "handle_change: %s is not UTF-8 text; skipping replication path. "
+                "Binary-aware ingest happens via the discovery callback on "
+                "first sighting.",
+                path,
+            )
+            return
         content_hash = chunk_content_hash(text)
         if self._echo_suppressor.was_just_written(path, content_hash):
             return
@@ -208,6 +272,7 @@ class PushPipeline:
         self._source_root = source_root
         self._exclude_globs = tuple(exclude_globs) if exclude_globs is not None else ()
         self._debounce_seconds = debounce_seconds
+        self._ignore_stack = _build_ignore_stack(source_root, self._exclude_globs)
         self._handler = _DebouncedHandler(self, debounce_seconds)
         self._observer = observers.Observer()
         self._observer.schedule(self._handler, str(source_root), recursive=True)
@@ -240,6 +305,23 @@ class PushPipeline:
         for pattern in self._exclude_globs:
             if fnmatch.fnmatch(name, pattern):
                 return True
+        # Consult the same ``IgnoreStack`` the scanner uses, so the
+        # daemon's watchdog filters out audio/video, RAW images,
+        # archives, build artifacts, etc. exactly the way
+        # ``ingest --once`` does.  Skipped here means we never reach
+        # ``read_text`` on these files — which is critical for binary
+        # formats that would raise ``UnicodeDecodeError``.
+        if self._ignore_stack is not None and self._source_root is not None:
+            try:
+                if self._ignore_stack.matches(
+                    path, is_dir=False, scan_root=self._source_root
+                ):
+                    return True
+            except ValueError:
+                # Path outside the source root — let the rest of the
+                # pipeline decide.  Should not happen under watchdog,
+                # which only fires within the scheduled tree.
+                pass
         try:
             if path.stat().st_blocks == 0:
                 return True
