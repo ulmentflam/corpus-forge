@@ -76,8 +76,8 @@ class TestProjectMetadata:
         assert project_table.get("name") == "corpus-forge"
 
     def test_version_is_beta(self, project_table: dict) -> None:
-        assert project_table.get("version") == "0.1.0b10", (
-            f"Expected version 0.1.0b10 (PEP 440 beta marker); got {project_table.get('version')!r}"
+        assert project_table.get("version") == "0.1.0b11", (
+            f"Expected version 0.1.0b11 (PEP 440 beta marker); got {project_table.get('version')!r}"
         )
 
     def test_license_is_apache2_spdx(self, project_table: dict) -> None:
