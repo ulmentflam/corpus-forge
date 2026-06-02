@@ -470,6 +470,19 @@ def agents_init(
         ui_error(f"--project-root not a directory: {root}")
         raise typer.Exit(code=1)
 
+    # Resolve + validate --output-dir up front so a bad path fails BEFORE
+    # auto-ingest and synthesis burn time (the writer would otherwise crash
+    # via NotADirectoryError on its mkdir at the very end of the run).
+    corpus_agents_dir = (
+        output_dir.expanduser().resolve() if output_dir is not None else (root / ".corpus-agents")
+    )
+    if corpus_agents_dir.exists() and not corpus_agents_dir.is_dir():
+        ui_error(
+            f"--output-dir {corpus_agents_dir!s} exists and is not a directory; "
+            "point it at a directory (or a not-yet-existing path)."
+        )
+        raise typer.Exit(code=1)
+
     # ── 2. Load config ────────────────────────────────────────────────
     try:
         config = _load_config()
@@ -522,18 +535,7 @@ def agents_init(
         raise typer.Exit(code=3) from None
 
     # ── 6. Write outputs ──────────────────────────────────────────────
-    corpus_agents_dir = (
-        output_dir.expanduser().resolve() if output_dir is not None else (root / ".corpus-agents")
-    )
-    # Reject up-front when --output-dir points at an existing file —
-    # otherwise `write_corpus_agents_dir`'s `mkdir(..., exist_ok=True)`
-    # would crash with NotADirectoryError and surface as a traceback.
-    if corpus_agents_dir.exists() and not corpus_agents_dir.is_dir():
-        ui_error(
-            f"--output-dir {corpus_agents_dir!s} exists and is not a directory; "
-            "point it at a directory (or a not-yet-existing path)."
-        )
-        raise typer.Exit(code=1)
+    # `corpus_agents_dir` was resolved + validated in step 1 (fail-fast).
     meta = _build_meta(project_root=root, context=context)
 
     write_result: WriteResult = write_corpus_agents_dir(
