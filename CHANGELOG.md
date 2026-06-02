@@ -8,7 +8,114 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+## [0.1.0b11] - 2026-06-02
+
 ### Added
+
+- **New `llama-cpp` embedder backend** (PRs #78, #79, #80). In-process
+  via `llama-cpp-python`, native Metal on Apple Silicon. Bypasses
+  Ollama's `/v1/embeddings` JSON encoder so the qwen3-embedding-style
+  NaN-in-vector bug can't drop the wire. New `provider = "llama-cpp"`
+  on `[[embedders]]` plus knobs `gguf_path`, `n_ctx`, `n_seq_max`,
+  `n_batch`, `n_ubatch`, `n_gpu_layers`. GGUF resolution rule:
+  explicit `gguf_path` wins; else auto-discovers from
+  `~/.ollama/models/manifests/registry.ollama.ai/library/<name>/<tag>`;
+  else raises a clear error naming both knobs. Runtime introspection
+  of `llama_n_ctx(ctx)` / `llama_n_seq_max(ctx)` (PR #80) so
+  truncation honors what llama.cpp actually allocated rather than the
+  configured value (v0.3.x bindings silently override `n_seq_max`).
+  Python-side token-aware truncation to `n_ctx_seq` keeps the
+  decoder within budget. New optional `[llama-cpp]` extra. Apple
+  Silicon install: `CMAKE_ARGS="-DGGML_METAL=on" uv tool install
+  'corpus-forge[llama-cpp]'`.
+- **Extension-based chunk routing for dual-tower setups** (PR #81).
+  New `extensions: list[str]` on `[[embedders]]` — each chunk routes
+  to exactly one active embedder: first specialist whose
+  case-insensitive `endswith` matches the chunk's source URI wins;
+  otherwise the first catchall (empty `extensions`) claims it.
+  Config-load gate (`EmbedderRoutingError`) rejects specialist-only
+  setups missing a catchall. `corpus-forge embed -e <name>` filters
+  its pending pool through the rule. Pairs with the llama-cpp
+  backend to make a `nomic-embed-text-v1.5` (catchall) +
+  `nomic-embed-code` (code specialist) dual-tower work out of the
+  box. Backwards-compat: when no embedder declares `extensions`,
+  every active embedder still embeds every chunk.
+- **`corpus-forge chunk` CLI subgroup** (PR #83) — agent-friendly
+  chunk explorer. `chunk show <id>` (full text + metadata, prev/next
+  hints, absolute disk path), `chunk neighbors <id> --before N
+  --after N` (ordered siblings in same document/conversation),
+  `chunk doc <doc_id> [--reassemble]` (every chunk of a document,
+  optionally concatenated for full-file view). All three support
+  `--json` for a single-line machine-readable object.
+- **`corpus-forge search --json -`** (PR #83) — single JSON object on
+  stdout with `{query, k, took_ms, hits}` and zero log chatter;
+  alembic / plugin / agent-event lines suppressed. The existing
+  `--json <PATH>` file-output contract is preserved.
+- **New MCP tools** (PR #83): `chunk_neighbors(chunk_id, before,
+  after)` and `get_document(document_id, reassemble=False)`. The
+  existing `get_chunk` tool gained `prev_chunk_id`, `next_chunk_id`,
+  and `abs_path` fields (additive — no field renames).
+- **Absolute-path resolver** (PR #83) — new
+  `corpus_forge/sources/path_resolve.py::resolve_abs_path` maps
+  `filesystem://<root>/<rel>` URIs to absolute on-disk paths by
+  walking `config.datasets[*].sources[*]`. Returns `None` for
+  non-filesystem URIs (conversation, http, etc.). Used by the chunk
+  CLI + MCP responses so agents don't have to remap URIs in their
+  heads.
+- `Pods/` (CocoaPods vendor dir) added to the managed
+  `.corpusignore` template (PR #76). Surfaced by `doctor` drift
+  check on iOS / React Native projects.
+
+### Changed
+
+- `StorageBackend.chunks_missing_embedding` widened to yield
+  `(chunk_id, text, source_uri)` 3-tuples and gained two optional
+  kwargs (PR #81, PR #82): `extensions: list[str] | None` pushes the
+  routing allow-list into the SQL `WHERE` clause; `after_id: int |
+  None` is a forward-progress cursor so paged backfills walk the
+  table deterministically. Both Postgres + SQLite implementations
+  updated; `count_chunks_missing_embedding` honors the same
+  filter so progress totals are honest. Backwards-compat: omitting
+  the kwargs (or passing `extensions=None`) yields current
+  behaviour.
+- `StorageBackend` gained `get_chunk_neighbors(chunk_id, before,
+  after)` and `get_document_chunks(doc_id)` on both Postgres + SQLite
+  implementations (PR #83), plus a defensive
+  `_chunk_prev_next_ids` helper. The existing `get_chunk` response
+  now includes `prev_chunk_id`, `next_chunk_id`, `abs_path` —
+  additive, no field renames.
+- `backfill_embedder`'s pending-pool loop (PR #82) no longer
+  `break`s when an in-memory route_for filter empties a page — it
+  `continue`s to the next page via the SQL cursor. A
+  consecutive-empty-page abort guard (`_MAX_EMPTY_PAGE_STREAK = 10`)
+  fires `RuntimeError` only on specialists (where the SQL filter
+  should keep every page dense) — catchall runs legitimately walk
+  past specialist-owned chunks and don't trip the alarm.
+
+### Fixed
+
+- **Subagent fabrication carve-out** (PR #77) — the
+  `corpus-forge-researcher` subagent was emitting confident
+  citations with `tool_uses: 0` (i.e. fabricating MCP responses).
+  Hardened the agent prompt with an anti-fabrication section that
+  cites the harness's tool-use counter as the verification
+  mechanism, forbids pasted fake `<function_calls>` blocks, requires
+  integer chunk_ids (real chunk_ids are integers; UUID-shaped IDs
+  are an explicit hallucination tell), and requires verbatim quotes
+  from tool results. Added "Not found in corpus" and "MCP
+  unavailable" output templates so refusing retrieval is
+  structurally easier than inventing it.
+- **Routing backfill stall** (PR #82) — closes the loop hole
+  introduced in PR #81 where the in-memory `route_for` filter ran
+  AFTER fetching a 1000-row page from the non-cursored
+  `chunks_missing_embedding` query. When the first page happened to
+  be entirely non-matching for the specialist, the loop hit
+  `break` and abandoned the rest of the corpus. Pushed the filter
+  into SQL on both backends + cursor-based paging. Symptom in prod:
+  1.88M chunks "pending" for a new code-specialist embedder, only
+  13 ever embedded over multiple restarts.
+
+### Added (earlier in the cycle)
 
 - `OpenAIEmbedder._embed_oversized_chunk` rescues chunks too long
   for the embedder's context window via recursive split-in-half +
