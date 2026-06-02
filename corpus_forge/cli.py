@@ -1333,9 +1333,11 @@ eval_app = typer.Typer(
 )
 app.add_typer(eval_app, name="eval")
 
+from corpus_forge.cli_agents import agents_app  # noqa: E402
 from corpus_forge.cli_analyze import analyze_app  # noqa: E402
 from corpus_forge.cli_feedback import feedback_app  # noqa: E402
 
+app.add_typer(agents_app, name="agents")
 app.add_typer(analyze_app, name="analyze")
 app.add_typer(feedback_app, name="feedback")
 
@@ -3912,6 +3914,10 @@ _AGENT_SELF_EMITTING: frozenset[str] = frozenset(
         "chunk show",
         "chunk neighbors",
         "chunk doc",
+        # PR #85 — agents init self-emits a structured `result` event so
+        # the wrapper must skip; otherwise consumers see two terminal
+        # events with mismatched command names.
+        "agents init",
         # mcp serve: stdio carve-out — DO NOT emit anything to stdout.
         # The JSON-RPC peer owns the wire.  The command is added to the
         # self-emitting set so the wrapper's auto-emission is bypassed;
