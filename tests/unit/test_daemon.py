@@ -1,5 +1,8 @@
 """Unit tests for daemon module."""
 
+import contextlib
+import signal
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,6 +17,37 @@ from corpus_forge.config import (
     EmbedderConfig,
 )
 from corpus_forge.daemon import main, run_daemon, setup_signal_handlers
+
+
+@pytest.fixture(autouse=True)
+def _restore_signal_handlers():
+    """Snapshot + restore SIGINT/SIGTERM handlers per-test.
+
+    Several tests below call ``run_daemon(config)`` without patching
+    ``corpus_forge.daemon.signal.signal``, so ``run_daemon`` installs
+    its real ``_shutdown`` handler into the running pytest-xdist
+    worker process.  The handler calls ``os._exit(0)`` (uncatchable);
+    any subsequent test on the same worker that sends SIGINT to its
+    own pid (e.g.
+    ``tests/diagnostics/test_logs_subcommand.py::TestLogsTailFollow::test_follow_exits_cleanly_on_sigint``)
+    would die without this restore — the leaked handler short-circuits
+    the ``KeyboardInterrupt`` path the SIGINT test relies on.
+
+    The previous shutdown used ``sys.exit(0)`` which the test runner
+    caught as SystemExit, masking the leak — the ``_exit_hard`` switch
+    in fix(daemon) made the leak fatal.  Snapshotting before + after
+    each test (rather than only restoring after run_daemon-using
+    tests) is the safest defensive choice.
+    """
+    saved = {
+        signal.SIGINT: signal.getsignal(signal.SIGINT),
+        signal.SIGTERM: signal.getsignal(signal.SIGTERM),
+    }
+    yield
+    for sig, handler in saved.items():
+        if handler is not None:
+            with contextlib.suppress(Exception):
+                signal.signal(sig, handler)
 
 
 class TestSetupSignalHandlers:
@@ -52,41 +86,62 @@ class TestSetupSignalHandlers:
 class TestDaemonMain:
     """Tests for daemon main function."""
 
-    def test_main_sets_up_signal_handlers(self):
-        """Test that main calls setup_signal_handlers."""
+    def test_main_loads_config_and_calls_run_daemon(self):
+        """``main`` must load ``Config`` and hand it to ``run_daemon``.
+
+        Regression test for the daemon respawn loop bug where ``main``
+        called the unimplemented ``ingest_main(once=False)`` stub
+        instead of ``run_daemon``, so launchd's ``KeepAlive`` respawned
+        the process every ~10s and no sync engines ever started.
+        """
+        fake_config = MagicMock()
         with (
-            patch("corpus_forge.daemon.setup_signal_handlers") as mock_setup,
-            patch("corpus_forge.daemon.ingest_main") as mock_ingest,
-            patch("corpus_forge.daemon.logging.info"),
-            patch("corpus_forge.daemon.sys.exit"),
+            patch("corpus_forge.config.Config.load", return_value=fake_config) as mock_load,
+            patch("corpus_forge.logging_config.init_logging"),
+            patch("corpus_forge.daemon.run_daemon") as mock_run,
+            patch("corpus_forge.daemon.time.sleep", side_effect=SystemExit(0)),
+            patch("corpus_forge.daemon.logger"),
+            patch("corpus_forge.daemon._log_embedder_drift_warning"),
+            pytest.raises(SystemExit),
         ):
             main()
-            mock_setup.assert_called_once()
-            mock_ingest.assert_called_once_with(once=False)
+        mock_load.assert_called_once()
+        mock_run.assert_called_once_with(fake_config)
 
     def test_main_logs_start(self):
         """Test that main logs startup message."""
         with (
-            patch("corpus_forge.daemon.setup_signal_handlers"),
-            patch("corpus_forge.daemon.ingest_main") as mock_ingest,
-            patch("corpus_forge.daemon.logging.info") as mock_info,
-            patch("corpus_forge.daemon.sys.exit"),
+            patch("corpus_forge.config.Config.load", return_value=MagicMock()),
+            patch("corpus_forge.logging_config.init_logging"),
+            patch("corpus_forge.daemon.run_daemon"),
+            patch("corpus_forge.daemon.time.sleep", side_effect=SystemExit(0)),
+            patch("corpus_forge.daemon.logger") as mock_logger,
+            patch("corpus_forge.daemon._log_embedder_drift_warning"),
+            pytest.raises(SystemExit),
         ):
             main()
-            mock_info.assert_any_call("Starting corpus-forge daemon...")
-            mock_ingest.assert_called_once()
+        mock_logger.info.assert_any_call("Starting corpus-forge daemon...")
 
-    def test_main_exits_after_ingest(self):
-        """Test that main exits after ingest_main returns."""
+    def test_main_blocks_in_sleep_loop_until_signal(self):
+        """``main`` must block after ``run_daemon`` returns.
+
+        ``run_daemon`` is non-blocking — it spawns watcher threads and
+        returns.  ``main`` must keep the process alive until a signal
+        handler raises ``SystemExit``; otherwise the daemon falls
+        through to ``sys.exit(0)`` immediately and launchd / systemd
+        respawn it in a tight loop.
+        """
         with (
-            patch("corpus_forge.daemon.setup_signal_handlers"),
-            patch("corpus_forge.daemon.ingest_main"),
-            patch("corpus_forge.daemon.logging.info"),
-            patch("corpus_forge.daemon.sys.exit") as mock_exit,
+            patch("corpus_forge.config.Config.load", return_value=MagicMock()),
+            patch("corpus_forge.logging_config.init_logging"),
+            patch("corpus_forge.daemon.run_daemon"),
+            patch("corpus_forge.daemon.time.sleep", side_effect=SystemExit(0)) as mock_sleep,
+            patch("corpus_forge.daemon.logger"),
+            patch("corpus_forge.daemon._log_embedder_drift_warning"),
+            pytest.raises(SystemExit),
         ):
             main()
-            # Should exit at the end
-            assert mock_exit.called
+        assert mock_sleep.called
 
 
 class TestDaemonSignalHandling:
@@ -122,53 +177,90 @@ class TestDaemonSignalHandling:
 class TestDaemonOrchestrator:
     """Tests for daemon sync engine orchestration via run_daemon."""
 
-    def test_sync_enabled_starts_engine(self):
-        """sync_enabled dataset — SyncEngine constructed and started."""
+    @staticmethod
+    def _config_with(dataset_mocks):
+        """Build a config mock whose ``host_id()`` and ``backend`` are concrete."""
         config = MagicMock()
-        dataset = MagicMock(sync_enabled=True)
-        dataset.sources = [MagicMock()]
-        config.datasets = [dataset]
+        config.datasets = dataset_mocks
+        config.host_id.return_value = "test-host"
+        return config
 
-        with patch("corpus_forge.daemon.SyncEngine") as mock_cls:
+    @staticmethod
+    def _backend_with(id_map):
+        """Build a backend mock whose ``find_dataset_id_by_name`` maps name → id."""
+        backend = MagicMock()
+        backend.find_dataset_id_by_name.side_effect = id_map.get
+        return backend
+
+    def test_sync_enabled_starts_engine(self):
+        """sync_enabled dataset — SyncEngine constructed with resolved id and started."""
+        dataset = MagicMock(sync_enabled=True, name="vault")
+        dataset.name = "vault"  # MagicMock(name=...) sets the mock's own name attr
+        dataset.sources = [MagicMock()]
+        config = self._config_with([dataset])
+        backend = self._backend_with({"vault": 42})
+
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake/vault")),
+            patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+        ):
             run_daemon(config)
             mock_cls.assert_called_once()
+            kwargs = mock_cls.call_args.kwargs
+            assert kwargs["dataset_id"] == 42
+            assert kwargs["source_root"] == Path("/fake/vault")
             mock_cls.return_value.start.assert_called_once()
 
     def test_sync_disabled_skips_engine(self):
         """sync_enabled=False — no SyncEngine created."""
-        config = MagicMock()
         dataset = MagicMock(sync_enabled=False)
         dataset.sources = [MagicMock()]
-        config.datasets = [dataset]
+        config = self._config_with([dataset])
+        backend = self._backend_with({"vault": 42})
 
-        with patch("corpus_forge.daemon.SyncEngine") as mock_cls:
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake/vault")),
+            patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+        ):
             run_daemon(config)
             mock_cls.assert_not_called()
 
     def test_multiple_sync_datasets_all_started(self):
-        """Multiple sync-enabled datasets — all get engines."""
-        config = MagicMock()
+        """Multiple sync-enabled datasets — each gets the right id."""
         d1 = MagicMock(sync_enabled=True, sources=[MagicMock()])
+        d1.name = "vault"
         d2 = MagicMock(sync_enabled=True, sources=[MagicMock()])
-        config.datasets = [d1, d2]
+        d2.name = "chats"
+        config = self._config_with([d1, d2])
+        backend = self._backend_with({"vault": 1, "chats": 7})
 
-        with patch("corpus_forge.daemon.SyncEngine") as mock_cls:
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake")),
+            patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+        ):
             run_daemon(config)
             assert mock_cls.call_count == 2
-            assert mock_cls.return_value.start.call_count == 2
+            ids_passed = [c.kwargs["dataset_id"] for c in mock_cls.call_args_list]
+            assert sorted(ids_passed) == [1, 7]
 
     def test_signal_stops_all_engines(self):
         """SIGINT/SIGTERM handler calls stop() on every engine."""
-        config = MagicMock()
         d1 = MagicMock(sync_enabled=True, sources=[MagicMock()])
-        config.datasets = [d1]
-
+        d1.name = "vault"
+        config = self._config_with([d1])
+        backend = self._backend_with({"vault": 1})
         engine = MagicMock()
 
         with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake")),
             patch("corpus_forge.daemon.SyncEngine", return_value=engine),
             patch("corpus_forge.daemon.signal.signal") as mock_signal,
-            patch("corpus_forge.daemon.sys.exit"),
+            patch("corpus_forge.daemon._exit_hard"),
+            patch("corpus_forge.admin.foreground.clear_pid"),
         ):
             run_daemon(config)
             handler = mock_signal.call_args_list[0][0][1]
@@ -177,22 +269,271 @@ class TestDaemonOrchestrator:
 
     def test_signal_does_not_stop_disabled_engines(self):
         """Only running engines are stopped on signal (disabled skipped)."""
-        config = MagicMock()
         enabled = MagicMock(sync_enabled=True, sources=[MagicMock()])
+        enabled.name = "vault"
         disabled = MagicMock(sync_enabled=False, sources=[MagicMock()])
-        config.datasets = [enabled, disabled]
-
+        disabled.name = "chats"
+        config = self._config_with([enabled, disabled])
+        backend = self._backend_with({"vault": 1})
         engine = MagicMock()
 
         with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake")),
             patch("corpus_forge.daemon.SyncEngine", return_value=engine),
             patch("corpus_forge.daemon.signal.signal") as mock_signal,
-            patch("corpus_forge.daemon.sys.exit"),
+            patch("corpus_forge.daemon._exit_hard"),
+            patch("corpus_forge.admin.foreground.clear_pid"),
         ):
             run_daemon(config)
             handler = mock_signal.call_args_list[0][0][1]
             handler(None, None)
             engine.stop.assert_called_once()
+
+    def test_signal_stops_engines_in_parallel(self):
+        """``_shutdown`` must stop all engines concurrently.
+
+        With N engines and a per-engine stop cost of T (PullPipeline's
+        thread.join can take up to 10s while it drains its poll loop),
+        a serial loop hits N*T which trivially exceeds the 30s
+        SIGTERM→SIGKILL grace under launchd / systemd.  Parallel
+        shutdown caps total time at max(individual stop times)
+        regardless of N.
+
+        This test pins the parallelism by giving each engine.stop()
+        a 0.5s sleep and asserting the whole handler completes in
+        well under N*0.5s.
+        """
+        import time as _time
+
+        n = 6
+        datasets = []
+        for i in range(n):
+            ds = MagicMock(sync_enabled=True, sources=[MagicMock()])
+            ds.name = f"d{i}"
+            datasets.append(ds)
+        config = self._config_with(datasets)
+        backend = self._backend_with({f"d{i}": i + 1 for i in range(n)})
+
+        engine = MagicMock()
+        engine.stop.side_effect = lambda: _time.sleep(0.5)
+
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake")),
+            patch("corpus_forge.daemon.SyncEngine", return_value=engine),
+            patch("corpus_forge.daemon.signal.signal") as mock_signal,
+            patch("corpus_forge.daemon._exit_hard"),
+            patch("corpus_forge.admin.foreground.clear_pid"),
+        ):
+            run_daemon(config)
+            handler = mock_signal.call_args_list[0][0][1]
+
+            t0 = _time.monotonic()
+            handler(None, None)
+            elapsed = _time.monotonic() - t0
+
+        # Serial would take ~n*0.5s = 3.0s.  Parallel should finish
+        # under 1.5s even allowing for ThreadPoolExecutor overhead.
+        assert engine.stop.call_count == n
+        assert elapsed < 1.5, f"expected parallel shutdown, got {elapsed:.2f}s for {n} engines"
+
+    def test_source_without_fs_root_skipped(self):
+        """Sources whose plugin has no watchable root → engine skipped, no crash.
+
+        ``_source_root`` returns ``None`` for plugins like ``zotero`` or
+        the chat ingesters.  ``run_daemon`` must skip those sources
+        cleanly rather than feed ``None`` into ``SyncEngine`` and crash
+        on the first watchdog call.
+        """
+        dataset = MagicMock(sync_enabled=True, sources=[MagicMock()])
+        dataset.name = "vault"
+        config = self._config_with([dataset])
+        backend = self._backend_with({"vault": 5})
+
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=None),
+            patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+        ):
+            run_daemon(config)
+            mock_cls.assert_not_called()
+
+    def test_unknown_dataset_name_skipped_with_warning(self, caplog):
+        """sync_enabled dataset whose name is not in the backend → skip with WARNING.
+
+        Regression for the ``AttributeError: 'DatasetConfig' object has no
+        attribute 'id'`` bug surfaced after PR #86 unblocked the
+        ``run_daemon`` path: when the user sets ``sync_enabled = true`` on
+        a dataset that hasn't been ingested yet, the backend has no row
+        for it, so we cannot resolve a dataset id.  The daemon must skip
+        cleanly with a WARNING rather than crash.
+        """
+        import logging as _logging
+
+        dataset = MagicMock(sync_enabled=True, sources=[MagicMock()])
+        dataset.name = "uningested"
+        config = self._config_with([dataset])
+        backend = self._backend_with({})  # empty — no datasets known
+
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake")),
+            patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+            caplog.at_level(_logging.WARNING, logger="corpus_forge.daemon"),
+        ):
+            run_daemon(config)
+            mock_cls.assert_not_called()
+
+        warnings = [r.message for r in caplog.records if r.levelno >= _logging.WARNING]
+        assert any("uningested" in m for m in warnings), warnings
+
+    def test_no_backend_skips_all_engines(self, caplog):
+        """``_get_any_backend`` returns None → run_daemon is a clean no-op.
+
+        Mirrors the same defensive guard ``_log_embedder_drift_warning``
+        uses for setups where the backend isn't reachable at startup.
+        """
+        dataset = MagicMock(sync_enabled=True, sources=[MagicMock()])
+        dataset.name = "vault"
+        config = self._config_with([dataset])
+
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=None),
+            patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+        ):
+            run_daemon(config)
+            mock_cls.assert_not_called()
+
+    def test_source_uri_prefix_passed_to_sync_engine(self):
+        """``run_daemon`` derives the source_uri_prefix from the plugin.
+
+        ``FilesystemSource.parse`` writes
+        ``filesystem://<root.name>/<rel>``; ``MarkdownVaultSource.parse``
+        writes ``vault://<root.name>/<rel>``.  ``PushPipeline`` must use
+        the same scheme so ``find_document`` matches and modifications
+        take the cheap replication path instead of re-discovering.
+        """
+        for plugin_name, expected_scheme in (
+            ("filesystem", "filesystem"),
+            ("markdown_vault", "vault"),
+        ):
+            ds = MagicMock(sync_enabled=True)
+            ds.name = "vault"
+            source = MagicMock()
+            source.plugin = plugin_name
+            ds.sources = [source]
+            config = self._config_with([ds])
+            backend = self._backend_with({"vault": 1})
+
+            with (
+                patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+                patch("corpus_forge.daemon._source_root", return_value=Path("/data/Workspace")),
+                patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+            ):
+                run_daemon(config)
+
+            kwargs = mock_cls.call_args.kwargs
+            assert kwargs["source_uri_prefix"] == f"{expected_scheme}://Workspace/", (
+                f"plugin={plugin_name}: got prefix={kwargs.get('source_uri_prefix')!r}"
+            )
+
+    def test_discovery_callback_swallows_lock_contention(self, caplog):
+        """``IngestRunInProgressError`` from ingest_one logs DEBUG, not ERROR.
+
+        Actively-edited files (Obsidian autosave, IDE save-on-keystroke)
+        fire watchdog events faster than the debouncer's
+        ``cancel-and-reschedule`` window can collapse them.  When two
+        callbacks race for the per-source advisory lock, the loser
+        raises ``IngestRunInProgressError`` — by design, the file is
+        in flight.  The next debounced event picks it up.  Logging
+        this at ERROR pollutes daemon.log on every save burst; we
+        downgrade to DEBUG and return cleanly.
+        """
+        import logging as _logging
+
+        from corpus_forge.backends.base import IngestRunInProgressError
+        from corpus_forge.daemon import _build_discovery_callback
+
+        backend = MagicMock()
+        config = MagicMock()
+        source_config = MagicMock()
+        cb = _build_discovery_callback(config, backend, dataset_id=1, source_config=source_config)
+
+        fake_source = MagicMock()
+        fake_source.parse.return_value = MagicMock(source_uri="filesystem://Workspace/hot.md")
+
+        with (
+            patch("corpus_forge.ingest._instantiate_source", return_value=fake_source),
+            patch("corpus_forge.ingest.get_chunker_for_source", return_value=MagicMock()),
+            patch("corpus_forge.ingest.get_active_embedders", return_value=[]),
+            patch(
+                "corpus_forge.ingest.ingest_one",
+                side_effect=IngestRunInProgressError("locked"),
+            ),
+            caplog.at_level(_logging.DEBUG, logger="corpus_forge.daemon"),
+        ):
+            cb(Path("/Workspace/hot.md"))
+
+        # No ERROR-level record for the contention case.
+        errors = [r for r in caplog.records if r.levelno >= _logging.ERROR]
+        assert not errors, [r.message for r in errors]
+        # And the skip was logged at DEBUG so future triage can grep it.
+        assert any("lock_source contention" in r.message for r in caplog.records), [
+            r.message for r in caplog.records
+        ]
+
+    def test_discovery_callback_wired_into_sync_engine(self):
+        """``run_daemon`` builds a discovery callback and passes it to SyncEngine.
+
+        The callback turns watchdog ``on_created`` events for brand-new
+        files into per-file ingest invocations, so the daemon picks up
+        new content without waiting for a manual ``ingest --once``.
+        """
+        dataset = MagicMock(sync_enabled=True, sources=[MagicMock()])
+        dataset.name = "vault"
+        config = self._config_with([dataset])
+        backend = self._backend_with({"vault": 7})
+
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake")),
+            patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+        ):
+            run_daemon(config)
+
+        kwargs = mock_cls.call_args.kwargs
+        assert "discovery_callback" in kwargs
+        assert callable(kwargs["discovery_callback"])
+
+    def test_dataset_id_passed_to_sync_engine(self):
+        """Pin the SyncEngine kwargs contract — dataset_id is an explicit kw arg.
+
+        Regression for the AttributeError: the broken call site was
+        ``SyncEngine(... dataset_config=dataset ...)`` and SyncEngine
+        read ``self._dataset_config.id``.  The contract now is that
+        ``run_daemon`` passes the int it resolved from the backend.
+        """
+        dataset = MagicMock(sync_enabled=True)
+        dataset.name = "vault"
+        source = MagicMock()
+        dataset.sources = [source]
+        config = self._config_with([dataset])
+        backend = self._backend_with({"vault": 99})
+
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake")),
+            patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+        ):
+            run_daemon(config)
+
+        kwargs = mock_cls.call_args.kwargs
+        assert kwargs["dataset_id"] == 99
+        assert kwargs["backend"] is backend
+        assert kwargs["host_id"] == "test-host"
+        assert kwargs["source"] is source
+        assert kwargs["source_root"] == Path("/fake")
 
 
 class TestDaemonRespectsConfigValidator:

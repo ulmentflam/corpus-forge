@@ -685,7 +685,33 @@ class LlamaCppEmbedder(BaseEmbedder):
                 "[[embedders]].dimension field to match the GGUF's native width."
             )
 
-        if self.normalized:
+        # Non-finite row filter — mirrors ``OpenAIEmbedder.encode``'s
+        # PR #49 contract (``last_failed_indices`` lists the dropped
+        # input positions; the returned array contains ONLY finite
+        # rows).  llama.cpp's C runtime occasionally emits NaN for
+        # numerically-unstable inputs (empty / pure-whitespace / very
+        # short chunks against ``qwen3-embedding`` is the maintainer's
+        # 2026-06-02 incident).  Without this filter, those rows reach
+        # pgvector and the daemon's discovery callback crashes with
+        # ``psycopg.errors.DataException: NaN not allowed in vector``.
+        self.last_failed_indices = []
+        if embeddings.size:
+            finite_row_mask = np.isfinite(embeddings).all(axis=1)
+            if not finite_row_mask.all():
+                bad_indices = np.where(~finite_row_mask)[0].tolist()
+                self.last_failed_indices = bad_indices
+                loader_logger.warning(
+                    "LlamaCppEmbedder %s dropped %d/%d row(s) with non-finite "
+                    "values (NaN/Inf); they stay in chunks_missing_embedding "
+                    "for the next pass. Sample indices: %s",
+                    self.name,
+                    len(bad_indices),
+                    embeddings.shape[0],
+                    bad_indices[:5],
+                )
+                embeddings = embeddings[finite_row_mask]
+
+        if self.normalized and embeddings.size:
             norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
             norms = np.maximum(norms, 1e-12)
             embeddings = embeddings / norms

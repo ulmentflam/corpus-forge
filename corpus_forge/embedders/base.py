@@ -56,6 +56,13 @@ class BaseEmbedder:
         # embedder as a catchall (no extension filter); see
         # ``corpus_forge.embedders.routing`` for the resolution rule.
         self.extensions: list[str] = list(extensions or [])
+        # Indices of input rows the most recent ``encode()`` could not
+        # produce a clean embedding for (NaN / Inf / 5xx / bisect-skip).
+        # ``_write_embeddings_for_chunks`` reads this attribute to keep
+        # the (chunk_id, embedding) zip in sync after row drops — the
+        # contract pioneered by ``OpenAIEmbedder`` (PR #49).  Embedders
+        # that never drop rows leave the list empty.
+        self.last_failed_indices: list[int] = []
 
     def warmup(self) -> None:
         """Warm up the embedder (e.g., load model)."""
