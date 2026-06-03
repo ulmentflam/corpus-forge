@@ -93,6 +93,38 @@ class TestAutoEmbedderLane:
         assert "llama-cpp" not in toml
 
 
+class TestAutoLaneWithPostgresBackend:
+    """The auto lane must compose with non-default backend selections.
+
+    Wires the embedder block to the postgres path so the rendered
+    config opens with ``[backend] kind = "postgres"`` followed by the
+    detected llama-cpp embedder block.
+    """
+
+    def test_postgres_backend_does_not_disturb_auto_embedder(self, tmp_path: Path):
+        info = AcceleratorInfo(
+            kind=Accelerator.CUDA,
+            device_name="NVIDIA A100",
+            vram_mb=81920,
+        )
+        with _stub(info):
+            toml = render_config_toml(
+                {
+                    "backend": "postgres",
+                    "postgres_dsn": "postgresql://u:p@h:5432/c",
+                    "embedder": "auto",
+                },
+                tmp_path / "ignored.sqlite",
+            )
+        # Both blocks present.
+        assert 'kind = "postgres"' in toml
+        assert 'dsn  = "postgresql://u:p@h:5432/c"' in toml
+        assert "[[embedders]]" in toml
+        assert 'provider   = "llama-cpp"' in toml
+        # The auto comment surfaces the detection result for triage.
+        assert "auto-detected accelerator" in toml.lower()
+
+
 class TestQuestionsToml:
     """The questions.toml file MUST advertise the new ``auto`` choice
     as the wizard's default; otherwise the install.sh + ps1 shells

@@ -127,6 +127,81 @@ class TestDetectAccelerator:
             info = detect_accelerator()
         assert info.kind is Accelerator.CPU
 
+    def test_nvidia_smi_empty_stdout(self):
+        """returncode 0 but no GPU rows → not CUDA.
+
+        Happens on hosts that have ``nvidia-smi`` installed (perhaps as
+        part of a container image baseline) but no actual driver
+        binding to GPUs at runtime.
+        """
+        completed = subprocess.CompletedProcess(
+            args=["nvidia-smi"], returncode=0, stdout="\n", stderr=""
+        )
+        with (
+            patch("corpus_forge.acceleration.subprocess.run", return_value=completed),
+            patch("corpus_forge.acceleration._mps_available", return_value=False),
+        ):
+            info = detect_accelerator()
+        assert info.kind is Accelerator.CPU
+
+    def test_nvidia_smi_unparseable_vram_keeps_cuda_lane(self):
+        """Memory field is non-numeric → still CUDA, just no VRAM info.
+
+        Robust to obscure driver-version output variations: we'd rather
+        downgrade VRAM to None and recommend the small-model lane than
+        misclassify as CPU.
+        """
+        completed = subprocess.CompletedProcess(
+            args=["nvidia-smi"],
+            returncode=0,
+            stdout="NVIDIA T4, [N/A]\n",
+            stderr="",
+        )
+        with patch("corpus_forge.acceleration.subprocess.run", return_value=completed):
+            info = detect_accelerator()
+        assert info.kind is Accelerator.CUDA
+        assert info.device_name == "NVIDIA T4"
+        assert info.vram_mb is None
+
+    def test_nvidia_smi_oserror_treated_as_missing(self):
+        """``PermissionError`` / ``OSError`` from exec → fall through.
+
+        Locked-down CI runners sometimes block ``nvidia-smi`` even when
+        the binary is on PATH; an exception MUST NOT crash the wizard.
+        """
+        with (
+            patch(
+                "corpus_forge.acceleration.subprocess.run",
+                side_effect=PermissionError("nvidia-smi: Operation not permitted"),
+            ),
+            patch("corpus_forge.acceleration._mps_available", return_value=False),
+        ):
+            info = detect_accelerator()
+        assert info.kind is Accelerator.CPU
+
+
+class TestMpsAvailable:
+    """``_mps_available`` is the only torch-coupled branch — pin its
+    fallbacks so import failures don't blow up doctor on minimal
+    installs (the universal failure mode on a Linux box without ML
+    extras)."""
+
+    def test_torch_missing_returns_false(self):
+        """``ImportError`` on torch → False, no crash."""
+        import builtins
+
+        from corpus_forge.acceleration import _mps_available
+
+        real_import = builtins.__import__
+
+        def _fake_import(name, *a, **k):
+            if name == "torch":
+                raise ImportError("No module named 'torch'")
+            return real_import(name, *a, **k)
+
+        with patch("builtins.__import__", side_effect=_fake_import):
+            assert _mps_available() is False
+
 
 class TestRecommendEmbedderPreset:
     """``recommend_embedder_preset`` maps detected hardware to a preset."""
