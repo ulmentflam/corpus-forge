@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from corpus_forge import __version__
+from corpus_forge.acceleration import detect_accelerator
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -761,12 +762,33 @@ def _check_icloud_access(cfg: Config) -> CheckResult:
 # ── orchestrator ──────────────────────────────────────────────────────────────────
 
 
+def _check_embedder_acceleration() -> CheckResult:
+    """Surface the detected accelerator + recommended embedder lane.
+
+    Informational only — CPU is not a failure, just a slower lane.
+    The detail line carries the device blurb plus the recommended
+    ``model_id`` so operators can spot a config that's leaving a
+    freshly-attached GPU on the table.  See
+    :mod:`corpus_forge.acceleration` for the detection +
+    recommendation logic.
+    """
+
+    from corpus_forge.acceleration import (  # noqa: PLC0415
+        recommend_embedder_preset,
+    )
+
+    info = detect_accelerator()
+    preset = recommend_embedder_preset(info)
+    return CheckResult("embedder_acceleration", CheckStatus.OK, preset.summary)
+
+
 _CHECKS: tuple[Callable[[], CheckResult], ...] = (
     _check_python_version,
     _check_uv,
     _check_poppler,
     _check_ffmpeg,
     _check_daemon_activity,
+    _check_embedder_acceleration,
 )
 
 

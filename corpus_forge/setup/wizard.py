@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
+from corpus_forge.acceleration import detect_accelerator, recommend_embedder_preset
+
 # Canonical question tree ships INSIDE the corpus_forge package (not in
 # repo-root ``packaging/``) so it's bundled in the wheel and the wizard
 # can find it post-``uv tool install``. The shell installers also read
@@ -224,7 +226,17 @@ def render_config_toml(answers: dict[str, str], db_path: Path) -> str:
     out.append("")
 
     # ── [[embedders]] ──────────────────────────────────────────────────
-    embedder = answers.get("embedder", "st")
+    embedder = answers.get("embedder", "auto")
+    if embedder == "auto":
+        # Detect the host's accelerator (CUDA / MPS / CPU) and emit
+        # the matching llama-cpp preset.  This is the recommended
+        # default for fresh installs because it picks a model size
+        # that fits the hardware and uses GPU offload when present.
+        info = detect_accelerator()
+        preset = recommend_embedder_preset(info)
+        out.append(f"# auto-detected accelerator: {preset.summary}")
+        out.append(preset.to_toml_block(name="nomic").rstrip())
+        out.append("")
     if embedder in {"st", "both"}:
         out.append("[[embedders]]")
         out.append('name      = "qwen3_8b"')
