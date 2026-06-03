@@ -197,6 +197,17 @@ def recommend_embedder_preset(info: AcceleratorInfo) -> EmbedderPreset:
     a single ``n_gpu_layers`` line and (for CPU) a smaller model id.
     """
     if info.kind is Accelerator.CUDA:
+        # ``info.vram_mb is None`` means the ``nvidia-smi`` memory
+        # field didn't parse as an int (rare driver-version output
+        # quirk; see ``_detect_cuda``).  We optimistically pick the
+        # higher-capacity ``qwen3-embedding:8b`` (4096d) lane in that
+        # case rather than fall back to ``nomic-embed-text`` (768d):
+        # the dimension mismatch on a config already populated for
+        # qwen3 would force a full re-embed of every chunk, which is
+        # a much worse failure mode than a transient OOM on first
+        # encode (the user can downgrade the preset by hand).  The
+        # ``EmbedderPreset`` + ``_cuda_summary`` pair below records
+        # the choice in ``preset.summary`` so doctor surfaces it.
         vram_ok = info.vram_mb is None or info.vram_mb >= _QWEN3_MIN_VRAM_MB
         if vram_ok:
             return EmbedderPreset(

@@ -76,3 +76,22 @@ class TestCheckEmbedderAcceleration:
         from corpus_forge.doctor.checks import _CHECKS
 
         assert _check_embedder_acceleration in _CHECKS
+
+    def test_detection_exception_is_caught_and_reported(self):
+        """A raised ``detect_accelerator`` must not crash doctor.
+
+        The wrapper returns a ``CheckStatus.OK`` result whose detail
+        explains detection was unavailable.  OK (not FAIL/WARN) keeps
+        the overall doctor report ``healthy`` — the user's corpus
+        works fine without accelerator detection; it's purely
+        informational.
+        """
+        with patch(
+            "corpus_forge.doctor.checks.detect_accelerator",
+            side_effect=RuntimeError("nvidia-smi exploded"),
+        ):
+            result = _check_embedder_acceleration()
+        assert result.status is CheckStatus.OK
+        assert result.name == "embedder_acceleration"
+        assert "detection unavailable" in result.detail
+        assert "nvidia-smi exploded" in result.detail

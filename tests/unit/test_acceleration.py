@@ -238,6 +238,28 @@ class TestRecommendEmbedderPreset:
         assert preset.model_id == "nomic-embed-text"
         assert preset.dimension == 768
 
+    def test_cuda_with_unknown_vram_defaults_to_high_vram_model(self):
+        """``vram_mb is None`` → optimistic ``qwen3-embedding:8b`` lane.
+
+        Pins the optimistic-default branch documented in
+        ``recommend_embedder_preset``: when ``nvidia-smi`` parsed the
+        device name but the memory field didn't decode to an int
+        (rare driver-version output quirk), we'd rather pick the
+        high-capacity model and risk an OOM-on-first-encode than
+        downgrade to a 768d lane whose dimension mismatch would
+        force a full re-embed of an already-populated corpus.
+        """
+        info = AcceleratorInfo(
+            kind=Accelerator.CUDA,
+            device_name="NVIDIA T4",
+            vram_mb=None,
+        )
+        preset = recommend_embedder_preset(info)
+        assert preset.provider == "llama-cpp"
+        assert preset.n_gpu_layers == -1
+        assert preset.model_id == "qwen3-embedding:8b"
+        assert preset.dimension == 4096
+
     def test_mps_recommends_metal_offload(self):
         """MPS (Mac) → llama-cpp-python with Metal (n_gpu_layers=-1)."""
         info = AcceleratorInfo(kind=Accelerator.MPS)

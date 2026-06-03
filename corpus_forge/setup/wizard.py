@@ -185,8 +185,13 @@ def _quote_toml_str(s: str) -> str:
 def render_config_toml(answers: dict[str, str], db_path: Path) -> str:
     """Render ``config.toml`` text from the wizard's answers.
 
-    Pure function (no side effects, no filesystem reads) so it can be
-    unit-tested directly. ``db_path`` is the SQLite DB location when
+    Has no *filesystem* side effects — output is returned as a string
+    rather than written.  When ``answers["embedder"] == "auto"``, the
+    function calls :func:`detect_accelerator` (which shells out to
+    ``nvidia-smi``); that subprocess probe is the only host-dependent
+    behaviour.  Tests patch
+    ``corpus_forge.setup.wizard.detect_accelerator`` to keep coverage
+    deterministic.  ``db_path`` is the SQLite DB location when
     ``backend=sqlite``; ignored otherwise.
 
     The rendered config is intentionally minimal — only the blocks the
