@@ -126,10 +126,10 @@ extras = ["rerank"]
 
 [[question]]
 id = "embedder"
-prompt = "Text embedder: 'st' (sentence-transformers, local, default), 'openai' (cloud or local proxy), or 'both'?"
+prompt = "Text embedder: 'auto' (detect GPU/CPU + pick a llama-cpp lane — recommended), 'st' (sentence-transformers), 'openai' (cloud or local proxy), or 'both' (st + openai)?"
 type = "choice"
-choices = ["st", "openai", "both"]
-default = "st"
+choices = ["auto", "st", "openai", "both"]
+default = "auto"
 env = "CF_EMBEDDER"
 
 [[question]]
