@@ -8,6 +8,92 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+## [0.1.0b13] - 2026-06-03
+
+### Fixed
+
+- **Daemon is now actually useful** (PR #86). Six stacked fixes that
+  take ``corpus-forge service start`` from "respawn loop that does
+  nothing" to "drop a file in a watched folder → it lands in the
+  corpus, chunked + embedded + searchable, while ``service stop``
+  returns in <1 s." Each fix reuses an existing repo pattern rather
+  than inventing a new mechanism.
+  1. **``daemon.main()`` wired through ``run_daemon``.** The published
+     entry point was calling the unimplemented ``ingest_main(once=False)``
+     stub, so under launchd's ``KeepAlive=true`` the process respawned
+     every ~10 s doing zero work. ``main()`` now loads ``Config``,
+     dispatches to ``run_daemon(config)``, initialises
+     ``init_logging("daemon", ...)`` (so daemon records survive the
+     LaunchAgent / systemd-unit stderr-to-``/dev/null`` redirection),
+     and blocks in ``time.sleep`` until the signal handler raises
+     ``SystemExit``.
+  2. **Dataset id + plugin-aware source root.** Three latent
+     ``AttributeError`` traps: Pydantic ``DatasetConfig`` carries
+     neither ``id`` nor ``exclude_globs`` (the id lives on the
+     backend's ``corpus.datasets`` row; ``exclude_globs`` is per-
+     source), and ``source.root`` is plugin-specific
+     (``filesystem``→``source.root``, ``markdown_vault``→
+     ``source.vault_root``, chat/Zotero→none). ``run_daemon`` now
+     resolves the id via ``backend.find_dataset_id_by_name(name)``
+     and the on-disk path via
+     ``ignore_lifecycle._source_root(source)``, and passes them as
+     explicit ``SyncEngine(dataset_id=..., source_root=...)`` kwargs.
+  3. **Watchdog ``on_created`` → per-file ingest (new-file discovery).**
+     ``PushPipeline`` was a replication-only pipeline — it silently
+     dropped brand-new files. ``PushPipeline`` now accepts an
+     optional ``discovery_callback`` and uses ``find_document``
+     (lookup-only, not the create-stub ``resolve_document``) to
+     detect genuinely-new paths. ``SyncEngine`` forwards the
+     callback. ``run_daemon`` builds a per-source callback via
+     ``_build_discovery_callback`` that lazy-instantiates the Source
+     plugin, the dispatched Chunker, and the active embedders on
+     first use (qwen3-4096 is ~4 GB resident; an idle daemon stays
+     light). ``handle_change`` is wrapped in a try/except so silent
+     worker-thread crashes surface in ``daemon.log``.
+  4. **Edge-case survival.** ``LlamaCppEmbedder.encode`` now follows
+     ``OpenAIEmbedder``'s ``last_failed_indices`` contract (PR #49):
+     non-finite rows are dropped from the returned array and their
+     input indices recorded — avoids ``psycopg.errors.DataException:
+     NaN not allowed in vector`` from llama-cpp's occasional NaN
+     emissions. ``PushPipeline.start`` composes the same three-layer
+     ``IgnoreStack`` the scanner uses
+     (``load_global_ignore + load_local_ignore + _ignore_from_globs``)
+     so binary files the managed ``.corpusignore`` excludes at scan
+     time are also skipped by the watchdog — and ``UnicodeDecodeError``
+     from ``read_text`` is caught at DEBUG as a belt-and-suspenders.
+     ``IngestRunInProgressError`` from per-source lock contention
+     (Obsidian autosave bursts) now logs at DEBUG instead of ERROR.
+     ``run_daemon._shutdown`` stops engines in parallel via
+     ``concurrent.futures.ThreadPoolExecutor`` then ``os._exit(0)``
+     (aliased as ``_exit_hard`` for testability) so the daemon
+     terminates promptly instead of waiting on Python's
+     interpreter finalisation. ``stop_daemon`` treats a pid
+     replacement (current pid ≠ original pid) as a clean exit so
+     launchd's ``KeepAlive=true`` respawn isn't mistaken for "still
+     alive" — ``service stop`` dropped from 30 s + ``SIGKILL`` to
+     ~0.3 s.
+  5. **File modifications re-chunk + re-embed.** Aligned
+     ``PushPipeline._compute_source_uri`` with ``Source.parse``'s
+     output (via a per-plugin ``source_uri_prefix`` derived in
+     ``run_daemon``) so ``find_document`` actually matches existing
+     rows. ``_handle_change_inner`` routes any content change
+     (new file OR existing file whose ``content_hash`` differs)
+     through the discovery callback — so modifications re-run
+     ``ingest_one`` → ``upsert_document`` (BUG-3 chunk-preserving
+     update path) → chunks and embeddings actually reflect the new
+     content. ``content_hash``-unchanged events (mtime touch, IDE
+     format-on-save) now no-op cheaply without acquiring a lock.
+  6. **CI portability.** ``_should_ignore`` uses
+     ``getattr(path.stat(), "st_blocks", None)`` instead of bare
+     attribute access — Windows's ``os.stat_result`` lacks the
+     POSIX-only field. ``test_daemon.py`` autouse fixture
+     snapshots + restores SIGINT/SIGTERM handlers per test so the
+     real handlers ``run_daemon`` installs don't survive into the
+     ``test_logs_subcommand.py`` SIGINT test on shared pytest-xdist
+     workers (the previous SystemExit-based shutdown masked this
+     leak; the new ``os._exit`` shutdown surfaced it as a worker
+     crash).
+
 ## [0.1.0b12] - 2026-06-02
 
 ### Added
