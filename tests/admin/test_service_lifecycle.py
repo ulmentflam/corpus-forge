@@ -214,8 +214,18 @@ def test_stop_daemon_treats_launchd_respawn_as_clean_exit(
     # Clean return — we did NOT escalate to SIGKILL.
     assert rc == 0
     assert (original_pid, signal.SIGTERM) in sent
-    assert (respawned_pid, svc._SIGKILL) not in sent
-    assert (original_pid, svc._SIGKILL) not in sent
+    # The only signal sent to the original pid is SIGTERM — no
+    # escalation.  Phrased this way (rather than ``(pid, _SIGKILL)
+    # not in sent``) because Windows lacks ``signal.SIGKILL`` and
+    # ``svc._SIGKILL`` aliases to ``signal.SIGTERM`` there; the
+    # tuple-not-in form would tautologically conflict with the
+    # SIGTERM-in assertion above.
+    assert not [s for (p, s) in sent if p == original_pid and s != signal.SIGTERM]
+    # The respawned pid must never have been signalled at all.
+    real_sigkill = getattr(signal, "SIGKILL", None)
+    if real_sigkill is not None:
+        assert (respawned_pid, real_sigkill) not in sent
+    assert not [s for (p, s) in sent if p == respawned_pid]
 
 
 def test_stop_daemon_escalates_to_sigkill_after_timeout(
