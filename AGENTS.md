@@ -34,7 +34,7 @@ Pick one. The tool runs the same way regardless of how you installed it.
 uv tool install 'corpus-forge[hf]'
 
 # Or the guided one-liner (asks a short prompt-tree).
-curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh | sh
+curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh | bash
 
 # macOS via Homebrew tap.
 brew install ulmentflam/tap/corpus-forge

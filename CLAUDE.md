@@ -27,7 +27,7 @@ Pick one. Reach for the first option that matches the user's platform unless the
 uv tool install 'corpus-forge[hf]'
 
 # Or the guided one-liner (asks the user a short prompt-tree).
-curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh | sh
+curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh | bash
 
 # macOS via Homebrew tap.
 brew install ulmentflam/tap/corpus-forge

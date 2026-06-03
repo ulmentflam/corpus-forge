@@ -37,8 +37,7 @@ hands off to the `corpus-forge setup` wizard to render
 Windows.
 
 ```bash
-# macOS / Linux / WSL
-curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh | sh
+curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh | bash
 ```
 
 ```powershell
@@ -51,7 +50,7 @@ iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install
 
 ```bash
 CF_NON_INTERACTIVE=1 CF_BACKEND=sqlite CF_MCP=yes CF_HF=yes \
-  curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh | sh
+  curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh | bash
 ```
 
 ### Install with Claude (copy-paste prompt)

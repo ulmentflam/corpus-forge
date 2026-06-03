@@ -3,7 +3,12 @@
 #
 # Typical install:
 #
-#     curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh | sh
+#     curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh | bash
+#
+# (Pipe to ``bash``, not ``sh`` — on Ubuntu/Debian ``/bin/sh`` is
+# ``dash`` which doesn't support ``pipefail`` and the other bashisms
+# this script relies on.  The shebang above only takes effect when
+# the script is invoked as a file, not when streamed through ``sh``.)
 #
 # Or, after `git clone`:
 #
@@ -25,6 +30,22 @@
 #         CF_MCP=yes CF_HF=yes ./install.sh
 #
 # All ``CF_*`` env vars are documented in ``packaging/install/questions.toml``.
+
+# Fail loudly + early when streamed through a non-bash shell (Ubuntu /
+# Debian's ``/bin/sh`` is dash, which rejects ``set -o pipefail`` with
+# the cryptic ``sh: 29: set: Illegal option -o pipefail``).  Detect by
+# checking for ``BASH_VERSION`` (set by bash, unset by dash / ash /
+# POSIX sh) and direct the user to the right command.
+if [ -z "${BASH_VERSION:-}" ]; then
+    printf '%s\n' \
+        "Error: install.sh requires bash (uses pipefail, [[ ]], local vars)." \
+        "Re-run with bash instead of sh:" \
+        "" \
+        "    curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh | bash" \
+        "" \
+        "Or, after \`git clone\`:  bash install.sh" >&2
+    exit 1
+fi
 
 set -euo pipefail
 
