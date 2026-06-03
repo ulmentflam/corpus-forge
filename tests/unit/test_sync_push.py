@@ -282,7 +282,7 @@ class TestLockSourceContext:
         lock because Python's context manager semantics fire ``__exit__``
         on the exception path regardless.
         """
-        import logging as _logging  # noqa: PLC0415
+        import logging as _logging
 
         pipeline = _make_pipeline()
         pipeline._echo_suppressor.was_just_written.return_value = False
@@ -304,7 +304,9 @@ class TestLockSourceContext:
 
         mock_lock.__exit__.assert_called_once()
         # The exception is captured in the rotating log.
-        assert any("db error" in r.message or "handle_change raised" in r.message for r in caplog.records), caplog.records
+        assert any(
+            "db error" in r.message or "handle_change raised" in r.message for r in caplog.records
+        ), caplog.records
 
     def test_lock_source_not_acquired_when_echo_suppressor_matches(self, mock_path):
         """No lock acquisition when echo suppressor short-circuits."""
@@ -959,7 +961,7 @@ class TestBinaryFileHandling:
 
     def test_handle_change_swallows_unicode_decode_error(self, mock_path, mock_lock, caplog):
         """A non-UTF-8 binary file must not raise to the watchdog timer."""
-        import logging as _logging  # noqa: PLC0415
+        import logging as _logging
 
         # Make read_text simulate a binary file's first byte.
         mock_path.read_text.side_effect = UnicodeDecodeError(

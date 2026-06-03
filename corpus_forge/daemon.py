@@ -6,11 +6,11 @@ import signal
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, NoReturn
+from typing import NoReturn
 
 from .sync.engine import SyncEngine
-
 
 # Module-level alias for the hard-exit primitive used by ``_shutdown``.
 # Tests patch ``corpus_forge.daemon._exit_hard`` to avoid terminating
@@ -122,8 +122,7 @@ def _build_discovery_callback(
             state["chunker"] = get_chunker_for_source(source, config)
             state["embedders"] = get_active_embedders(config)
             logger.info(
-                "Discovery callback warmed up for dataset_id=%d / %s "
-                "(embedders=%d)",
+                "Discovery callback warmed up for dataset_id=%d / %s (embedders=%d)",
                 dataset_id,
                 getattr(source_config, "plugin", "?"),
                 len(state["embedders"]),
@@ -139,9 +138,7 @@ def _build_discovery_callback(
         embedders = state["embedders"]
         raw = source.parse(Path(path))
         if raw is None:
-            logger.debug(
-                "Discovery: source.parse returned None for %s; skipping", path
-            )
+            logger.debug("Discovery: source.parse returned None for %s; skipping", path)
             return
         try:
             ingest_one(
@@ -193,9 +190,7 @@ def run_daemon(config) -> None:
 
     backend = _get_any_backend(config)
     if backend is None:
-        logger.warning(
-            "No reachable backend at daemon startup; skipping all sync engines"
-        )
+        logger.warning("No reachable backend at daemon startup; skipping all sync engines")
     else:
         for dataset in config.datasets:
             if not dataset.sync_enabled:
@@ -220,16 +215,13 @@ def run_daemon(config) -> None:
                 root = _source_root(source_config)
                 if root is None:
                     logger.info(
-                        "Skipping sync engine for %s/%s — plugin has no "
-                        "watchable filesystem root",
+                        "Skipping sync engine for %s/%s — plugin has no watchable filesystem root",
                         dataset.name,
                         source_config.plugin,
                     )
                     continue
 
-                discovery_cb = _build_discovery_callback(
-                    config, backend, dataset_id, source_config
-                )
+                discovery_cb = _build_discovery_callback(config, backend, dataset_id, source_config)
                 # URI prefix MUST match what ``Source.parse`` writes
                 # into ``corpus.documents.source_uri`` so PushPipeline's
                 # ``find_document`` lookup hits.  Without this, every
@@ -301,7 +293,7 @@ def run_daemon(config) -> None:
         # Lazy-loaded llama-cpp embedders + watchdog Observer
         # internals spawn native + Python threads we don't own, and
         # waiting on them blew past the 30 s SIGTERM→SIGKILL grace
-        # window in ``corpus-forge service stop`` (12 sources × 10 s
+        # window in ``corpus-forge service stop`` (12 sources x 10 s
         # PullPipeline.join).  The daemon's authoritative state lives
         # in Postgres + the rotating log file (both already durable);
         # there is nothing to flush, so a hard exit is appropriate.
@@ -317,11 +309,11 @@ def run_daemon(config) -> None:
         # Force-flush logs so the operator's last view in daemon.log
         # is the shutdown ack, not whatever was buffered when the
         # OS started tearing down.
+        import contextlib  # noqa: PLC0415
+
         for handler in logging.getLogger("corpus_forge").handlers:
-            try:
+            with contextlib.suppress(Exception):
                 handler.flush()
-            except Exception:
-                pass
         _exit_hard(0)
 
     signal.signal(signal.SIGINT, _shutdown)

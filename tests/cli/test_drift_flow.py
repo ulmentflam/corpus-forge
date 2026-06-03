@@ -302,7 +302,9 @@ def test_daemon_emits_warning_log_on_drift(caplog, monkeypatch):
     # Don't enter the real sync engines, block in the sleep loop, or
     # tear down ``caplog``'s handlers by re-initialising logging.
     monkeypatch.setattr(daemon_mod, "run_daemon", lambda config: None)
-    monkeypatch.setattr(daemon_mod.time, "sleep", lambda _seconds: (_ for _ in ()).throw(SystemExit(0)))
+    monkeypatch.setattr(
+        daemon_mod.time, "sleep", lambda _seconds: (_ for _ in ()).throw(SystemExit(0))
+    )
     monkeypatch.setattr("corpus_forge.logging_config.init_logging", lambda *a, **k: None)
 
     def _bail():

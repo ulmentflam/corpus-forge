@@ -36,7 +36,11 @@ def _build_ignore_stack(source_root: Path, exclude_globs: tuple[str, ...]):
     — callers fall back to the existing ``fnmatch(exclude_globs)``
     path on a per-name basis.
     """
-    from corpus_forge.ignore import IgnoreStack, load_global_ignore, load_local_ignore  # noqa: PLC0415
+    from corpus_forge.ignore import (  # noqa: PLC0415
+        IgnoreStack,
+        load_global_ignore,
+        load_local_ignore,
+    )
     from corpus_forge.sources.filesystem import _ignore_from_globs  # noqa: PLC0415
 
     sets = []
@@ -150,9 +154,12 @@ class PushPipeline:
         kill the watchdog Timer thread it runs on; the rotating log
         captures the traceback for triage instead.
         """
+        callback = self._discovery_callback
+        if callback is None:
+            return
         try:
-            self._discovery_callback(path)
-        except Exception:  # noqa: BLE001 — defensive in a worker thread
+            callback(path)
+        except Exception:
             logger.exception(
                 "Discovery callback raised for %s; new file not ingested",
                 path,
@@ -192,7 +199,7 @@ class PushPipeline:
         # watchdog-stage crashes invisible to operators.
         try:
             self._handle_change_inner(path)
-        except Exception:  # noqa: BLE001 — defensive in a worker thread
+        except Exception:
             logger.exception("handle_change raised for %s", path)
 
     def _handle_change_inner(self, path: Path) -> None:
@@ -385,9 +392,7 @@ class PushPipeline:
         # formats that would raise ``UnicodeDecodeError``.
         if self._ignore_stack is not None and self._source_root is not None:
             try:
-                if self._ignore_stack.matches(
-                    path, is_dir=False, scan_root=self._source_root
-                ):
+                if self._ignore_stack.matches(path, is_dir=False, scan_root=self._source_root):
                     return True
             except ValueError:
                 # Path outside the source root — let the rest of the
@@ -395,7 +400,13 @@ class PushPipeline:
                 # which only fires within the scheduled tree.
                 pass
         try:
-            if path.stat().st_blocks == 0:
+            # ``st_blocks`` is POSIX-only — absent on Windows's
+            # ``os.stat_result``.  Treat the field as "not zero" when
+            # the platform doesn't expose it; the iCloud-placeholder
+            # heuristic (zero-block sparse files) only applies on
+            # macOS/Linux anyway.
+            st_blocks = getattr(path.stat(), "st_blocks", None)
+            if st_blocks == 0:
                 return True
         except OSError:
             pass

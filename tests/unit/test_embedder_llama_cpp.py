@@ -1303,7 +1303,11 @@ class TestEncodeNanRowFilter:
 
         # The warning must name the embedder + the number of dropped
         # rows so operators can grep for it.
-        matches = [r for r in caplog.records if "non-finite" in r.message.lower() or "nan" in r.message.lower()]
+        matches = [
+            r
+            for r in caplog.records
+            if "non-finite" in r.message.lower() or "nan" in r.message.lower()
+        ]
         assert matches, [r.message for r in caplog.records]
 
     def test_last_failed_indices_reset_per_call(self) -> None:

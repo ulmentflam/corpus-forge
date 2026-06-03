@@ -72,8 +72,8 @@ class TestDaemonMain:
             pytest.raises(SystemExit),
         ):
             main()
-            mock_load.assert_called_once()
-            mock_run.assert_called_once_with(fake_config)
+        mock_load.assert_called_once()
+        mock_run.assert_called_once_with(fake_config)
 
     def test_main_logs_start(self):
         """Test that main logs startup message."""
@@ -87,7 +87,7 @@ class TestDaemonMain:
             pytest.raises(SystemExit),
         ):
             main()
-            mock_logger.info.assert_any_call("Starting corpus-forge daemon...")
+        mock_logger.info.assert_any_call("Starting corpus-forge daemon...")
 
     def test_main_blocks_in_sleep_loop_until_signal(self):
         """``main`` must block after ``run_daemon`` returns.
@@ -108,7 +108,7 @@ class TestDaemonMain:
             pytest.raises(SystemExit),
         ):
             main()
-            assert mock_sleep.called
+        assert mock_sleep.called
 
 
 class TestDaemonSignalHandling:
@@ -156,7 +156,7 @@ class TestDaemonOrchestrator:
     def _backend_with(id_map):
         """Build a backend mock whose ``find_dataset_id_by_name`` maps name → id."""
         backend = MagicMock()
-        backend.find_dataset_id_by_name.side_effect = lambda name: id_map.get(name)
+        backend.find_dataset_id_by_name.side_effect = id_map.get
         return backend
 
     def test_sync_enabled_starts_engine(self):
@@ -271,7 +271,7 @@ class TestDaemonOrchestrator:
         a 0.5s sleep and asserting the whole handler completes in
         well under N*0.5s.
         """
-        import time as _time  # noqa: PLC0415
+        import time as _time
 
         n = 6
         datasets = []
@@ -336,7 +336,7 @@ class TestDaemonOrchestrator:
         for it, so we cannot resolve a dataset id.  The daemon must skip
         cleanly with a WARNING rather than crash.
         """
-        import logging as _logging  # noqa: PLC0415
+        import logging as _logging
 
         dataset = MagicMock(sync_enabled=True, sources=[MagicMock()])
         dataset.name = "uningested"
@@ -381,7 +381,10 @@ class TestDaemonOrchestrator:
         the same scheme so ``find_document`` matches and modifications
         take the cheap replication path instead of re-discovering.
         """
-        for plugin_name, expected_scheme in (("filesystem", "filesystem"), ("markdown_vault", "vault")):
+        for plugin_name, expected_scheme in (
+            ("filesystem", "filesystem"),
+            ("markdown_vault", "vault"),
+        ):
             ds = MagicMock(sync_enabled=True)
             ds.name = "vault"
             source = MagicMock()
@@ -414,10 +417,10 @@ class TestDaemonOrchestrator:
         this at ERROR pollutes daemon.log on every save burst; we
         downgrade to DEBUG and return cleanly.
         """
-        import logging as _logging  # noqa: PLC0415
+        import logging as _logging
 
-        from corpus_forge.backends.base import IngestRunInProgressError  # noqa: PLC0415
-        from corpus_forge.daemon import _build_discovery_callback  # noqa: PLC0415
+        from corpus_forge.backends.base import IngestRunInProgressError
+        from corpus_forge.daemon import _build_discovery_callback
 
         backend = MagicMock()
         config = MagicMock()
