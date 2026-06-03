@@ -109,6 +109,53 @@ loader_logger = logging.getLogger("corpus_forge.embedders.loader")
 _OLLAMA_MODEL_LAYER_MEDIA_TYPE = "application/vnd.ollama.image.model"
 _DEFAULT_OLLAMA_MODELS_ROOT = Path.home() / ".ollama" / "models"
 
+# Headroom subtracted from the per-sequence token budget — empirically
+# enough for the BOS / EOS / pooling tokens llama.cpp prepends.
+_N_CTX_SEQ_HEADROOM = 4
+# Floor protecting against a pathological zero from the bindings (e.g.
+# an uninitialised context handle).
+_N_CTX_SEQ_FLOOR = 64
+
+
+def effective_n_ctx_seq(
+    *,
+    n_ctx: int,
+    n_seq_max: int,
+    n_batch: int,
+    n_ubatch: int,
+    kv_unified: bool,
+) -> int:
+    """Return the safe per-sequence token budget for one embed call.
+
+    Two regimes, keyed off how the llama.cpp context lays out its KV
+    cache (issue #88):
+
+    - ``kv_unified=True`` — llama-cpp-python >= 0.3.25 sets this for
+      every ``embedding=True`` context: all sequences share one
+      ``n_ctx``-sized buffer, and the binding's ``embed()`` clears the
+      cache before every decode while packing at most ``n_batch``
+      tokens per decode call. A single sequence may therefore use the
+      whole buffer — the budget is ``min(n_ctx, n_batch, n_ubatch)``.
+      (``n_ubatch`` participates because non-causal / pooling models
+      must fit a whole sequence into a single micro-batch; corpus-forge
+      defaults both batch knobs to ``n_ctx`` so the min is a no-op on
+      stock configs.)
+
+    - ``kv_unified=False`` — older bindings / split KV cache: each of
+      the ``n_seq_max`` streams owns ``n_ctx // n_seq_max`` cache
+      slots, so that division IS the per-sequence capacity. This is
+      the regime that produced the original ``decode: failed to find
+      a memory slot`` crash (maintainer's 2026-05-29 incident, PR
+      #80), and the conservative math is kept verbatim for it.
+
+    Issue #88 was the first regime being fed through the second's
+    math: the binding forces ``n_seq_max=256`` on embedding contexts,
+    so ``8192 // 256 - 4 = 28`` floored to 64 — and every chunk was
+    silently truncated to 64 tokens before embedding.
+    """
+    budget = min(n_ctx, n_batch, n_ubatch) if kv_unified else n_ctx // max(n_seq_max, 1)
+    return max(budget - _N_CTX_SEQ_HEADROOM, _N_CTX_SEQ_FLOOR)
+
 
 def resolve_gguf_path(
     *,
@@ -424,6 +471,10 @@ class LlamaCppEmbedder(BaseEmbedder):
         # lives here so it survives across multiple :meth:`encode` calls
         # on the same embedder.
         self._runtime_logged: bool = False
+        # Per-instance latch for the issue-#88 collapse WARNING — fires
+        # at most once when the effective per-sequence budget lands far
+        # below the configured ``n_ctx``.
+        self._collapse_warned: bool = False
 
     # ── lazy load ─────────────────────────────────────────────────────
 
@@ -593,12 +644,8 @@ class LlamaCppEmbedder(BaseEmbedder):
         #
         # The configured ``n_ctx`` / ``n_seq_max`` are NOT reliable —
         # llama-cpp-python's ``embedding=True`` initialiser overrides
-        # ``n_seq_max`` post-construction to up to
-        # ``llama_max_parallel_sequences()`` (~32 on a stock install).
-        # Slicing to 8192 tokens while the decoder accepts only ~256
-        # produces ``decode: failed to find a memory slot`` /
-        # ``RuntimeError: llama_decode returned 1`` on the first real
-        # input (maintainer's 2026-05-29 incident; fixed in PR #80).
+        # ``n_seq_max`` to ``min(n_batch, llama_max_parallel_sequences())``
+        # (256 on a stock 0.3.25 install) BEFORE creating the context.
         # Introspect the actual runtime values off the loaded context
         # via the C-bindings and fall back to the configured-value
         # path when the bindings don't expose what we need. The
@@ -620,21 +667,37 @@ class LlamaCppEmbedder(BaseEmbedder):
                 raise TypeError("not a real ctx pointer")
             _runtime_n_ctx = int(_lcpp.llama_n_ctx(_ctx_ptr))  # type: ignore[arg-type]
             _runtime_n_seq_max = int(_lcpp.llama_n_seq_max(_ctx_ptr))  # type: ignore[arg-type]
-            # The ``- 4`` is empirically enough headroom for the BOS /
-            # EOS / pooling tokens llama.cpp prepends. The ``max(..., 64)``
-            # floor protects against a pathological zero from the
-            # bindings (e.g. an uninitialised context handle).
-            n_ctx_seq = max(_runtime_n_ctx // max(_runtime_n_seq_max, 1) - 4, 64)
+            _runtime_n_batch = int(_lcpp.llama_n_batch(_ctx_ptr))  # type: ignore[arg-type]
+            _runtime_n_ubatch = int(_lcpp.llama_n_ubatch(_ctx_ptr))  # type: ignore[arg-type]
             _runtime_lookup_ok = True
         except (AttributeError, TypeError, ImportError, ctypes.ArgumentError, OSError):
             # Older bindings or test fakes without ``_ctx.ctx`` → fall
-            # back to the configured-value math from PR #79. Still
-            # honest for installs where post-construction mutation
-            # actually sticks.
-            n_ctx_seq = self.n_ctx // max(self.n_seq_max, 1)
+            # back to the configured values from PR #79. Still honest
+            # for installs where post-construction mutation actually
+            # sticks.
             _runtime_n_ctx = self.n_ctx
             _runtime_n_seq_max = self.n_seq_max
+            _runtime_n_batch = self.n_batch
+            _runtime_n_ubatch = self.n_ubatch
             _runtime_lookup_ok = False
+
+        # ``kv_unified`` has no C-API getter, but the binding mutates
+        # ``context_params`` BEFORE creating the context, so the params
+        # struct retained on the handle is authoritative for what the
+        # context was built with. The ``isinstance(..., bool)`` guard
+        # keeps MagicMock test doubles (whose attribute access returns
+        # a truthy Mock) on the conservative split-cache path — same
+        # contract as the ctx-pointer guard above.
+        _kv_unified_raw = getattr(getattr(self._llama, "context_params", None), "kv_unified", False)
+        _kv_unified = _kv_unified_raw if isinstance(_kv_unified_raw, bool) else False
+
+        n_ctx_seq = effective_n_ctx_seq(
+            n_ctx=_runtime_n_ctx,
+            n_seq_max=_runtime_n_seq_max,
+            n_batch=_runtime_n_batch,
+            n_ubatch=_runtime_n_ubatch,
+            kv_unified=_kv_unified,
+        )
 
         # Once-per-instance INFO log so future triage has a greppable
         # signal of what the C-bindings actually report vs. what the
@@ -643,17 +706,44 @@ class LlamaCppEmbedder(BaseEmbedder):
         if not self._runtime_logged:
             loader_logger.info(
                 "LlamaCppEmbedder runtime n_ctx_seq for %s: runtime=(n_ctx=%d, "
-                "n_seq_max=%d, n_ctx_seq=%d), configured=(n_ctx=%d, n_seq_max=%d), "
+                "n_seq_max=%d, n_batch=%d, n_ubatch=%d, kv_unified=%s, "
+                "n_ctx_seq=%d), configured=(n_ctx=%d, n_seq_max=%d), "
                 "lookup_ok=%s",
                 self.name,
                 _runtime_n_ctx,
                 _runtime_n_seq_max,
+                _runtime_n_batch,
+                _runtime_n_ubatch,
+                _kv_unified,
                 n_ctx_seq,
                 self.n_ctx,
                 self.n_seq_max,
                 _runtime_lookup_ok,
             )
             self._runtime_logged = True
+
+        # Issue #88 — the silent-collapse guard. When the effective
+        # per-sequence budget lands materially below the configured
+        # window, every long chunk is about to be truncated and the
+        # only prior signal was a DEBUG line per chunk. WARN once per
+        # instance so the operator sees it in the rotating log without
+        # tailing at DEBUG.
+        if n_ctx_seq < self.n_ctx // 2 and not self._collapse_warned:
+            loader_logger.warning(
+                "LlamaCppEmbedder %s: effective per-sequence budget "
+                "n_ctx_seq=%d is far below configured n_ctx=%d — chunks "
+                "longer than %d tokens WILL be truncated before embedding "
+                "(kv_unified=%s, runtime n_seq_max=%d). If this is a "
+                "split-KV binding, upgrade llama-cpp-python; otherwise "
+                "check n_batch/n_ubatch overrides in [[embedders]].",
+                self.name,
+                n_ctx_seq,
+                self.n_ctx,
+                n_ctx_seq,
+                _kv_unified,
+                _runtime_n_seq_max,
+            )
+            self._collapse_warned = True
 
         texts_list = [self._maybe_truncate(t, n_ctx_seq) for t in texts]
         all_rows: list[list[float]] = []
@@ -732,4 +822,9 @@ class LlamaCppEmbedder(BaseEmbedder):
         return self.encode(texts, batch_size=batch_size)
 
 
-__all__ = ["LLAMA_CPP_AVAILABLE", "LlamaCppEmbedder", "resolve_gguf_path"]
+__all__ = [
+    "LLAMA_CPP_AVAILABLE",
+    "LlamaCppEmbedder",
+    "effective_n_ctx_seq",
+    "resolve_gguf_path",
+]

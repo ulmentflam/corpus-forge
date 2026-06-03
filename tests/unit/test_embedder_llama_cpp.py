@@ -572,6 +572,176 @@ class TestWarmup:
             assert load_p.call_count == 1
 
 
+# ── effective_n_ctx_seq (issue #88) ──────────────────────────────────
+
+
+class TestEffectiveNCtxSeq:
+    """Pure-math pins for the per-sequence budget helper (issue #88)."""
+
+    def test_issue_88_incident_values_do_not_collapse(self) -> None:
+        """THE regression: 0.3.25 forces n_seq_max=256 + kv_unified=True.
+
+        The old math divided n_ctx by the runtime n_seq_max regardless
+        of cache layout: ``8192 // 256 - 4 = 28`` → floored to 64, and
+        every chunk was silently truncated to 64 tokens before
+        embedding. With a unified KV cache the whole window belongs to
+        the single in-flight sequence.
+        """
+        from corpus_forge.embedders.llama_cpp import effective_n_ctx_seq
+
+        assert (
+            effective_n_ctx_seq(
+                n_ctx=8192, n_seq_max=256, n_batch=8192, n_ubatch=8192, kv_unified=True
+            )
+            == 8188
+        )
+
+    def test_split_cache_keeps_conservative_division(self) -> None:
+        """Old bindings (split KV): n_ctx // n_seq_max IS the capacity.
+
+        This is the regime behind the original ``decode: failed to
+        find a memory slot`` crash (PR #80) — the conservative math
+        must survive for it.
+        """
+        from corpus_forge.embedders.llama_cpp import effective_n_ctx_seq
+
+        assert (
+            effective_n_ctx_seq(
+                n_ctx=8192, n_seq_max=256, n_batch=8192, n_ubatch=8192, kv_unified=False
+            )
+            == 64  # 8192 // 256 - 4 = 28 → floor
+        )
+
+    def test_split_cache_single_sequence_gets_full_window(self) -> None:
+        from corpus_forge.embedders.llama_cpp import effective_n_ctx_seq
+
+        assert (
+            effective_n_ctx_seq(
+                n_ctx=8192, n_seq_max=1, n_batch=8192, n_ubatch=8192, kv_unified=False
+            )
+            == 8188
+        )
+
+    def test_unified_budget_capped_by_n_batch(self) -> None:
+        """A user-overridden smaller n_batch bounds the unified budget —
+        llama-cpp-python's ``embed()`` packs at most n_batch tokens per
+        decode and raises on any single sequence longer than that."""
+        from corpus_forge.embedders.llama_cpp import effective_n_ctx_seq
+
+        assert (
+            effective_n_ctx_seq(
+                n_ctx=8192, n_seq_max=256, n_batch=2048, n_ubatch=8192, kv_unified=True
+            )
+            == 2044
+        )
+
+    def test_unified_budget_capped_by_n_ubatch(self) -> None:
+        """Non-causal / pooling models must fit a sequence in one
+        micro-batch; min() with n_ubatch keeps them safe."""
+        from corpus_forge.embedders.llama_cpp import effective_n_ctx_seq
+
+        assert (
+            effective_n_ctx_seq(
+                n_ctx=8192, n_seq_max=256, n_batch=8192, n_ubatch=1024, kv_unified=True
+            )
+            == 1020
+        )
+
+    def test_floor_protects_against_pathological_zero(self) -> None:
+        from corpus_forge.embedders.llama_cpp import effective_n_ctx_seq
+
+        assert (
+            effective_n_ctx_seq(n_ctx=0, n_seq_max=1, n_batch=0, n_ubatch=0, kv_unified=True) == 64
+        )
+
+    def test_zero_n_seq_max_does_not_divide_by_zero(self) -> None:
+        from corpus_forge.embedders.llama_cpp import effective_n_ctx_seq
+
+        assert (
+            effective_n_ctx_seq(n_ctx=512, n_seq_max=0, n_batch=512, n_ubatch=512, kv_unified=False)
+            == 508
+        )
+
+
+class TestKvUnifiedBudgetInEncode:
+    """``encode()`` honours the handle's ``kv_unified`` flag (issue #88).
+
+    These exercise the configured-value fallback path (fakes have no
+    real ``_ctx.ctx`` pointer) with ``context_params.kv_unified``
+    controlled explicitly via ``SimpleNamespace`` — a real ``bool``,
+    unlike MagicMock attribute access which yields a truthy Mock.
+    """
+
+    def _build(self, *, kv_unified, n_ctx: int = 8192, n_seq_max: int = 256):
+        from types import SimpleNamespace
+
+        from corpus_forge.embedders.llama_cpp import LlamaCppEmbedder
+
+        e = LlamaCppEmbedder(
+            name="kv",
+            model_id="x:y",
+            dimension=4,
+            n_ctx=n_ctx,
+            n_seq_max=n_seq_max,
+        )
+        fake = MagicMock()
+        fake.create_embedding.side_effect = _fake_create_embedding(4)
+        # 5000 "tokens" — far above the collapsed 64-token budget,
+        # well below the healthy 8188 one.
+        fake.tokenize.return_value = list(range(5000))
+        fake.detokenize.return_value = b"truncated"
+        if kv_unified is not None:
+            fake.context_params = SimpleNamespace(kv_unified=kv_unified)
+        e._llama = fake
+        return e, fake
+
+    def test_unified_cache_skips_truncation(self) -> None:
+        """kv_unified=True → budget 8188 ≥ 5000 tokens → text passes
+        through untouched (detokenize never called)."""
+        e, fake = self._build(kv_unified=True)
+        e.encode(["x" * 20000])
+        fake.detokenize.assert_not_called()
+
+    def test_split_cache_truncates_and_warns(self, caplog) -> None:
+        """kv_unified=False → budget 8192//256-4 → floor 64 → the 5000-
+        token input is truncated AND the once-per-instance collapse
+        WARNING fires."""
+        import logging
+
+        e, fake = self._build(kv_unified=False)
+        with caplog.at_level(logging.WARNING, logger="corpus_forge.embedders.loader"):
+            e.encode(["x" * 20000])
+        fake.detokenize.assert_called_once()
+        assert any("n_ctx_seq=64" in r.getMessage() for r in caplog.records)
+
+    def test_collapse_warning_fires_once_per_instance(self, caplog) -> None:
+        import logging
+
+        e, _ = self._build(kv_unified=False)
+        with caplog.at_level(logging.WARNING, logger="corpus_forge.embedders.loader"):
+            e.encode(["a" * 20000])
+            e.encode(["b" * 20000])
+        warnings = [r for r in caplog.records if "WILL be truncated" in r.getMessage()]
+        assert len(warnings) == 1
+
+    def test_mock_truthy_kv_unified_stays_conservative(self) -> None:
+        """A bare MagicMock handle's ``context_params.kv_unified`` is a
+        truthy Mock, not a bool — the isinstance guard must keep it on
+        the split-cache path so test doubles never unlock the larger
+        budget by accident."""
+        e, fake = self._build(kv_unified=None)  # plain MagicMock attrs
+        e.encode(["x" * 20000])
+        fake.detokenize.assert_called_once()
+
+    def test_healthy_budget_emits_no_collapse_warning(self, caplog) -> None:
+        import logging
+
+        e, _ = self._build(kv_unified=True)
+        with caplog.at_level(logging.WARNING, logger="corpus_forge.embedders.loader"):
+            e.encode(["x" * 20000])
+        assert not [r for r in caplog.records if "WILL be truncated" in r.getMessage()]
+
+
 # ── Smoke (gated) ────────────────────────────────────────────────────
 
 
@@ -764,7 +934,12 @@ class TestTruncation:
         return e, fake
 
     def test_oversized_text_is_truncated_to_n_ctx_seq(self) -> None:
-        """600-token text with n_ctx=512, n_seq_max=1 → slice to 512."""
+        """600-token text with n_ctx=512, n_seq_max=1 → slice to 508.
+
+        508 = 512 - _N_CTX_SEQ_HEADROOM: since issue #88 the headroom
+        for BOS/EOS/pooling tokens applies on every path, including
+        the configured-value fallback these fakes exercise.
+        """
         e, fake = self._build(
             n_ctx=512,
             n_seq_max=1,
@@ -775,16 +950,16 @@ class TestTruncation:
         fake.tokenize.assert_called_once()
         called_arg = fake.tokenize.call_args.args[0]
         assert called_arg == b"long"
-        # detokenize was called with a 512-token slice.
+        # detokenize was called with a 508-token slice.
         fake.detokenize.assert_called_once()
         detok_tokens = fake.detokenize.call_args.args[0]
-        assert len(detok_tokens) == 512
+        assert len(detok_tokens) == 508
         # The downstream create_embedding got the detokenized string.
         sent_batch = fake.create_embedding.call_args.args[0]
-        assert sent_batch == ["<detok-512>"]
+        assert sent_batch == ["<detok-508>"]
 
     def test_n_ctx_seq_math_with_n_seq_max_gt_one(self) -> None:
-        """``n_ctx_seq = n_ctx // max(n_seq_max, 1)``. 512/4 → 128."""
+        """``n_ctx_seq = n_ctx // max(n_seq_max, 1) - headroom``. 512/4-4 → 124."""
         e, fake = self._build(
             n_ctx=512,
             n_seq_max=4,
@@ -792,7 +967,7 @@ class TestTruncation:
         )
         e.encode(["long"])
         detok_tokens = fake.detokenize.call_args.args[0]
-        assert len(detok_tokens) == 128
+        assert len(detok_tokens) == 124
 
     def test_short_text_is_not_truncated(self) -> None:
         """50-token text with n_ctx=512 → no truncation, no detokenize call."""
@@ -837,10 +1012,10 @@ class TestTruncation:
         # Exactly one detokenize call for the 500-token input.
         assert fake.detokenize.call_count == 1
         detok_tokens = fake.detokenize.call_args.args[0]
-        assert len(detok_tokens) == 128
+        assert len(detok_tokens) == 124  # 128 - headroom (issue #88)
         # The downstream batch order is preserved.
         sent_batch = fake.create_embedding.call_args.args[0]
-        assert sent_batch == ["s1", "<detok-128>", "s2"]
+        assert sent_batch == ["s1", "<detok-124>", "s2"]
 
     def test_truncation_emits_debug_log(self, caplog: pytest.LogCaptureFixture) -> None:
         """A truncation event MUST hit the loader logger at DEBUG with a
@@ -1069,10 +1244,13 @@ class TestRuntimeNCtxSeqIntrospection:
 
     def test_fallback_when_ctx_ptr_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Older bindings: ``self._llama._ctx`` is ``None`` (or lacks
-        ``.ctx``). Falls back to ``self.n_ctx // max(self.n_seq_max, 1)``.
+        ``.ctx``). Falls back to the configured values through
+        ``effective_n_ctx_seq`` (split-cache regime — no real
+        ``kv_unified`` bool on the fake).
 
-        Configured ``n_ctx=512, n_seq_max=1`` → fallback budget 512.
-        Token length 600 → truncate to 512.
+        Configured ``n_ctx=512, n_seq_max=1`` → fallback budget
+        512 - headroom = 508 (issue #88 unified the headroom across
+        both paths). Token length 600 → truncate to 508.
         """
         # Even though the C-bindings would return wild values, the
         # fallback path MUST NOT invoke them — gate by leaving _ctx=None.
@@ -1102,12 +1280,12 @@ class TestRuntimeNCtxSeqIntrospection:
         monkeypatch.setattr(mod.LlamaCppEmbedder, "_maybe_truncate", _spy)
 
         e.encode(["long"])
-        assert captured["n_ctx_seq"] == 512, (
-            f"Fallback should use configured 512 // 1 = 512, got {captured.get('n_ctx_seq')!r}"
+        assert captured["n_ctx_seq"] == 508, (
+            f"Fallback should be configured 512 - headroom = 508, got {captured.get('n_ctx_seq')!r}"
         )
         # The detokenize slice must reflect the fallback budget.
         detok_tokens = fake.detokenize.call_args.args[0]
-        assert len(detok_tokens) == 512
+        assert len(detok_tokens) == 508
 
     def test_floor_protects_against_zero_runtime_n_ctx(
         self, monkeypatch: pytest.MonkeyPatch

@@ -8,6 +8,30 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Fixed
+
+- **llama-cpp embedder silently truncated every chunk to 64 tokens**
+  (issue #88). llama-cpp-python's ``embedding=True`` initialiser
+  overrides ``n_seq_max`` to ``min(n_batch,
+  llama_max_parallel_sequences())`` (256 on a stock 0.3.25 install),
+  and ``encode()``'s runtime introspection fed that through the
+  split-KV-cache math unconditionally: ``8192 // 256 - 4 = 28``,
+  floored to 64 — so every chunk longer than 64 tokens was sliced
+  before embedding, with only a DEBUG line as evidence. The same
+  binding versions also set ``kv_unified = True`` on embedding
+  contexts and clear the KV cache before every decode, which means a
+  single sequence may use the whole window. The new
+  ``effective_n_ctx_seq`` helper branches on the handle's
+  ``kv_unified`` flag: unified caches get
+  ``min(n_ctx, n_batch, n_ubatch) - headroom`` (full window on stock
+  configs); split caches keep the conservative
+  ``n_ctx // n_seq_max`` division that PR #80 shipped for the
+  ``decode: failed to find a memory slot`` crash. ``encode()`` now
+  also WARNs once per instance whenever the effective budget lands
+  below half the configured ``n_ctx``, so a future collapse can't
+  hide at DEBUG level again. Vectors embedded while the collapse was
+  active were built from 64-token prefixes and should be re-embedded.
+
 ## [0.1.0b13] - 2026-06-03
 
 ### Fixed
