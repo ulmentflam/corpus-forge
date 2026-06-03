@@ -8,6 +8,38 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+## [0.1.0b14] - 2026-06-03
+
+### Added
+
+- **Auto-detect accelerator and pick a matching embedder lane** (PR
+  #87). New ``corpus_forge.acceleration`` module probes the host
+  hardware via a lightweight ``subprocess.run(["nvidia-smi", ...])``
+  shellout (no torch dependency — keeps doctor shippable on minimal
+  installs) plus ``torch.backends.mps.is_available()`` on Apple
+  Silicon, then maps the result to one of three llama-cpp lanes:
+  CUDA ≥ 8 GB VRAM → ``qwen3-embedding:8b`` (4096d) with
+  ``n_gpu_layers = -1``; CUDA < 8 GB → ``nomic-embed-text`` (768d)
+  with full GPU offload; MPS → same as CUDA-≥8GB; CPU →
+  ``nomic-embed-text`` (768d) with ``n_gpu_layers = 0``. All lanes
+  use ``provider = "llama-cpp"`` so cross-host configs diverge by a
+  single field. Two integration points:
+  - ``corpus-forge setup`` wizard gets a new ``embedder = "auto"``
+    choice (the default) that calls the detector and emits the
+    matching ``[[embedders]]`` block.  ``st`` / ``openai`` / ``both``
+    stay as opt-out manual lanes.
+  - ``corpus-forge doctor`` gets a new informational
+    ``embedder_acceleration`` check that surfaces the detected
+    hardware and the recommended ``model_id`` so operators can spot
+    a config leaving a freshly-attached GPU on the table.  Always
+    ``OK`` status — CPU is a slower lane, not a failure.  Wrapped in
+    ``except Exception`` so a future detection-helper change can
+    never crash ``doctor``.
+  - Detection times out at 2 s on ``nvidia-smi`` so a hung driver
+    never blocks the wizard / doctor; ``FileNotFoundError`` /
+    ``TimeoutExpired`` / non-zero exit / ``PermissionError`` all
+    fall through cleanly.
+
 ### Fixed
 
 - **llama-cpp embedder silently truncated every chunk to 64 tokens**
