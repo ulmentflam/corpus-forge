@@ -1,5 +1,7 @@
 """Unit tests for daemon module."""
 
+import contextlib
+import signal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +17,37 @@ from corpus_forge.config import (
     EmbedderConfig,
 )
 from corpus_forge.daemon import main, run_daemon, setup_signal_handlers
+
+
+@pytest.fixture(autouse=True)
+def _restore_signal_handlers():
+    """Snapshot + restore SIGINT/SIGTERM handlers per-test.
+
+    Several tests below call ``run_daemon(config)`` without patching
+    ``corpus_forge.daemon.signal.signal``, so ``run_daemon`` installs
+    its real ``_shutdown`` handler into the running pytest-xdist
+    worker process.  The handler calls ``os._exit(0)`` (uncatchable);
+    any subsequent test on the same worker that sends SIGINT to its
+    own pid (e.g.
+    ``tests/diagnostics/test_logs_subcommand.py::TestLogsTailFollow::test_follow_exits_cleanly_on_sigint``)
+    would die without this restore — the leaked handler short-circuits
+    the ``KeyboardInterrupt`` path the SIGINT test relies on.
+
+    The previous shutdown used ``sys.exit(0)`` which the test runner
+    caught as SystemExit, masking the leak — the ``_exit_hard`` switch
+    in fix(daemon) made the leak fatal.  Snapshotting before + after
+    each test (rather than only restoring after run_daemon-using
+    tests) is the safest defensive choice.
+    """
+    saved = {
+        signal.SIGINT: signal.getsignal(signal.SIGINT),
+        signal.SIGTERM: signal.getsignal(signal.SIGTERM),
+    }
+    yield
+    for sig, handler in saved.items():
+        if handler is not None:
+            with contextlib.suppress(Exception):
+                signal.signal(sig, handler)
 
 
 class TestSetupSignalHandlers:
