@@ -8,6 +8,70 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+## [0.1.0b16] - 2026-06-04
+
+Supersedes 0.1.0b15 — same code (PR #91 + #92 + flake-stabilization
+fixes) but with the full release notes covering everything that
+landed on this main commit.
+
+### Stabilized
+
+- **Cross-test flake from ``sys.modules`` pop with parent-attr leak**.
+  ``test_package_import_does_not_load_server`` (in
+  ``test_mcp_module_scaffold.py``) and
+  ``TestImportSurface.test_server_module_import_does_not_construct_retriever``
+  (in ``test_mcp_server.py``) both popped ``corpus_forge.mcp.*`` from
+  ``sys.modules`` to force a fresh module-load. A simple snapshot/
+  restore was insufficient because the import statement also writes
+  the submodule as an attribute on the parent package
+  (``corpus_forge.mcp.server = <module>``), and that attribute
+  survives ``sys.modules.pop``. When a sibling test then did
+  ``import corpus_forge.mcp.server as server_mod``, Python's
+  ``IMPORT_FROM`` bytecode resolved ``server`` via attribute lookup on
+  ``corpus_forge.mcp`` — picking up the *stale* freshly-imported
+  module instead of the one in ``sys.modules``. Under ``-n auto`` the
+  resulting patch / monkeypatch mismatches surfaced as 9-test
+  cascades on macos-py3.12 and windows-py3.13 (lifecycle tests
+  reporting empty results, ``pytest.raises`` missing the raised
+  exception class) plus 2 ``test_cli_mcp_serve`` failures
+  (``CliRunner`` stdout closed by an unpatched ``serve_stdio``). Both
+  tests now run their import-side-effect assertion inside a
+  ``subprocess.run([sys.executable, "-c", code])`` — a truly fresh
+  interpreter with no parent-attr pointers to leak.
+
+- **Integration ``embedder`` fixture's ``return`` aborted the
+  ``patch(...)`` context manager mid-test**, restoring the real
+  ``SentenceTransformer`` before any ``embedder.encode(...)`` call
+  ran. With CI's ``HF_HUB_OFFLINE=1`` and shared-runner-pool 429
+  storms this surfaced as recurring "HTTP Error 429 … Timeout"
+  failures on ``Integration (ubuntu-22.04 / py3.{11,12})``. Two-part
+  fix in ``TestSentenceTransformersEmbedderContract.embedder``:
+  ``yield embedder`` (not ``return``) so the patch survives the test;
+  and an ``encode.side_effect`` lambda that returns an array shaped
+  to match input length, so ``test_encode_single_text`` /
+  ``test_encode_empty_list`` don't fail on the now-active mock.
+
+### CI
+
+- **HF cache keyed on the model list** (PR #92). The HuggingFace
+  cache used to share a key with ``uv.lock`` / ``pyproject.toml``,
+  so every unrelated dependency bump rotated the multi-GB model
+  cache and forced every cell to re-download. New
+  ``.github/ci-models.txt`` pins the warmed model set; the cache
+  key hashes that file only, so the model cache stays valid until
+  the model list itself changes. On a miss, the new
+  ``.github/scripts/warm_hf_cache.py`` script pre-downloads each
+  repo with ``snapshot_download``, retry/backoff on transient
+  ``429 / 5xx``, and exit-non-zero on permanent failures (``404`` /
+  auth / malformed repo id). Test steps then run under
+  ``HF_HUB_OFFLINE=1`` so a Hub outage during the test phase can't
+  flake them. Warm-step soft-fails when *all* failures are
+  transient HTTP errors (Hub CDN rate-limiting the runner pool's
+  egress IP) so an environment-level flake doesn't block CI —
+  unit / fuzz / smoke tests mock model loads, and integration
+  tests skip via their own ``model_loads_ok`` conftest fixtures
+  when needed weights aren't in cache.
+
 ## [0.1.0b15] - 2026-06-04
 
 ### Fixed
