@@ -1,18 +1,18 @@
-"""F-03 RED — smoke tests: MCP write tools gated by writes_enabled flag.
+"""Smoke tests: MCP write tools enabled by default; opt-out via ``writes_enabled=False``.
 
-Three tests:
-1. Default ``build_server(...)`` omits write tools entirely (only 3 read tools exposed).
-2. ``build_server(..., writes_enabled=True)`` exposes all 11 tools (3 read + 8 write).
-3. When disabled, calling a write tool (add_label) raises MCP method-not-found or returns
-   an error result — not silently processed.
+Three tests pin the new default-on contract (hotfix for the
+``corpus-forge mcp serve`` CLI that previously left the 16 write
+tools unreachable because nothing flipped the default):
 
-All three fail today with:
-  ImportError: cannot import name 'writes' from 'corpus_forge.mcp'
-  (once writes.py exists, test 1 and 3 will need writes_enabled=False explicit assertion,
-   and test 2 will need writes_enabled=True which triggers the unexpected-kwarg error)
+1. Default ``build_server(...)`` exposes ALL tools (read + write).
+2. ``build_server(..., writes_enabled=True)`` is identical to default
+   (kept as an explicit opt-in surface for the SDK).
+3. ``build_server(..., writes_enabled=False)`` is the explicit
+   opt-out path — exposes ONLY the read tools, and calling a write
+   tool (add_label) returns an error result.
 
 Run command:
-    uv run python -m pytest tests/smoke/test_mcp_writes_disabled_by_default.py -v
+    uv run python -m pytest tests/smoke/test_mcp_writes_enabled_by_default.py -v
 """
 
 from __future__ import annotations
@@ -133,31 +133,40 @@ class _FakeRetriever:
 # ---------------------------------------------------------------------------
 
 
-def test_default_build_server_omits_write_tools() -> None:
-    """build_server without writes_enabled=True exposes only the 3 read tools.
+def test_default_build_server_exposes_all_tools() -> None:
+    """build_server() with no opt-out exposes every read + write tool.
 
-    Explicitly passes writes_enabled=False to pin the kwarg contract — this
-    fails until build_server accepts the writes_enabled parameter.
+    Hotfix contract: ``corpus-forge mcp serve`` (and any other caller
+    that doesn't pass ``writes_enabled`` explicitly) gets writes ON
+    by default.  The 16 write tools were unreachable in 0.1.0b14 and
+    earlier because no caller flipped the parameter from its old
+    ``False`` default.
     """
+    from corpus_forge.backends.sqlite import SQLiteBackend
     from corpus_forge.mcp.server import build_server
 
     retriever = _FakeRetriever()
-    # Explicitly pass writes_enabled=False — this triggers the unexpected-kwarg
-    # error until build_server is updated.
-    server = build_server(retriever_builder=lambda: retriever, writes_enabled=False)
+    backend = SQLiteBackend(path=":memory:")
+    backend.migrate()
+    retriever.backend = backend
+
+    # No ``writes_enabled`` kwarg — picks up the default.
+    server = build_server(retriever_builder=lambda: retriever)
 
     tool_names = _list_tool_names(server)
-    assert tool_names == _READ_TOOL_NAMES, (
-        f"Default server must expose only {_READ_TOOL_NAMES}; got {tool_names}"
+    assert tool_names == _ALL_TOOL_NAMES, (
+        f"Default server must expose all read + write tools; got {tool_names}"
     )
-    for write_tool in _WRITE_TOOL_NAMES:
-        assert write_tool not in tool_names, (
-            f"Write tool {write_tool!r} must be absent when writes_enabled=False"
-        )
+    for name in _WRITE_TOOL_NAMES:
+        assert name in tool_names, f"Write tool {name!r} missing under the new default"
 
 
-def test_explicit_writes_enabled_true_exposes_writes() -> None:
-    """build_server(writes_enabled=True) exposes all 12 tools."""
+def test_explicit_writes_enabled_true_is_a_no_op() -> None:
+    """``writes_enabled=True`` (explicit) matches the new default.
+
+    Kept as an SDK-level surface: callers that want to be explicit
+    about the policy still type-check + behave correctly.
+    """
     from corpus_forge.backends.sqlite import SQLiteBackend
     from corpus_forge.mcp.server import build_server
 
@@ -172,27 +181,29 @@ def test_explicit_writes_enabled_true_exposes_writes() -> None:
     )
 
     tool_names = _list_tool_names(server)
-    assert tool_names == _ALL_TOOL_NAMES, (
-        f"writes_enabled=True must expose all 11 tools; got {tool_names}"
-    )
-    for name in _WRITE_TOOL_NAMES:
-        assert name in tool_names, f"Write tool {name!r} missing with writes_enabled=True"
+    assert tool_names == _ALL_TOOL_NAMES
 
 
-def test_writes_disabled_means_calling_a_write_tool_errors() -> None:
-    """Calling add_label when writes_enabled=False returns an error result.
+def test_writes_disabled_via_opt_out_still_works() -> None:
+    """``writes_enabled=False`` (explicit opt-out) exposes ONLY reads.
 
-    The server must not dispatch write tools when they are not registered.
-    Either the MCP framework returns an error (tool-not-found) or the
-    handler explicitly returns isError=True — either is acceptable.
-
-    Explicitly passes writes_enabled=False — fails until build_server
-    accepts the parameter.
+    The kill-switch path stays available for paranoid sandboxes (e.g.
+    connect-to-prod-corpus-for-debugging without write risk).  Calling
+    a write tool under opt-out must return an error result.
     """
     from corpus_forge.mcp.server import build_server
 
     retriever = _FakeRetriever()
     server = build_server(retriever_builder=lambda: retriever, writes_enabled=False)
+
+    tool_names = _list_tool_names(server)
+    assert tool_names == _READ_TOOL_NAMES, (
+        f"writes_enabled=False must expose only {_READ_TOOL_NAMES}; got {tool_names}"
+    )
+    for write_tool in _WRITE_TOOL_NAMES:
+        assert write_tool not in tool_names, (
+            f"Write tool {write_tool!r} must be absent when writes_enabled=False"
+        )
 
     # Calling an unregistered tool should produce an error result.
     # The MCP framework may raise or return CallToolResult(isError=True).

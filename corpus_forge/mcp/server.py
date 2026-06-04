@@ -915,7 +915,7 @@ def build_server(
     retriever_builder: Callable[[], Any],
     reranker_builder: Callable[[], Any] | None = None,
     default_dataset: str | None = None,
-    writes_enabled: bool = False,
+    writes_enabled: bool = True,
 ) -> Server[Any]:
     """Construct a fully-configured MCP server.
 
@@ -931,12 +931,12 @@ def build_server(
         default_dataset: optional default dataset name.  When the caller
             does not supply ``dataset`` in a ``search`` call, this value
             is used.  ``None`` = no default filter.
-        writes_enabled: when ``True``, the 8 write tools (add_label,
-            remove_label, set_metadata, set_description, list_labels,
-            append_conversation, append_message, add_feedback) are
-            registered alongside the 3 read tools.  Defaults to
-            ``False`` (production-safe: write tools are never exposed
-            unless explicitly opted in).
+        writes_enabled: when ``True`` (the default since the hotfix
+            for the ``corpus-forge mcp serve`` CLI that previously left
+            writes unreachable), the 16 write tools are registered
+            alongside the 14 read tools.  Pass ``False`` for an
+            explicit read-only sandbox (e.g. connect-to-prod-corpus-
+            for-debugging without write risk).
 
     Returns:
         ``mcp.server.Server`` instance with name ``"corpus-forge"`` and
@@ -2706,20 +2706,24 @@ def _zotero_real_sync(*, dataset: str) -> dict[str, Any]:
 # ── stdio entry point (used by `corpus-forge mcp serve`) ─────────────────
 
 
-def serve_stdio(*, default_dataset: str | None = None) -> None:
+def serve_stdio(*, default_dataset: str | None = None, writes_enabled: bool = True) -> None:
     """Run the MCP server over stdio.
 
     Wires the real ``_build_retriever_for_eval`` / ``_build_reranker_from_config``
     helpers from the CLI module into :func:`build_server`, then drives the
     stdio loop.  This is the entry point :func:`corpus_forge.cli.mcp_serve`
     dispatches to.
+
+    ``writes_enabled`` defaults to ``True`` so ``corpus-forge mcp serve``
+    exposes the write toolset by default; pass ``False`` (or run with
+    ``--no-writes``) for an explicit read-only sandbox.
     """
     import asyncio
 
-    asyncio.run(_serve_stdio_async(default_dataset=default_dataset))
+    asyncio.run(_serve_stdio_async(default_dataset=default_dataset, writes_enabled=writes_enabled))
 
 
-async def _serve_stdio_async(*, default_dataset: str | None) -> None:
+async def _serve_stdio_async(*, default_dataset: str | None, writes_enabled: bool) -> None:
     from mcp.server.stdio import stdio_server
 
     # Lazy imports so module import stays cheap.
@@ -2739,6 +2743,7 @@ async def _serve_stdio_async(*, default_dataset: str | None) -> None:
         retriever_builder=_retriever_builder,
         reranker_builder=_reranker_builder,
         default_dataset=default_dataset,
+        writes_enabled=writes_enabled,
     )
 
     async with stdio_server() as (read_stream, write_stream):
