@@ -12,6 +12,7 @@ Pins:
 
 from __future__ import annotations
 
+import subprocess
 import sys
 
 
@@ -48,31 +49,39 @@ def test_package_import_does_not_load_server() -> None:
     (which pulls in the third-party `mcp` package).  Lazy-load discipline
     mirrors the rerank sub-package pattern from R4.
 
-    The cached ``corpus_forge.mcp.*`` entries are snapshotted and
-    **restored** afterwards — sibling test files capture symbols from
-    these exact module objects at collection time, so dropping them
-    permanently makes ``patch("corpus_forge.mcp.lifecycle.X")`` target
-    a freshly-created module while the captured functions keep reading
-    the old one, silently nullifying every patch (see
-    ``TestImportSurface`` in ``test_mcp_server.py`` for the full
-    failure story; under ``-n auto`` this broke the lifecycle tests in
-    ``test_mcp_restart_and_doctor.py`` whenever both landed on the
-    same xdist worker).
+    Runs the check in a subprocess so the assertion sees a truly fresh
+    interpreter (no prior ``from corpus_forge.mcp.X import Y`` having
+    populated ``sys.modules``).  In-process snapshot/restore of
+    ``sys.modules`` is insufficient — the import statement also writes
+    submodules as attributes on the parent package
+    (``corpus_forge.mcp.server = <module>``), and that attribute
+    survives ``sys.modules.pop``.  When a sibling test then does
+    ``import corpus_forge.mcp.server as server_mod``, Python's
+    ``IMPORT_FROM`` bytecode resolves ``server`` via attribute lookup on
+    ``corpus_forge.mcp`` — picking up the stale freshly-imported module
+    instead of the one in ``sys.modules``.  Under ``-n auto`` this
+    surfaces as spurious ``ValueError: I/O operation on closed file``
+    (``test_cli_mcp_serve``) and ``ProcessDiscoveryUnavailable``
+    cascades (``test_mcp_restart_and_doctor``) on the same xdist
+    worker.  The subprocess form sidesteps both: a fresh interpreter
+    has no parent-attr pointers to leak.
     """
-    prefix = "corpus_forge.mcp"
-    snapshot = {k: v for k, v in sys.modules.items() if k.startswith(prefix)}
-    for k in list(snapshot):
-        sys.modules.pop(k, None)
-    try:
-        import corpus_forge.mcp  # noqa: F401
-
-        assert "corpus_forge.mcp.server" not in sys.modules, (
-            "Importing corpus_forge.mcp must not eagerly import the server module."
-        )
-    finally:
-        # Put the pre-test cache back so function/class identity stays
-        # stable for every other test file on this worker.
-        for k in list(sys.modules):
-            if k.startswith(prefix) and k not in snapshot:
-                sys.modules.pop(k, None)
-        sys.modules.update(snapshot)
+    code = (
+        "import sys\n"
+        "import corpus_forge.mcp  # noqa: F401\n"
+        "assert 'corpus_forge.mcp.server' not in sys.modules, (\n"
+        "    'Importing corpus_forge.mcp must not eagerly import the server module; '\n"
+        "    f'found keys: {[k for k in sys.modules if k.startswith(\"corpus_forge.mcp\")]}'\n"
+        ")\n"
+    )
+    result = subprocess.run(  # noqa: S603 — same interpreter, fixed inline code
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30.0,
+    )
+    assert result.returncode == 0, (
+        f"Subprocess assertion failed (exit {result.returncode}).\n"
+        f"stderr:\n{result.stderr}\nstdout:\n{result.stdout}"
+    )
