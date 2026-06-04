@@ -21,11 +21,16 @@ Goals
   when the Hub provides one.  Worst-case wall time per model is
   ~8 minutes (5 attempts x ~30/60/90/120/180s) which fits inside
   every workflow's job timeout with room to spare.
-* **Loud failure on bad config.** If a repo id in ``ci-models.txt``
-  is missing or unreachable AFTER retries, this script exits
-  non-zero so the warm step itself fails (rather than silently
-  leaving the cache half-populated and letting the
-  ``HF_HUB_OFFLINE=1`` test step pass with phantom green).
+* **Loud failure on bad config.** Permanent errors (404, auth,
+  malformed repo id) exit non-zero so the warm step itself fails.
+  Transient HTTP errors (429 / 5xx) that survive the full retry
+  budget log loudly but exit 0 — the Hub's CDN refusing to serve
+  this runner pool is an environment-level flake, not a config bug,
+  and unit/smoke/fuzz tests mock model loads so a partially-cold
+  cache doesn't break them.  Integration tests that actually touch
+  the missing models will skip via their own
+  ``model_loads_ok`` conftest fixtures instead of producing a
+  confusing offline-mode error far from the warm step.
 
 Usage
 -----
@@ -225,7 +230,36 @@ def main(argv: list[str]) -> int:
             f"warm_hf_cache: {len(failures)} repo(s) failed to warm: {names}",
             file=sys.stderr,
         )
-        return 1
+        # If EVERY failure is a transient HTTP issue (429 storm, 5xx) we've
+        # already burned the full retry budget — the Hub's CDN simply isn't
+        # serving this runner pool right now. Treat that as
+        # environment-level flake and exit 0 so the rest of the workflow
+        # can proceed: unit/fuzz/smoke tests mock the model loads, so a
+        # cold cache is harmless for them; integration tests that actually
+        # touch HF models will skip via their own ``model_loads_ok``
+        # conftest fixtures (see ``tests/integration/conftest.py``).
+        # Permanent failures (404, auth, malformed repo id) still exit
+        # non-zero because those are config bugs the warm step must
+        # surface loudly.
+        permanent_failures = [
+            (repo, exc) for repo, exc in failures if not _is_transient(exc)[0]
+        ]
+        if permanent_failures:
+            perm_names = ", ".join(repo for repo, _ in permanent_failures)
+            print(
+                f"warm_hf_cache: {len(permanent_failures)} permanent failure(s): "
+                f"{perm_names}; failing the warm step",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"warm_hf_cache: all {len(failures)} failure(s) were transient HTTP errors "
+            f"(429/5xx) — Hub CDN is rate-limiting this runner pool. Continuing with "
+            f"a partially-warm cache; offline-mode tests that need a missing model "
+            f"will surface a clearer error than the warm step would.",
+            file=sys.stderr,
+        )
+        return 0
     print(
         f"warm_hf_cache: cached {len(repo_ids)} repo(s) into ~/.cache/huggingface",
         flush=True,
