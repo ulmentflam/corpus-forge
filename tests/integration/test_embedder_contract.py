@@ -143,11 +143,33 @@ class TestSentenceTransformersEmbedderContract:
 
     @pytest.fixture
     def embedder(self):
-        """Return a SentenceTransformersEmbedder with mocked model loading."""
+        """Yield a SentenceTransformersEmbedder with mocked model loading.
+
+        ``yield`` (not ``return``) keeps the ``patch`` context manager
+        active for the duration of the test — otherwise the patch
+        exits when the fixture returns, the real ``SentenceTransformer``
+        is restored, and ``embedder.encode(...)``'s lazy
+        ``_load_model()`` triggers a real HF Hub fetch for
+        ``BAAI/bge-small-en-v1.5``'s adapter / processor / preprocessor
+        configs.  Under CI's ``HF_HUB_OFFLINE=1`` (and shared-egress-IP
+        429 storms) this surfaces as a 1-minute timeout / 429 cascade
+        on ``test_encode_*`` — exactly the historical Integration
+        flake on PR #91.
+
+        The mock's ``encode`` returns an array shaped to match the
+        input length so per-test shape assertions
+        (``test_encode_single_text``, ``test_encode_empty_list``) hold
+        without each test having to re-stub the mock.
+        """
         with patch("corpus_forge.embedders.sentence_transformers.SentenceTransformer") as MockST:
             mock_model = MagicMock()
             mock_model.get_sentence_embedding_dimension.return_value = 384
-            mock_model.encode.return_value = np.random.randn(2, 384).astype(np.float32)
+
+            def _encode(texts, *args, **kwargs):
+                n = len(texts) if hasattr(texts, "__len__") else sum(1 for _ in texts)
+                return np.random.randn(n, 384).astype(np.float32)
+
+            mock_model.encode.side_effect = _encode
             MockST.return_value = mock_model
 
             from corpus_forge.embedders.sentence_transformers import SentenceTransformersEmbedder
@@ -158,7 +180,7 @@ class TestSentenceTransformersEmbedderContract:
                 dimension=384,
                 device="cpu",
             )
-            return embedder
+            yield embedder
 
     def test_encode_returns_numpy_array(self, embedder):
         result = embedder.encode(["hello", "world"])
