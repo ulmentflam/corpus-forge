@@ -124,6 +124,9 @@ jobs:
         uses: ./.github/actions/setup-uv
         with:
           python-version: ${{ matrix.python-version }}
+          # Re-key on .github/ci-models.txt and warm on cache miss.
+          # See the action for the full rationale.
+          warm-hf-cache: "true"
 
       - name: Restore uv cache
         uses: actions/cache@v5
@@ -134,19 +137,22 @@ jobs:
             uv-${{ runner.os }}-py${{ matrix.python-version }}-
             uv-${{ runner.os }}-
 
-      - name: Restore Hugging Face cache
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/huggingface
-          key: hf-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'uv.lock') }}
-          restore-keys: |
-            hf-${{ runner.os }}-
-
       - name: Unit tests (parallel, timeout-gated, coverage-gated)
+        env:
+          # Cache is warmed in setup-uv on miss; tests must run
+          # offline so a Hub 429 storm can't quietly flake them.
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
         run: make test-unit
 
       - name: Fuzz tests (hypothesis profile=ci)
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
         run: make test-fuzz
 
       - name: Smoke tests
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
         run: make test-smoke
