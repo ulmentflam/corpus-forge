@@ -2058,12 +2058,27 @@ def mcp_serve(
         "-d",
         help="Optional default dataset name to scope tool calls when not specified.",
     ),
+    writes: bool = typer.Option(
+        True,
+        "--writes/--no-writes",
+        help=(
+            "Expose the 16 MCP write tools (curation, labels, metadata, ignore "
+            "patterns, Zotero sync, search rating, demonstration capture) in "
+            "addition to the 14 read tools.  Default: enabled.  Pass "
+            "``--no-writes`` for an explicit read-only sandbox."
+        ),
+    ),
 ) -> None:
     """Launch the corpus-forge MCP server.
 
-    The server registers three tools: ``search`` (hybrid retrieval),
-    ``get_chunk`` (chunk lookup by id), and ``list_datasets`` (catalogue
-    enumeration).  See ``corpus_forge.mcp.server`` for the schemas.
+    Registers the full corpus-forge MCP toolset over stdio:
+    14 read tools (``search``, ``get_chunk``, ``list_datasets``,
+    ``estimate_sync_size``, the analyze / curation / chunk-navigation
+    read paths) plus, by default, 16 write tools (``add_label``,
+    ``commit_curation``, ``register_template``, ``zotero_sync``,
+    ``add_ignore_pattern`` …).  Pass ``--no-writes`` for a
+    read-only sandbox.  See ``corpus_forge.mcp.server`` for the
+    full tool catalogue + schemas.
     """
     import os as _os
 
@@ -2112,9 +2127,44 @@ def mcp_serve(
     if chosen is Transport.STDIO:
         from corpus_forge.mcp.server import serve_stdio
 
-        serve_stdio(default_dataset=dataset)
+        serve_stdio(default_dataset=dataset, writes_enabled=writes)
     else:  # pragma: no cover — defensive; the enum currently has only STDIO
         raise typer.BadParameter(f"transport {chosen.value!r} not implemented")
+
+
+@mcp_app.command("restart")
+def mcp_restart() -> None:
+    """SIGTERM every running ``corpus-forge mcp serve`` process.
+
+    The MCP client (Claude Code / Claude Desktop / Anthropic SDK
+    Managed Agent) re-spawns the server on the next stdio call —
+    which picks up whatever wheel is currently installed.  Use this
+    after a ``uv tool install --force`` of a fixed wheel, or after
+    accidentally leaving ``--no-writes`` in an MCP launch config.
+    """
+    from corpus_forge.mcp.lifecycle import restart_mcp_servers
+
+    result = restart_mcp_servers()
+    if result.detection_error is not None:
+        ui_warn(
+            f"Could not enumerate the OS process table — detection unavailable: "
+            f"{result.detection_error}. Skipping restart."
+        )
+        return
+    if not result.signalled_pids and not result.already_dead:
+        ui_info("No corpus-forge mcp serve processes detected.")
+        return
+    if result.signalled_pids:
+        ui_ok(
+            f"Signalled {len(result.signalled_pids)} MCP server(s) "
+            f"(pids={result.signalled_pids}); the MCP client will respawn "
+            "them on the next request."
+        )
+    if result.already_dead:
+        ui_info(
+            f"{len(result.already_dead)} pid(s) were already gone "
+            f"(pids={result.already_dead}); no action taken."
+        )
 
 
 # ── top-level `search` command (Phase R5) ────────────────────────────────

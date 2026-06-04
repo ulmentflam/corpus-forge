@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from corpus_forge import __version__
 from corpus_forge.acceleration import detect_accelerator
+from corpus_forge.mcp.lifecycle import ProcessDiscoveryUnavailable, discover_mcp_servers
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -797,6 +798,69 @@ def _check_embedder_acceleration() -> CheckResult:
     return CheckResult("embedder_acceleration", CheckStatus.OK, preset.summary)
 
 
+def _check_mcp_servers() -> CheckResult:
+    """Surface running ``corpus-forge mcp serve`` children + flag stale ones.
+
+    Two failure modes the operator hits most often:
+
+    1. After a ``uv tool install --force`` of a fixed wheel, the
+       client-spawned MCP server is still running on the OLD binding
+       (writes-disabled, NaN bug, …) because the MCP client never
+       restarted its child.  Doctor can't tell from outside which
+       wheel the child loaded, so it does the conservative thing —
+       reports the live pids, recommends ``corpus-forge mcp restart``
+       at OK level so the operator can act if they JUST upgraded.
+
+    2. ``--no-writes`` left in argv from a debug session.  WARN
+       because that's the most common "why isn't this commit_curation
+       call landing" mystery; recommends ``corpus-forge mcp restart``
+       (with the default re-enabling writes).
+
+    Wrapped in a broad except so a flaky ``ps`` invocation can never
+    crash doctor. ``ProcessDiscoveryUnavailable`` is the expected
+    failure shape (no ``ps`` on PATH, timeout, non-zero exit) — kept
+    at ``OK`` because doctor can't act on it; broader ``Exception``
+    is the belt-and-braces escape hatch for anything else.
+    """
+    try:
+        servers = list(discover_mcp_servers())
+    except ProcessDiscoveryUnavailable as exc:
+        return CheckResult(
+            "mcp_servers",
+            CheckStatus.OK,
+            f"detection unavailable: {exc}",
+        )
+    except Exception as exc:  # discovery is best-effort
+        return CheckResult(
+            "mcp_servers",
+            CheckStatus.OK,
+            f"detection unavailable: {exc}",
+        )
+    if not servers:
+        return CheckResult(
+            "mcp_servers",
+            CheckStatus.OK,
+            "no corpus-forge mcp serve processes detected",
+        )
+    no_writes_pids = [s.pid for s in servers if s.writes_disabled]
+    if no_writes_pids:
+        return CheckResult(
+            "mcp_servers",
+            CheckStatus.WARN,
+            f"{len(no_writes_pids)} server(s) running with --no-writes "
+            f"(pids={no_writes_pids}); writes disabled — run "
+            "`corpus-forge mcp restart` to relaunch under the default "
+            "(writes enabled).",
+        )
+    pids = [s.pid for s in servers]
+    return CheckResult(
+        "mcp_servers",
+        CheckStatus.OK,
+        f"{len(servers)} server(s) running (pids={pids}); "
+        "run `corpus-forge mcp restart` if you just upgraded the wheel.",
+    )
+
+
 _CHECKS: tuple[Callable[[], CheckResult], ...] = (
     _check_python_version,
     _check_uv,
@@ -804,6 +868,7 @@ _CHECKS: tuple[Callable[[], CheckResult], ...] = (
     _check_ffmpeg,
     _check_daemon_activity,
     _check_embedder_acceleration,
+    _check_mcp_servers,
 )
 
 

@@ -12,6 +12,7 @@ Pins:
 
 from __future__ import annotations
 
+import subprocess
 import sys
 
 
@@ -46,13 +47,41 @@ def test_transport_enum_is_string_enum() -> None:
 def test_package_import_does_not_load_server() -> None:
     """`import corpus_forge.mcp` must NOT eagerly import the server module
     (which pulls in the third-party `mcp` package).  Lazy-load discipline
-    mirrors the rerank sub-package pattern from R4."""
-    # Drop any cached modules first
-    for k in [k for k in list(sys.modules) if k.startswith("corpus_forge.mcp")]:
-        sys.modules.pop(k, None)
+    mirrors the rerank sub-package pattern from R4.
 
-    import corpus_forge.mcp  # noqa: F401
-
-    assert "corpus_forge.mcp.server" not in sys.modules, (
-        "Importing corpus_forge.mcp must not eagerly import the server module."
+    Runs the check in a subprocess so the assertion sees a truly fresh
+    interpreter (no prior ``from corpus_forge.mcp.X import Y`` having
+    populated ``sys.modules``).  In-process snapshot/restore of
+    ``sys.modules`` is insufficient — the import statement also writes
+    submodules as attributes on the parent package
+    (``corpus_forge.mcp.server = <module>``), and that attribute
+    survives ``sys.modules.pop``.  When a sibling test then does
+    ``import corpus_forge.mcp.server as server_mod``, Python's
+    ``IMPORT_FROM`` bytecode resolves ``server`` via attribute lookup on
+    ``corpus_forge.mcp`` — picking up the stale freshly-imported module
+    instead of the one in ``sys.modules``.  Under ``-n auto`` this
+    surfaces as spurious ``ValueError: I/O operation on closed file``
+    (``test_cli_mcp_serve``) and ``ProcessDiscoveryUnavailable``
+    cascades (``test_mcp_restart_and_doctor``) on the same xdist
+    worker.  The subprocess form sidesteps both: a fresh interpreter
+    has no parent-attr pointers to leak.
+    """
+    code = (
+        "import sys\n"
+        "import corpus_forge.mcp  # noqa: F401\n"
+        "assert 'corpus_forge.mcp.server' not in sys.modules, (\n"
+        "    'Importing corpus_forge.mcp must not eagerly import the server module; '\n"
+        "    f'found keys: {[k for k in sys.modules if k.startswith(\"corpus_forge.mcp\")]}'\n"
+        ")\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30.0,
+    )
+    assert result.returncode == 0, (
+        f"Subprocess assertion failed (exit {result.returncode}).\n"
+        f"stderr:\n{result.stderr}\nstdout:\n{result.stdout}"
     )

@@ -157,13 +157,20 @@ class TestRegisteredTools:
         return server, retriever
 
     def test_three_tools_registered(self) -> None:
+        # Pins the always-available *read* surface under the explicit
+        # writes-disabled opt-out.  The default (writes_enabled=True,
+        # hotfix in 0.1.0b15) exposes the full read + write set — that
+        # contract lives in ``tests/smoke/test_mcp_writes_enabled_by_default.py``.
         # G-03: render_conversation + list_chat_templates are always-available read tools.
         # J1:   estimate_sync_size is an always-available read tool (no backend writes).
         # J4:   next_curation_target + next_curation_batch are always-available read tools.
         # Phase M Wave 3: list_ignore + validate_ignore are always-available read tools.
         # Phase O Wave 4: analyze_corpus + find_duplicates + cluster_topics + score_quality.
         # agent-chunk-explorer: chunk_neighbors + get_document are always-available read tools.
-        server, _ = self._build()
+        from corpus_forge.mcp.server import build_server
+
+        retriever = _FakeRetriever([_FakeHit(1, 0.9, "alpha")])
+        server = build_server(retriever_builder=lambda: retriever, writes_enabled=False)
         tools = _list_tools_via_handler(server)
         names = {t.name for t in tools}
         assert names == {
@@ -186,11 +193,11 @@ class TestRegisteredTools:
             "chunk_neighbors",
             "get_document",
         }, (
-            f"Expected sixteen read tools (search/get_chunk/list_datasets/"
-            f"render_conversation/list_chat_templates/estimate_sync_size/"
-            f"next_curation_target/next_curation_batch/list_ignore/validate_ignore/"
-            f"analyze_corpus/find_duplicates/cluster_topics/score_quality/"
-            f"chunk_neighbors/get_document); "
+            f"Expected sixteen read tools under writes_enabled=False (search/"
+            f"get_chunk/list_datasets/render_conversation/list_chat_templates/"
+            f"estimate_sync_size/next_curation_target/next_curation_batch/"
+            f"list_ignore/validate_ignore/analyze_corpus/find_duplicates/"
+            f"cluster_topics/score_quality/chunk_neighbors/get_document); "
             f"got {names}"
         )
 
@@ -445,13 +452,44 @@ class TestDispatcherExceptionSurface:
 
 class TestImportSurface:
     def test_server_module_import_does_not_construct_retriever(self) -> None:
-        """Importing the server module must not construct a Retriever."""
-        for k in [k for k in list(sys.modules) if k.startswith("corpus_forge.mcp")]:
-            sys.modules.pop(k, None)
-        import corpus_forge.mcp.server  # noqa: F401
+        """Importing the server module must not construct a Retriever.
 
-        # Direct introspection: no global retriever instance exists.
-        mod = sys.modules["corpus_forge.mcp.server"]
-        assert not hasattr(mod, "_global_retriever"), (
-            "Server module must not stash a module-level retriever"
+        Runs in a subprocess so the assertion sees a truly fresh
+        interpreter.  An in-process snapshot/restore of ``sys.modules``
+        is insufficient because the import statement also writes the
+        submodule as an attribute on the parent package
+        (``corpus_forge.mcp.server = <module>``), and that attribute
+        survives any later ``sys.modules.pop``-based reset.  When a
+        sibling test then does
+        ``import corpus_forge.mcp.server as server_mod``, Python's
+        ``IMPORT_FROM`` bytecode resolves ``server`` via attribute
+        lookup on ``corpus_forge.mcp`` — picking up the stale
+        freshly-imported module instead of the one in ``sys.modules``.
+        Under ``-n auto`` this surfaces as ``test_cli_mcp_serve``'s
+        ``monkeypatch.setattr(server_mod, "serve_stdio", …)`` no-oping
+        (the patched module is not the one the CLI's local
+        ``from corpus_forge.mcp.server import serve_stdio`` resolves
+        to), letting the real ``serve_stdio`` run and close the
+        ``CliRunner``'s stdout — ``ValueError: I/O operation on
+        closed file`` at ``click/testing.py``.
+        """
+        import subprocess
+
+        code = (
+            "import corpus_forge.mcp.server\n"
+            "mod = corpus_forge.mcp.server\n"
+            "assert not hasattr(mod, '_global_retriever'), (\n"
+            "    'Server module must not stash a module-level retriever'\n"
+            ")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30.0,
+        )
+        assert result.returncode == 0, (
+            f"Subprocess assertion failed (exit {result.returncode}).\n"
+            f"stderr:\n{result.stderr}\nstdout:\n{result.stdout}"
         )
