@@ -8,6 +8,25 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+## [0.1.0b15] - 2026-06-04
+
+### Fixed
+
+- **MCP server: `writes_enabled` now defaults to `True`** (PR #91).
+  Hotfix — the 16 write tools were unreachable in 0.1.0b14 and
+  earlier because nothing flipped the default. Opt-out remains via
+  `--no-writes` / `writes_enabled=False`.
+
+### Added
+
+- **New `corpus-forge mcp restart` verb** (PR #91) — SIGTERMs every
+  running `corpus-forge mcp serve` process so the client respawns it
+  under the new wheel.
+- **New doctor `mcp_servers` check** (PR #91) — detects running
+  servers with `--no-writes` in argv (WARN) and surfaces
+  `ProcessDiscoveryUnavailable` when `ps` can't enumerate the process
+  table (OK with "detection unavailable" detail).
+
 ## [0.1.0b14] - 2026-06-03
 
 ### Added
