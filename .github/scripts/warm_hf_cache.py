@@ -14,10 +14,18 @@ Goals
   set ``HF_HUB_OFFLINE=1`` so they fail loudly on any model that
   isn't already cached — eliminating Hub 429 flakes from the
   network-dependent integration / multimodal suites.
+* **Survive a 429 storm on the first warm.** GitHub's hosted
+  runners share egress IPs, so an unlucky cold-cache run can land
+  on a 429 from the Hub's CDN.  This script wraps each download in
+  an exponential-backoff retry loop that honours ``Retry-After``
+  when the Hub provides one.  Worst-case wall time per model is
+  ~8 minutes (5 attempts x ~30/60/90/120/180s) which fits inside
+  every workflow's job timeout with room to spare.
 * **Loud failure on bad config.** If a repo id in ``ci-models.txt``
-  is missing or unreachable, this script exits non-zero so the
-  warm step itself fails (rather than silently leaving the cache
-  half-populated).
+  is missing or unreachable AFTER retries, this script exits
+  non-zero so the warm step itself fails (rather than silently
+  leaving the cache half-populated and letting the
+  ``HF_HUB_OFFLINE=1`` test step pass with phantom green).
 
 Usage
 -----
@@ -32,12 +40,27 @@ Usage
 from __future__ import annotations
 
 import os
+import random
 import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
 
 _DEFAULT_MODEL_LIST = Path(".github/ci-models.txt")
+
+# Per-model retry budget.  5 attempts with the schedule below yields a
+# worst-case ~8-minute wall time before we give up — long enough to
+# ride out the CDN's typical 429 cooldown, short enough that two
+# models in series still fit inside the integration job's 30-minute
+# timeout with margin.
+_MAX_ATTEMPTS = 5
+_BACKOFF_SECONDS: tuple[float, ...] = (30.0, 60.0, 90.0, 120.0, 180.0)
+# Cap Retry-After honouring so a pathological header value can't
+# strand the warm step longer than a backoff bucket.
+_RETRY_AFTER_CAP_SECONDS = 300.0
+# Transient HTTP status codes we consider worth retrying.  Everything
+# else (auth, 404 on the repo, …) is a permanent error.
+_TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
 def _iter_repo_ids(path: Path) -> Iterator[str]:
@@ -56,6 +79,51 @@ def _iter_repo_ids(path: Path) -> Iterator[str]:
         yield line
 
 
+def _is_transient(exc: BaseException) -> tuple[bool, int | None, str | None]:
+    """Inspect *exc* (and its chained causes) for a transient HTTP failure.
+
+    ``huggingface_hub`` wraps the actual ``HfHubHTTPError`` in a
+    ``LocalEntryNotFoundError`` for snapshot_download's "couldn't find
+    the revision" path, so we have to walk ``__cause__`` rather than
+    just ``isinstance``-checking the top exception.
+
+    Returns ``(is_transient, status_code, retry_after_header)``.  The
+    ``retry_after_header`` is the raw string value (seconds or an
+    HTTP-date) if the response carried one; the caller is responsible
+    for interpreting it.
+    """
+    # Late import: keeps the malformed-list early-exit path off the
+    # huggingface_hub import cost.
+    from huggingface_hub.utils import HfHubHTTPError  # noqa: PLC0415
+
+    cur: BaseException | None = exc
+    while cur is not None:
+        if isinstance(cur, HfHubHTTPError) and getattr(cur, "response", None) is not None:
+            status = cur.response.status_code
+            if status in _TRANSIENT_STATUS:
+                retry_after = cur.response.headers.get("Retry-After")
+                return True, status, retry_after
+            return False, status, None
+        cur = cur.__cause__
+    return False, None, None
+
+
+def _sleep_for_attempt(attempt_idx: int, retry_after: str | None) -> float:
+    """Return the number of seconds to sleep before the next retry.
+
+    Prefers the server's ``Retry-After`` (numeric form only — we
+    don't try to parse the HTTP-date variant; in practice the Hub
+    sends seconds) and falls back to the scheduled backoff bucket
+    with a small jitter so two warmups racing on the same runner
+    pool don't lock-step.
+    """
+    if retry_after is not None and retry_after.strip().isdigit():
+        base = min(float(retry_after), _RETRY_AFTER_CAP_SECONDS)
+    else:
+        base = _BACKOFF_SECONDS[min(attempt_idx, len(_BACKOFF_SECONDS) - 1)]
+    return base + random.uniform(0, base * 0.25)
+
+
 def _warm_one(repo_id: str) -> None:
     """Download every file in *repo_id* into the HF cache.
 
@@ -70,7 +138,6 @@ def _warm_one(repo_id: str) -> None:
     # early sys.exit) doesn't pay the huggingface_hub import cost.
     from huggingface_hub import snapshot_download  # noqa: PLC0415
 
-    print(f"warm_hf_cache: snapshot_download {repo_id!r}", flush=True)
     t0 = time.monotonic()
     snapshot_download(
         repo_id=repo_id,
@@ -81,6 +148,40 @@ def _warm_one(repo_id: str) -> None:
     )
     elapsed = time.monotonic() - t0
     print(f"warm_hf_cache: {repo_id!r} ready in {elapsed:.1f}s", flush=True)
+
+
+def _warm_one_with_retry(repo_id: str) -> None:
+    """Warm *repo_id*, retrying on transient HTTP failures.
+
+    Permanent errors (auth, 404, malformed repo id) raise immediately.
+    Transient errors (429 / 5xx, possibly wrapped by
+    ``LocalEntryNotFoundError``) trigger up to ``_MAX_ATTEMPTS - 1``
+    retries with exponential backoff + jitter, honouring
+    ``Retry-After`` when the Hub provides one.
+    """
+    for attempt_idx in range(_MAX_ATTEMPTS):
+        try:
+            print(
+                f"warm_hf_cache: snapshot_download {repo_id!r} "
+                f"(attempt {attempt_idx + 1}/{_MAX_ATTEMPTS})",
+                flush=True,
+            )
+            _warm_one(repo_id)
+            return
+        except Exception as exc:
+            transient, status, retry_after = _is_transient(exc)
+            if not transient or attempt_idx + 1 == _MAX_ATTEMPTS:
+                raise
+            sleep_s = _sleep_for_attempt(attempt_idx, retry_after)
+            print(
+                f"warm_hf_cache: {repo_id!r} got HTTP {status} "
+                f"(attempt {attempt_idx + 1}/{_MAX_ATTEMPTS}); "
+                f"retrying after {sleep_s:.1f}s "
+                f"(Retry-After={retry_after!r})",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(sleep_s)
 
 
 def main(argv: list[str]) -> int:
@@ -110,7 +211,7 @@ def main(argv: list[str]) -> int:
     failures: list[tuple[str, BaseException]] = []
     for repo_id in repo_ids:
         try:
-            _warm_one(repo_id)
+            _warm_one_with_retry(repo_id)
         except Exception as exc:
             failures.append((repo_id, exc))
             print(
