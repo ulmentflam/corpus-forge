@@ -482,7 +482,7 @@ class TestImportSurface:
             "    'Server module must not stash a module-level retriever'\n"
             ")\n"
         )
-        result = subprocess.run(  # noqa: S603 — same interpreter, fixed inline code
+        result = subprocess.run(
             [sys.executable, "-c", code],
             capture_output=True,
             text=True,

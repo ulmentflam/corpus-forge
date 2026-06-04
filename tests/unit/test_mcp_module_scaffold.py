@@ -74,7 +74,7 @@ def test_package_import_does_not_load_server() -> None:
         "    f'found keys: {[k for k in sys.modules if k.startswith(\"corpus_forge.mcp\")]}'\n"
         ")\n"
     )
-    result = subprocess.run(  # noqa: S603 — same interpreter, fixed inline code
+    result = subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
