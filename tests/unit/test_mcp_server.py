@@ -452,13 +452,40 @@ class TestDispatcherExceptionSurface:
 
 class TestImportSurface:
     def test_server_module_import_does_not_construct_retriever(self) -> None:
-        """Importing the server module must not construct a Retriever."""
-        for k in [k for k in list(sys.modules) if k.startswith("corpus_forge.mcp")]:
-            sys.modules.pop(k, None)
-        import corpus_forge.mcp.server  # noqa: F401
+        """Importing the server module must not construct a Retriever.
 
-        # Direct introspection: no global retriever instance exists.
-        mod = sys.modules["corpus_forge.mcp.server"]
-        assert not hasattr(mod, "_global_retriever"), (
-            "Server module must not stash a module-level retriever"
-        )
+        We pop ``corpus_forge.mcp.*`` from ``sys.modules`` to force a
+        fresh module-load (so the import-side-effects assertion is
+        meaningful), then **restore the original entries** before the
+        method returns. Without the restore, sibling test files that
+        already captured symbols at collection time
+        (``from corpus_forge.mcp.lifecycle import ProcessDiscoveryUnavailable``)
+        would hold references to the OLD class object while
+        ``sys.modules`` points at a NEW one — patches against the
+        ``corpus_forge.mcp.lifecycle.X`` path would target the new
+        module and the function-internal lookups inside the captured
+        functions would target the old module, silently nullifying
+        every patch. Under ``-n auto`` this surfaces as the lifecycle
+        tests in ``test_mcp_restart_and_doctor.py`` returning empty
+        results when run on the same xdist worker.
+        """
+        prefix = "corpus_forge.mcp"
+        snapshot = {k: v for k, v in sys.modules.items() if k.startswith(prefix)}
+        for k in list(snapshot):
+            sys.modules.pop(k, None)
+        try:
+            import corpus_forge.mcp.server  # noqa: F401
+
+            # Direct introspection: no global retriever instance exists.
+            mod = sys.modules["corpus_forge.mcp.server"]
+            assert not hasattr(mod, "_global_retriever"), (
+                "Server module must not stash a module-level retriever"
+            )
+        finally:
+            # Restore the pre-test cache so the function/class objects
+            # captured by other test files keep matching what
+            # ``patch(..., "corpus_forge.mcp.X")`` resolves to.
+            for k in list(sys.modules):
+                if k.startswith(prefix) and k not in snapshot:
+                    sys.modules.pop(k, None)
+            sys.modules.update(snapshot)
