@@ -46,13 +46,33 @@ def test_transport_enum_is_string_enum() -> None:
 def test_package_import_does_not_load_server() -> None:
     """`import corpus_forge.mcp` must NOT eagerly import the server module
     (which pulls in the third-party `mcp` package).  Lazy-load discipline
-    mirrors the rerank sub-package pattern from R4."""
-    # Drop any cached modules first
-    for k in [k for k in list(sys.modules) if k.startswith("corpus_forge.mcp")]:
+    mirrors the rerank sub-package pattern from R4.
+
+    The cached ``corpus_forge.mcp.*`` entries are snapshotted and
+    **restored** afterwards — sibling test files capture symbols from
+    these exact module objects at collection time, so dropping them
+    permanently makes ``patch("corpus_forge.mcp.lifecycle.X")`` target
+    a freshly-created module while the captured functions keep reading
+    the old one, silently nullifying every patch (see
+    ``TestImportSurface`` in ``test_mcp_server.py`` for the full
+    failure story; under ``-n auto`` this broke the lifecycle tests in
+    ``test_mcp_restart_and_doctor.py`` whenever both landed on the
+    same xdist worker).
+    """
+    prefix = "corpus_forge.mcp"
+    snapshot = {k: v for k, v in sys.modules.items() if k.startswith(prefix)}
+    for k in list(snapshot):
         sys.modules.pop(k, None)
+    try:
+        import corpus_forge.mcp  # noqa: F401
 
-    import corpus_forge.mcp  # noqa: F401
-
-    assert "corpus_forge.mcp.server" not in sys.modules, (
-        "Importing corpus_forge.mcp must not eagerly import the server module."
-    )
+        assert "corpus_forge.mcp.server" not in sys.modules, (
+            "Importing corpus_forge.mcp must not eagerly import the server module."
+        )
+    finally:
+        # Put the pre-test cache back so function/class identity stays
+        # stable for every other test file on this worker.
+        for k in list(sys.modules):
+            if k.startswith(prefix) and k not in snapshot:
+                sys.modules.pop(k, None)
+        sys.modules.update(snapshot)
