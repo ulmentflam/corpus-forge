@@ -10,6 +10,18 @@ inputs:
     description: Python version to provision via uv.
     required: false
     default: "3.13"
+  warm-hf-cache:
+    description: >-
+      Restore (or, on a miss, pre-download) the HuggingFace model cache
+      driven by ``.github/ci-models.txt``.  When ``'true'``, the cache
+      is keyed on the hash of that file so the cache stays valid until
+      the model list itself changes — unrelated dependency bumps to
+      ``pyproject.toml`` / ``uv.lock`` no longer invalidate it.
+      Callers that don't load HF models (e.g. lint-only jobs, the
+      install-smoke workflow) can leave this at its ``'false'`` default
+      to skip the restore + warm steps entirely.
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -28,15 +40,33 @@ runs:
       run: uv python install "${{ inputs.python-version }}"
 
     - name: Restore Hugging Face model cache
+      id: hf-cache
+      if: inputs.warm-hf-cache == 'true'
       uses: actions/cache@v5
       with:
-        # Sentence-transformers and reranker models live here; cached
-        # separately from uv so warm runs skip the cold-download cost.
+        # Sentence-transformers / faster-whisper / cross-encoder all
+        # read from ~/.cache/huggingface/hub, so caching the parent
+        # directory covers every loader corpus-forge uses.
         path: ~/.cache/huggingface
-        key: hf-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+        # Keyed on ``.github/ci-models.txt``: the cache stays valid
+        # until the model list itself changes — unrelated dep bumps
+        # to pyproject.toml / uv.lock no longer rotate the multi-GB
+        # model cache.
+        key: hf-${{ runner.os }}-${{ hashFiles('.github/ci-models.txt') }}
         restore-keys: |
           hf-${{ runner.os }}-
 
     - name: Sync dependencies (dev + all extras)
       shell: bash
       run: uv sync --all-extras --group dev
+
+    - name: Warm Hugging Face cache (cache miss only)
+      # Cold cache: download every model listed in
+      # ``.github/ci-models.txt`` once, so the subsequent test steps
+      # can run under ``HF_HUB_OFFLINE=1`` and fail loudly on a
+      # missing model rather than silently retrying through a Hub
+      # 429 storm.  No-op on cache hit (which is the common path
+      # after the first warm run).
+      if: inputs.warm-hf-cache == 'true' && steps.hf-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: uv run python .github/scripts/warm_hf_cache.py

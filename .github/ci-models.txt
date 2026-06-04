@@ -1,0 +1,29 @@
+# corpus-forge CI HuggingFace cache warm list.
+#
+# Lines beginning with `#` and blank lines are ignored.  Every other
+# line MUST be a fully-qualified ``owner/repo`` HF Hub repo id, exactly
+# as ``huggingface_hub.snapshot_download`` accepts it.
+#
+# This file is the single source of truth for the ``hf-...`` cache
+# key in ``.github/actions/setup-uv/action.yml``: any add / remove
+# here rotates the cache key, and the warm-on-miss step inside that
+# action pre-populates the cache on first hit.  Tests then run with
+# ``HF_HUB_OFFLINE=1`` so cold-cache CI fails loudly instead of
+# silently network-downloading and flaking on Hub 429s.
+#
+# Add a NEW model here ONLY if a test (or fixture) on a hosted runner
+# actually loads it over the network.  Mocked / stubbed models do not
+# belong in this file.
+#
+# Current real downloaders on GitHub-hosted runners (2026-06-03):
+#
+#  * ``tests/integration/conftest.py::_probe_clip_local`` →
+#    ``SentenceTransformer("clip-ViT-B-32")`` for the multimodal e2e
+#    suite.  Resolves to ``sentence-transformers/clip-ViT-B-32``.
+#  * ``tests/integration/conftest.py::_probe_whisper_local`` →
+#    ``faster_whisper.WhisperModel("tiny", device="cpu", ...)`` for
+#    the audio-transcript pipeline.  Resolves to
+#    ``Systran/faster-whisper-tiny`` on the Hub.
+
+sentence-transformers/clip-ViT-B-32
+Systran/faster-whisper-tiny
