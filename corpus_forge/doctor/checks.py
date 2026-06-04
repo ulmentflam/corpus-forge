@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 from corpus_forge import __version__
 from corpus_forge.acceleration import detect_accelerator
-from corpus_forge.mcp.lifecycle import discover_mcp_servers
+from corpus_forge.mcp.lifecycle import ProcessDiscoveryUnavailable, discover_mcp_servers
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -817,10 +817,19 @@ def _check_mcp_servers() -> CheckResult:
        (with the default re-enabling writes).
 
     Wrapped in a broad except so a flaky ``ps`` invocation can never
-    crash doctor.
+    crash doctor. ``ProcessDiscoveryUnavailable`` is the expected
+    failure shape (no ``ps`` on PATH, timeout, non-zero exit) — kept
+    at ``OK`` because doctor can't act on it; broader ``Exception``
+    is the belt-and-braces escape hatch for anything else.
     """
     try:
         servers = list(discover_mcp_servers())
+    except ProcessDiscoveryUnavailable as exc:
+        return CheckResult(
+            "mcp_servers",
+            CheckStatus.OK,
+            f"detection unavailable: {exc}",
+        )
     except Exception as exc:  # discovery is best-effort
         return CheckResult(
             "mcp_servers",

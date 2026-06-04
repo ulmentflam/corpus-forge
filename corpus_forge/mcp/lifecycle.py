@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 
 __all__ = [
     "MCPServerProcess",
+    "ProcessDiscoveryUnavailable",
     "RestartResult",
     "discover_mcp_servers",
     "restart_mcp_servers",
@@ -37,6 +38,17 @@ __all__ = [
 # Minimum argv length required to recognise a ``corpus-forge mcp serve``
 # invocation — three tokens (``corpus-forge``, ``mcp``, ``serve``).
 _MCP_SERVE_MIN_ARGV = 3
+
+
+class ProcessDiscoveryUnavailable(RuntimeError):
+    """Raised when the OS process table cannot be enumerated.
+
+    Distinct from "no MCP servers running" so callers can render
+    ``"detection unavailable"`` rather than ``"no servers"`` — the
+    two have very different operator actions (the former might mean
+    a sandboxed environment with no ``ps`` on PATH; the latter means
+    the MCP client just hasn't spawned a server yet).
+    """
 
 
 @dataclass(frozen=True)
@@ -59,15 +71,21 @@ class RestartResult:
 
     signalled_pids: list[int] = field(default_factory=list)
     already_dead: list[int] = field(default_factory=list)
+    detection_error: str | None = None
 
 
 def _iter_processes() -> Iterator[MCPServerProcess]:
     """Yield every visible process as an ``MCPServerProcess``.
 
-    Uses ``ps -eo pid,comm,args`` so we don't need ``psutil`` as a
+    Uses ``ps -eo pid,args`` so we don't need ``psutil`` as a
     dependency.  Tests patch this directly to inject synthetic
     process tables — keeping the real shellout off the test critical
     path.
+
+    Raises :class:`ProcessDiscoveryUnavailable` when ``ps`` is
+    missing, times out, or returns a non-zero exit code. Callers
+    must distinguish this from "no servers running" because the
+    operator-facing remediation is different.
     """
     try:
         completed = subprocess.run(
@@ -77,10 +95,15 @@ def _iter_processes() -> Iterator[MCPServerProcess]:
             check=False,
             timeout=5.0,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        raise ProcessDiscoveryUnavailable(
+            f"ps shellout failed: {type(exc).__name__}: {exc}"
+        ) from exc
     if completed.returncode != 0:
-        return
+        stderr_tail = (completed.stderr or "").strip()[:200]
+        raise ProcessDiscoveryUnavailable(
+            f"ps exited with code {completed.returncode}: {stderr_tail}"
+        )
     for raw_line in completed.stdout.splitlines():
         line = raw_line.strip()
         if not line:
@@ -132,10 +155,20 @@ def restart_mcp_servers() -> RestartResult:
     window races against the client's own teardown loop.  A pid
     that's gone is the goal state anyway, so we count it as
     ``already_dead`` rather than an error.
+
+    When the OS process table can't be read at all, swallows
+    :class:`ProcessDiscoveryUnavailable` and reports it via the
+    ``detection_error`` field on the returned :class:`RestartResult`
+    — the CLI prints a clear "detection unavailable" message instead
+    of a misleading "no servers running" line.
     """
     signalled: list[int] = []
     already_dead: list[int] = []
-    for proc in discover_mcp_servers():
+    try:
+        procs = list(discover_mcp_servers())
+    except ProcessDiscoveryUnavailable as exc:
+        return RestartResult(detection_error=str(exc))
+    for proc in procs:
         try:
             os.kill(proc.pid, signal.SIGTERM)
         except ProcessLookupError:

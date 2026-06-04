@@ -22,9 +22,12 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from corpus_forge.doctor.checks import CheckStatus, _check_mcp_servers
 from corpus_forge.mcp.lifecycle import (
     MCPServerProcess,
+    ProcessDiscoveryUnavailable,
     discover_mcp_servers,
     restart_mcp_servers,
 )
@@ -47,7 +50,10 @@ class TestDiscoverMcpServers:
                 executable_path="/path/to/uv/tools/corpus-forge/bin/python",
             ),
         ]
-        with patch("corpus_forge.mcp.lifecycle._iter_processes", return_value=iter(fake_ps)):
+        with patch(
+            "corpus_forge.mcp.lifecycle._iter_processes",
+            side_effect=lambda: iter(fake_ps),
+        ):
             found = list(discover_mcp_servers())
         assert {p.pid for p in found} == {11111, 22222}
 
@@ -70,7 +76,10 @@ class TestDiscoverMcpServers:
                 executable_path="/path/to/uv/tools/corpus-forge/bin/python",
             ),
         ]
-        with patch("corpus_forge.mcp.lifecycle._iter_processes", return_value=iter(unrelated)):
+        with patch(
+            "corpus_forge.mcp.lifecycle._iter_processes",
+            side_effect=lambda: iter(unrelated),
+        ):
             found = list(discover_mcp_servers())
         assert found == []
 
@@ -83,7 +92,10 @@ class TestDiscoverMcpServers:
                 executable_path="/path/to/uv/tools/corpus-forge/bin/python",
             ),
         ]
-        with patch("corpus_forge.mcp.lifecycle._iter_processes", return_value=iter(ps)):
+        with patch(
+            "corpus_forge.mcp.lifecycle._iter_processes",
+            side_effect=lambda: iter(ps),
+        ):
             found = list(discover_mcp_servers())
         assert found[0].writes_disabled is True
 
@@ -96,7 +108,10 @@ class TestDiscoverMcpServers:
                 executable_path="/path/to/uv/tools/corpus-forge/bin/python",
             ),
         ]
-        with patch("corpus_forge.mcp.lifecycle._iter_processes", return_value=iter(ps)):
+        with patch(
+            "corpus_forge.mcp.lifecycle._iter_processes",
+            side_effect=lambda: iter(ps),
+        ):
             found = list(discover_mcp_servers())
         assert found[0].writes_disabled is False
 
@@ -117,18 +132,26 @@ class TestRestartMcpServers:
             signalled.append(pid)
 
         with (
-            patch("corpus_forge.mcp.lifecycle.discover_mcp_servers", return_value=iter(ps)),
+            patch(
+                "corpus_forge.mcp.lifecycle.discover_mcp_servers",
+                side_effect=lambda: iter(ps),
+            ),
             patch("corpus_forge.mcp.lifecycle.os.kill", side_effect=_fake_kill),
         ):
             result = restart_mcp_servers()
         assert sorted(signalled) == [11111, 22222]
         assert result.signalled_pids == [11111, 22222]
+        assert result.detection_error is None
 
     def test_no_servers_running_is_clean_return(self):
         """No discovered servers → empty result, no error."""
-        with patch("corpus_forge.mcp.lifecycle.discover_mcp_servers", return_value=iter([])):
+        with patch(
+            "corpus_forge.mcp.lifecycle.discover_mcp_servers",
+            side_effect=lambda: iter([]),
+        ):
             result = restart_mcp_servers()
         assert result.signalled_pids == []
+        assert result.detection_error is None
 
     def test_process_lookup_error_swallowed(self):
         """Race: server exited between discovery and kill → ProcessLookupError."""
@@ -138,13 +161,33 @@ class TestRestartMcpServers:
             raise ProcessLookupError(f"no such pid {pid}")
 
         with (
-            patch("corpus_forge.mcp.lifecycle.discover_mcp_servers", return_value=iter(ps)),
+            patch(
+                "corpus_forge.mcp.lifecycle.discover_mcp_servers",
+                side_effect=lambda: iter(ps),
+            ),
             patch("corpus_forge.mcp.lifecycle.os.kill", side_effect=_fake_kill),
         ):
             # Must NOT raise; the process being gone is the goal state anyway.
             result = restart_mcp_servers()
         assert result.signalled_pids == []
         assert result.already_dead == [11111]
+        assert result.detection_error is None
+
+    def test_process_discovery_unavailable_surfaced(self):
+        """``ps`` shellout fails → ``detection_error`` set, signalled empty.
+
+        The CLI prints "detection unavailable" instead of "no servers
+        running" — the two have very different operator remediations.
+        """
+        with patch(
+            "corpus_forge.mcp.lifecycle.discover_mcp_servers",
+            side_effect=ProcessDiscoveryUnavailable("ps not on PATH"),
+        ):
+            result = restart_mcp_servers()
+        assert result.signalled_pids == []
+        assert result.already_dead == []
+        assert result.detection_error is not None
+        assert "ps not on PATH" in result.detection_error
 
 
 # ── doctor ``mcp_servers`` check ─────────────────────────────────────
@@ -154,7 +197,7 @@ class TestCheckMcpServers:
     def _patch_discover(self, servers):
         return patch(
             "corpus_forge.doctor.checks.discover_mcp_servers",
-            return_value=iter(servers),
+            side_effect=lambda: iter(servers),
         )
 
     def test_no_servers_running_returns_ok_skip_blurb(self):
@@ -199,3 +242,71 @@ class TestCheckMcpServers:
         from corpus_forge.doctor.checks import _CHECKS
 
         assert _check_mcp_servers in _CHECKS
+
+    def test_detection_unavailable_returns_ok_with_blurb(self):
+        """``ProcessDiscoveryUnavailable`` → OK with "detection unavailable".
+
+        ``ps`` missing or sandboxed is operator-actionable (install
+        procps / loosen the sandbox), but doctor can't recover from
+        outside the env — kept at OK so it doesn't gate other checks.
+        """
+        with patch(
+            "corpus_forge.doctor.checks.discover_mcp_servers",
+            side_effect=ProcessDiscoveryUnavailable("ps not on PATH"),
+        ):
+            result = _check_mcp_servers()
+        assert result.status is CheckStatus.OK
+        assert "detection unavailable" in result.detail.lower()
+        assert "ps not on PATH" in result.detail
+
+
+# ── ``_iter_processes`` failure shapes ───────────────────────────────
+
+
+class TestIterProcessesFailures:
+    """Exercise the new ``ProcessDiscoveryUnavailable`` propagation path."""
+
+    def test_subprocess_not_found_raises(self):
+        from corpus_forge.mcp.lifecycle import _iter_processes
+
+        with (
+            patch(
+                "corpus_forge.mcp.lifecycle.subprocess.run",
+                side_effect=FileNotFoundError("[Errno 2] No such file: 'ps'"),
+            ),
+            pytest.raises(ProcessDiscoveryUnavailable) as excinfo,
+        ):
+            list(_iter_processes())
+        assert "ps shellout failed" in str(excinfo.value)
+        assert "FileNotFoundError" in str(excinfo.value)
+
+    def test_subprocess_timeout_raises(self):
+        import subprocess as _subprocess
+
+        from corpus_forge.mcp.lifecycle import _iter_processes
+
+        with (
+            patch(
+                "corpus_forge.mcp.lifecycle.subprocess.run",
+                side_effect=_subprocess.TimeoutExpired(cmd=["ps"], timeout=5.0),
+            ),
+            pytest.raises(ProcessDiscoveryUnavailable),
+        ):
+            list(_iter_processes())
+
+    def test_nonzero_returncode_raises(self):
+        from unittest.mock import MagicMock
+
+        from corpus_forge.mcp.lifecycle import _iter_processes
+
+        fake_completed = MagicMock(returncode=1, stdout="", stderr="ps: error\n")
+        with (
+            patch(
+                "corpus_forge.mcp.lifecycle.subprocess.run",
+                return_value=fake_completed,
+            ),
+            pytest.raises(ProcessDiscoveryUnavailable) as excinfo,
+        ):
+            list(_iter_processes())
+        assert "exited with code 1" in str(excinfo.value)
+        assert "ps: error" in str(excinfo.value)

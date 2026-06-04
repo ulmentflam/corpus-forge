@@ -157,13 +157,20 @@ class TestRegisteredTools:
         return server, retriever
 
     def test_three_tools_registered(self) -> None:
+        # Pins the always-available *read* surface under the explicit
+        # writes-disabled opt-out.  The default (writes_enabled=True,
+        # hotfix in 0.1.0b15) exposes the full read + write set — that
+        # contract lives in ``tests/smoke/test_mcp_writes_enabled_by_default.py``.
         # G-03: render_conversation + list_chat_templates are always-available read tools.
         # J1:   estimate_sync_size is an always-available read tool (no backend writes).
         # J4:   next_curation_target + next_curation_batch are always-available read tools.
         # Phase M Wave 3: list_ignore + validate_ignore are always-available read tools.
         # Phase O Wave 4: analyze_corpus + find_duplicates + cluster_topics + score_quality.
         # agent-chunk-explorer: chunk_neighbors + get_document are always-available read tools.
-        server, _ = self._build()
+        from corpus_forge.mcp.server import build_server
+
+        retriever = _FakeRetriever([_FakeHit(1, 0.9, "alpha")])
+        server = build_server(retriever_builder=lambda: retriever, writes_enabled=False)
         tools = _list_tools_via_handler(server)
         names = {t.name for t in tools}
         assert names == {
@@ -186,11 +193,11 @@ class TestRegisteredTools:
             "chunk_neighbors",
             "get_document",
         }, (
-            f"Expected sixteen read tools (search/get_chunk/list_datasets/"
-            f"render_conversation/list_chat_templates/estimate_sync_size/"
-            f"next_curation_target/next_curation_batch/list_ignore/validate_ignore/"
-            f"analyze_corpus/find_duplicates/cluster_topics/score_quality/"
-            f"chunk_neighbors/get_document); "
+            f"Expected sixteen read tools under writes_enabled=False (search/"
+            f"get_chunk/list_datasets/render_conversation/list_chat_templates/"
+            f"estimate_sync_size/next_curation_target/next_curation_batch/"
+            f"list_ignore/validate_ignore/analyze_corpus/find_duplicates/"
+            f"cluster_topics/score_quality/chunk_neighbors/get_document); "
             f"got {names}"
         )
 

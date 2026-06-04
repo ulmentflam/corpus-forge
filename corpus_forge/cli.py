@@ -2145,6 +2145,12 @@ def mcp_restart() -> None:
     from corpus_forge.mcp.lifecycle import restart_mcp_servers
 
     result = restart_mcp_servers()
+    if result.detection_error is not None:
+        ui_warn(
+            f"Could not enumerate the OS process table — detection unavailable: "
+            f"{result.detection_error}. Skipping restart."
+        )
+        return
     if not result.signalled_pids and not result.already_dead:
         ui_info("No corpus-forge mcp serve processes detected.")
         return
