@@ -8,11 +8,26 @@ no-config exit path (a graceful ``typer.Exit(code=2)`` with the
 real backend; that's covered by integration tests.
 """
 
+import pytest
 from typer.testing import CliRunner
 
 from corpus_forge.cli import app
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def no_real_config(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Force the missing-config path regardless of the dev machine.
+
+    ``Config.load()`` resolves ``CORPUS_FORGE_CONFIG`` first, then
+    ``~/.config/corpus-forge/config.toml`` — so on any machine with a
+    real config these tests used to exercise the *found*-config path
+    and fail (CI was green only because runners have no config).
+    Pointing the env var at a path that doesn't exist pins the
+    behavior under test on every machine.
+    """
+    monkeypatch.setenv("CORPUS_FORGE_CONFIG", str(tmp_path / "nonexistent-config.toml"))
 
 
 def _assert_no_config_exit(result) -> None:
