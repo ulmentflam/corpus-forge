@@ -56,6 +56,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           warm-hf-cache: "true"
+          # Authenticated Hub requests dodge the anonymous shared-runner-IP
+          # rate limit on the cold (cache-miss) warm path — issue #90.
+          # Empty when the secret isn't configured / on fork PRs: safe,
+          # huggingface_hub treats an empty token as anonymous.
+          hf-token: ${{ secrets.HF_TOKEN }}
 
       - name: Restore uv cache
         uses: actions/cache@v5
@@ -114,6 +119,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           warm-hf-cache: "true"
+          # Authenticated Hub requests dodge the anonymous shared-runner-IP
+          # rate limit on the cold (cache-miss) warm path — issue #90.
+          # Empty when the secret isn't configured / on fork PRs: safe,
+          # huggingface_hub treats an empty token as anonymous.
+          hf-token: ${{ secrets.HF_TOKEN }}
 
       - name: Integration tests
         env:

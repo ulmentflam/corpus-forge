@@ -241,9 +241,7 @@ def main(argv: list[str]) -> int:
         # Permanent failures (404, auth, malformed repo id) still exit
         # non-zero because those are config bugs the warm step must
         # surface loudly.
-        permanent_failures = [
-            (repo, exc) for repo, exc in failures if not _is_transient(exc)[0]
-        ]
+        permanent_failures = [(repo, exc) for repo, exc in failures if not _is_transient(exc)[0]]
         if permanent_failures:
             perm_names = ", ".join(repo for repo, _ in permanent_failures)
             print(
