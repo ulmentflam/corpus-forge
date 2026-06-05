@@ -11,7 +11,7 @@ import weakref
 from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -1191,23 +1191,60 @@ class PostgresBackend(StorageBackend):
         :func:`corpus_forge.backends.base.normalize_extensions_filter`
         for the normalisation contract.
         """
-        # Get embedder info
+        built = self._build_missing_embedding_query(
+            embedder_id, extensions=extensions, after_id=after_id
+        )
+        if built is None:
+            return
+        from_where, params = built
+
+        query = f"""
+        SELECT
+            c.id,
+            c.text,
+            COALESCE(d.source_uri, cv.source_uri, '') AS source_uri
+        {from_where}
+        ORDER BY c.id
+        LIMIT %s
+        """
+
+        results = self._execute(query, (*params, limit))
+        for row in results:
+            yield (row["id"], row["text"], row["source_uri"] or "")
+
+    def _build_missing_embedding_query(
+        self,
+        embedder_id: int,
+        *,
+        extensions: list[str] | None = None,
+        after_id: int | None = None,
+    ) -> tuple[str, tuple] | None:
+        """Build the shared ``FROM ... WHERE e.chunk_id IS NULL ...`` fragment.
+
+        Single source of truth for the "chunk missing an embedding under
+        ``embedder_id``" predicate, reused by
+        :meth:`chunks_missing_embedding`,
+        :meth:`count_chunks_missing_embedding`, and
+        :meth:`claim_chunks_for_embedding` so the three paths cannot drift.
+
+        Returns ``(from_where_sql, params)`` where ``from_where_sql`` begins
+        with ``FROM corpus.chunks c`` and ends with the ``WHERE`` clause
+        (no ORDER BY / LIMIT). ``params`` are the positional ``%s`` args for
+        the ext-filter + cursor clauses, in order. Returns ``None`` when the
+        embedder row doesn't exist (no per-embedder table to join).
+
+        The JOINs onto documents/conversations give the route layer
+        ``source_uri`` without a second round-trip; chunks XOR the two
+        parents (schema CHECK), so COALESCE picks whichever side is set.
+        """
         embedder_info = self._execute(
             "SELECT name FROM corpus.embedders WHERE id = %s", (embedder_id,)
         )
-
         if not embedder_info:
-            return
-
+            return None
         embedder_name = embedder_info[0]["name"]
         table_name = f"embeddings_{embedder_name.replace('-', '_')}"
 
-        # JOIN documents/conversations so the route layer has source_uri
-        # in hand without a second round-trip per batch.  Chunks XOR the
-        # two parents (CHECK constraint in the schema), so COALESCE picks
-        # whichever side is set.  Conversation source URIs (``claude-code://...``)
-        # have no meaningful file extension and therefore always route to
-        # the catchall — that's the correct behaviour.
         norm_exts = normalize_extensions_filter(extensions)
         ext_clause = ""
         ext_params: tuple = ()
@@ -1232,23 +1269,12 @@ class PostgresBackend(StorageBackend):
             cursor_clause = " AND c.id > %s"
             cursor_params = (after_id,)
 
-        query = f"""
-        SELECT
-            c.id,
-            c.text,
-            COALESCE(d.source_uri, cv.source_uri, '') AS source_uri
-        FROM corpus.chunks c
+        from_where = f"""FROM corpus.chunks c
         LEFT JOIN corpus.documents d ON d.id = c.document_id
         LEFT JOIN corpus.conversations cv ON cv.id = c.conversation_id
         LEFT JOIN corpus.{table_name} e ON e.chunk_id = c.id
-        WHERE e.chunk_id IS NULL{ext_clause}{cursor_clause}
-        ORDER BY c.id
-        LIMIT %s
-        """
-
-        results = self._execute(query, (*ext_params, *cursor_params, limit))
-        for row in results:
-            yield (row["id"], row["text"], row["source_uri"] or "")
+        WHERE e.chunk_id IS NULL{ext_clause}{cursor_clause}"""
+        return from_where, (*ext_params, *cursor_params)
 
     def count_chunks_missing_embedding(
         self,
@@ -1269,37 +1295,142 @@ class PostgresBackend(StorageBackend):
         "1.88 M pending" for ``nomic-code`` even when only a few
         thousand .py chunks actually qualify).
         """
-        embedder_info = self._execute(
-            "SELECT name FROM corpus.embedders WHERE id = %s", (embedder_id,)
-        )
-        if not embedder_info:
+        # Reuses :meth:`_build_missing_embedding_query` so the count matches
+        # exactly what :meth:`chunks_missing_embedding` would yield (same
+        # JOINs, same COALESCE-based extension allow-list).
+        built = self._build_missing_embedding_query(embedder_id, extensions=extensions)
+        if built is None:
             return 0
-        embedder_name = embedder_info[0]["name"]
-        table_name = f"embeddings_{embedder_name.replace('-', '_')}"
-
-        norm_exts = normalize_extensions_filter(extensions)
-        # The count query joins documents + conversations (LEFT JOIN) so
-        # the same COALESCE-based extension allow-list as
-        # :meth:`chunks_missing_embedding` can be applied — and crucially,
-        # so the count matches what that method would yield.
-        ext_clause = ""
-        ext_params: tuple = ()
-        if norm_exts:
-            like_clauses = " OR ".join(
-                "lower(COALESCE(d.source_uri, cv.source_uri, '')) LIKE %s" for _ in norm_exts
-            )
-            ext_clause = f" AND ({like_clauses})"
-            ext_params = tuple(f"%{e}" for e in norm_exts)
-
-        query = (
-            f"SELECT COUNT(*) AS n FROM corpus.chunks c "
-            f"LEFT JOIN corpus.documents d ON d.id = c.document_id "
-            f"LEFT JOIN corpus.conversations cv ON cv.id = c.conversation_id "
-            f"LEFT JOIN corpus.{table_name} e ON e.chunk_id = c.id "
-            f"WHERE e.chunk_id IS NULL{ext_clause}"
-        )
-        rows = self._execute(query, ext_params) if ext_params else self._execute(query)
+        from_where, params = built
+        query = f"SELECT COUNT(*) AS n {from_where}"
+        rows = self._execute(query, params) if params else self._execute(query)
         return int(rows[0]["n"]) if rows else 0
+
+    # ── Fleet 2 — distributed claim-based embedding backfill ──────────────
+
+    def claim_chunks_for_embedding(
+        self,
+        embedder_id: int,
+        host_id: str,
+        batch: int = 1024,
+        lease_ttl: int = 600,
+        *,
+        extensions: list[str] | None = None,
+        after_id: int | None = None,
+    ) -> list[tuple[int, str, str]]:
+        """Atomically reserve up to ``batch`` not-yet-embedded chunks for ``host_id``.
+
+        See :meth:`StorageBackend.claim_chunks_for_embedding` for the full
+        contract. Concurrency safety rests on two Postgres primitives:
+
+        * ``FOR UPDATE SKIP LOCKED`` on the candidate ``chunks`` rows — a
+          second host claiming the same lane skips rows this transaction
+          has locked instead of blocking on them.
+        * ``ON CONFLICT (embedder_id, chunk_id) DO NOTHING`` on the claim
+          insert — if two transactions select disjoint locked sets but a
+          lease-expiry sweep raced in between, the unique constraint makes
+          the duplicate insert a no-op; only ``RETURNING`` rows (claims that
+          actually landed) are worked.
+
+        The claim runs as a single CTE statement so the ``SKIP LOCKED`` row
+        locks stay held across the insert: ``cand`` locks the candidate
+        chunk rows, ``ins`` inserts the claims (``ON CONFLICT DO NOTHING``),
+        and the final SELECT returns only the chunks whose claim landed.
+        The stale-claim sweep runs first, in its own committed transaction,
+        so rows freed by a dead worker are visible to ``cand``'s
+        live-claim anti-join in this same call.
+        """
+        # 1. Self-heal first (own transaction) so freed rows are claimable now.
+        self.expire_stale_claims(embedder_id)
+
+        built = self._build_missing_embedding_query(
+            embedder_id, extensions=extensions, after_id=after_id
+        )
+        if built is None:
+            return []
+        from_where, params = built
+
+        now = datetime.now(tz=UTC)
+        lease_until = now + timedelta(seconds=lease_ttl)
+
+        # 2+3. Lock the candidate set (missing-embedding shared fragment,
+        #      excluding live claims) and insert the claims atomically. The
+        #      final SELECT joins the locked candidates to the rows that the
+        #      insert actually landed (ON CONFLICT DO NOTHING filters races).
+        query = f"""
+        WITH cand AS (
+            SELECT c.id, c.text,
+                   COALESCE(d.source_uri, cv.source_uri, '') AS source_uri
+            {from_where}
+              AND NOT EXISTS (
+                  SELECT 1 FROM corpus.embed_claims cc
+                  WHERE cc.embedder_id = %s AND cc.chunk_id = c.id
+              )
+            ORDER BY c.id
+            LIMIT %s
+            FOR UPDATE OF c SKIP LOCKED
+        ),
+        ins AS (
+            INSERT INTO corpus.embed_claims
+                (embedder_id, chunk_id, host_id, claimed_at, lease_until)
+            SELECT %s, cand.id, %s, %s, %s FROM cand
+            ON CONFLICT (embedder_id, chunk_id) DO NOTHING
+            RETURNING chunk_id
+        )
+        SELECT cand.id, cand.text, cand.source_uri
+        FROM cand
+        JOIN ins ON ins.chunk_id = cand.id
+        ORDER BY cand.id
+        """
+        rows = self._execute(
+            query,
+            (*params, embedder_id, batch, embedder_id, host_id, now, lease_until),
+        )
+        return [(row["id"], row["text"], row["source_uri"] or "") for row in rows]
+
+    def release_claims(
+        self,
+        embedder_id: int,
+        host_id: str,
+        chunk_ids: list[int],
+    ) -> int:
+        """Release this host's claims on ``chunk_ids`` for ``embedder_id``.
+
+        See :meth:`StorageBackend.release_claims`. Scoped to ``host_id`` so a
+        worker only ever releases its own reservations (a slow host whose
+        lease expired and got re-claimed elsewhere won't clobber the new
+        owner's claim). Returns the number of rows deleted.
+        """
+        if not chunk_ids:
+            return 0
+        rows = self._execute(
+            "DELETE FROM corpus.embed_claims "
+            "WHERE embedder_id = %s AND host_id = %s AND chunk_id = ANY(%s) "
+            "RETURNING chunk_id",
+            (embedder_id, host_id, list(chunk_ids)),
+        )
+        return len(rows)
+
+    def expire_stale_claims(self, embedder_id: int | None = None) -> int:
+        """Delete claims past ``lease_until``; return the count deleted.
+
+        See :meth:`StorageBackend.expire_stale_claims`. ``embedder_id=None``
+        sweeps every lane (used by the doctor stale-claim check); a concrete
+        id scopes the sweep to one embedder.
+        """
+        now = datetime.now(tz=UTC)
+        if embedder_id is None:
+            rows = self._execute(
+                "DELETE FROM corpus.embed_claims WHERE lease_until < %s RETURNING chunk_id",
+                (now,),
+            )
+        else:
+            rows = self._execute(
+                "DELETE FROM corpus.embed_claims "
+                "WHERE embedder_id = %s AND lease_until < %s RETURNING chunk_id",
+                (embedder_id, now),
+            )
+        return len(rows)
 
     # ── Phase L Wave 6 — embedder-fingerprint helpers ─────────────────────
 

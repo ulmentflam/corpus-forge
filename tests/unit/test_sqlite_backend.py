@@ -236,6 +236,11 @@ class TestSchemaTablePresence:
             "hosts",
             "models",
             "model_benchmarks",
+            # rfc-fleet-2 (0019_embed_claims) adds the distributed-embedding
+            # claim table (never used on SQLite — the backend raises
+            # FederationUnsupported — but the migration creates it on both
+            # dialects for schema symmetry).
+            "embed_claims",
         ]
     )
 

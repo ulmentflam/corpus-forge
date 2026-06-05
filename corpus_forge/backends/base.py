@@ -22,6 +22,21 @@ class IngestRunInProgressError(RuntimeError):
     """
 
 
+class FederationUnsupported(RuntimeError):
+    """Raised when a fleet-federation operation is attempted on a backend
+    that cannot coordinate multiple hosts.
+
+    Distributed claim-based embedding backfill (RFC ``fleet-2``) relies on
+    a single shared Postgres for cross-host coordination
+    (``FOR UPDATE SKIP LOCKED`` + ``ON CONFLICT DO NOTHING`` on
+    ``corpus.embed_claims``). The SQLite backend is single-machine by
+    construction, so :meth:`StorageBackend.claim_chunks_for_embedding`,
+    :meth:`StorageBackend.release_claims`, and
+    :meth:`StorageBackend.expire_stale_claims` raise this on SQLite rather
+    than silently letting two hosts duplicate compute.
+    """
+
+
 def normalize_extensions_filter(extensions: "list[str] | None") -> list[str]:
     """Normalise an ``extensions=`` allow-list for SQL pushdown.
 
@@ -154,6 +169,79 @@ class StorageBackend(Protocol):
         count is filtered by the same SQL allow-list as the paging query
         so the embed progress bar's ETA reflects the *real* work for a
         specialist embedder rather than the unfiltered chunks total.
+        """
+        ...
+
+    # --- Fleet 2 — distributed claim-based embedding backfill -------------
+
+    def claim_chunks_for_embedding(
+        self,
+        embedder_id: int,
+        host_id: str,
+        batch: int = 1024,
+        lease_ttl: int = 600,
+        *,
+        extensions: "list[str] | None" = None,
+        after_id: int | None = None,
+    ) -> "list[tuple[int, str, str]]":
+        """Atomically reserve up to ``batch`` not-yet-embedded chunks for ``host_id``.
+
+        Fleet-2 (RFC ``rfc-fleet-2-distributed-embedding``) coordination
+        primitive. Lets N hosts drain the *same* embedder lane concurrently
+        with zero duplicated GPU compute, by recording per-chunk
+        reservations in ``corpus.embed_claims``.
+
+        Contract (Postgres):
+
+        1. **Self-heal first.** Opportunistically delete this embedder's
+           stale claims (rows past ``lease_until``) so abandoned work from
+           a dead worker becomes claimable again — no operator action.
+        2. **Select from the missing-embeddings set.** Uses the *same*
+           "missing embedding" definition as
+           :meth:`chunks_missing_embedding` (shared SQL fragment so the
+           two paths cannot drift), additionally excluding chunks with a
+           live claim, and applying ``FOR UPDATE SKIP LOCKED`` so
+           concurrent claimers skip each other's in-flight rows instead of
+           blocking.
+        3. **Insert claim rows** with ``lease_until = now + lease_ttl`` and
+           ``ON CONFLICT (embedder_id, chunk_id) DO NOTHING`` — only the
+           host whose insert actually lands works the chunk, making
+           uniqueness races benign.
+        4. **Return** the claimed chunks in the same
+           ``(chunk_id, text, source_uri)`` shape
+           :meth:`chunks_missing_embedding` yields, so the backfill loop
+           can switch over transparently.
+
+        ``extensions`` / ``after_id`` mirror
+        :meth:`chunks_missing_embedding` for lane filtering and
+        forward-progress cursoring.
+
+        SQLite raises :class:`FederationUnsupported`.
+        """
+        ...
+
+    def release_claims(
+        self,
+        embedder_id: int,
+        host_id: str,
+        chunk_ids: "list[int]",
+    ) -> int:
+        """Release this host's claims on ``chunk_ids`` for ``embedder_id``.
+
+        Called after a batch is embedded (the embedding row is the durable
+        record; the claim was only a reservation). Returns the number of
+        claim rows deleted. SQLite raises :class:`FederationUnsupported`.
+        """
+        ...
+
+    def expire_stale_claims(self, embedder_id: int | None = None) -> int:
+        """Delete claims whose ``lease_until`` is in the past; return the count.
+
+        Called opportunistically at the top of
+        :meth:`claim_chunks_for_embedding` so a host that dies mid-batch
+        has its reservations reclaimed automatically once the lease
+        elapses. ``embedder_id=None`` sweeps every lane. SQLite raises
+        :class:`FederationUnsupported`.
         """
         ...
 

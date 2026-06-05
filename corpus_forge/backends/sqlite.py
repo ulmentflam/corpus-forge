@@ -22,7 +22,7 @@ from ..chunkers.base import TextChunk
 from ..identity import chunk_content_hash
 from ..schema import migrate as _migrate_module
 from ..sources.base import RawDocument
-from .base import IngestRunInProgressError, normalize_extensions_filter
+from .base import FederationUnsupported, IngestRunInProgressError, normalize_extensions_filter
 from .sqlite_vec_loader import SQLITE_VEC_AVAILABLE, load_sqlite_vec
 
 # Width of the legacy ``(heading, text)`` chunk shape accepted by
@@ -1428,6 +1428,60 @@ class SQLiteBackend:
             (embedder_id, *ext_params),
         )
         return int(rows[0]["n"]) if rows else 0
+
+    # ── Fleet 2 — distributed claim-based embedding backfill ──────────────
+    #
+    # SQLite is single-machine by construction: there is no shared database
+    # for multiple hosts to coordinate through, and no ``FOR UPDATE SKIP
+    # LOCKED`` to make claiming concurrency-safe.  Rather than silently let
+    # two hosts duplicate GPU compute, all three claim methods raise
+    # :class:`FederationUnsupported` (RFC fleet-2 non-goal: "No SQLite
+    # federation").  The embed-worker on SQLite keeps using the plain
+    # :meth:`chunks_missing_embedding` fetch path.
+
+    def claim_chunks_for_embedding(
+        self,
+        embedder_id: int,
+        host_id: str,
+        batch: int = 1024,
+        lease_ttl: int = 600,
+        *,
+        extensions: list[str] | None = None,
+        after_id: int | None = None,
+    ) -> list[tuple[int, str, str]]:
+        """Unsupported on SQLite — raises :class:`FederationUnsupported`.
+
+        Arguments are accepted for Protocol signature parity but never used
+        (the method always raises); ``del`` consumes them so the unused-arg
+        linter stays green without a suppression comment.
+        """
+        del embedder_id, host_id, batch, lease_ttl, extensions, after_id
+        raise FederationUnsupported(
+            "claim_chunks_for_embedding requires a shared Postgres backend; "
+            "the SQLite backend is single-machine and cannot coordinate "
+            "multiple embedding hosts (RFC fleet-2)."
+        )
+
+    def release_claims(
+        self,
+        embedder_id: int,
+        host_id: str,
+        chunk_ids: list[int],
+    ) -> int:
+        """Unsupported on SQLite — raises :class:`FederationUnsupported`."""
+        del embedder_id, host_id, chunk_ids
+        raise FederationUnsupported(
+            "release_claims requires a shared Postgres backend; the SQLite "
+            "backend does not support fleet federation (RFC fleet-2)."
+        )
+
+    def expire_stale_claims(self, embedder_id: int | None = None) -> int:
+        """Unsupported on SQLite — raises :class:`FederationUnsupported`."""
+        del embedder_id
+        raise FederationUnsupported(
+            "expire_stale_claims requires a shared Postgres backend; the "
+            "SQLite backend does not support fleet federation (RFC fleet-2)."
+        )
 
     def pending_documents(
         self, *, dataset_id: int | None = None, limit: int = 5
