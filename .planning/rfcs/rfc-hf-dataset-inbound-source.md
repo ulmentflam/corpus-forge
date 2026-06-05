@@ -128,29 +128,21 @@ When the source dataset is larger than `max_rows`:
 
 ## Tasks
 
-- [ ] `corpus_forge/sources/hf_dataset.py`: `HFDatasetSource`.
-- [ ] `corpus_forge/sources/hf_dataset_presets.py`: a small dict of
+- [x] `corpus_forge/sources/hf_dataset.py`: `HFDatasetSource`. — local proposal (branch `nightly/hf-dataset-source-195137Z`, commit `a58e1b6`)
+- [x] `corpus_forge/sources/hf_dataset_presets.py`: — same local proposal as above; a small dict of
       known dataset → column-map presets.
-- [ ] Extend `corpus_forge/config.py::DatasetSourceConfig` with the
-      five new fields.
-- [ ] Wire into `corpus_forge/ingest.py::_instantiate_source` (same
-      pattern as the chat sources in PR #29).
-- [ ] Add `hf-dataset://` to `_SOURCE_URI_TO_CLIENT`.
-- [ ] Config example block in `config.example.toml`.
-- [ ] Tests:
-  - [ ] `tests/unit/test_source_hf_dataset.py` — stub
-        `datasets.load_dataset` with a tiny in-memory dataset; verify
-        column-map application, `max_rows` cap, `streaming=True`
-        path.
-  - [ ] `tests/unit/test_hf_dataset_presets.py` — preset registry
-        loads without import errors.
-  - [ ] `tests/unit/test_ingest_chat_source_wiring.py` — add
-        parametrise case for `hf_dataset` (this file from PR #29).
-  - [ ] `tests/integration/test_hf_dataset_ingest_e2e.py` —
-        end-to-end against a tiny public test dataset (e.g.,
-        `hf-internal-testing/tiny-random-Llama` corpora style); gated
-        by `pytest.mark.requires_network`.
-- [ ] CHANGELOG entry. Call out the license-responsibility note.
+- [x] Extend `corpus_forge/config.py::DatasetSourceConfig` with the
+      five new fields. — local proposal (branch `nightly/hf-config-200028Z`, commit `646e134`; 4 new fields — `max_rows` already shipped in PR #42)
+- [x] Wire into `corpus_forge/ingest.py::_instantiate_source` (same
+      pattern as the chat sources in PR #29). — local proposal (branch `nightly/hf-wiring-200441Z`, commit `d3b99a1`)
+- [x] Add `hf-dataset://` to `_SOURCE_URI_TO_CLIENT`. — same local proposal as above (task 0013).
+- [x] Config example block in `config.example.toml`. — local proposal (branch `nightly/hf-example-200853Z`, commit `c82acd2`)
+- [x] Tests:
+  - [x] `tests/unit/test_source_hf_dataset.py` — task 0011 local proposal (named `test_hf_dataset_source.py`, 18 tests covering load_dataset stub, column-map, max_rows, streaming branches)
+  - [x] `tests/unit/test_hf_dataset_presets.py` — task 0011 local proposal (preset registry tests bundled into the same file: 12 tests of source + 6 of presets)
+  - [x] `tests/unit/test_ingest_chat_source_wiring.py` — task 0013 local proposal (new file `test_ingest_instantiate_hf.py`, 6 tests for the dispatch branch)
+  - [ ] `tests/integration/test_hf_dataset_ingest_e2e.py` — (Deferred: requires network access; gated by `pytest.mark.requires_network`. Belongs in a separate PR once the stack merges.)
+- [x] CHANGELOG entry. Call out the license-responsibility note. — bullets in each task's local proposal (0011/0012/0013/0014). License note: HF dataset licenses vary; users are responsible for compliance with each dataset's terms.
 
 ## Verification
 

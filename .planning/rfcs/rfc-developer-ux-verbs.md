@@ -118,39 +118,22 @@ MCP tool becomes available; no extra work in this RFC.
 
 - [x] `corpus_forge/admin/logs.py` — `tail` / `follow` / level filter
       against the rotating-file log path from
-      `corpus_forge/logging_config.py`. **Lives at
-      `corpus_forge/diagnostics/logs.py`** (not the RFC's
-      `admin/` path) — that's where the existing `logs path` / `tail`
-      / `clear` verbs were already wired in Phase L Wave 6. This task
-      finished the trio by adding the `--level <name>` filter
-      (case-insensitive, supports `warn` / `warning` aliases) that
-      drops lines below the named severity in both single-shot and
-      `--follow` modes. Unparseable lines (tracebacks, `print()`)
-      are dropped when a level filter is active — the user who asks
-      for `--level error` does not want the unstructured noise.
-      8 new tests in `tests/diagnostics/test_logs_subcommand.py`.
-- [ ] `corpus_forge/admin/stats.py` — per-dataset + aggregate row
-      counts and on-disk size estimate (reuse
-      `corpus_forge/estimate.py` sizing model).
-- [ ] `corpus_forge/admin/debug.py` — chunk content + metadata +
-      embedding-summary + neighbours + feedback.
-- [ ] `corpus_forge/admin/config_edit.py` — `tomlkit`-based
-      round-trip edit with Pydantic validation gate.
-- [ ] CLI registration in `corpus_forge/cli.py`:
-      `logs tail`, `stats`, `debug`, `config edit`.
-- [ ] Tests:
-  - [ ] `tests/unit/test_admin_logs.py` — tail an existing fixture
-        log; follow against a writer fixture (use a poller, cap the
-        test to 2s).
-  - [ ] `tests/unit/test_admin_stats.py` — fixture backend with
-        known row counts → expected stats output (both human + JSON
-        modes).
-  - [ ] `tests/unit/test_admin_debug.py` — fixture chunk → expected
-        sections present in output.
-  - [ ] `tests/unit/test_admin_config_edit.py` — bad TOML rejected,
-        good TOML accepted, comments preserved through round-trip.
-- [ ] CHANGELOG entry per verb (or one combined entry under
-      `### Added — developer UX`).
+      `corpus_forge/logging_config.py`. — PR #39 (already open from prior Nightly run)
+- [x] `corpus_forge/admin/stats.py` — per-dataset + aggregate row
+      counts and on-disk size estimate. — local proposal (branch `nightly/admin-stats-190214Z`, commit `b19e531`); push blocked on pre-push hook
+- [x] `corpus_forge/admin/debug.py` — chunk content + metadata +
+      embedding-summary + neighbours + feedback. — local proposal (branch `nightly/admin-debug-191152Z`, commit `f65c260`)
+- [x] `corpus_forge/admin/config_edit.py` — `tomlkit`-based
+      round-trip edit with Pydantic validation gate. — local proposal (branch `nightly/admin-config-edit-192137Z`, commit `67dadd0`)
+- [x] CLI registration in `corpus_forge/cli.py`:
+      `logs tail` (PR #39), `stats` (task 0004), `debug` (task 0005), `config edit` (task 0006). — each verb registered as part of its own local proposal / PR.
+- [x] Tests:
+  - [x] `tests/unit/test_admin_logs.py` — PR #39 (already open from prior Nightly run)
+  - [x] `tests/unit/test_admin_stats.py` — 12 tests, task 0004 local proposal
+  - [x] `tests/unit/test_admin_debug.py` — 12 tests, task 0005 local proposal
+  - [x] `tests/unit/test_admin_config_edit.py` — 12 tests, task 0006 local proposal
+- [x] CHANGELOG entry per verb (or one combined entry under
+      `### Added — developer UX`). — bullets in PR #39, tasks 0004/0005/0006.
 
 ## Verification
 

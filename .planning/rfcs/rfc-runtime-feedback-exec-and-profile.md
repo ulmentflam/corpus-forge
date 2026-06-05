@@ -146,36 +146,27 @@ CLI mirror: `corpus-forge exec-chunk <chunk_id> [--mode sandbox|local]`.
 
 ## Tasks
 
-- [ ] `corpus_forge/execfeedback/sandbox.py`: `Sandbox` ABC +
+- [x] `corpus_forge/execfeedback/sandbox.py`: `Sandbox` ABC + — local proposal (branch `nightly/execfeedback-sandbox-205022Z`, commit `05051c9`; 21 tests pin the security guards including RLIMIT_AS kill; threat-model gaps documented in module docstring and RFC body)
       `SubprocessSandbox` (rlimit + tempdir cwd + scrubbed env) +
       `LocalVenvSandbox` (resolve user's venv from config).
-- [ ] `corpus_forge/execfeedback/profile.py`: `ProfileCapture`
-      wrapping `cProfile`; emit top-N functions by `tottime`.
-- [ ] `corpus_forge/execfeedback/snippet.py`: extract a runnable
-      snippet from a chunk's text using AST parse for Python; emit a
-      temp `.py` file or a stdin program.
-- [ ] `corpus_forge/execfeedback/runner.py`:
+- [x] `corpus_forge/execfeedback/profile.py`: `ProfileCapture`
+      wrapping `cProfile`; emit top-N functions by `tottime`. — task 0024 local proposal (10 tests; harness wraps via exec/compile, dumps via __CF_PROFILE_PATH__ stdout marker, summarize sorts by tottime descending)
+- [x] `corpus_forge/execfeedback/snippet.py`: extract a runnable
+      snippet from a chunk's text using AST parse for Python. — task 0024 local proposal (9 tests; eval-first dispatch wraps bare expressions in `print(repr(...))`; module-mode pass-through for full module text; clear SnippetExtractionError on bad input)
+- [x] `corpus_forge/execfeedback/runner.py`:
       `attach_execution_feedback(backend, chunk_id, mode, inputs)`
-      orchestration; calls into `_dispatch_add_feedback`.
-- [ ] Extend the MCP `run_chunk_and_capture` tool in
-      `corpus_forge/mcp/server.py`.
-- [ ] CLI verb `corpus-forge exec-chunk` in `corpus_forge/cli.py`.
-- [ ] Tests:
-  - [ ] `tests/unit/test_sandbox_subprocess.py` — runs `print(1+1)`;
-        captures stdout; CPU-bound infinite loop is killed within
-        budget; OOM-ish script hits memory cap.
-  - [ ] `tests/unit/test_sandbox_local_venv.py` — gated behind a
-        `requires_local_venv` marker; runs a trivial import from the
-        project's own package.
-  - [ ] `tests/unit/test_profile_capture.py` — known hot-loop
-        function's `tottime` dominates.
-  - [ ] `tests/unit/test_snippet_extractor.py` — function chunks
-        get wrapped with a call; class chunks emit a no-op success.
-  - [ ] `tests/integration/test_run_chunk_and_capture_e2e.py` —
-        round-trip a chunk through the MCP tool; verify feedback row
-        contains all five fields; verify a failing snippet attaches
-        a non-empty `stack_trace`.
-- [ ] CHANGELOG entry with prominent threat-model note for
+      orchestration. — task 0025 local proposal (12 tests; orchestrates snippet → extract → wrap → sandbox → profile → optional feedback row write; dry-run-default; 4 KB stdout/stderr preview caps)
+- [x] Extend the MCP `run_chunk_and_capture` tool in
+      `corpus_forge/mcp/server.py`. — task 0026 local proposal (5 new MCP tests; gates `apply=True` behind `writes_enabled` matching the `score_quality` persist pattern; tool always-available for read path)
+- [x] CLI verb `corpus-forge exec-chunk` in `corpus_forge/cli.py`. — task 0027 local proposal (8 tests; threat-model warning in --help; exit codes 0/1/2/3 mapped to success / generic / arg-validation / chunk-not-found)
+- [x] Tests:
+  - [x] `tests/unit/test_sandbox_subprocess.py` — task 0023 local proposal (`test_execfeedback_sandbox.py`, 21 tests covering hello-world, stderr, env-stripped, cwd tempdir, timeout, OOM-via-RLIMIT_AS kill)
+  - [x] `tests/unit/test_sandbox_local_venv.py` — task 0023 local proposal (`test_execfeedback_sandbox.py` shares the file with the subprocess sandbox; 4 LocalVenv tests including env-passthrough verification)
+  - [x] `tests/unit/test_profile_capture.py` — task 0024 local proposal (`test_execfeedback_profile.py`, 10 tests; hot-loop function's tottime dominates via top-N sort)
+  - [x] `tests/unit/test_snippet_extractor.py` — task 0024 local proposal (`test_execfeedback_snippet.py`, 9 tests; module pass-through + bare-expr wrap; malformed raises)
+  - [ ] `tests/integration/test_run_chunk_and_capture_e2e.py` — (Deferred: needs the MCP + runner + sandbox stack all merged for the e2e round-trip)
+- [x] CHANGELOG entry with prominent threat-model note. — bullets in each task's local proposal (0023/0024/0025/0026/0027), each calling out the threat model location.
+       — original RFC text:
       `mode="local"`.
 
 ## Verification

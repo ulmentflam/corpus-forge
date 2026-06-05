@@ -116,43 +116,29 @@ share it.
 
 ## Tasks
 
-- [x] `corpus_forge/eval/_schema.py` — shared output envelope.
-      `EvalOutput` (Pydantic v2) with `eval_kind` Literal (classifier
-      / quality / retrieval / regression), `dataset`, `git_commit`,
-      `ts` (auto-populated ISO 8601 Z), `metrics` (free-form dict),
-      `config` (free-form dict). `extra='forbid'` keeps the envelope
-      tight. 15 unit tests in `tests/unit/test_eval_schema.py`.
-- [ ] `corpus_forge/eval/classifier_accuracy.py` —
+- [x] `corpus_forge/eval/_schema.py` — shared output envelope. — PR #38 (already open from prior Nightly run)
+- [x] `corpus_forge/eval/classifier_accuracy.py` — local proposal (branch `nightly/eval-classifier-192805Z`, commit `f39b303`)
+       — original RFC text:
       precision/recall/F1, confusion matrix, gold loader.
-- [ ] `corpus_forge/eval/chunk_quality.py` — rubric loader, scoring,
+- [x] `corpus_forge/eval/chunk_quality.py` — rubric loader, scoring, — local proposal (branch `nightly/eval-chunk-quality-193342Z`, commit `1769c57`)
+       — original RFC text:
       MAE/Spearman.
-- [ ] `corpus_forge/eval/regression.py` — diff two result envelopes,
+- [x] `corpus_forge/eval/regression.py` — diff two result envelopes, — local proposal (branch `nightly/eval-regression-193929Z`, commit `367effb`)
+       — original RFC text:
       tolerance gating.
-- [ ] Extend `corpus_forge/cli.py` with `eval classifier`,
-      `eval quality`, `eval regression`.
+- [x] Extend `corpus_forge/cli.py` with `eval classifier`,
+      `eval quality`, `eval regression`. — local proposal (branch `nightly/eval-cli-194335Z`, commit `6481f76`)
 - [x] Pydantic `EvalRegressionConfig` block in
-      `corpus_forge/config.py` (tolerances). Three fields:
-      `enabled` (bool, default `True`), `default_tolerance` (float
-      in `[0.0, 1.0]`, default `0.02`), `per_metric` (dict[str, float],
-      bounded `[0.0, 1.0]`). Convenience `tolerance_for(name)` helper
-      returns `per_metric` override or default. Wired onto
-      `Config.eval_regression`. 16 unit tests in
-      `tests/unit/test_eval_regression_config.py`.
-- [ ] Tests:
-  - [ ] `tests/unit/test_eval_classifier_accuracy.py` — known
-        confusion matrix → expected metrics.
-  - [ ] `tests/unit/test_eval_chunk_quality.py` — known scores →
-        expected MAE / Spearman.
-  - [ ] `tests/unit/test_eval_regression.py` — tolerance gating, all
-        sign directions.
-  - [ ] `tests/unit/test_eval_schema.py` — envelope shape stable
-        across kinds.
-  - [ ] `tests/integration/test_eval_cli_e2e.py` — full
-        `eval classifier`/`eval quality` CLI invocation against a
-        fixture dataset; JSON output matches the schema.
-- [ ] Sample gold files under `tests/fixtures/eval/` for both
-      classifier and quality.
-- [ ] CHANGELOG entry.
+      `corpus_forge/config.py` (tolerances). — PR #41 (already open from prior Nightly run)
+- [x] Tests:
+  - [x] `tests/unit/test_eval_classifier_accuracy.py` — task 0007 local proposal (11 tests)
+  - [x] `tests/unit/test_eval_chunk_quality.py` — task 0008 local proposal (21 tests)
+  - [x] `tests/unit/test_eval_regression.py` — task 0009 local proposal (14 tests)
+  - [x] `tests/unit/test_eval_schema.py` — PR #38 (already open from prior Nightly run)
+  - [ ] `tests/integration/test_eval_cli_e2e.py` — (Deferred: needs PR #38, tasks 0007/0008/0009/0010 all merged for the e2e round-trip)
+- [x] Sample gold files under `tests/fixtures/eval/` for both
+      classifier and quality. — `classifier_gold.jsonl` (task 0007), `chunk_quality_gold.jsonl` (task 0008)
+- [x] CHANGELOG entry. — bullets in each task's local proposal (0007/0008/0009/0010).
 
 ## Verification
 

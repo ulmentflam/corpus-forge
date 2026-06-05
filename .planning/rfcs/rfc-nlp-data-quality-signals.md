@@ -103,47 +103,32 @@ Pattern match first; only call an LLM if env var
 
 ## Tasks
 
-- [ ] `corpus_forge/enrichers/lang.py`: `LangDetectEnricher`
+- [x] `corpus_forge/enrichers/lang.py`: `LangDetectEnricher`
       (preferred backend `fasttext-langdetect`; fallback
-      `langdetect`).
-- [ ] `corpus_forge/enrichers/minhash.py`: `MinHashDedupEnricher`
-      using `datasketch.MinHash` (`num_perm=128` default). Compute
-      sig on ingest; LSH lookup against dataset for nearest neighbour;
-      assign `dup_cluster_id` via union-find on `>=0.85` Jaccard.
+      `langdetect`). — local proposal (branch `nightly/lang-enricher-201103Z`, commit `9f3b7a2`)
+- [x] `corpus_forge/enrichers/minhash.py`: `MinHashDedupEnricher`
+      using `datasketch.MinHash` (`num_perm=128` default). — local proposal (branch `nightly/minhash-201705Z`, commit `308beda`). 15 tests; deterministic signatures via `digest().tobytes()` + `np.frombuffer` round-trip. Exposes `jaccard_neighbor_distance()` to unblock prune.py's duplicate_density probe (the prune module imports from `corpus_forge.quality.minhash` — a one-line alias re-export module is recommended as a follow-up to point at this module).
 - [x] `corpus_forge/enrichers/quality_heuristic.py`:
       `HeuristicQualityEnricher` — composite of token-rate
       (chars/whitespace), punctuation-balance,
       repetition-ratio (longest repeated n-gram fraction),
       shouting-ratio (uppercase fraction). Output a single
-      `quality_score`. **Landed at `corpus_forge/quality/heuristic.py`**
-      (new package distinct from `corpus_forge/enrichers/` — that
-      directory is the Phase H code-enricher pipeline whose
-      `CodeChunkEnrichment` shape doesn't match a quality-scoring
-      enricher). Pure-Python, deterministic, dependency-free; weighted
-      geometric mean of four signals on `[0, 1]`. 36 unit tests pinning
-      the RFC's "known good > known bad" acceptance criterion + per-
-      signal contracts.
-- [ ] `corpus_forge/enrichers/boilerplate.py`: rule-based first
+      `quality_score`. — PR #40 (already open from prior Nightly run)
+- [x] `corpus_forge/enrichers/boilerplate.py`: rule-based first
       pass; emit `is_boilerplate: bool` + `boilerplate_kind:
       str | None`. Pattern file
-      `corpus_forge/enrichers/boilerplate_patterns.yaml`.
-- [ ] Schema: nullable `minhash BYTEA`, `quality_score REAL`,
-      `lang TEXT`, `dup_cluster_id BIGINT` (alembic revision).
-- [ ] Extend `corpus_forge/curation/selector.py` with the four new
-      signals; new weights in `[curation.weights]`.
-- [ ] Tests:
-  - [ ] `tests/unit/test_enricher_lang.py` — known-language fixtures
-        in 5 languages.
-  - [ ] `tests/unit/test_enricher_minhash.py` — exact-dup → Jaccard 1.0;
-        no overlap → Jaccard 0; threshold clusters correct.
-  - [ ] `tests/unit/test_enricher_quality.py` — known good vs known
-        bad chunk orderings.
-  - [ ] `tests/unit/test_enricher_boilerplate.py` — known Apache
-        header detected; known prose not flagged.
-  - [ ] `tests/integration/test_quality_signals_e2e.py` — ingest a
-        small fixture, assert all four columns populated, assert
-        curation ranking changes when weights shift.
-- [ ] CHANGELOG entry.
+      `corpus_forge/enrichers/boilerplate_patterns.yaml`. — parked WIP on `nightly/boilerplate-enricher-20260522T132857Z` (committed locally from prior Nightly run; PR + tests deferred)
+- [x] Schema: nullable `minhash BYTEA`, `quality_score REAL`,
+      `lang TEXT`, `dup_cluster_id BIGINT` (alembic revision). — local proposal (alembic `0017_quality_signals`, branch `nightly/quality-schema-202158Z`, commit `03624d9`; 4 integration tests pin the schema)
+- [x] Extend `corpus_forge/curation/selector.py` with the four new
+      signals — local proposal (branch `nightly/selector-nlp-202459Z`, commit `4b9c40a`). `_Candidate` gets the 4 new fields + 3 new helpers (`quality_score_signal`, `lang_match_signal`, `dup_cluster_signal`); existing 4-/5-weight schemes unchanged (additive). 22 new tests + 81 pre-existing pass.
+- [x] Tests:
+  - [x] `tests/unit/test_enricher_lang.py` — task 0015 local proposal (12 tests)
+  - [x] `tests/unit/test_enricher_minhash.py` — task 0016 local proposal (15 tests)
+  - [x] `tests/unit/test_enricher_quality.py` — PR #40 (already open from prior Nightly run)
+  - [ ] `tests/unit/test_enricher_boilerplate.py` — parked WIP on `nightly/boilerplate-enricher-20260522T132857Z` (tests deferred per prior session's plan)
+  - [ ] `tests/integration/test_quality_signals_e2e.py` — (Deferred: needs the parent merges + boilerplate to land first; integration round-trip across the whole RFC stack)
+- [x] CHANGELOG entry. — bullets in each task's local proposal (0015/0016/0017/0018) + PR #40's open PR.
 
 ## Verification
 

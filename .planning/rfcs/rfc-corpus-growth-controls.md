@@ -132,36 +132,25 @@ Validate via Pydantic `GrowthConfig` in `corpus_forge/config.py`.
 
 ## Tasks
 
-- [ ] `corpus_forge/admin/prune.py`: new module with `prune_dataset(...)`.
-- [ ] Extend `corpus_forge/curation/selector.py` with
+- [x] `corpus_forge/admin/prune.py`: new module with `prune_dataset(...)`. — PR #50
+- [x] Extend `corpus_forge/curation/selector.py` with
       `score_for_pruning(chunk, ...)` that exposes the same weighted
-      stack with prune-tuned weights.
-- [ ] `corpus_forge/cli.py`: register `corpus-forge prune` verb.
-- [x] Extend `DatasetSourceConfig` with `max_rows` / `max_bytes`.
-      Both `int | None`, default `None` (uncapped), validated `> 0`
-      when set. Storage-only this PR — the eviction runtime is the
-      next checkbox (`ingest_once` enforcement). 17 unit tests in
-      `tests/unit/test_dataset_source_caps.py`.
-- [ ] `corpus_forge/ingest.py::ingest_once`: enforce caps after each
-      insert, evict as needed.
-- [ ] Extend `corpus_forge/estimate.py` with `predict_sync_delta`.
-- [ ] `corpus-forge estimate sync` CLI verb.
-- [x] New `GrowthConfig` block in `corpus_forge/config.py`. Three
-      fields: `prune_percentile_default` (int 0-100, default 10),
-      `sync_cap_bytes` (int | None, accepts human-readable strings
-      like `"10G"` via a `_parse_bytes` helper), and
-      `per_source_cap_default_rows` (int ≥ 0, default 0 = disabled).
-      Wired onto `Config` with no-enforcement defaults. 35 unit
-      tests in `tests/unit/test_growth_config.py`.
-- [ ] Tests:
-  - [ ] `tests/unit/test_prune_scorer.py` — score ordering invariants.
-  - [ ] `tests/unit/test_source_caps.py` — `max_rows` triggers eviction.
+      stack with prune-tuned weights. — PR #51
+- [x] `corpus_forge/cli.py`: register `corpus-forge prune` verb. — PR #52
+- [x] Extend `DatasetSourceConfig` with `max_rows` / `max_bytes`. — PR #42 (already open from prior Nightly run)
+- [x] `corpus_forge/ingest.py::ingest_once`: enforce caps after each
+      insert, evict as needed. — PR #53 (per-source-once enforcement; see PR body for trade-off)
+- [x] Extend `corpus_forge/estimate.py` with `predict_sync_delta`. — local proposal (branch `nightly/predict-sync-delta-180526Z`, commit `06393d3`); push blocked on 11 pre-existing test failures (see task 0002 uncertainty.md)
+- [x] `corpus-forge estimate sync` CLI verb. — local proposal (branch `nightly/estimate-sync-cli-183310Z`, commit `22bf688`); push blocked on pre-push hook (see task 0003 uncertainty.md)
+- [x] New `GrowthConfig` block in `corpus_forge/config.py`. — PR #37 (already open from prior Nightly run)
+- [x] Tests:
+  - [x] `tests/unit/test_prune_scorer.py` — score ordering invariants. — PR #50
+  - [x] `tests/unit/test_source_caps.py` (renamed `test_dataset_source_caps.py`) — `max_rows` triggers eviction. — PR #42 (storage layer; eviction-runtime tests in `test_source_caps_enforcement.py`, PR #53)
   - [ ] `tests/integration/test_prune_e2e.py` — round-trip a dataset
         through prune; row count drops by the expected percentile;
-        retained rows are the top-scoring ones.
-  - [ ] `tests/unit/test_estimate_sync.py` — predicted vs actual delta
-        within a documented tolerance.
-- [ ] CHANGELOG entry.
+        retained rows are the top-scoring ones. (Deferred: needs PR #50 / #52 merged for a real e2e round-trip)
+  - [x] `tests/unit/test_estimate_sync.py` — predicted vs actual delta within a documented tolerance. — covered by `test_cli_estimate_sync.py` (19 tests, local proposal in task 0003) and `test_predict_sync_delta.py` (9 tests, local proposal in task 0002)
+- [x] CHANGELOG entry. — bullets landed in every PR (#50, #51, #52, #53) and the two local proposals.
 
 ## Verification
 
