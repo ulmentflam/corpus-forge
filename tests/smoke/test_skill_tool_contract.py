@@ -101,6 +101,8 @@ _READ_TOOLS = {
     # PR #83 — agent-friendly chunk navigation (read-only)
     "chunk_neighbors",
     "get_document",
+    # RFC version-update-awareness — update check (read-only)
+    "check_update",
 }
 _ALL_TOOLS = _READ_TOOLS | _WRITE_TOOLS
 

@@ -143,6 +143,23 @@ def _upgrade_command(channel: Channel) -> tuple[str, ...]:
             return (sys.executable, "-m", "pip", "install", "-U", "corpus-forge")
 
 
+def recommended_update_command(channel: Channel) -> str:
+    """One-line, copy-pasteable upgrade recommendation for ``channel``.
+
+    The agent-facing sibling of :func:`_upgrade_command` (RFC
+    version-update-awareness): shared by the MCP ``check_update``
+    tool and any other surface that *recommends* rather than *runs*
+    an upgrade. ``corpus-forge update`` is the default answer — it
+    delegates to the channel command and then chains ``migrate`` +
+    ``doctor``, which a raw channel command would skip. Docker is the
+    exception: a container can't self-upgrade, so the host-side pull
+    is the actionable command.
+    """
+    if channel == "docker":
+        return " ".join(_upgrade_command(channel))
+    return "corpus-forge update"
+
+
 def run_update(
     *,
     channel: Channel | None = None,

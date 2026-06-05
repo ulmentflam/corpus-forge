@@ -150,6 +150,23 @@ _LIST_DATASETS_INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+# RFC version-update-awareness — read-only, always registered.
+_CHECK_UPDATE_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "force_refresh": {
+            "type": "boolean",
+            "description": (
+                "Bypass the 24h version-check cache and ping PyPI now. "
+                "Default false — the common path is cache-only and cheap."
+            ),
+            "default": False,
+        },
+    },
+    "additionalProperties": False,
+}
+
+
 # ── agent-chunk-explorer: chunk navigation read tools ───────────────────
 
 
@@ -907,6 +924,48 @@ def _error_result(message: str) -> Any:
     )
 
 
+_BASE_INSTRUCTIONS = (
+    "corpus-forge turns the user's notes, docs, code, and chat history "
+    "into a searchable, trainable corpus. Ground answers with the "
+    "search / get_chunk / list_datasets tools; curate weak entries via "
+    "the curation tools when the user wants to improve their data."
+)
+
+
+def _update_advisory() -> str | None:
+    """Cache-only "newer version available" line for ``instructions=``.
+
+    Built at server-start from the existing 24h version-check cache —
+    NEVER forces a network call (RFC non-goal: no per-request network
+    beyond what the cache already does). Returns ``None`` when the
+    cache is absent, the install is current, the user opted out via
+    ``CF_NO_VERSION_CHECK``, or anything at all goes wrong — an
+    advisory must never break server startup.
+    """
+    try:
+        from corpus_forge.update.version_check import cached_check_result
+
+        result = cached_check_result()
+        if result is None or not result.is_newer_available:
+            return None
+        return (
+            f"A newer corpus-forge (v{result.latest}) is available; you "
+            f"have v{result.installed}. Recommend the user run "
+            "`corpus-forge update`. Call the `check_update` tool for "
+            "details."
+        )
+    except Exception:  # pragma: no cover — defensive: advisory is best-effort
+        return None
+
+
+def _build_instructions() -> str:
+    """The ``Server(instructions=...)`` string: base + optional advisory."""
+    advisory = _update_advisory()
+    if advisory is None:
+        return _BASE_INSTRUCTIONS
+    return f"{_BASE_INSTRUCTIONS}\n\n{advisory}"
+
+
 # ── Public factory ───────────────────────────────────────────────────────
 
 
@@ -933,10 +992,11 @@ def build_server(
             is used.  ``None`` = no default filter.
         writes_enabled: when ``True`` (the default since the hotfix
             for the ``corpus-forge mcp serve`` CLI that previously left
-            writes unreachable), the 16 write tools are registered
-            alongside the 14 read tools.  Pass ``False`` for an
-            explicit read-only sandbox (e.g. connect-to-prod-corpus-
-            for-debugging without write risk).
+            writes unreachable), the write tools are registered
+            alongside the always-available read tools (the exact
+            inventory is pinned in ``test_mcp_server_enrichment.py``).
+            Pass ``False`` for an explicit read-only sandbox (e.g.
+            connect-to-prod-corpus-for-debugging without write risk).
 
     Returns:
         ``mcp.server.Server`` instance with name ``"corpus-forge"`` and
@@ -948,7 +1008,11 @@ def build_server(
 
     from corpus_forge.retrieval.types import SearchOptions
 
-    server: Server[Any] = Server("corpus-forge")
+    # ``instructions`` reaches every MCP client at initialize — the
+    # passive half of update-awareness (RFC version-update-awareness):
+    # a cache-only advisory line rides along when a newer version is
+    # known, so agents learn about it without calling any tool.
+    server: Server[Any] = Server("corpus-forge", instructions=_build_instructions())
 
     # Lazy / memoized state.  We keep these in closure-scoped containers
     # so the inner async handlers can mutate without `nonlocal` boilerplate.
@@ -1035,6 +1099,19 @@ def build_server(
                     "schema_version=1 on both the `estimate` and `time` sub-payloads."
                 ),
                 inputSchema=_ESTIMATE_SYNC_SIZE_INPUT_SCHEMA,
+            ),
+            # RFC version-update-awareness (always available — read-only)
+            mt.Tool(
+                name="check_update",
+                description=(
+                    "Check whether a newer corpus-forge release is available. "
+                    "Cache-only by default (24h TTL); pass force_refresh=true "
+                    "to ping PyPI now. Returns installed/latest versions, the "
+                    "install channel, and the channel-appropriate "
+                    "recommended_command. Recommend the command to the user — "
+                    "never run the upgrade yourself."
+                ),
+                inputSchema=_CHECK_UPDATE_INPUT_SCHEMA,
             ),
             # J4 curation read tools (always available — read-only)
             mt.Tool(
@@ -1310,6 +1387,8 @@ def build_server(
             return await _dispatch_get_document(arguments)
         if name == "estimate_sync_size":
             return await _dispatch_estimate_sync_size(arguments)
+        if name == "check_update":
+            return await _dispatch_check_update(arguments)
         # J4 curation read tools — always available (read-only)
         if name == "next_curation_target":
             return await _dispatch_next_curation_target(arguments)
@@ -1671,6 +1750,60 @@ def build_server(
         return {
             "document": document_block,
             "chunks": [_chunk_row_to_mcp_dict(r) for r in rows],
+        }
+
+    async def _dispatch_check_update(arguments: dict[str, Any]) -> dict[str, Any]:
+        """RFC version-update-awareness — the active "check now" half.
+
+        Wraps :func:`check_for_update` + :func:`detect_channel`. Honors
+        ``CF_NO_VERSION_CHECK`` (returns the opted-out shape instead of
+        pinging), mirrors the checker's silent-failure contract on
+        offline/5xx (``latest: null``, ``update_available: false``),
+        and never raises into the client — any surprise lands in the
+        outer ``_call_tool`` wrapper as a clean error result.
+        """
+        # Lazy imports — keep build_server cheap; fully-qualified names
+        # are what test monkeypatches target.
+        import os as _os
+
+        from corpus_forge import __version__ as _installed
+        from corpus_forge.update.channels import (
+            detect_channel,
+            recommended_update_command,
+        )
+        from corpus_forge.update.version_check import check_for_update
+
+        channel = detect_channel()
+        command = recommended_update_command(channel)
+        if _os.environ.get("CF_NO_VERSION_CHECK"):
+            return {
+                "installed": _installed,
+                "latest": None,
+                "update_available": False,
+                "served_from_cache": False,
+                "channel": channel,
+                "recommended_command": command,
+                "note": "version checks are disabled (CF_NO_VERSION_CHECK=1)",
+            }
+        force_refresh = bool(arguments.get("force_refresh", False))
+        result = check_for_update(force_refresh=force_refresh)
+        if result is None:  # opted out via env seen by the checker only
+            return {
+                "installed": _installed,
+                "latest": None,
+                "update_available": False,
+                "served_from_cache": False,
+                "channel": channel,
+                "recommended_command": command,
+                "note": "version checks are disabled (CF_NO_VERSION_CHECK=1)",
+            }
+        return {
+            "installed": result.installed,
+            "latest": result.latest,
+            "update_available": result.is_newer_available,
+            "served_from_cache": result.served_from_cache,
+            "channel": channel,
+            "recommended_command": command,
         }
 
     async def _dispatch_estimate_sync_size(arguments: dict[str, Any]) -> Any:

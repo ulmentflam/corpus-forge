@@ -66,6 +66,7 @@ def check_for_update(
     now: float | None = None,
     env: dict[str, str] | None = None,
     installed: str | None = None,
+    force_refresh: bool = False,
 ) -> VersionCheckResult | None:
     """Return a :class:`VersionCheckResult` or ``None`` when opted-out.
 
@@ -79,6 +80,10 @@ def check_for_update(
         now: Override ``time.time()`` for cache-TTL tests.
         env: ``os.environ``-equivalent override (test hook).
         installed: Override the installed-version string (test hook).
+        force_refresh: Skip the 24h-cache fast-path and ping PyPI now
+            (the fresh answer is still written back to the cache).
+            Added for the MCP ``check_update`` tool's explicit
+            "check now" gesture; the opt-out env var still wins.
     """
     e = env if env is not None else os.environ
     if e.get(_OPT_OUT_ENV):
@@ -90,7 +95,11 @@ def check_for_update(
 
     # Cache hit fast-path.
     cached = _load_cache(cache)
-    if cached is not None and (current - cached.get("last_checked_unix", 0)) < CACHE_TTL_S:
+    if (
+        not force_refresh
+        and cached is not None
+        and (current - cached.get("last_checked_unix", 0)) < CACHE_TTL_S
+    ):
         latest = cached.get("latest")
         return VersionCheckResult(
             installed=installed_version,
@@ -117,6 +126,41 @@ def check_for_update(
         latest=latest,
         is_newer_available=_is_newer(latest, installed_version),
         served_from_cache=False,
+        cache_path=cache,
+    )
+
+
+def cached_check_result(
+    *,
+    cache_path: Path | None = None,
+    env: dict[str, str] | None = None,
+    installed: str | None = None,
+) -> VersionCheckResult | None:
+    """Cache-only variant of :func:`check_for_update` — never networks.
+
+    Reads whatever the last successful check wrote (even past the 24h
+    TTL — a stale "newer available" is still true or harmlessly
+    conservative) and returns ``None`` when opted out or when no cache
+    exists yet. Built for surfaces that must stay off the network
+    unconditionally, e.g. the MCP server's ``instructions=`` advisory
+    constructed at startup.
+    """
+    e = env if env is not None else os.environ
+    if e.get(_OPT_OUT_ENV):
+        return None
+    cache = cache_path or DEFAULT_CACHE_PATH
+    cached = _load_cache(cache)
+    if cached is None:
+        return None
+    latest = cached.get("latest")
+    if not isinstance(latest, str):
+        return None
+    installed_version = installed or __version__
+    return VersionCheckResult(
+        installed=installed_version,
+        latest=latest,
+        is_newer_available=_is_newer(latest, installed_version),
+        served_from_cache=True,
         cache_path=cache,
     )
 
