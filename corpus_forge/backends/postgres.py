@@ -3788,3 +3788,59 @@ class PostgresBackend(StorageBackend):
         except psycopg.OperationalError as exc:
             logger.debug("mark_stale_runs swallowed OperationalError: %r", exc)
             return 0
+
+    # -------------------------------------------------------------------------
+    # Fleet telemetry registry (rfc-fleet-1)
+    # -------------------------------------------------------------------------
+
+    def upsert_host(
+        self,
+        *,
+        host_id: str,
+        hostname: str,
+        os: str,
+        accelerator: dict | None,
+        tailscale_name: str | None = None,
+    ) -> None:
+        """UPSERT this host's row, bumping ``last_seen`` to now (rfc-fleet-1)."""
+        now = datetime.now(tz=UTC)
+        accelerator_json = json.dumps(accelerator) if accelerator is not None else None
+        self._execute(
+            """
+            INSERT INTO corpus.hosts
+                (host_id, hostname, os, accelerator, tailscale_name, last_seen)
+            VALUES (%s, %s, %s, %s::jsonb, %s, %s)
+            ON CONFLICT (host_id) DO UPDATE
+                SET hostname       = EXCLUDED.hostname,
+                    os             = EXCLUDED.os,
+                    accelerator    = EXCLUDED.accelerator,
+                    tailscale_name = COALESCE(
+                        EXCLUDED.tailscale_name, corpus.hosts.tailscale_name
+                    ),
+                    last_seen      = EXCLUDED.last_seen
+            """,
+            (host_id, hostname, os, accelerator_json, tailscale_name, now),
+        )
+
+    def upsert_models(self, rows: list[dict]) -> None:
+        """Insert ``models`` rows, preserving ``first_seen`` (rfc-fleet-1)."""
+        if not rows:
+            return
+        now = datetime.now(tz=UTC)
+        for row in rows:
+            self._execute(
+                """
+                INSERT INTO corpus.models
+                    (model_key, kind, provider, model_id, dimension, first_seen)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (model_key) DO NOTHING
+                """,
+                (
+                    row["model_key"],
+                    row.get("kind"),
+                    row.get("provider"),
+                    row.get("model_id"),
+                    row.get("dimension"),
+                    now,
+                ),
+            )

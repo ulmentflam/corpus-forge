@@ -232,6 +232,10 @@ class TestSchemaTablePresence:
             # SR-G1 (0017_ingest_runs) adds the ingest-run tracking tables.
             "ingest_runs",
             "ingest_run_sources",
+            # rfc-fleet-1 (0018_model_telemetry) adds the fleet telemetry tables.
+            "hosts",
+            "models",
+            "model_benchmarks",
         ]
     )
 
