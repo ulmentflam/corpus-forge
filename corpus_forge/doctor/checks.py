@@ -183,7 +183,7 @@ def _check_ffmpeg() -> CheckResult:
     try:
         # imageio-ffmpeg ships a bundled binary used by faster-whisper.
         # pyrefly: ignore[missing-import]  # optional [whisper] extra
-        import imageio_ffmpeg  # noqa: PLC0415
+        import imageio_ffmpeg
 
         return CheckResult(
             "ffmpeg",
@@ -321,13 +321,13 @@ def _check_corpusignore(cfg: Config) -> CheckResult:
     # Local imports keep doctor's import-time cost bounded and avoid
     # circular imports with corpus_forge.config (which imports doctor
     # in some legacy code paths).
-    from corpus_forge.ignore import CorpusIgnore  # noqa: PLC0415
-    from corpus_forge.ignore_defaults import (  # noqa: PLC0415
+    from corpus_forge.ignore import CorpusIgnore
+    from corpus_forge.ignore_defaults import (
         default_managed_lines,
         feature_flags_from_config,
         parse_managed_lines,
     )
-    from corpus_forge.ignore_lifecycle import discover_data_roots  # noqa: PLC0415
+    from corpus_forge.ignore_lifecycle import discover_data_roots
 
     roots = discover_data_roots(cfg)
     if not roots:
@@ -418,12 +418,12 @@ def _check_global_ignore(cfg: Config | None = None) -> CheckResult:
     ``ignore sync`` write the global file with), so the junk patterns —
     which are unconditional — are always part of the expected set.
     """
-    from corpus_forge.ignore_defaults import (  # noqa: PLC0415
+    from corpus_forge.ignore_defaults import (
         default_managed_lines,
         feature_flags_from_config,
         parse_managed_lines,
     )
-    from corpus_forge.ignore_lifecycle import _resolve_global_path  # noqa: PLC0415
+    from corpus_forge.ignore_lifecycle import _resolve_global_path
 
     global_path = _resolve_global_path()
     if not global_path.exists():
@@ -503,8 +503,8 @@ def _check_zotero(cfg: Config) -> CheckResult:
           missing but web is configured; ``FAIL`` only when BOTH fail.
     - Worst-status wins across multiple sources.
     """
-    import os as _os  # noqa: PLC0415
-    import sqlite3 as _sqlite3  # noqa: PLC0415
+    import os as _os
+    import sqlite3 as _sqlite3
 
     zotero_sources = []
     for ds in cfg.datasets:
@@ -639,8 +639,8 @@ def _check_embedder_drift(cfg: Config) -> CheckResult:
         )
 
     try:
-        from corpus_forge.admin.embedder import audit_embedder_drift  # noqa: PLC0415
-        from corpus_forge.backends.postgres import PostgresBackend  # noqa: PLC0415
+        from corpus_forge.admin.embedder import audit_embedder_drift
+        from corpus_forge.backends.postgres import PostgresBackend
     except ImportError as exc:
         return CheckResult(
             "embedder_drift",
@@ -710,7 +710,7 @@ def _check_icloud_access(cfg: Config) -> CheckResult:
       run, but doesn't have to abort it.
     """
 
-    from corpus_forge import macos_tcc  # noqa: PLC0415 — keeps cold start fast
+    from corpus_forge import macos_tcc
 
     if not macos_tcc.is_macos():
         return CheckResult(
@@ -782,7 +782,7 @@ def _check_embedder_acceleration() -> CheckResult:
     was unavailable.
     """
 
-    from corpus_forge.acceleration import (  # noqa: PLC0415
+    from corpus_forge.acceleration import (
         recommend_embedder_preset,
     )
 
@@ -882,7 +882,7 @@ def _try_load_config(config_path: Path) -> Config | None:
     if not config_path.exists():
         return None
     try:
-        from corpus_forge.config import Config  # noqa: PLC0415
+        from corpus_forge.config import Config
 
         return Config.load(config_path=config_path, secrets_path=config_path.parent / "secrets.env")
     except Exception:  # pragma: no cover — broad-except by design
@@ -917,8 +917,8 @@ def _check_embedder_indexes(cfg: Config) -> CheckResult:
     # Lazy imports keep doctor's import-time cheap when the postgres
     # extras aren't installed.
     try:
-        from corpus_forge.admin.embedder import audit_embedder_indexes  # noqa: PLC0415
-        from corpus_forge.backends.postgres import PostgresBackend  # noqa: PLC0415
+        from corpus_forge.admin.embedder import audit_embedder_indexes
+        from corpus_forge.backends.postgres import PostgresBackend
     except ImportError as exc:
         return CheckResult(
             "embedder_indexes",
@@ -979,6 +979,72 @@ def _check_embedder_indexes(cfg: Config) -> CheckResult:
     )
 
 
+def _check_model_telemetry(cfg: Config) -> CheckResult:
+    """Informational report on the fleet model-telemetry tables (rfc-fleet-1).
+
+    This check NEVER blocks doctor — it is purely informational, so every
+    outcome is ``OK``:
+
+    - ``OK`` "N benchmark rows, freshest <age> ago" when the
+      ``model_benchmarks`` table holds rows.
+    - ``OK`` "no benchmarks yet — run `corpus-forge bench embed --all`"
+      when the table is empty (the common fresh-install case — *not* a
+      warning, because passive telemetry fills it on the first real
+      ``embed`` run regardless).
+    - ``OK`` "telemetry unavailable: <reason>" when the backend can't be
+      built / reached or the table doesn't exist yet (pre-migrate). A
+      down Postgres or a missing extra must not turn doctor red over an
+      optional read.
+
+    The age string reuses :func:`corpus_forge.admin.fleet_views.format_age`
+    so the doctor hint and the ``models list`` / ``hosts list`` staleness
+    columns render identically.
+    """
+    from corpus_forge.admin.fleet_views import format_age
+    from corpus_forge.backends.base import StorageBackend
+
+    backend: StorageBackend
+    try:
+        if cfg.backend.kind == "sqlite":
+            from corpus_forge.backends.sqlite import SQLiteBackend
+
+            backend = SQLiteBackend(path=cfg.backend.dsn, schema=cfg.backend.schema)
+        else:
+            from corpus_forge.backends.postgres import PostgresBackend
+
+            backend = PostgresBackend(dsn=cfg.backend.dsn, schema=cfg.backend.schema)
+    except Exception as exc:
+        return CheckResult(
+            "model_telemetry",
+            CheckStatus.OK,
+            f"telemetry unavailable: {exc}",
+        )
+
+    try:
+        stats = backend.model_benchmark_stats()
+    except Exception as exc:
+        return CheckResult(
+            "model_telemetry",
+            CheckStatus.OK,
+            f"telemetry unavailable: {exc}",
+        )
+
+    count = int(stats.get("count") or 0)
+    if count == 0:
+        return CheckResult(
+            "model_telemetry",
+            CheckStatus.OK,
+            "no benchmarks yet — run `corpus-forge bench embed --all`",
+        )
+
+    age = format_age(stats.get("freshest"))
+    return CheckResult(
+        "model_telemetry",
+        CheckStatus.OK,
+        f"{count} benchmark row(s), freshest {age}",
+    )
+
+
 def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
     """Run every registered check and return the aggregated report."""
     cfg = config_path if config_path is not None else DEFAULT_CONFIG_PATH
@@ -1017,12 +1083,20 @@ def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
                 "skipped (config not loaded)",
             )
         )
+        results.append(
+            CheckResult(
+                "model_telemetry",
+                CheckStatus.SKIP,
+                "skipped (config not loaded)",
+            )
+        )
     else:
         results.append(_check_corpusignore(loaded_cfg))
         results.append(_check_zotero(loaded_cfg))
         results.append(_check_embedder_indexes(loaded_cfg))
         results.append(_check_embedder_drift(loaded_cfg))
         results.append(_check_icloud_access(loaded_cfg))
+        results.append(_check_model_telemetry(loaded_cfg))
     # The global ignore drift check is independent of whether the config
     # loaded — the global file lives at ~/.config/corpus-forge/ignore
     # regardless. Pass the (possibly None) config for feature derivation;

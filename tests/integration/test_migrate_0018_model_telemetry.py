@@ -254,3 +254,125 @@ def test_postgres_upsert_models_empty_is_noop(pg_dsn: str) -> None:
     backend.upsert_models([])
     rows = backend._execute("SELECT COUNT(*) AS n FROM corpus.models")
     assert rows[0]["n"] == 0
+
+
+# ---------------------------------------------------------------------------
+# PostgresBackend read helpers (rfc-fleet-1 items 6/7) — latest-per-(host,model)
+# ---------------------------------------------------------------------------
+
+
+def _seed_telemetry(backend: object) -> None:
+    """Seed two hosts + one model with multiple benchmark rows.
+
+    h1 benchmarks st:m1 twice (older 10.0, then fresher 99.0); h2 once
+    (500.0).  st:m2 is registered but never benchmarked.  Mirrors the
+    SQLite read-helper unit fixture so the two dialects pin identical
+    "latest per pair" semantics.
+    """
+    import time
+
+    backend.upsert_host(host_id="h1", hostname="mac", os="macOS", accelerator={"kind": "mps"})
+    backend.upsert_host(
+        host_id="h2",
+        hostname="gb10",
+        os="Linux",
+        accelerator={"kind": "cuda", "device_name": "GB10", "vram_mb": 20480},
+    )
+    backend.upsert_models(
+        [
+            {
+                "model_key": "st:m1",
+                "kind": "embedder",
+                "provider": "st",
+                "model_id": "m1",
+                "dimension": 384,
+            },
+            {
+                "model_key": "st:m2",
+                "kind": "embedder",
+                "provider": "st",
+                "model_id": "m2",
+                "dimension": 768,
+            },
+        ]
+    )
+    backend.insert_model_benchmark(
+        host_id="h1",
+        model_key="st:m1",
+        source="bench",
+        transport="local",
+        device="mps",
+        batch_size=32,
+        sample_chunks=64,
+        chunks_per_s=10.0,
+    )
+    time.sleep(0.01)
+    backend.insert_model_benchmark(
+        host_id="h1",
+        model_key="st:m1",
+        source="embed-run",
+        transport="local",
+        device="mps",
+        batch_size=32,
+        sample_chunks=64,
+        chunks_per_s=99.0,
+    )
+    backend.insert_model_benchmark(
+        host_id="h2",
+        model_key="st:m1",
+        source="bench",
+        transport="local",
+        device="cuda",
+        batch_size=64,
+        sample_chunks=64,
+        chunks_per_s=500.0,
+    )
+
+
+def test_postgres_list_models_latest_per_host_model(pg_dsn: str) -> None:
+    from corpus_forge.backends.postgres import PostgresBackend
+
+    _reset_pg_schema(pg_dsn)
+    _upgrade_pg(pg_dsn, _TARGET_REVISION)
+    backend = PostgresBackend(dsn=pg_dsn, schema="corpus")
+    _seed_telemetry(backend)
+
+    rows = backend.list_models_with_latest_benchmark()
+    # h1's older 10.0 row must NOT win — the fresher 99.0 does.
+    h1 = [r for r in rows if r["model_key"] == "st:m1" and r["host_id"] == "h1"]
+    assert len(h1) == 1
+    assert float(h1[0]["chunks_per_s"]) == 99.0
+    assert h1[0]["source"] == "embed-run"
+    # st:m2 was never benchmarked — still present, no host.
+    m2 = [r for r in rows if r["model_key"] == "st:m2"]
+    assert len(m2) == 1
+    assert m2[0]["host_id"] is None
+    assert m2[0]["chunks_per_s"] is None
+
+
+def test_postgres_list_hosts_latest_rate(pg_dsn: str) -> None:
+    from corpus_forge.backends.postgres import PostgresBackend
+
+    _reset_pg_schema(pg_dsn)
+    _upgrade_pg(pg_dsn, _TARGET_REVISION)
+    backend = PostgresBackend(dsn=pg_dsn, schema="corpus")
+    _seed_telemetry(backend)
+
+    hosts = {r["host_id"]: r for r in backend.list_hosts_with_latest_rate()}
+    assert hosts["h1"]["models"] == 1
+    assert float(hosts["h1"]["latest_chunks_per_s"]) == 99.0
+    assert float(hosts["h2"]["latest_chunks_per_s"]) == 500.0
+
+
+def test_postgres_model_benchmark_stats(pg_dsn: str) -> None:
+    from corpus_forge.backends.postgres import PostgresBackend
+
+    _reset_pg_schema(pg_dsn)
+    _upgrade_pg(pg_dsn, _TARGET_REVISION)
+    backend = PostgresBackend(dsn=pg_dsn, schema="corpus")
+    # Empty table first.
+    assert backend.model_benchmark_stats() == {"count": 0, "freshest": None}
+    _seed_telemetry(backend)
+    stats = backend.model_benchmark_stats()
+    assert stats["count"] == 3
+    assert stats["freshest"] is not None

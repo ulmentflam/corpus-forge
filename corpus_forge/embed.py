@@ -33,6 +33,60 @@ logger = logging.getLogger(__name__)
 #: don't trip ruff's ``PLR2004 magic-value-in-comparison`` rule.
 _CHUNKS_MISSING_TUPLE_WIDTH = 3
 
+#: rfc-fleet-1 item 5 — passive telemetry checkpoint interval.  Every
+#: ``_TELEMETRY_CHECKPOINT_EVERY`` processed chunks the backfill writes a
+#: ``model_benchmarks`` row (``source="embed-run"``) carrying the
+#: aggregate observed rate so a crashed run still reports.  We INSERT a
+#: row per checkpoint rather than UPDATE one — the table's PK is a
+#: bigserial with no natural per-run key, so append-only keeps the
+#: backend helper simple.  At 10k-chunk granularity a full 3.29M-chunk
+#: backfill emits ~329 rows (+1 end-of-run), which is bounded and each is
+#: a real datapoint for the "latest per host+model" reads.
+_TELEMETRY_CHECKPOINT_EVERY = 10_000
+
+
+def _write_embed_run_telemetry(
+    backend,
+    config: "Config",
+    embedder_config,
+    *,
+    transport: str,
+    device: str,
+    processed: int,
+    elapsed_s: float,
+) -> None:
+    """Best-effort ``source="embed-run"`` benchmark row from a live backfill.
+
+    Failure-isolated exactly like the heartbeat: a telemetry write must
+    NEVER break or slow the backfill, so every failure path (no
+    ``insert_model_benchmark`` hook on the backend, an unreachable DB, a
+    zero-length window) is swallowed with a debug log.  Latencies are
+    ``None`` — passive telemetry measures the aggregate batched rate, not
+    per-request round trips.
+    """
+
+    if processed <= 0 or elapsed_s <= 0:
+        return
+    try:
+        chunks_per_s = processed / elapsed_s
+        model_key = f"{embedder_config.provider}:{embedder_config.model_id}"
+        backend.insert_model_benchmark(
+            host_id=config.host_id(),
+            model_key=model_key,
+            source="embed-run",
+            transport=transport,
+            device=device,
+            batch_size=getattr(embedder_config, "batch_size", None),
+            sample_chunks=processed,
+            chunks_per_s=chunks_per_s,
+            tokens_per_s=None,
+            latency_p50_ms=None,
+            latency_p95_ms=None,
+        )
+        logger.debug("embed telemetry: recorded embed-run row at %d chunks", processed)
+    except Exception as exc:
+        logger.debug("embed telemetry: embed-run write skipped (%r)", exc)
+
 
 def _resolve_image_bytes(metadata: dict) -> bytes | None:
     """Resolve image bytes from a chunk's metadata dict.
@@ -174,6 +228,15 @@ def backfill_embedder(
     logger.info(f"Backfilling {embedder_name}: {total_missing} chunks pending")
     processed = 0
 
+    # rfc-fleet-1 item 5 — passive telemetry.  Resolve transport/device
+    # once (failure-isolated inside the helpers) and start the run clock so
+    # checkpoint + end-of-run rows carry the aggregate observed rate.
+    from corpus_forge.admin.bench import resolve_device, resolve_transport  # noqa: PLC0415
+
+    _telemetry_transport = resolve_transport(embedder_config)
+    _telemetry_device = resolve_device(_telemetry_transport)
+    _next_telemetry_at = _TELEMETRY_CHECKPOINT_EVERY
+
     progress_total = total_missing if total_missing > 0 else None
     # Hoisted once per backfill (rather than per batch) — Python caches
     # the import after first use, but the in-loop form needlessly hits
@@ -181,6 +244,10 @@ def backfill_embedder(
     import time as _time  # noqa: PLC0415
 
     from corpus_forge.runtime_profile import record as _record  # noqa: PLC0415
+
+    # Run clock for passive telemetry — wall time over the whole backfill
+    # so the recorded rate reflects real throughput (encode + DB write).
+    _run_started = _time.perf_counter()
 
     with make_progress(
         f"Embedding chunks ({embedder_name})",
@@ -370,6 +437,21 @@ def backfill_embedder(
             empty_page_streak = 0
             progress.update(task, completed=processed)
 
+            # rfc-fleet-1 item 5 — checkpoint passive telemetry every
+            # ~10k chunks so a crashed run still reports its rate.
+            # Failure-isolated inside the helper.
+            if processed >= _next_telemetry_at:
+                _write_embed_run_telemetry(
+                    backend,
+                    config,
+                    embedder_config,
+                    transport=_telemetry_transport,
+                    device=_telemetry_device,
+                    processed=processed,
+                    elapsed_s=_time.perf_counter() - _run_started,
+                )
+                _next_telemetry_at += _TELEMETRY_CHECKPOINT_EVERY
+
             # Wall-clock calibration — record this batch's embed rate
             # AND the per-chunk DB-write rate so the on-disk profile
             # converges on real hardware. Best-effort; ``record`` swallows
@@ -395,6 +477,18 @@ def backfill_embedder(
             # Break if we've hit the limit
             if limit is not None and processed >= limit:
                 break
+
+    # rfc-fleet-1 item 5 — end-of-run passive telemetry row.  Best-effort;
+    # a zero-work run (processed == 0) is skipped inside the helper.
+    _write_embed_run_telemetry(
+        backend,
+        config,
+        embedder_config,
+        transport=_telemetry_transport,
+        device=_telemetry_device,
+        processed=processed,
+        elapsed_s=_time.perf_counter() - _run_started,
+    )
 
     logger.info(f"Backfill complete. Processed {processed} embeddings for {embedder_name}")
 

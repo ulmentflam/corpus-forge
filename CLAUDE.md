@@ -147,6 +147,8 @@ corpus-forge ingest --once                       # one-shot sync of the configur
                                                  # HNSW strategy (vector_cosine_ops for dim<=2000,
                                                  # halfvec projection for dim>2000)
 corpus-forge embed -e qwen3_8b                   # backfill embeddings
+corpus-forge bench embed --all                   # record this machine's embedder throughput
+                                                 #   (model telemetry tables; see `models list`)
 corpus-forge search "what does the daemon log on startup" --k 5
 ```
 

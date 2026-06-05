@@ -662,3 +662,90 @@ class StorageBackend(Protocol):
         empty ``rows`` list is a no-op.
         """
         ...
+
+    def insert_model_benchmark(
+        self,
+        *,
+        host_id: str,
+        model_key: str,
+        source: str,
+        transport: str,
+        device: str,
+        batch_size: int | None,
+        sample_chunks: int | None,
+        chunks_per_s: float | None,
+        tokens_per_s: float | None = None,
+        latency_p50_ms: float | None = None,
+        latency_p95_ms: float | None = None,
+    ) -> None:
+        """Insert one ``model_benchmarks`` throughput sample (rfc-fleet-1).
+
+        Append-only (the table's PK is a ``bigserial``); ``measured_at``
+        is stamped to ``now()`` by the backend.  ``source`` is
+        ``"bench"`` (active ``bench embed`` sample) or ``"embed-run"``
+        (passive telemetry from a real backfill); ``transport`` is
+        ``"local"`` / ``"api"`` and ``device`` the accelerator lane
+        (``cuda`` / ``mps`` / ``cpu`` / ``remote``).  The optional
+        latency / token columns stay ``None`` when not measurable for
+        the lane.  Foreign keys point at :meth:`upsert_host` /
+        :meth:`upsert_models` rows, so callers heartbeat first.
+        """
+        ...
+
+    def list_models_with_latest_benchmark(self) -> "list[dict]":
+        """Return ``models`` rows joined to the LATEST benchmark per host (rfc-fleet-1).
+
+        Powers ``corpus-forge models list``.  The base of the join is the
+        ``models`` registry — every registered model appears at least once
+        even when it has no benchmark yet (those rows carry ``host_id =
+        None`` and ``None`` metrics).  When a model *has* benchmark rows,
+        one row is emitted per ``(host_id, model_key)`` carrying only the
+        *most recent* sample for that pair (older samples are dropped via a
+        ``ROW_NUMBER() OVER (PARTITION BY host_id, model_key ORDER BY
+        measured_at DESC)`` window — portable across Postgres and SQLite
+        and served by the 0018 ``(host_id, model_key, measured_at DESC)``
+        index).
+
+        Each dict carries the model registry columns (``model_key``,
+        ``kind``, ``provider``, ``model_id``, ``dimension``) plus the
+        latest-benchmark columns (``host_id``, ``chunks_per_s``,
+        ``transport``, ``device``, ``source``, ``measured_at``) — the
+        latter all ``None`` for a model with no benchmark.  Rows are
+        ordered by ``model_key`` then ``host_id`` for a stable render.
+        """
+        ...
+
+    def list_hosts_with_latest_rate(self) -> "list[dict]":
+        """Return ``hosts`` rows + each host's freshest aggregate rate (rfc-fleet-1).
+
+        Powers ``corpus-forge hosts list``.  The base is the ``hosts``
+        registry so a host with zero benchmarks still appears (``models``
+        / ``latest_chunks_per_s`` / ``latest_measured_at`` are ``None``).
+        ``latest_chunks_per_s`` is the ``chunks_per_s`` of that host's
+        single most-recent benchmark row across all of its models (the
+        "what's the freshest number I measured on this box" headline);
+        ``models`` is the count of distinct ``model_key`` values that host
+        has ever benchmarked.
+
+        Each dict carries the host columns (``host_id``, ``hostname``,
+        ``os``, ``accelerator``, ``last_seen``) plus the aggregate columns
+        (``models``, ``latest_chunks_per_s``, ``latest_measured_at``).
+        ``accelerator`` is returned as the backend stored it — a ``dict``
+        on Postgres (JSONB), a JSON ``str`` on SQLite — and the view layer
+        normalises it.  Rows are ordered by ``last_seen`` descending so
+        the most-recently-seen host renders first.
+        """
+        ...
+
+    def model_benchmark_stats(self) -> "dict":
+        """Return ``{"count": int, "freshest": <measured_at | None>}`` (rfc-fleet-1).
+
+        Powers the informational ``model_telemetry`` doctor check: the
+        total number of ``model_benchmarks`` rows and the single most
+        recent ``measured_at`` across all of them (``None`` when the table
+        is empty).  ``freshest`` is the backend's native timestamp type
+        (a ``datetime`` on Postgres, an ISO ``str`` on SQLite) — doctor
+        renders the age from it.  An empty table returns
+        ``{"count": 0, "freshest": None}``.
+        """
+        ...

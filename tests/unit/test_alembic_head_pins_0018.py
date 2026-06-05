@@ -1,18 +1,19 @@
-"""Unit tests pinning 0018_model_telemetry's place in the alembic chain.
+"""Unit tests pinning the alembic revision chain head to 0018_model_telemetry.
 
-rfc-fleet-1 (model telemetry foundation) added 0018_model_telemetry on top
-of 0017_ingest_runs.  Fleet-2 (rfc-fleet-2-distributed-embedding) then
-stacked 0019_embed_claims on top of 0018, so 0018 is no longer the head —
-the head identity is pinned in ``test_alembic_head_pins_0019.py``.  These
-tests pin the still-true invariants for 0018:
+rfc-fleet-1 (model telemetry foundation) — moves the pinned head from
+0017_ingest_runs to 0018_model_telemetry.
 
+These tests assert:
 1. The revision file for 0018_model_telemetry exists at the expected path.
 2. The module declares ``revision = "0018_model_telemetry"`` and
    ``down_revision = "0017_ingest_runs"``.
 3. The revision id fits in alembic's VARCHAR(32) ``version_num`` column.
-4. alembic's ScriptDirectory can resolve 0018 and it chains onto 0017.
-5. 0018 has exactly one successor (0019_embed_claims) — chain stayed linear.
-6. The overall chain has one root and one head (head identity in 0019 test).
+4. alembic's ScriptDirectory reports ``0018_model_telemetry`` as the single
+   current head revision (i.e., nothing depends on 0017 other than 0018,
+   and 0018 has no successor).
+5. The _expected_head_revision() helper used by
+   ``test_apply_migrations_uses_alembic.py`` resolves to ``0018_model_telemetry``.
+6. The chain from 0001 to 0018 is linear (no branches or orphans).
 """
 
 from __future__ import annotations
@@ -122,18 +123,21 @@ def test_revision_id_fits_varchar32() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_alembic_script_directory_knows_0018() -> None:
-    """alembic.script.ScriptDirectory must know about 0018_model_telemetry.
+def test_alembic_script_directory_head_is_0018() -> None:
+    """alembic.script.ScriptDirectory must report exactly one head: 0018_model_telemetry.
 
-    0018 is no longer the head (fleet-2's 0019_embed_claims stacks on top —
-    see test_alembic_head_pins_0019.py), but it must remain a resolvable
-    revision in the chain that ``apply_migrations`` walks.
+    This test uses the same ScriptDirectory that ``apply_migrations`` and
+    ``_expected_head_revision()`` use, so if this passes, the integration
+    test head assertion in test_apply_migrations_uses_alembic.py will too.
+
+    If alembic can't locate 0018_model_telemetry, get_current_head()
+    returns 0017_ingest_runs (or raises CommandError).
     """
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     assert _ALEMBIC_INI.exists(), (
-        f"alembic.ini not found at {_ALEMBIC_INI}; cannot resolve revisions."
+        f"alembic.ini not found at {_ALEMBIC_INI}; cannot resolve head revision."
     )
 
     cfg = Config(str(_ALEMBIC_INI))
@@ -143,58 +147,55 @@ def test_alembic_script_directory_knows_0018() -> None:
     )
 
     script = ScriptDirectory.from_config(cfg)
-    rev = script.get_revision(_TARGET_REVISION)
-    assert rev is not None and rev.revision == _TARGET_REVISION, (
-        f"alembic ScriptDirectory cannot resolve {_TARGET_REVISION!r}; "
-        "the 0018_model_telemetry.py file must exist and chain onto 0017."
+    current_head = script.get_current_head()
+
+    assert current_head == _TARGET_REVISION, (
+        f"alembic ScriptDirectory reports head={current_head!r}; "
+        f"expected {_TARGET_REVISION!r}. "
+        "The 0018_model_telemetry.py file must exist and chain onto 0017 before this passes."
     )
-    assert rev.down_revision == _PRIOR_REVISION
 
 
 # ---------------------------------------------------------------------------
-# Test 5: 0018 has exactly one successor (0019), i.e. it is no longer the head
+# Test 5: _expected_head_revision() helper agrees with 0018
 # ---------------------------------------------------------------------------
 
 
-def test_0018_has_single_successor() -> None:
-    """0018 must chain forward to exactly one successor revision.
+def test_expected_head_revision_helper_returns_0018() -> None:
+    """The _expected_head_revision() helper used by test_apply_migrations_uses_alembic.py
+    must resolve to '0018_model_telemetry'.
 
-    Fleet-2 added 0019_embed_claims on top of 0018; this pins that the
-    chain stayed linear (0018 has exactly one child, not zero and not two).
+    This pins the head used by the apply_migrations integration tests so that
+    a coder who only runs the unit tier can see immediately which string they
+    need to land.
     """
-    from alembic.config import Config
     from alembic.script import ScriptDirectory
 
-    cfg = Config(str(_ALEMBIC_INI))
-    cfg.set_main_option(
-        "script_location",
-        str(_REPO_ROOT / "corpus_forge" / "alembic"),
-    )
-    script = ScriptDirectory.from_config(cfg)
+    from corpus_forge.schema.migrate import _build_alembic_config
 
-    successors = [
-        rev.revision for rev in script.walk_revisions() if rev.down_revision == _TARGET_REVISION
-    ]
-    assert successors == ["0019_embed_claims"], (
-        f"Expected 0018 to have exactly one successor 0019_embed_claims; got {successors!r}."
+    head = ScriptDirectory.from_config(_build_alembic_config()).get_current_head()
+    assert head == _TARGET_REVISION, (
+        f"_expected_head_revision() helper returned {head!r}; "
+        f"expected {_TARGET_REVISION!r}. "
+        "corpus_forge.schema.migrate._build_alembic_config must point at the "
+        "versions directory that contains 0018_model_telemetry.py."
     )
 
 
 # ---------------------------------------------------------------------------
-# Test 6: Full chain linearity (single root, single head, no duplicates)
+# Test 6: Full chain linearity (0001 → 0018 with no gaps or branches)
 # ---------------------------------------------------------------------------
 
 
-def test_revision_chain_is_linear() -> None:
-    """The alembic revision chain from root to head must be strictly linear.
+def test_revision_chain_is_linear_through_0018() -> None:
+    """The alembic revision chain from root to 0018 must be strictly linear.
 
     Walks the ScriptDirectory's revision map and asserts:
     - Exactly one root (down_revision is None).
     - Exactly one head (no revision has two successors).
     - No duplicate revision ids.
+    - The head equals 0018_model_telemetry.
     - Every non-root down_revision references a known revision id.
-
-    (The head identity itself is pinned in test_alembic_head_pins_0019.py.)
     """
     from alembic.config import Config
     from alembic.script import ScriptDirectory
@@ -215,6 +216,9 @@ def test_revision_chain_is_linear() -> None:
         pytest.skip("No revisions found — cannot validate chain linearity.")
 
     revision_ids = [rev.revision for rev in all_revisions]
+    down_revisions = [
+        rev.down_revision for rev in all_revisions
+    ]  # None or str (not tuple for linear chains)
 
     # No duplicate revision ids
     assert len(revision_ids) == len(set(revision_ids)), (
@@ -231,6 +235,9 @@ def test_revision_chain_is_linear() -> None:
                 "the chain must be strictly linear (no merge revisions)."
             )
 
+    # Flatten down_revisions to scalars
+    {(dr[0] if isinstance(dr, (list, tuple)) and dr else dr) for dr in down_revisions}
+
     # Exactly one root
     roots = [rev.revision for rev in all_revisions if rev.down_revision is None]
     assert len(roots) == 1, (
@@ -243,6 +250,7 @@ def test_revision_chain_is_linear() -> None:
         f"Expected exactly one head, alembic reports {len(heads)}: {heads}. "
         "Multiple heads mean a branch was introduced."
     )
+    assert heads[0] == _TARGET_REVISION, f"Head is {heads[0]!r}, expected {_TARGET_REVISION!r}."
 
     # Every non-root down_revision references a known revision
     revision_id_set = set(revision_ids)
