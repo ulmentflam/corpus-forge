@@ -43,6 +43,34 @@ DEFAULT_QUESTIONS_PATH = Path(__file__).resolve().parent / "questions.toml"
 
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "corpus-forge"
 
+# Post-setup "next steps" the wizard prints after writing config. The
+# ``bench embed --all`` line is the rfc-fleet-1 calibration step — it
+# records this machine's embedder throughput into the model-telemetry
+# tables so ``corpus-forge models list`` can compare lanes across the
+# fleet. Kept as data (not inlined) so both the interactive and
+# non-interactive paths emit the identical sequence and tests can assert
+# the contract from one source.
+NEXT_STEPS: tuple[str, ...] = (
+    "Next steps:",
+    "  corpus-forge migrate          # apply the schema (idempotent)",
+    "  corpus-forge ingest --once    # one-shot sync of the configured roots",
+    "  corpus-forge embed            # backfill embeddings",
+    "  corpus-forge bench embed --all  # calibrate this machine's embedder "
+    "throughput (see `models list`)",
+)
+
+
+def render_next_steps() -> str:
+    """Return the post-setup "next steps" block as a single string.
+
+    The block ends with the rfc-fleet-1 ``bench embed --all`` calibration
+    hint.  Emitted by both :func:`run_wizard` (to the interactive
+    ``stream_out``) and :func:`run_non_interactive` (to ``stderr`` so it
+    surfaces in install logs without polluting the machine-driven
+    stdout).
+    """
+    return "\n".join(NEXT_STEPS) + "\n"
+
 
 @dataclass(frozen=True)
 class Question:
@@ -537,6 +565,7 @@ def run_wizard(
     config_path, secrets_path = _write_config(resolved_dir, answers)
     _apply_corpusignore(answers, resolved_dir)
     _run_macos_tcc_handshake(answers, stream_out=stream_out or sys.stdout)
+    (stream_out or sys.stdout).write(render_next_steps())
     return config_path, secrets_path, answers
 
 
@@ -564,6 +593,10 @@ def run_non_interactive(
         stream_out=sys.stderr,
         open_settings=False,
     )
+    # Surface the calibration hint on stderr (not stdout) so the
+    # machine-driven non-interactive surface keeps a clean stdout while
+    # the hint still lands in install logs.
+    sys.stderr.write(render_next_steps())
     return config_path, secrets_path, answers
 
 

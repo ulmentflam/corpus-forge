@@ -368,6 +368,12 @@ ignore = ["PLR0911", "PLR0912", "PLR0913", "PLR0915"]
 # verb functions so the package is importable without the user's config file
 # present (the verbs handle missing config individually).
 "corpus_forge/admin/*.py" = ["PLC0415"]
+# doctor/checks.py defers Config + backend imports inside each check function so
+# `doctor` works on minimal installs (a top-level postgres import would raise on
+# sqlite-only setups — the exact failure doctor exists to diagnose). Every check
+# follows this lazy-import structure; promoted from 15 per-line noqas to a
+# file-level ignore, matching the other lazy-by-contract modules in this list.
+"corpus_forge/doctor/checks.py" = ["PLC0415"]
 # Phase O Wave 2: analyze/language.py — entire module contract is lazy-import.
 # fasttext + langdetect MUST NOT appear in sys.modules on module load; the wave
 # gate enforces this with a python -c assertion. PLC0415 suppression is
