@@ -85,7 +85,7 @@ Edit `~/.gemini/settings.json` (per Gemini CLI's MCP docs cited above):
 }
 ```
 
-Reload Gemini CLI (`gemini` will re-read settings on launch). The tools `mcp__corpus-forge__search`, `…__get_chunk`, `…__list_datasets`, `…__estimate_sync_size`, `…__next_curation_target`, `…__next_curation_batch`, and `…__commit_curation` (plus the existing write tools) become available.
+Reload Gemini CLI (`gemini` will re-read settings on launch). The tools `mcp__corpus-forge__search`, `…__get_chunk`, `…__list_datasets`, `…__estimate_sync_size`, `…__check_update`, `…__next_curation_target`, `…__next_curation_batch`, and `…__commit_curation` (plus the existing write tools) become available.
 
 ### Gemini Code Assist (VS Code / JetBrains)
 
@@ -101,6 +101,7 @@ corpus-forge ships **two** first-class Gemini agent files in this repo:
 
 - `.gemini/agents/corpus-forge-search.md` — search-and-cite. Use whenever the user asks a question whose answer plausibly lives in the indexed corpus.
 - `.gemini/agents/corpus-curate.md` — the data-improvement chat loop. Use when the user says "let's curate," "improve my data," "fix labels," or when you notice many recently-ingested entries look thin on metadata.
+- `.gemini/agents/corpus-forge-update.md` — update-awareness. Use when the user asks about updating corpus-forge; calls `check_update` and recommends (never runs) the upgrade command.
 
 These mirror the Claude Code skills under `.claude/skills/` and the OpenCode commands under `.opencode/command/`, so behaviour is consistent across clients.
 

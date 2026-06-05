@@ -89,7 +89,7 @@ Add to project `.mcp.json` (or the user-scoped equivalent):
 }
 ```
 
-Reload Claude Code. The tools `mcp__corpus-forge__search`, `…__get_chunk`, `…__list_datasets`, `…__estimate_sync_size`, `…__next_curation_target`, `…__next_curation_batch`, and `…__commit_curation` (plus the existing write tools) should appear in `/mcp`.
+Reload Claude Code. The tools `mcp__corpus-forge__search`, `…__get_chunk`, `…__list_datasets`, `…__estimate_sync_size`, `…__check_update`, `…__next_curation_target`, `…__next_curation_batch`, and `…__commit_curation` (plus the existing write tools) should appear in `/mcp`.
 
 ### Claude Desktop
 
@@ -121,6 +121,7 @@ corpus-forge ships **two** first-class Claude skills in this repo:
 
 - `corpus-forge-search` — search-and-cite. Use whenever the user asks a question whose answer plausibly lives in the indexed corpus. See `.claude/skills/corpus-forge-search/SKILL.md`.
 - `corpus-curate` — the data-improvement chat loop. Use when the user says "let's curate," "improve my data," "fix labels," or when you notice many recently-ingested entries look thin on metadata. See `.claude/skills/corpus-curate/SKILL.md`.
+- `corpus-forge-update` — update-awareness. Use when the user asks about updating corpus-forge or the server's MCP instructions advertise a newer version; calls `check_update` and recommends (never runs) the upgrade command. See `.claude/skills/corpus-forge-update/SKILL.md`.
 
 Both skills are auto-discovered if this repo is on the Claude Code skill search path. If the user is wiring them into a different project, copy or symlink `.claude/skills/corpus-forge-search/` and `.claude/skills/corpus-curate/` into the target repo.
 
