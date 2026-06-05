@@ -574,3 +574,32 @@ class StorageBackend(Protocol):
         empty ``rows`` list is a no-op.
         """
         ...
+
+    def insert_model_benchmark(
+        self,
+        *,
+        host_id: str,
+        model_key: str,
+        source: str,
+        transport: str,
+        device: str,
+        batch_size: int | None,
+        sample_chunks: int | None,
+        chunks_per_s: float | None,
+        tokens_per_s: float | None = None,
+        latency_p50_ms: float | None = None,
+        latency_p95_ms: float | None = None,
+    ) -> None:
+        """Insert one ``model_benchmarks`` throughput sample (rfc-fleet-1).
+
+        Append-only (the table's PK is a ``bigserial``); ``measured_at``
+        is stamped to ``now()`` by the backend.  ``source`` is
+        ``"bench"`` (active ``bench embed`` sample) or ``"embed-run"``
+        (passive telemetry from a real backfill); ``transport`` is
+        ``"local"`` / ``"api"`` and ``device`` the accelerator lane
+        (``cuda`` / ``mps`` / ``cpu`` / ``remote``).  The optional
+        latency / token columns stay ``None`` when not measurable for
+        the lane.  Foreign keys point at :meth:`upsert_host` /
+        :meth:`upsert_models` rows, so callers heartbeat first.
+        """
+        ...

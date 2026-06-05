@@ -4145,3 +4145,44 @@ class SQLiteBackend:
                     now,
                 ),
             )
+
+    def insert_model_benchmark(
+        self,
+        *,
+        host_id: str,
+        model_key: str,
+        source: str,
+        transport: str,
+        device: str,
+        batch_size: "int | None",
+        sample_chunks: "int | None",
+        chunks_per_s: "float | None",
+        tokens_per_s: "float | None" = None,
+        latency_p50_ms: "float | None" = None,
+        latency_p95_ms: "float | None" = None,
+    ) -> None:
+        """Insert one ``model_benchmarks`` row, stamping ``measured_at`` (rfc-fleet-1)."""
+        now = self._now_iso()
+        self._execute(
+            """
+            INSERT INTO model_benchmarks
+                (host_id, model_key, source, transport, device, batch_size,
+                 sample_chunks, chunks_per_s, tokens_per_s, latency_p50_ms,
+                 latency_p95_ms, measured_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                host_id,
+                model_key,
+                source,
+                transport,
+                device,
+                batch_size,
+                sample_chunks,
+                chunks_per_s,
+                tokens_per_s,
+                latency_p50_ms,
+                latency_p95_ms,
+                now,
+            ),
+        )

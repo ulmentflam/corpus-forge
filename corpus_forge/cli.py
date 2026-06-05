@@ -752,6 +752,7 @@ app.add_typer(_logs_app, name="logs")
 # Five sub-apps for inspecting and editing the deployment without
 # hand-editing ``config.toml``.  Each module owns its verb wiring;
 # we just register the Typer apps onto the root.
+from corpus_forge.admin.bench import bench_app as _bench_app  # noqa: E402
 from corpus_forge.admin.config import config_app as _config_app  # noqa: E402
 from corpus_forge.admin.dataset import dataset_app as _dataset_app  # noqa: E402
 from corpus_forge.admin.embedder import embedder_app as _embedder_app  # noqa: E402
@@ -769,6 +770,8 @@ app.add_typer(_source_app, name="source")
 app.add_typer(_service_app, name="service")
 # Phase M Wave 3 — .corpusignore browse / edit verbs.
 app.add_typer(_ignore_app, name="ignore")
+# rfc-fleet-1 — embedder throughput benchmarking (`bench embed`).
+app.add_typer(_bench_app, name="bench")
 
 
 # ── export subcommand group ──────────────────────────────────────────────
@@ -3973,6 +3976,10 @@ _AGENT_SELF_EMITTING: frozenset[str] = frozenset(
         # self-emitting set so the wrapper's auto-emission is bypassed;
         # the body itself emits nothing.
         "mcp serve",
+        # rfc-fleet-1 — `bench embed` prints a single JSON object on
+        # stdout in agent / --json mode; the wrapper's auto-emission would
+        # wrap it with an extra (empty-data) result event.
+        "bench embed",
     }
 )
 

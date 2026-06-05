@@ -414,3 +414,85 @@ def test_sqlite_upsert_models_swallows_nothing_unexpected(tmp_path: Path) -> Non
 def test_module_uses_sqlite_connect_marker() -> None:
     """Guard import so a refactor that drops sqlite3 from this test is obvious."""
     assert sqlite3.sqlite_version  # trivial smoke that sqlite3 is importable
+
+
+# ---------------------------------------------------------------------------
+# insert_model_benchmark backend method (rfc-fleet-1 item 4)
+# ---------------------------------------------------------------------------
+
+
+def test_sqlite_insert_model_benchmark_full_row(tmp_path: Path) -> None:
+    backend = _backend(tmp_path)
+    backend.upsert_host(host_id="h", hostname="x", os="o", accelerator=None)
+    backend.upsert_models(
+        [{"model_key": "openai:m", "kind": "embedder", "provider": "openai", "model_id": "m"}]
+    )
+    backend.insert_model_benchmark(
+        host_id="h",
+        model_key="openai:m",
+        source="bench",
+        transport="api",
+        device="remote",
+        batch_size=32,
+        sample_chunks=64,
+        chunks_per_s=42.0,
+        tokens_per_s=1000.0,
+        latency_p50_ms=10.0,
+        latency_p95_ms=25.0,
+    )
+    rows = backend._execute("SELECT * FROM model_benchmarks", ())
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["source"] == "bench"
+    assert row["transport"] == "api"
+    assert row["device"] == "remote"
+    assert row["chunks_per_s"] == pytest.approx(42.0)
+    assert row["tokens_per_s"] == pytest.approx(1000.0)
+    assert row["latency_p50_ms"] == pytest.approx(10.0)
+    assert row["measured_at"]
+
+
+def test_sqlite_insert_model_benchmark_optional_columns_default_none(tmp_path: Path) -> None:
+    backend = _backend(tmp_path)
+    backend.upsert_host(host_id="h", hostname="x", os="o", accelerator=None)
+    backend.upsert_models(
+        [{"model_key": "st:e", "kind": "embedder", "provider": "st", "model_id": "e"}]
+    )
+    # embed-run shape: no latencies / tokens.
+    backend.insert_model_benchmark(
+        host_id="h",
+        model_key="st:e",
+        source="embed-run",
+        transport="local",
+        device="cpu",
+        batch_size=None,
+        sample_chunks=10000,
+        chunks_per_s=5.5,
+    )
+    rows = backend._execute("SELECT * FROM model_benchmarks", ())
+    assert rows[0]["source"] == "embed-run"
+    assert rows[0]["tokens_per_s"] is None
+    assert rows[0]["latency_p50_ms"] is None
+    assert rows[0]["batch_size"] is None
+
+
+def test_sqlite_insert_model_benchmark_appends(tmp_path: Path) -> None:
+    """Append-only — two inserts for the same (host, model) keep both rows."""
+    backend = _backend(tmp_path)
+    backend.upsert_host(host_id="h", hostname="x", os="o", accelerator=None)
+    backend.upsert_models(
+        [{"model_key": "st:e", "kind": "embedder", "provider": "st", "model_id": "e"}]
+    )
+    for rate in (1.0, 2.0):
+        backend.insert_model_benchmark(
+            host_id="h",
+            model_key="st:e",
+            source="embed-run",
+            transport="local",
+            device="cpu",
+            batch_size=None,
+            sample_chunks=100,
+            chunks_per_s=rate,
+        )
+    rows = backend._execute("SELECT chunks_per_s FROM model_benchmarks ORDER BY id", ())
+    assert [r["chunks_per_s"] for r in rows] == pytest.approx([1.0, 2.0])
