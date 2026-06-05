@@ -14,11 +14,6 @@ tests can exercise the non-CLI surface directly when convenient.
 
 from __future__ import annotations
 
-import os
-import signal
-import sys
-import threading
-import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -238,37 +233,33 @@ class TestLogsTailLevelFilter:
 
 
 class TestLogsTailFollow:
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason=(
-            "Windows xdist workers don't survive os.kill(getpid, SIGINT) — "
-            "SIGINT delivery to the current process under pytest crashes the worker "
-            "rather than waking the poll loop. The follow path is exercised on POSIX runners."
-        ),
-    )
-    def test_follow_exits_cleanly_on_sigint(self, isolated_log_dir: Path) -> None:
+    def test_follow_exits_cleanly_on_interrupt(
+        self, isolated_log_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The poll loop's ``except KeyboardInterrupt`` returns exit code 0.
+
+        Earlier versions delivered a real process-wide SIGINT from a
+        background thread (``os.kill(os.getpid(), signal.SIGINT)``).
+        Depending on which syscall the signal landed on, it sometimes
+        escaped ``_tail_follow``'s try block and killed the pytest-xdist
+        worker outright (deterministic skip on Windows, intermittent
+        worker crashes on POSIX CI).  Raising ``KeyboardInterrupt`` from
+        the poll-loop sleep exercises the same handler without any
+        signal delivery, threads, or timing dependence.
+        """
         from corpus_forge.diagnostics import logs as logs_mod
 
         log_path = isolated_log_dir / "cli.log"
         log_path.write_text("seed line\n")
 
-        # Background thread that fires SIGINT after a short delay so the
-        # blocking poll loop exits via KeyboardInterrupt.
-        def _interrupt_soon() -> None:
-            time.sleep(0.3)
-            os.kill(os.getpid(), signal.SIGINT)
+        # _tail_follow seeks to EOF, reads an empty chunk, then sleeps —
+        # so the patched sleep raises inside the poll loop's try block.
+        def _raise_interrupt(_seconds: float) -> None:
+            raise KeyboardInterrupt
 
-        interrupter = threading.Thread(target=_interrupt_soon, daemon=True)
-        interrupter.start()
+        monkeypatch.setattr(logs_mod.time, "sleep", _raise_interrupt)
 
-        # Linux CI under pytest occasionally surfaces the SIGINT as a
-        # SystemExit(0) before the inner ``except KeyboardInterrupt``
-        # in ``_tail_follow`` can catch it (depends on which syscall
-        # the signal lands on).  Either outcome is a clean exit.
-        try:
-            exit_code = logs_mod._tail_follow(log_path, n_initial=10, poll_seconds=0.05)
-        except SystemExit as exc:
-            exit_code = int(exc.code) if isinstance(exc.code, int) else 0
+        exit_code = logs_mod._tail_follow(log_path, n_initial=10, poll_seconds=0.05)
 
         assert exit_code == 0
 

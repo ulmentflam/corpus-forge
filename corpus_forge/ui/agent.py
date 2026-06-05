@@ -19,7 +19,9 @@ slot starts at ``HUMAN`` until the CLI global callback calls
 
 from __future__ import annotations
 
+import errno
 import json
+import logging
 import os
 import re
 import sys
@@ -299,6 +301,30 @@ def detect(
 # ── JSONL emission ───────────────────────────────────────────────────
 
 
+_LOG: Final = logging.getLogger(__name__)
+
+
+@dataclass
+class _EmitSink:
+    """Process-global broken-pipe latch for the JSONL emitter.
+
+    When the agent-mode stdout consumer exits early (e.g.
+    ``corpus-forge service start --foreground | head -5``), the *next*
+    ``sys.stdout.flush()`` raises ``BrokenPipeError`` (EPIPE).  Inside
+    the daemon's pull loop that would fire every tick forever, so the
+    first EPIPE flips :attr:`dead` and every subsequent :func:`emit`
+    becomes a cheap no-op — there is no reader left to serve, and the
+    rotating ``daemon.log`` remains the durable channel for the
+    suppressed events.  Attribute mutation keeps :func:`emit` free of
+    ``global`` rebinding.
+    """
+
+    dead: bool = False
+
+
+_SINK: Final = _EmitSink()
+
+
 def _iso_now() -> str:
     """UTC ISO 8601 with millisecond precision (``Z`` suffix)."""
 
@@ -329,16 +355,36 @@ def emit(event_type: str, **fields: Any) -> None:
     sanely.  Every value is run through :func:`_sanitize` so non-JSON
     inputs (Path, Enum, dataclass instances passed via ``data=``) don't
     explode at the wire.
+
+    Guarded by the process-global ``_SINK.dead`` broken-pipe latch: if a
+    prior write hit ``BrokenPipeError`` (EPIPE) — the agent-mode stdout
+    consumer exited early — the latch is set and every later call returns
+    immediately without touching stdout.  This stops the daemon's pull
+    loop from re-raising (and re-logging) the same EPIPE on every tick.
+    A single WARNING is logged when the latch first flips; any non-EPIPE
+    ``OSError`` re-raises untouched (no blanket swallow).
     """
 
+    if _SINK.dead:
+        return
     payload: dict[str, Any] = {"event": event_type, "ts": _iso_now()}
     for k, v in fields.items():
         payload[k] = _sanitize(v)
     line = json.dumps(payload, ensure_ascii=False, default=str)
     # No embedded newlines: dumps already escapes them inside strings,
     # so a single ``\n`` ends the record.
-    sys.stdout.write(line + "\n")
-    sys.stdout.flush()
+    try:
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
+    except OSError as exc:
+        if isinstance(exc, BrokenPipeError) or exc.errno == errno.EPIPE:
+            _SINK.dead = True
+            _LOG.warning(
+                "agent-mode stdout closed (broken pipe); suppressing further "
+                "event emission for this process"
+            )
+            return
+        raise
 
 
 def result(cmd: str, *, status: str = "ok", data: dict[str, Any] | None = None) -> int:

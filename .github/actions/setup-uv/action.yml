@@ -22,6 +22,20 @@ inputs:
       to skip the restore + warm steps entirely.
     required: false
     default: "false"
+  hf-token:
+    description: >-
+      HuggingFace Hub token forwarded to the warm step (issue #90,
+      option 1).  Authenticated requests get a far higher rate limit
+      than the anonymous shared-runner-IP pool, so a cold-cache warm
+      is much less likely to ride out a 429 storm.  Callers pass the
+      ``secrets.HF_TOKEN`` expression — composite actions cannot read
+      the secrets context themselves (and the runner template-evaluates
+      this description, so the expression cannot be written literally
+      here).  Empty (fork PRs, secret not
+      configured) is safe: huggingface_hub treats an empty
+      ``HF_TOKEN`` as anonymous.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -69,4 +83,9 @@ runs:
       # after the first warm run).
       if: inputs.warm-hf-cache == 'true' && steps.hf-cache.outputs.cache-hit != 'true'
       shell: bash
+      # The token is scoped to exactly this step — the only step in
+      # any workflow that talks to the Hub (test steps run with
+      # HF_HUB_OFFLINE=1).
+      env:
+        HF_TOKEN: ${{ inputs.hf-token }}
       run: uv run python .github/scripts/warm_hf_cache.py
