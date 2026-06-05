@@ -18,18 +18,22 @@ Public entry points:
 """
 
 from .wizard import (
+    NEXT_STEPS,
     Question,
     load_questions,
     render_config_toml,
+    render_next_steps,
     run_non_interactive,
     run_quick,
     run_wizard,
 )
 
 __all__ = [
+    "NEXT_STEPS",
     "Question",
     "load_questions",
     "render_config_toml",
+    "render_next_steps",
     "run_non_interactive",
     "run_quick",
     "run_wizard",

@@ -430,6 +430,37 @@ class TestRunWizard:
         assert config_path.exists()
         assert answers["backend"] == "sqlite"
 
+    def test_prints_next_steps_calibration_hint(self, tmp_path: Path) -> None:
+        """rfc-fleet-1: the interactive path ends with the bench hint."""
+        stream_in = io.StringIO("\n" * 100)
+        stream_out = io.StringIO()
+        run_wizard(config_dir=tmp_path, stream_in=stream_in, stream_out=stream_out)
+        out = stream_out.getvalue()
+        assert "Next steps:" in out
+        assert "corpus-forge bench embed --all" in out
+
+
+# ── post-setup "next steps" calibration hint (rfc-fleet-1) ─────────────
+
+
+class TestNextStepsHint:
+    """Both setup paths surface the ``bench embed --all`` calibration hint."""
+
+    def test_render_next_steps_contains_bench_calibration(self) -> None:
+        from corpus_forge.setup import render_next_steps
+
+        text = render_next_steps()
+        assert "Next steps:" in text
+        assert "corpus-forge bench embed --all" in text
+        # The hint points the operator at the read verb.
+        assert "models list" in text
+
+    def test_non_interactive_path_writes_hint_to_stderr(self, tmp_path: Path, capsys) -> None:
+        run_non_interactive(config_dir=tmp_path, env={"CF_BACKEND": "sqlite"})
+        captured = capsys.readouterr()
+        # Non-interactive keeps stdout clean; the hint lands on stderr.
+        assert "corpus-forge bench embed --all" in captured.err
+
 
 # ── _collect_answers depends_on threading ─────────────────────────────
 

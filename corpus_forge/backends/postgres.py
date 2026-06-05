@@ -3885,3 +3885,82 @@ class PostgresBackend(StorageBackend):
                 now,
             ),
         )
+
+    def list_models_with_latest_benchmark(self) -> list[dict]:
+        """``models`` ⨝ latest benchmark per ``(host_id, model_key)`` (rfc-fleet-1).
+
+        A ``ROW_NUMBER()`` window over the benchmarks picks the freshest
+        row per ``(host_id, model_key)`` pair (the 0018 index on
+        ``(host_id, model_key, measured_at DESC)`` serves the ORDER BY); a
+        LEFT JOIN from ``models`` keeps never-benchmarked models in the
+        output with NULL host/metric columns.
+        """
+        return self._execute(
+            """
+            WITH latest AS (
+                SELECT
+                    host_id, model_key, chunks_per_s, transport, device,
+                    source, measured_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY host_id, model_key
+                        ORDER BY measured_at DESC
+                    ) AS rn
+                FROM corpus.model_benchmarks
+            )
+            SELECT
+                m.model_key, m.kind, m.provider, m.model_id, m.dimension,
+                l.host_id, l.chunks_per_s, l.transport, l.device,
+                l.source, l.measured_at
+            FROM corpus.models m
+            LEFT JOIN latest l
+                ON l.model_key = m.model_key AND l.rn = 1
+            ORDER BY m.model_key ASC, l.host_id ASC NULLS FIRST
+            """
+        )
+
+    def list_hosts_with_latest_rate(self) -> list[dict]:
+        """``hosts`` + each host's freshest aggregate ``chunks_per_s`` (rfc-fleet-1).
+
+        ``latest`` ranks every host's benchmark rows by ``measured_at`` so
+        ``rn = 1`` is the single freshest sample; ``counts`` tallies the
+        distinct benchmarked models per host.  A LEFT JOIN from ``hosts``
+        keeps hosts with no benchmarks (NULL aggregates).
+        """
+        return self._execute(
+            """
+            WITH latest AS (
+                SELECT
+                    host_id, chunks_per_s, measured_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY host_id ORDER BY measured_at DESC
+                    ) AS rn
+                FROM corpus.model_benchmarks
+            ),
+            counts AS (
+                SELECT host_id, COUNT(DISTINCT model_key) AS models
+                FROM corpus.model_benchmarks
+                GROUP BY host_id
+            )
+            SELECT
+                h.host_id, h.hostname, h.os, h.accelerator, h.last_seen,
+                COALESCE(c.models, 0) AS models,
+                l.chunks_per_s AS latest_chunks_per_s,
+                l.measured_at AS latest_measured_at
+            FROM corpus.hosts h
+            LEFT JOIN latest l ON l.host_id = h.host_id AND l.rn = 1
+            LEFT JOIN counts c ON c.host_id = h.host_id
+            ORDER BY h.last_seen DESC NULLS LAST
+            """
+        )
+
+    def model_benchmark_stats(self) -> dict:
+        """Total ``model_benchmarks`` count + freshest ``measured_at`` (rfc-fleet-1)."""
+        rows = self._execute(
+            """
+            SELECT COUNT(*) AS count, MAX(measured_at) AS freshest
+            FROM corpus.model_benchmarks
+            """
+        )
+        if not rows:
+            return {"count": 0, "freshest": None}
+        return {"count": int(rows[0].get("count") or 0), "freshest": rows[0].get("freshest")}

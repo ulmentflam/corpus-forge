@@ -756,6 +756,8 @@ from corpus_forge.admin.bench import bench_app as _bench_app  # noqa: E402
 from corpus_forge.admin.config import config_app as _config_app  # noqa: E402
 from corpus_forge.admin.dataset import dataset_app as _dataset_app  # noqa: E402
 from corpus_forge.admin.embedder import embedder_app as _embedder_app  # noqa: E402
+from corpus_forge.admin.fleet_views import hosts_app as _hosts_app  # noqa: E402
+from corpus_forge.admin.fleet_views import models_app as _models_app  # noqa: E402
 from corpus_forge.admin.ignore import ignore_app as _ignore_app  # noqa: E402
 from corpus_forge.admin.ollama import ollama_app as _ollama_app  # noqa: E402
 from corpus_forge.admin.service import service_app as _service_app  # noqa: E402
@@ -772,6 +774,9 @@ app.add_typer(_service_app, name="service")
 app.add_typer(_ignore_app, name="ignore")
 # rfc-fleet-1 — embedder throughput benchmarking (`bench embed`).
 app.add_typer(_bench_app, name="bench")
+# rfc-fleet-1 — fleet read verbs (`models list` / `hosts list`).
+app.add_typer(_models_app, name="models")
+app.add_typer(_hosts_app, name="hosts")
 
 
 # ── export subcommand group ──────────────────────────────────────────────
@@ -3980,6 +3985,11 @@ _AGENT_SELF_EMITTING: frozenset[str] = frozenset(
         # stdout in agent / --json mode; the wrapper's auto-emission would
         # wrap it with an extra (empty-data) result event.
         "bench embed",
+        # rfc-fleet-1 — the fleet read verbs print a single JSON object on
+        # stdout in agent / --json mode; suppress auto-emission so the
+        # agent sees exactly one payload, not a wrapped result event.
+        "models list",
+        "hosts list",
     }
 )
 
