@@ -27,9 +27,11 @@ inputs:
       HuggingFace Hub token forwarded to the warm step (issue #90,
       option 1).  Authenticated requests get a far higher rate limit
       than the anonymous shared-runner-IP pool, so a cold-cache warm
-      is much less likely to ride out a 429 storm.  Callers pass
-      ``${{ secrets.HF_TOKEN }}`` — composite actions cannot read the
-      ``secrets`` context themselves.  Empty (fork PRs, secret not
+      is much less likely to ride out a 429 storm.  Callers pass the
+      ``secrets.HF_TOKEN`` expression — composite actions cannot read
+      the secrets context themselves (and the runner template-evaluates
+      this description, so the expression cannot be written literally
+      here).  Empty (fork PRs, secret not
       configured) is safe: huggingface_hub treats an empty
       ``HF_TOKEN`` as anonymous.
     required: false
