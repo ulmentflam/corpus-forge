@@ -314,3 +314,97 @@ def test_claim_count_matches_missing_minus_claimed(backend: PostgresBackend) -> 
     # claim path narrows via the live-claim anti-join, returning the rest.
     remaining = backend.claim_chunks_for_embedding(emb, host_id="h2", batch=100, lease_ttl=600)
     assert {c[0] for c in claimed} | {c[0] for c in remaining} == set(chunk_ids)
+
+
+# ── SKIP LOCKED under live contention (reviewer-major follow-through) ────────
+#
+# The tests above prove disjointness via the live-claim anti-join
+# (sequential calls). These two prove the FOR UPDATE OF c SKIP LOCKED
+# half: candidate rows locked by a *concurrent open transaction* are
+# skipped — not blocked on, not double-claimed.
+
+
+def test_held_row_locks_are_skipped_not_blocked(backend: PostgresBackend, pg_dsn: str) -> None:
+    """Host B claims around rows a concurrent transaction has locked.
+
+    Simulates host A mid-claim: a raw connection holds ``FOR UPDATE``
+    locks on the first two candidate chunk rows (the same locks the
+    claim CTE's ``cand`` takes) without committing. Host B's claim via
+    the real API must return the *other* chunks promptly — SKIP LOCKED,
+    not lock-wait — and the locked rows become claimable again once A's
+    transaction ends.
+    """
+    import psycopg
+
+    emb = _register_embedder(backend)
+    chunk_ids = _seed_chunks(backend, n=5)
+    locked, free = chunk_ids[:2], chunk_ids[2:]
+
+    with psycopg.connect(pg_dsn) as held:
+        with held.cursor() as cur:
+            # Fail loudly instead of deadlocking the test if SKIP LOCKED
+            # were ever lost from the claim CTE.
+            cur.execute("SET statement_timeout = '5s'")
+            cur.execute(
+                "SELECT id FROM corpus.chunks WHERE id = ANY(%s) FOR UPDATE",
+                (locked,),
+            )
+            assert {r[0] for r in cur.fetchall()} == set(locked)
+
+            claimed = backend.claim_chunks_for_embedding(
+                emb, host_id="worker-B", batch=10, lease_ttl=600
+            )
+            assert {c[0] for c in claimed} == set(free), (
+                "host B must claim exactly the unlocked candidates while "
+                "host A's transaction holds the first two rows"
+            )
+        held.rollback()
+
+    # A's locks are gone (no claims were written by the raw transaction) —
+    # the two skipped chunks are claimable now.
+    leftovers = backend.claim_chunks_for_embedding(emb, host_id="worker-A", batch=10, lease_ttl=600)
+    assert {c[0] for c in leftovers} == set(locked)
+
+
+def test_simultaneous_same_lane_claims_are_disjoint(backend: PostgresBackend) -> None:
+    """Two workers drain one lane at the same moment: no overlap, no loss.
+
+    Both transactions order candidates by ``c.id``, so they contend on
+    the *same* leading rows — the winner locks them, SKIP LOCKED routes
+    the loser to the next free rows. A barrier maximises the overlap
+    window; each claim runs on its own connection via a thread-local
+    backend.
+    """
+    import threading
+
+    emb = _register_embedder(backend)
+    chunk_ids = _seed_chunks(backend, n=8)
+
+    barrier = threading.Barrier(2)
+    results: dict[str, list[tuple[int, str, str]]] = {}
+    errors: list[BaseException] = []
+
+    def worker(host_id: str) -> None:
+        b = PostgresBackend(dsn=backend.dsn)
+        try:
+            barrier.wait(timeout=10)
+            results[host_id] = b.claim_chunks_for_embedding(
+                emb, host_id=host_id, batch=4, lease_ttl=600
+            )
+        except BaseException as exc:  # surfaced below — don't swallow in thread
+            errors.append(exc)
+        finally:
+            b.close()
+
+    threads = [threading.Thread(target=worker, args=(h,)) for h in ("worker-A", "worker-B")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert not errors, f"claim worker raised: {errors!r}"
+
+    got_a = {c[0] for c in results["worker-A"]}
+    got_b = {c[0] for c in results["worker-B"]}
+    assert got_a.isdisjoint(got_b), "two hosts claimed overlapping chunks"
+    assert got_a | got_b == set(chunk_ids), "chunks lost between concurrent claimers"
+    assert _claim_count(backend) == len(chunk_ids)
