@@ -541,3 +541,36 @@ class StorageBackend(Protocol):
             Number of rows transitioned to 'failed'.
         """
         ...
+
+    # --- Fleet telemetry registry (rfc-fleet-1) -----------------------------
+
+    def upsert_host(
+        self,
+        *,
+        host_id: str,
+        hostname: str,
+        os: str,
+        accelerator: "dict | None",
+        tailscale_name: str | None = None,
+    ) -> None:
+        """UPSERT this host's row in the ``hosts`` registry (rfc-fleet-1).
+
+        Keyed on ``host_id``.  ``accelerator`` is serialised to JSON by
+        the backend (JSONB on Postgres, TEXT on SQLite).  ``last_seen``
+        is set to ``now()`` on every call — the row doubles as a
+        heartbeat.  Called once per process start (daemon startup, embed
+        entry), never on a hot path.
+        """
+        ...
+
+    def upsert_models(self, rows: "list[dict]") -> None:
+        """Insert ``models`` registry rows, preserving ``first_seen`` (rfc-fleet-1).
+
+        Each dict carries ``model_key`` (``"<provider>:<model_id>"``),
+        ``kind``, ``provider``, ``model_id``, and an optional
+        ``dimension`` (``None`` when unknown — e.g. ``ollama list`` LLM
+        rows).  Insert uses ``ON CONFLICT (model_key) DO NOTHING`` so a
+        model's original ``first_seen`` survives re-registration.  An
+        empty ``rows`` list is a no-op.
+        """
+        ...

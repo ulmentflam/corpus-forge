@@ -189,6 +189,12 @@ def run_daemon(config) -> None:
     engines: list[SyncEngine] = []
 
     backend = _get_any_backend(config)
+    # Fleet telemetry (rfc-fleet-1): record this host + its available
+    # models once at daemon startup.  Failure-isolated inside the helper,
+    # and a no-op when the backend is unreachable.
+    from corpus_forge.telemetry_registry import heartbeat as _telemetry_heartbeat  # noqa: PLC0415
+
+    _telemetry_heartbeat(backend, config)
     if backend is None:
         logger.warning("No reachable backend at daemon startup; skipping all sync engines")
     else:

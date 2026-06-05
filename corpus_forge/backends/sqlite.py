@@ -4086,3 +4086,62 @@ class SQLiteBackend:
         except sqlite3.OperationalError as exc:
             logger.debug("mark_stale_runs swallowed OperationalError: %r", exc)
             return 0
+
+    # -------------------------------------------------------------------------
+    # Fleet telemetry registry (rfc-fleet-1)
+    # -------------------------------------------------------------------------
+
+    def upsert_host(
+        self,
+        *,
+        host_id: str,
+        hostname: str,
+        os: str,
+        accelerator: "dict | None",
+        tailscale_name: "str | None" = None,
+    ) -> None:
+        """UPSERT this host's row, bumping ``last_seen`` to now (rfc-fleet-1).
+
+        ``accelerator`` is stored as a JSON ``TEXT`` document (SQLite has
+        no JSONB type); the application layer reads it back with
+        :func:`json.loads`.
+        """
+        now = self._now_iso()
+        accelerator_json = json.dumps(accelerator) if accelerator is not None else None
+        self._execute(
+            """
+            INSERT INTO hosts
+                (host_id, hostname, os, accelerator, tailscale_name, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(host_id) DO UPDATE SET
+                hostname       = excluded.hostname,
+                os             = excluded.os,
+                accelerator    = excluded.accelerator,
+                tailscale_name = COALESCE(excluded.tailscale_name, hosts.tailscale_name),
+                last_seen      = excluded.last_seen
+            """,
+            (host_id, hostname, os, accelerator_json, tailscale_name, now),
+        )
+
+    def upsert_models(self, rows: "list[dict]") -> None:
+        """Insert ``models`` rows, preserving ``first_seen`` (rfc-fleet-1)."""
+        if not rows:
+            return
+        now = self._now_iso()
+        for row in rows:
+            self._execute(
+                """
+                INSERT INTO models
+                    (model_key, kind, provider, model_id, dimension, first_seen)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(model_key) DO NOTHING
+                """,
+                (
+                    row["model_key"],
+                    row.get("kind"),
+                    row.get("provider"),
+                    row.get("model_id"),
+                    row.get("dimension"),
+                    now,
+                ),
+            )

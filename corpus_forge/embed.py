@@ -111,6 +111,13 @@ def backfill_embedder(
     # Apply migrations (after validating embedder config exists, before any DB writes)
     backend.migrate()
 
+    # Fleet telemetry (rfc-fleet-1): record this host + its available
+    # models once per embed run.  Failure-isolated inside the helper, so a
+    # briefly-unreachable backend never adds a failure mode to embed.
+    from corpus_forge.telemetry_registry import heartbeat as _telemetry_heartbeat  # noqa: PLC0415
+
+    _telemetry_heartbeat(backend, config)
+
     # Register/create the embedder via the shared per-provider gating
     # so ``corpus-forge embed`` doesn't drift from ingest / search /
     # admin. The previous inline ``registry.register(...)`` call
