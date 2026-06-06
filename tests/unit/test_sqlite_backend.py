@@ -241,6 +241,10 @@ class TestSchemaTablePresence:
             # FederationUnsupported — but the migration creates it on both
             # dialects for schema symmetry).
             "embed_claims",
+            # rfc-fleet-3 (0020_shared_config) adds the federated-config table
+            # (never used on SQLite — the backend raises FederationUnsupported —
+            # but the migration creates it on both dialects for schema symmetry).
+            "shared_config",
         ]
     )
 

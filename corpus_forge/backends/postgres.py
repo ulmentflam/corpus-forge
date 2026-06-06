@@ -22,7 +22,12 @@ from psycopg_pool import ConnectionPool
 
 from ..chunkers.base import TextChunk
 from ..identity import advisory_lock_key, chunk_content_hash
-from .base import IngestRunInProgressError, StorageBackend, normalize_extensions_filter
+from .base import (
+    IngestRunInProgressError,
+    SharedConfigVersionConflict,
+    StorageBackend,
+    normalize_extensions_filter,
+)
 
 if TYPE_CHECKING:
     from corpus_forge.classifiers.base import ClassifiableDocument
@@ -1431,6 +1436,66 @@ class PostgresBackend(StorageBackend):
                 (embedder_id, now),
             )
         return len(rows)
+
+    # ── Fleet 3 — federated config publish / pull ─────────────────────────
+
+    def get_shared_config(self) -> tuple[int, dict] | None:
+        """Return ``(version, body)`` for the corpus's shared config, or None.
+
+        See :meth:`StorageBackend.get_shared_config`. ``body`` is a ``JSONB``
+        column, so psycopg decodes it straight to a dict. Empty table → None.
+        """
+        rows = self._execute("SELECT version, body FROM corpus.shared_config WHERE corpus_id = 1")
+        if not rows:
+            return None
+        row = rows[0]
+        return int(row["version"]), row["body"]
+
+    def put_shared_config(
+        self,
+        body: dict,
+        expected_version: int,
+        published_by: str,
+    ) -> int:
+        """Atomically publish ``body`` as the next shared-config version.
+
+        See :meth:`StorageBackend.put_shared_config`. The write is a single
+        conditional statement so the optimistic-concurrency check and the
+        write are one atomic operation — two hosts racing on the same
+        ``expected_version`` cannot both succeed (the PK on the first
+        publish, the ``version = %s`` guard on updates). No ``RETURNING``
+        row means the race was lost, raising
+        :class:`SharedConfigVersionConflict`.
+        """
+        body_json = json.dumps(body)
+        now = datetime.now(tz=UTC)
+        new_version = expected_version + 1
+        if expected_version == 0:
+            # First publish: the PK on corpus_id is the conflict guard.
+            rows = self._execute(
+                "INSERT INTO corpus.shared_config "
+                "(corpus_id, version, body, published_by, published_at) "
+                "VALUES (1, %s, %s::jsonb, %s, %s) "
+                "ON CONFLICT (corpus_id) DO NOTHING "
+                "RETURNING version",
+                (new_version, body_json, published_by, now),
+            )
+        else:
+            # Update: the version guard is the conflict check.
+            rows = self._execute(
+                "UPDATE corpus.shared_config "
+                "SET version = version + 1, body = %s::jsonb, "
+                "    published_by = %s, published_at = %s "
+                "WHERE corpus_id = 1 AND version = %s "
+                "RETURNING version",
+                (body_json, published_by, now, expected_version),
+            )
+        if not rows:
+            raise SharedConfigVersionConflict(
+                f"shared config has moved past version {expected_version}; "
+                "pull the current config first, then re-publish on top."
+            )
+        return int(rows[0]["version"])
 
     # ── Phase L Wave 6 — embedder-fingerprint helpers ─────────────────────
 
