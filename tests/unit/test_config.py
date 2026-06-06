@@ -163,7 +163,12 @@ DB_NAME=secret_db
     secrets_file = tmp_path / "secrets.env"
     secrets_file.write_text(secrets_content)
 
-    # Mock home directory to point to tmp_path
+    # Mock home directory to point to tmp_path. Also clear
+    # CORPUS_FORGE_CONFIG: Config.load() resolves that env var BEFORE
+    # the home-relative default, so an ambient value (set by a dev
+    # shell or an outer test harness) would bypass the tmp config this
+    # test stages and read someone else's file.
+    monkeypatch.delenv("CORPUS_FORGE_CONFIG", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     # Load config (should find secrets in ~/.config/corpus-forge/secrets.env)
