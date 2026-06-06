@@ -59,6 +59,8 @@ _READ_TOOL_NAMES = {
     # agent-chunk-explorer — chunk navigation read tools
     "chunk_neighbors",
     "get_document",
+    # RFC version-update-awareness — update check read tool
+    "check_update",
 }
 
 _WRITE_TOOL_NAMES = {

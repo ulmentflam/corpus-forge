@@ -16,6 +16,7 @@ Connected to an MCP-speaking assistant, corpus-forge exposes:
 | `get_chunk` | Full record of a single chunk by id. |
 | `list_datasets` | Catalogue of indexed datasets with row/chunk counts. |
 | `estimate_sync_size` | Predicts Postgres footprint of syncing a directory tree — pure prediction, no I/O. |
+| `check_update` | Reports whether a newer corpus-forge release exists (24h-cached PyPI check) plus the channel-appropriate upgrade command. Read-only; recommend, never run. |
 | `next_curation_target` / `next_curation_batch` | Ranker-driven "what entry most needs my help right now?" |
 | `commit_curation` | Atomic multi-write covering label adds/removes, metadata, description, feedback. |
 | `add_label` / `remove_label` / `set_metadata` / `set_description` / `add_feedback` | Direct write surface, used internally by `commit_curation` but available stand-alone. |
@@ -105,10 +106,13 @@ The repo ships skill assets that work across clients with minimal porting:
 ```
 .claude/skills/corpus-forge-search/SKILL.md
 .claude/skills/corpus-curate/SKILL.md
+.claude/skills/corpus-forge-update/SKILL.md
 .opencode/command/corpus-forge-search.md
 .opencode/command/corpus-curate.md
+.opencode/command/corpus-forge-update.md
 .gemini/agents/corpus-forge-search.md
 .gemini/agents/corpus-curate.md
+.gemini/agents/corpus-forge-update.md
 ```
 
 For clients without a native slash-command system, copy the prose of `SKILL.md` into the assistant's system prompt or "instructions" panel — the prompts are intentionally vendor-neutral and reference only the MCP tool names.

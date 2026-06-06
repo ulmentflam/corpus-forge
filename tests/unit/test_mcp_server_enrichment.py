@@ -249,7 +249,8 @@ class TestWritesEnabledGate:
         next_curation_target and next_curation_batch (both read-only,
         always available) → 8. Phase M Wave 3 adds list_ignore + validate_ignore
         → 10. Phase O Wave 4 adds analyze_corpus + find_duplicates +
-        cluster_topics + score_quality → 14.
+        cluster_topics + score_quality → 14. RFC version-update-awareness
+        adds check_update → 17 (with the 2 chunk-explorer tools).
         """
         server = _build_server(backend, writes_enabled=False)
         tools = _list_tools(server)
@@ -273,7 +274,9 @@ class TestWritesEnabledGate:
             # agent-chunk-explorer read tools
             "chunk_neighbors",
             "get_document",
-        }, f"Expected exactly 16 read tools; got: {sorted(tools)}"
+            # RFC version-update-awareness read tool
+            "check_update",
+        }, f"Expected exactly 17 read tools; got: {sorted(tools)}"
 
     def test_writes_enabled_exposes_all_11_tools(
         self, backend: SQLiteBackend, seeded: dict
@@ -288,6 +291,7 @@ class TestWritesEnabledGate:
         commit_curation (write) = 19 total.
         Phase O Wave 4 adds 4 analyze read tools = 29 total.
         Phase P Wave 2 adds rate_search_result (write) = 30 total.
+        RFC version-update-awareness adds check_update (read) = 32 total.
         """
         server = _build_server(backend, writes_enabled=True)
         tools = _list_tools(server)
@@ -314,6 +318,8 @@ class TestWritesEnabledGate:
             # agent-chunk-explorer read tools
             "chunk_neighbors",
             "get_document",
+            # RFC version-update-awareness read tool
+            "check_update",
             # F-03 write tools
             "add_label",
             "remove_label",
@@ -341,7 +347,7 @@ class TestWritesEnabledGate:
             "record_demonstration",
         }
         assert set(tools) == expected, (
-            f"Expected 31 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
+            f"Expected 32 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
         )
 
     def test_unknown_tool_returns_error_when_writes_disabled(

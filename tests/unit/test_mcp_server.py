@@ -167,6 +167,7 @@ class TestRegisteredTools:
         # Phase M Wave 3: list_ignore + validate_ignore are always-available read tools.
         # Phase O Wave 4: analyze_corpus + find_duplicates + cluster_topics + score_quality.
         # agent-chunk-explorer: chunk_neighbors + get_document are always-available read tools.
+        # RFC version-update-awareness: check_update is an always-available read tool.
         from corpus_forge.mcp.server import build_server
 
         retriever = _FakeRetriever([_FakeHit(1, 0.9, "alpha")])
@@ -192,13 +193,15 @@ class TestRegisteredTools:
             # agent-chunk-explorer read tools
             "chunk_neighbors",
             "get_document",
+            # RFC version-update-awareness read tool
+            "check_update",
         }, (
-            f"Expected sixteen read tools under writes_enabled=False (search/"
+            f"Expected seventeen read tools under writes_enabled=False (search/"
             f"get_chunk/list_datasets/render_conversation/list_chat_templates/"
             f"estimate_sync_size/next_curation_target/next_curation_batch/"
             f"list_ignore/validate_ignore/analyze_corpus/find_duplicates/"
-            f"cluster_topics/score_quality/chunk_neighbors/get_document); "
-            f"got {names}"
+            f"cluster_topics/score_quality/chunk_neighbors/get_document/"
+            f"check_update); got {names}"
         )
 
     def test_search_input_schema_has_query_required(self) -> None:
