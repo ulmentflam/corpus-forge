@@ -120,9 +120,9 @@ embed-worker and `corpus-forge embed --all` respect it; explicit
 
 ## Tasks
 
-- [ ] Alembic revision: `corpus.embed_claims` + unique
+- [x] Alembic revision: `corpus.embed_claims` + unique
       `(embedder_id, chunk_id)` + lease index; idempotent re-run test.
-- [ ] Backend methods `claim_chunks_for_embedding` /
+- [x] Backend methods `claim_chunks_for_embedding` /
       `release_claims` / `expire_stale_claims`
       (`FOR UPDATE SKIP LOCKED`); SQLite raises
       `FederationUnsupported`.
