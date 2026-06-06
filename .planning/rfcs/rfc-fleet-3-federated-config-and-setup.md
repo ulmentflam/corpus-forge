@@ -120,7 +120,7 @@ produces today's wizard verbatim (snapshot test on the prompt tree).
 
 ## Tasks
 
-- [ ] Scope annotations on config models + `shared_scope_dict` /
+- [x] Scope annotations on config models + `shared_scope_dict` /
       `merge_shared_scope` (tomlkit, comment-preserving) + deny-list
       test (no path-shaped / secret-bearing field ever extracted).
 - [ ] Alembic revision: `corpus.shared_config` (versioned jsonb);

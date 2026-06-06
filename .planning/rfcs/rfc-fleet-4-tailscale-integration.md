@@ -102,7 +102,7 @@ issue from PR #91's CI flake).
 
 ## Tasks
 
-- [ ] `corpus_forge/net/tailscale.py`: `resolve` / `peers` /
+- [x] `corpus_forge/net/tailscale.py`: `resolve` / `peers` /
       `TailscaleUnavailable` (MagicDNS-first, status-JSON fallback,
       5 s timeout, process-lifetime cache).
 - [ ] `ts://` scheme accepted by every URL/DSN config field via a
