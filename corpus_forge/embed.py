@@ -168,6 +168,54 @@ def _resolve_image_bytes(metadata: dict) -> bytes | None:
     return None
 
 
+def filter_embedders_by_lanes(embedder_names, lanes):
+    """RFC fleet-2 item 4 — intersect ``embedder_names`` with the host's lanes.
+
+    This is the lane filter for the *implicit* multi-embedder paths —
+    the daemon embed-worker (``get_active_embedders`` →
+    ``_flush_all_pending_embeddings``) and agent auto-ingest — where the
+    host should
+    only work the lanes its local ``[embed] lanes`` config pins it to.
+
+    Semantics:
+
+    - ``lanes`` empty / falsy → return ``embedder_names`` unchanged (the
+      hard backcompat bar: absent ``[embed] lanes`` means "all active
+      embedders", today's behaviour, byte-identical).
+    - ``lanes`` non-empty → keep only names that appear in ``lanes``,
+      preserving the input order of ``embedder_names`` (config /
+      declaration order) so the worker drains lanes deterministically.
+
+    Lane names are validated against ``[[embedders]]`` at config-load time
+    (``Config._check_embed_lanes``), so any name in ``lanes`` is a real
+    embedder; the intersection here is purely "which of the active ones
+    does THIS host serve".  Returns a fresh ``list``.
+
+    Note: this is NOT the override path — an operator's explicit
+    ``corpus-forge embed -e <name>`` bypasses this filter entirely (see
+    :func:`embedder_outside_lanes`); only warn-and-proceed applies there.
+    """
+    if not lanes:
+        return list(embedder_names)
+    lane_set = set(lanes)
+    return [name for name in embedder_names if name in lane_set]
+
+
+def embedder_outside_lanes(embedder_name: str, lanes) -> bool:
+    """Return ``True`` when an explicit ``-e`` target is outside the lanes.
+
+    RFC fleet-2 item 4: an explicit ``corpus-forge embed -e <name>``
+    OVERRIDES lane pinning — the operator's direct command wins and the
+    backfill proceeds regardless.  The caller uses this predicate only to
+    decide whether to emit a one-line WARN ("you pinned lanes X but asked
+    for Y; proceeding anyway") before running.  Empty ``lanes`` (the
+    default) means "no pinning", so nothing is ever outside it.
+    """
+    if not lanes:
+        return False
+    return embedder_name not in set(lanes)
+
+
 def backfill_embedder(
     embedder_name: str, dataset_name: str | None = None, limit: int | None = None
 ) -> None:

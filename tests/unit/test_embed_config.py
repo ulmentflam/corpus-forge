@@ -90,9 +90,27 @@ class TestExtraForbid:
     """``extra='forbid'`` catches typos in ``[embed]`` blocks."""
 
     def test_unknown_field_rejected(self) -> None:
-        # ``lanes`` is RFC item 4, not yet wired — extra='forbid' rejects it.
+        # A genuinely-unknown field is still caught by extra='forbid'.
+        # (``lanes`` became a real field in RFC item 4 — see TestLanesField.)
         with pytest.raises(ValidationError):
-            _build_embed_config(claim_lease_ttl=600, lanes=["a"])
+            _build_embed_config(claim_lease_ttl=600, lanez=["a"])
+
+
+class TestLanesField:
+    """RFC fleet-2 item 4 — the ``[embed] lanes`` lane-pinning field."""
+
+    def test_default_is_empty_list(self) -> None:
+        # Empty/absent lanes is the backcompat bar: "all active embedders".
+        assert EmbedConfig().lanes == []
+
+    def test_explicit_lanes_accepted(self) -> None:
+        cfg = EmbedConfig(lanes=["qwen3_8b", "nomic"])
+        assert cfg.lanes == ["qwen3_8b", "nomic"]
+
+    def test_lanes_independent_of_ttl(self) -> None:
+        cfg = EmbedConfig(claim_lease_ttl=900, lanes=["a"])
+        assert cfg.claim_lease_ttl == 900
+        assert cfg.lanes == ["a"]
 
 
 class TestLegacyConfigBackcompat:
@@ -115,3 +133,41 @@ class TestLegacyConfigBackcompat:
 
         config = Config.load(config_path=config_file)
         assert config.embed.claim_lease_ttl == 1200
+
+
+class TestEmbedLanesConfigValidation:
+    """RFC fleet-2 item 4 — ``Config._check_embed_lanes`` cross-reference."""
+
+    def test_legacy_config_has_empty_lanes(self, tmp_path) -> None:
+        # No ``[embed]`` block ⇒ default empty lanes ⇒ all active embedders.
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(_LEGACY_TOML)
+        config = Config.load(config_path=config_file)
+        assert config.embed.lanes == []
+
+    def test_known_lane_accepted(self, tmp_path) -> None:
+        config_file = tmp_path / "config.toml"
+        # ``test-embedder`` is the embedder declared in _LEGACY_TOML.
+        config_file.write_text(_LEGACY_TOML + '\n[embed]\nlanes = ["test-embedder"]\n')
+        config = Config.load(config_path=config_file)
+        assert config.embed.lanes == ["test-embedder"]
+
+    def test_unknown_lane_rejected_with_helpful_message(self, tmp_path) -> None:
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(_LEGACY_TOML + '\n[embed]\nlanes = ["nope"]\n')
+        with pytest.raises(ValidationError) as exc_info:
+            Config.load(config_path=config_file)
+        msg = str(exc_info.value)
+        # The error names the offending lane AND lists the valid options.
+        assert "nope" in msg
+        assert "test-embedder" in msg
+        assert "embed.lanes" in msg
+
+    def test_partial_unknown_lane_rejected(self, tmp_path) -> None:
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(_LEGACY_TOML + '\n[embed]\nlanes = ["test-embedder", "bogus"]\n')
+        with pytest.raises(ValidationError) as exc_info:
+            Config.load(config_path=config_file)
+        # Only the bad name is reported; the good one isn't in the "unknown" list.
+        msg = str(exc_info.value)
+        assert "bogus" in msg
