@@ -1432,6 +1432,26 @@ class PostgresBackend(StorageBackend):
             )
         return len(rows)
 
+    def count_stale_claims(self, embedder_id: int | None = None) -> int:
+        """Count claims past ``lease_until`` without deleting them.
+
+        See :meth:`StorageBackend.count_stale_claims`. Read-only sibling of
+        :meth:`expire_stale_claims` for the ``embed_claims`` doctor check.
+        """
+        now = datetime.now(tz=UTC)
+        if embedder_id is None:
+            rows = self._execute(
+                "SELECT COUNT(*) AS n FROM corpus.embed_claims WHERE lease_until < %s",
+                (now,),
+            )
+        else:
+            rows = self._execute(
+                "SELECT COUNT(*) AS n FROM corpus.embed_claims "
+                "WHERE embedder_id = %s AND lease_until < %s",
+                (embedder_id, now),
+            )
+        return int(rows[0]["n"]) if rows else 0
+
     # ── Phase L Wave 6 — embedder-fingerprint helpers ─────────────────────
 
     def find_embedder_row_by_name(self, name: str) -> dict | None:

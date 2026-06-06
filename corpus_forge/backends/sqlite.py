@@ -1483,6 +1483,14 @@ class SQLiteBackend:
             "SQLite backend does not support fleet federation (RFC fleet-2)."
         )
 
+    def count_stale_claims(self, embedder_id: int | None = None) -> int:
+        """Unsupported on SQLite — raises :class:`FederationUnsupported`."""
+        del embedder_id
+        raise FederationUnsupported(
+            "count_stale_claims requires a shared Postgres backend; the "
+            "SQLite backend does not support fleet federation (RFC fleet-2)."
+        )
+
     def pending_documents(
         self, *, dataset_id: int | None = None, limit: int = 5
     ) -> tuple[int, list[str]]:

@@ -20,6 +20,7 @@ from corpus_forge.mcp.lifecycle import ProcessDiscoveryUnavailable, discover_mcp
 if TYPE_CHECKING:
     from rich.console import Console
 
+    from corpus_forge.backends.base import StorageBackend
     from corpus_forge.config import Config
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "corpus-forge" / "config.toml"
@@ -1001,7 +1002,6 @@ def _check_model_telemetry(cfg: Config) -> CheckResult:
     columns render identically.
     """
     from corpus_forge.admin.fleet_views import format_age
-    from corpus_forge.backends.base import StorageBackend
 
     backend: StorageBackend
     try:
@@ -1043,6 +1043,203 @@ def _check_model_telemetry(cfg: Config) -> CheckResult:
         CheckStatus.OK,
         f"{count} benchmark row(s), freshest {age}",
     )
+
+
+# ── embed_claims (rfc-fleet-2) thresholds ─────────────────────────────────
+# Stale claims are self-healing — the next ``claim_chunks_for_embedding``
+# call sweeps every row past its lease — so a non-zero count is normal,
+# transient bookkeeping, never an error. We only WARN when the backlog is
+# *large* enough to suggest a worker is crash-looping (claiming then dying
+# before release), at which point the operator may want to look. 1000 is a
+# generous threshold: at the default 1024-chunk batch one abandoned batch
+# leaves < 1024 stale rows, comfortably under the bar.
+_STALE_CLAIMS_WARN_THRESHOLD = 1000
+
+# Fraction of ``claim_lease_ttl`` that a host's worst-case batch wall-clock
+# may consume before we WARN. A batch that takes more than half the lease
+# leaves little headroom for GC pauses / model reloads / a slow tail before
+# the lease expires mid-batch and another host re-claims the same chunks
+# (wasted GPU compute). The fix is always "raise [embed] claim_lease_ttl".
+_LEASE_TTL_BATCH_FRACTION = 0.5
+
+# Fallback when ``cfg.embed.claim_lease_ttl`` is absent. ``EmbedConfig``
+# (with ``claim_lease_ttl``) is not on main yet — it ships in PR #107 — so
+# this check reads the value via ``getattr`` with the RFC's documented
+# default of 600 s and degrades gracefully until the config block lands.
+_DEFAULT_CLAIM_LEASE_TTL = 600
+
+
+def _check_embed_claims(cfg: Config) -> CheckResult:
+    """Informational report on fleet-2 embed-claim health (rfc-fleet-2).
+
+    Like :func:`_check_model_telemetry`, this check NEVER blocks doctor —
+    every outcome is ``OK`` or ``WARN``, never ``FAIL``:
+
+    - **Stale-claim count** (postgres): ``OK`` "N stale claim(s) — swept
+      automatically on the next claim call" for any count at/under
+      :data:`_STALE_CLAIMS_WARN_THRESHOLD`; ``WARN`` above it (a sign a
+      worker may be crash-looping).
+    - **Lease-TTL vs observed rate** (postgres): when ``model_benchmarks``
+      holds a rate for (this host, an active embedder), the worst-case
+      batch wall-clock is ``batch_size / rate``; ``WARN`` when it exceeds
+      :data:`_LEASE_TTL_BATCH_FRACTION` of ``[embed] claim_lease_ttl``,
+      naming the embedder, the estimate, the TTL, and the fix. Skipped
+      silently per-embedder when no benchmark row exists.
+    - **Multi-host SQLite** (sqlite): ``WARN`` when more than one host has
+      heartbeated against a SQLite corpus — federation requires postgres.
+    - ``OK`` "no claims yet" / "single-host sqlite" on the healthy paths;
+      ``OK`` "claims unavailable: <reason>" when the backend can't be
+      built / reached (an optional read must never turn doctor red).
+
+    The TTL is read via ``getattr(cfg.embed, "claim_lease_ttl", 600)``
+    because ``EmbedConfig`` lands in PR #107 — see
+    :data:`_DEFAULT_CLAIM_LEASE_TTL`.
+    """
+    from corpus_forge.backends.base import FederationUnsupported
+
+    backend: StorageBackend
+    try:
+        if cfg.backend.kind == "sqlite":
+            from corpus_forge.backends.sqlite import SQLiteBackend
+
+            backend = SQLiteBackend(path=cfg.backend.dsn, schema=cfg.backend.schema)
+        else:
+            from corpus_forge.backends.postgres import PostgresBackend
+
+            backend = PostgresBackend(dsn=cfg.backend.dsn, schema=cfg.backend.schema)
+    except Exception as exc:
+        return CheckResult(
+            "embed_claims",
+            CheckStatus.OK,
+            f"claims unavailable: {exc}",
+        )
+
+    # ── SQLite: federation is unsupported; the only signal worth raising
+    # is "you have more than one host but a single-machine backend". The
+    # corpus.hosts table may not exist on old SQLite DBs — tolerate.
+    if cfg.backend.kind == "sqlite":
+        try:
+            host_rows = backend.list_hosts_with_latest_rate()
+        except Exception:
+            host_rows = []
+        host_ids = {r.get("host_id") for r in host_rows if r.get("host_id")}
+        if len(host_ids) > 1:
+            return CheckResult(
+                "embed_claims",
+                CheckStatus.WARN,
+                (
+                    f"{len(host_ids)} hosts have heartbeated against a SQLite "
+                    "corpus; federation requires postgres (claim-based "
+                    "distributed embedding is postgres-only — RFC fleet-2)"
+                ),
+            )
+        return CheckResult(
+            "embed_claims",
+            CheckStatus.OK,
+            "single-host sqlite (federation requires postgres)",
+        )
+
+    # ── Postgres: stale-claim count (read-only; the next claim call sweeps).
+    try:
+        stale = backend.count_stale_claims()
+    except FederationUnsupported as exc:
+        # Defensive: a misconfigured non-postgres backend slipping past the
+        # kind branch should still be informational, never red.
+        return CheckResult("embed_claims", CheckStatus.OK, f"claims unavailable: {exc}")
+    except Exception as exc:
+        # Pre-migrate (no embed_claims table) or backend down — informational.
+        return CheckResult("embed_claims", CheckStatus.OK, f"claims unavailable: {exc}")
+
+    if stale > _STALE_CLAIMS_WARN_THRESHOLD:
+        return CheckResult(
+            "embed_claims",
+            CheckStatus.WARN,
+            (
+                f"{stale} stale claim(s) past their lease — unusually high "
+                f"(> {_STALE_CLAIMS_WARN_THRESHOLD}); a worker may be "
+                "crash-looping. They are swept automatically on the next "
+                "claim call, but check the embed-worker logs"
+            ),
+        )
+
+    # ── Lease-TTL vs observed rate: WARN if worst-case batch wall-clock
+    # nears the lease. Skipped silently per-embedder when no benchmark row.
+    ttl = int(getattr(getattr(cfg, "embed", None), "claim_lease_ttl", _DEFAULT_CLAIM_LEASE_TTL))
+    ttl_warning = _embed_claims_ttl_warning(cfg, backend, ttl)
+    if ttl_warning is not None:
+        return CheckResult("embed_claims", CheckStatus.WARN, ttl_warning)
+
+    if stale == 0:
+        return CheckResult(
+            "embed_claims",
+            CheckStatus.OK,
+            "no stale claims; lease TTL comfortable for observed rates",
+        )
+    return CheckResult(
+        "embed_claims",
+        CheckStatus.OK,
+        f"{stale} stale claim(s) — swept automatically on the next claim call",
+    )
+
+
+def _embed_claims_ttl_warning(cfg: Config, backend: StorageBackend, ttl: int) -> str | None:
+    """Return a TTL-sanity WARN message, or None when every lane is healthy.
+
+    For each active embedder with a benchmark row for *this host*, estimate
+    worst-case batch wall-clock = ``batch_size / chunks_per_s`` and WARN
+    when it exceeds :data:`_LEASE_TTL_BATCH_FRACTION` of ``ttl``. Lanes
+    without a benchmark row are skipped silently (the RFC's contract).
+    """
+    # ``host_id()`` and the benchmark read are both optional reads — any
+    # failure means "can't evaluate the TTL heuristic", which is not a
+    # warning condition (the stale-count branch already reported OK).
+    try:
+        this_host = cfg.host_id()
+    except Exception:
+        return None
+    try:
+        rows = backend.list_models_with_latest_benchmark()
+    except Exception:
+        return None
+
+    # model_key → chunks_per_s for THIS host (freshest row per pair).
+    rate_by_key: dict[str, float] = {}
+    for row in rows:
+        if row.get("host_id") != this_host:
+            continue
+        rate = row.get("chunks_per_s")
+        key = row.get("model_key")
+        if rate is None or key is None:
+            continue
+        try:
+            rate_f = float(rate)
+        except (TypeError, ValueError):
+            continue
+        if rate_f > 0:
+            rate_by_key[key] = rate_f
+
+    if not rate_by_key:
+        return None
+
+    budget = ttl * _LEASE_TTL_BATCH_FRACTION
+    for ec in cfg.embedders:
+        if not getattr(ec, "active", True):
+            continue
+        key = f"{ec.provider}:{ec.model_id}"
+        rate = rate_by_key.get(key)
+        if rate is None:
+            continue  # no benchmark for this lane on this host — skip silently
+        est = ec.batch_size / rate
+        if est > budget:
+            return (
+                f"embedder '{ec.name}': worst-case batch wall-clock "
+                f"~{est:.0f}s ({ec.batch_size} chunks / {rate:.1f} chunks/s) "
+                f"exceeds {_LEASE_TTL_BATCH_FRACTION:.0%} of the "
+                f"{ttl}s claim lease — a slow batch may lose its lease "
+                "mid-flight and let another host re-claim the same chunks. "
+                "Fix: raise [embed] claim_lease_ttl"
+            )
+    return None
 
 
 def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
@@ -1090,6 +1287,13 @@ def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
                 "skipped (config not loaded)",
             )
         )
+        results.append(
+            CheckResult(
+                "embed_claims",
+                CheckStatus.SKIP,
+                "skipped (config not loaded)",
+            )
+        )
     else:
         results.append(_check_corpusignore(loaded_cfg))
         results.append(_check_zotero(loaded_cfg))
@@ -1097,6 +1301,7 @@ def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
         results.append(_check_embedder_drift(loaded_cfg))
         results.append(_check_icloud_access(loaded_cfg))
         results.append(_check_model_telemetry(loaded_cfg))
+        results.append(_check_embed_claims(loaded_cfg))
     # The global ignore drift check is independent of whether the config
     # loaded — the global file lives at ~/.config/corpus-forge/ignore
     # regardless. Pass the (possibly None) config for feature derivation;

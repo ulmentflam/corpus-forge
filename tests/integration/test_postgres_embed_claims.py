@@ -263,6 +263,49 @@ def test_expire_stale_claims_global(backend: PostgresBackend) -> None:
     assert _claim_count(backend) == 0
 
 
+def test_count_stale_claims_does_not_delete(backend: PostgresBackend) -> None:
+    """``count_stale_claims`` is the read-only sibling of ``expire_stale_claims``."""
+    emb = _register_embedder(backend)
+    chunk_ids = _seed_chunks(backend, n=2)
+    _insert_stale_claim(backend, emb, chunk_ids[0], "dead-host")
+    future = datetime.now(tz=UTC) + timedelta(seconds=600)
+    backend._execute(
+        "INSERT INTO corpus.embed_claims "
+        "(embedder_id, chunk_id, host_id, claimed_at, lease_until) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        (emb, chunk_ids[1], "h-live", datetime.now(tz=UTC), future),
+    )
+
+    assert backend.count_stale_claims() == 1
+    # The count must NOT mutate state — both claims still present.
+    assert _claim_count(backend) == 2
+
+
+def test_count_stale_claims_per_embedder_scope(backend: PostgresBackend) -> None:
+    emb1 = _register_embedder(backend, name="count-e1")
+    emb2 = _register_embedder(backend, name="count-e2")
+    chunk_ids = _seed_chunks(backend, n=2)
+    _insert_stale_claim(backend, emb1, chunk_ids[0], "d1")
+    _insert_stale_claim(backend, emb2, chunk_ids[1], "d2")
+
+    assert backend.count_stale_claims(embedder_id=emb1) == 1
+    assert backend.count_stale_claims() == 2  # global
+    assert _claim_count(backend) == 2  # still no deletion
+
+
+def test_count_stale_claims_empty_is_zero(backend: PostgresBackend) -> None:
+    emb = _register_embedder(backend)
+    chunk_ids = _seed_chunks(backend, n=1)
+    future = datetime.now(tz=UTC) + timedelta(seconds=600)
+    backend._execute(
+        "INSERT INTO corpus.embed_claims "
+        "(embedder_id, chunk_id, host_id, claimed_at, lease_until) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        (emb, chunk_ids[0], "h-live", datetime.now(tz=UTC), future),
+    )
+    assert backend.count_stale_claims() == 0
+
+
 def test_crash_recovery_via_opportunistic_expiry(backend: PostgresBackend) -> None:
     """Worker A claims a chunk and dies; its lease expires; worker B reclaims it.
 

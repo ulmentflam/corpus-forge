@@ -41,6 +41,16 @@ def test_expire_stale_claims_with_embedder_id_raises(backend: SQLiteBackend) -> 
         backend.expire_stale_claims(embedder_id=1)
 
 
+def test_count_stale_claims_raises(backend: SQLiteBackend) -> None:
+    with pytest.raises(FederationUnsupported):
+        backend.count_stale_claims()
+
+
+def test_count_stale_claims_with_embedder_id_raises(backend: SQLiteBackend) -> None:
+    with pytest.raises(FederationUnsupported):
+        backend.count_stale_claims(embedder_id=1)
+
+
 def test_federation_unsupported_is_runtime_error() -> None:
     """FederationUnsupported subclasses RuntimeError so generic handlers catch it."""
     assert issubclass(FederationUnsupported, RuntimeError)
