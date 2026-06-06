@@ -142,22 +142,22 @@ specialist must cover new code to ≥ 90 % line coverage
 
 ## Tasks
 
-- [ ] Alembic revision: `corpus.hosts` / `corpus.models` /
+- [x] Alembic revision: `corpus.hosts` / `corpus.models` /
       `corpus.model_benchmarks` + indexes; idempotent re-run test.
-- [ ] Host upsert/heartbeat backend helper wired into daemon startup
+- [x] Host upsert/heartbeat backend helper wired into daemon startup
       and `embed` entry; `accelerator` from the acceleration probe.
-- [ ] Model registry upsert from configured embedders + best-effort
+- [x] Model registry upsert from configured embedders + best-effort
       `ollama list`.
-- [ ] `corpus_forge/admin/bench.py`: `bench embed` with `--sample`
+- [x] `corpus_forge/admin/bench.py`: `bench embed` with `--sample`
       (default 64), `-e`/`--all`, real-pending-first sampling with
       synthetic fallback, persisted-vs-not vector rules pinned by
       tests, Rich table + `--json`, writes `source="bench"` rows.
-- [ ] Passive telemetry rows from `backfill_embedder`
+- [x] Passive telemetry rows from `backfill_embedder`
       (`source="embed-run"`, end-of-run + periodic checkpoint).
-- [ ] `corpus-forge models list` and `corpus-forge hosts list` verbs
+- [x] `corpus-forge models list` and `corpus-forge hosts list` verbs
       (Rich + `--json`).
-- [ ] Doctor `model_telemetry` informational check.
-- [ ] Setup wizard / non-interactive "next steps" hint includes
+- [x] Doctor `model_telemetry` informational check.
+- [x] Setup wizard / non-interactive "next steps" hint includes
       `bench embed --all`; docs touch in CLAUDE.md §6.
 
 ## Verification
