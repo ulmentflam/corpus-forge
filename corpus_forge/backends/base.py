@@ -245,6 +245,22 @@ class StorageBackend(Protocol):
         """
         ...
 
+    def count_live_claims(
+        self,
+        embedder_id: int,
+        exclude_host_id: str | None = None,
+    ) -> int:
+        """Count unexpired claims on ``embedder_id`` (RFC fleet-2).
+
+        A claim is "live" when its ``lease_until`` is still in the future.
+        ``exclude_host_id`` drops this host's own claims from the count so
+        the embed backfill can compute a truthful progress total — the
+        chunks *other* hosts have reserved are work this host will never
+        do, so they're subtracted from the missing-embeddings total
+        (floored at 0). SQLite raises :class:`FederationUnsupported`.
+        """
+        ...
+
     # --- Phase L Wave 6 — embedder-fingerprint helpers --------------------
 
     def find_embedder_row_by_name(self, name: str) -> "dict | None":

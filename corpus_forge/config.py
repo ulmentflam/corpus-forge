@@ -828,6 +828,35 @@ class EstimateConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class EmbedConfig(BaseModel):
+    """RFC ``rfc-fleet-2-distributed-embedding`` — distributed embed knobs.
+
+    Tunes the claim/release backfill loop in
+    :func:`corpus_forge.embed.backfill_embedder`. On the Postgres backend
+    the loop reserves chunks in ``corpus.embed_claims`` so N hosts drain
+    the same embedder lane with zero duplicated GPU compute; on SQLite the
+    loop falls back to the single-host ``chunks_missing_embedding`` path
+    and this block is inert.
+
+    Migration: existing configs have no ``[embed]`` section. The default
+    field below means they continue to validate as-is —
+    ``Config(**old_toml)`` simply gets the default-constructed
+    ``EmbedConfig`` instance.
+
+    Fields:
+
+    - ``claim_lease_ttl``: seconds a claim row stays valid before the
+      opportunistic stale-claim sweep makes it reclaimable. Must
+      comfortably exceed worst-case batch wall clock so a live host
+      doesn't lose chunks mid-batch; the crash path relies on the lease
+      expiring. Default ``600`` (10 minutes). Must be ``> 0``.
+    """
+
+    claim_lease_ttl: int = Field(default=600, gt=0)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class EvalRegressionConfig(BaseModel):
     """RFC ``rfc-eval-framework-expansion`` — tolerance gating for regression eval.
 
@@ -1166,6 +1195,11 @@ class Config(BaseModel):
     # no-compression baseline so existing configs see no behaviour
     # change.
     estimate: EstimateConfig = Field(default_factory=EstimateConfig)
+    # RFC ``rfc-fleet-2-distributed-embedding`` — distributed embed
+    # backfill knobs (claim lease TTL). Defaulted so existing configs
+    # (which omit the ``[embed]`` block) keep validating; on SQLite the
+    # block is inert (the claim loop falls back to the single-host path).
+    embed: EmbedConfig = Field(default_factory=EmbedConfig)
     # Phase L Wave 7 — Ollama daemon endpoint used by the admin verbs.
     # Defaulted so existing configs (which omit the block) keep validating.
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)

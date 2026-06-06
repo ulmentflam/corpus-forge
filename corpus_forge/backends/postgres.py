@@ -1432,6 +1432,33 @@ class PostgresBackend(StorageBackend):
             )
         return len(rows)
 
+    def count_live_claims(
+        self,
+        embedder_id: int,
+        exclude_host_id: str | None = None,
+    ) -> int:
+        """Count unexpired claims on ``embedder_id`` (RFC fleet-2).
+
+        See :meth:`StorageBackend.count_live_claims`. ``lease_until > now``
+        defines "live"; when ``exclude_host_id`` is set this host's own
+        claims are excluded so the embed progress total reflects only the
+        chunks *other* hosts have reserved.
+        """
+        now = datetime.now(tz=UTC)
+        if exclude_host_id is None:
+            rows = self._execute(
+                "SELECT COUNT(*) AS n FROM corpus.embed_claims "
+                "WHERE embedder_id = %s AND lease_until > %s",
+                (embedder_id, now),
+            )
+        else:
+            rows = self._execute(
+                "SELECT COUNT(*) AS n FROM corpus.embed_claims "
+                "WHERE embedder_id = %s AND lease_until > %s AND host_id <> %s",
+                (embedder_id, now, exclude_host_id),
+            )
+        return int(rows[0]["n"]) if rows else 0
+
     # ── Phase L Wave 6 — embedder-fingerprint helpers ─────────────────────
 
     def find_embedder_row_by_name(self, name: str) -> dict | None:
