@@ -292,10 +292,17 @@ class DatasetSourceConfig(BaseModel):
 
 
 class DatasetConfig(BaseModel):
-    """Configuration for a dataset."""
+    """Configuration for a dataset.
 
-    name: str
-    kind: str = Field(pattern="^(text|chat)$")
+    Federation scope (RFC fleet-3): ``name`` and ``kind`` are SHARED —
+    every host in a fleet must resolve the same dataset rows by name, so
+    these converge across machines. ``sources`` is LOCAL (each machine
+    ingests its own directories) and is excluded from the shared scope;
+    ``description`` / ``sync_enabled`` are local toggles.
+    """
+
+    name: str = Field(json_schema_extra={"scope": "shared"})
+    kind: str = Field(pattern="^(text|chat)$", json_schema_extra={"scope": "shared"})
     description: str | None = None
     sources: list[DatasetSourceConfig]
     sync_enabled: bool = False
@@ -322,7 +329,13 @@ class EmbedderConfig(BaseModel):
     integration supports the local-or-remote URL pattern.
     """
 
-    name: str
+    # Federation scope (RFC fleet-3): the embedder *definition* —
+    # identity, provider, model, dimension, distance semantics, active
+    # flag, and routing extensions — is SHARED: every host must embed
+    # into identically-shaped tables or the corpus forks. Machine
+    # tuning (device, batch sizes, llama.cpp knobs), endpoint URLs,
+    # and ``api_key_env`` names stay LOCAL.
+    name: str = Field(json_schema_extra={"scope": "shared"})
     # Phase N Wave 3 added ``"model2vec"`` for the static fast-tier
     # provider (potion-code-16M).  Optional ``[fast-tier]`` extra at
     # install time; the dispatch lives in ``embedders/registry.py``.
@@ -331,12 +344,17 @@ class EmbedderConfig(BaseModel):
     # ``failed to encode response: json: unsupported value: NaN`` for
     # ~30% of Python-code chunks, and in-process llama.cpp avoids
     # Ollama's JSON encoder entirely.  Optional ``[llama-cpp]`` extra.
-    provider: str = Field(pattern=r"^(sentence_transformers|openai|model2vec|llama\-cpp)$")
-    model_id: str
-    dimension: int = Field(gt=0)
-    normalize: bool = Field(default=True)
-    distance: str = Field(default="cosine", pattern="^(cosine|l2|ip)$")
-    active: bool = Field(default=True)
+    provider: str = Field(
+        pattern=r"^(sentence_transformers|openai|model2vec|llama\-cpp)$",
+        json_schema_extra={"scope": "shared"},
+    )
+    model_id: str = Field(json_schema_extra={"scope": "shared"})
+    dimension: int = Field(gt=0, json_schema_extra={"scope": "shared"})
+    normalize: bool = Field(default=True, json_schema_extra={"scope": "shared"})
+    distance: str = Field(
+        default="cosine", pattern="^(cosine|l2|ip)$", json_schema_extra={"scope": "shared"}
+    )
+    active: bool = Field(default=True, json_schema_extra={"scope": "shared"})
     batch_size: int = Field(default=32, gt=0)
     device: str = Field(default="auto")
     api_key_env: str = Field(default="OPENAI_API_KEY")
@@ -382,7 +400,7 @@ class EmbedderConfig(BaseModel):
     # declaration order).  Pairs with the ``Config``-level
     # ``_check_routing_invariant`` validator below which rejects
     # specialist-only configs that have no active catchall.
-    extensions: list[str] = Field(default_factory=list)
+    extensions: list[str] = Field(default_factory=list, json_schema_extra={"scope": "shared"})
 
     @field_validator("extensions")
     @classmethod
@@ -424,11 +442,16 @@ class RerankerConfig(BaseModel):
     600 MB model download never happens by accident.
     """
 
-    kind: Literal["cross_encoder", "ollama"] = "cross_encoder"
-    model_id: str = "BAAI/bge-reranker-v2-m3"
+    # Federation scope (RFC fleet-3): the reranker *choice* (kind,
+    # model, scoring window) is SHARED so fleet hosts rank identically;
+    # ``device`` and ``batch_size`` are machine tuning and stay LOCAL.
+    kind: Literal["cross_encoder", "ollama"] = Field(
+        default="cross_encoder", json_schema_extra={"scope": "shared"}
+    )
+    model_id: str = Field(default="BAAI/bge-reranker-v2-m3", json_schema_extra={"scope": "shared"})
     device: str = "auto"
     batch_size: int = Field(default=32, gt=0)
-    max_length: int = Field(default=512, gt=0)
+    max_length: int = Field(default=512, gt=0, json_schema_extra={"scope": "shared"})
 
 
 class RetrievalConfig(BaseModel):
@@ -485,23 +508,33 @@ class RetrievalConfig(BaseModel):
       tight and a heavy multiplier swamps it).
     """
 
-    alpha: float = Field(default=0.5, ge=0.0, le=1.0)
-    fusion: Literal["rrf", "alpha"] = "rrf"
-    default_k: int = Field(default=10, gt=0)
-    rerank_top_n: int = Field(default=50, gt=0)
-    rerank_enabled: bool = False
+    # Federation scope (RFC fleet-3): retrieval settings are SHARED —
+    # two hosts querying the same corpus must fuse/boost identically or
+    # "the same search" returns different answers per machine. The
+    # nested ``reranker`` block carries its own per-field scope split.
+    alpha: float = Field(default=0.5, ge=0.0, le=1.0, json_schema_extra={"scope": "shared"})
+    fusion: Literal["rrf", "alpha"] = Field(default="rrf", json_schema_extra={"scope": "shared"})
+    default_k: int = Field(default=10, gt=0, json_schema_extra={"scope": "shared"})
+    rerank_top_n: int = Field(default=50, gt=0, json_schema_extra={"scope": "shared"})
+    rerank_enabled: bool = Field(default=False, json_schema_extra={"scope": "shared"})
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
-    adaptive_lexical_weight: bool = False
-    symbol_query_alpha: float = Field(default=0.3, ge=0.0, le=1.0)
-    definition_boost_enabled: bool = False
-    definition_boost_factor_pre_rerank: float = Field(default=1.5, ge=1.0, le=5.0)
-    definition_boost_factor_post_rerank: float = Field(default=1.2, ge=1.0, le=5.0)
+    adaptive_lexical_weight: bool = Field(default=False, json_schema_extra={"scope": "shared"})
+    symbol_query_alpha: float = Field(
+        default=0.3, ge=0.0, le=1.0, json_schema_extra={"scope": "shared"}
+    )
+    definition_boost_enabled: bool = Field(default=False, json_schema_extra={"scope": "shared"})
+    definition_boost_factor_pre_rerank: float = Field(
+        default=1.5, ge=1.0, le=5.0, json_schema_extra={"scope": "shared"}
+    )
+    definition_boost_factor_post_rerank: float = Field(
+        default=1.2, ge=1.0, le=5.0, json_schema_extra={"scope": "shared"}
+    )
     # Phase N Wave 3 — fast-tier embedder cross-reference.  Names an
     # entry in ``Config.embedders`` that runs as a candidate generator
     # when ``SearchOptions.fast_tier_mode != "skip"``.  Validated at
     # ``Config`` load time (see ``Config._check_fast_tier_embedder``)
     # so a typo surfaces before any search call.
-    fast_tier_embedder_name: str | None = None
+    fast_tier_embedder_name: str | None = Field(default=None, json_schema_extra={"scope": "shared"})
 
 
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -551,10 +584,13 @@ class VLMConfig(BaseModel):
     - ``timeout_s``: per-request budget for both backends.
     """
 
+    # Federation scope (RFC fleet-3): the *model choices* are SHARED;
+    # ``backend`` (which machine runs what), URLs, key-env names, and
+    # timeouts stay LOCAL.
     backend: Literal["ollama", "mistral", "none"] = "none"
-    ollama_model: str = "qwen2.5vl:7b"
+    ollama_model: str = Field(default="qwen2.5vl:7b", json_schema_extra={"scope": "shared"})
     ollama_url: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
-    mistral_model: str = "mistral-ocr-2503"
+    mistral_model: str = Field(default="mistral-ocr-2503", json_schema_extra={"scope": "shared"})
     mistral_base_url: AnyHttpUrl = AnyHttpUrl("https://api.mistral.ai/v1")
     mistral_api_key_env: str = "MISTRAL_API_KEY"
     timeout_s: float = Field(120.0, gt=0)
@@ -601,8 +637,11 @@ class WhisperConfig(BaseModel):
     blocks. The remote Whisper path shows the same pattern.
     """
 
+    # Federation scope (RFC fleet-3): the Whisper *model choice* is
+    # SHARED; backend mode, compute type, URLs, key-env names, and
+    # timeouts stay LOCAL.
     backend: Literal["local", "remote", "none"] = "none"
-    model: str = "small"
+    model: str = Field(default="small", json_schema_extra={"scope": "shared"})
     local_compute_type: Literal["auto", "float16", "int8", "int8_float16"] = "auto"
     remote_base_url: AnyHttpUrl = AnyHttpUrl("https://api.openai.com/v1")
     remote_api_key_env: str = "OPENAI_API_KEY"
@@ -655,18 +694,28 @@ class ClassifierConfig(BaseModel):
     - ``llm_excerpt_chars``: total head+tail budget passed to the model.
     """
 
-    chain: list[str] = Field(default_factory=lambda: ["rule", "llm"])
-    escalation_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
+    # Federation scope (RFC fleet-3): the classification *behavior* —
+    # chain, escalation threshold, model choice, sampling — is SHARED
+    # so every host labels documents identically; the endpoint URL,
+    # key-env name, and timeout stay LOCAL.
+    chain: list[str] = Field(
+        default_factory=lambda: ["rule", "llm"], json_schema_extra={"scope": "shared"}
+    )
+    escalation_threshold: float = Field(
+        default=0.4, ge=0.0, le=1.0, json_schema_extra={"scope": "shared"}
+    )
     # ── LLM fields ────────────────────────────────────────────────────
-    llm_model: str = "qwen2.5:7b-instruct"
+    llm_model: str = Field(default="qwen2.5:7b-instruct", json_schema_extra={"scope": "shared"})
     # Pydantic v2 quirk: ``AnyHttpUrl`` defaults must be wrapped in the
     # class (not bare strings). Mirrors the proven pattern from
     # :attr:`VLMConfig.ollama_url`.
     llm_url: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
     llm_api_key_env: str = ""
     llm_timeout_s: float = Field(default=60.0, gt=0)
-    llm_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
-    llm_excerpt_chars: int = Field(default=2000, gt=0)
+    llm_temperature: float = Field(
+        default=0.0, ge=0.0, le=2.0, json_schema_extra={"scope": "shared"}
+    )
+    llm_excerpt_chars: int = Field(default=2000, gt=0, json_schema_extra={"scope": "shared"})
 
     model_config = ConfigDict(extra="forbid")
 
@@ -708,15 +757,22 @@ class EnricherConfig(BaseModel):
     - ``temperature``: sampling temperature in ``[0.0, 2.0]``.
     """
 
+    # Federation scope (RFC fleet-3): enricher *model choices* and
+    # sampling are SHARED; backend mode (which machine runs local vs
+    # remote), URLs, API shape, key-env name, and timeout stay LOCAL.
     backend: Literal["local", "remote", "none"] = "none"
-    local_model: str = "qwen3.6:35b-a3b-instruct"
+    local_model: str = Field(
+        default="qwen3.6:35b-a3b-instruct", json_schema_extra={"scope": "shared"}
+    )
     local_url: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
-    remote_model: str = "qwen3.6:35b-a3b-instruct"
+    remote_model: str = Field(
+        default="qwen3.6:35b-a3b-instruct", json_schema_extra={"scope": "shared"}
+    )
     remote_url: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
     remote_api_shape: Literal["ollama", "openai"] = "ollama"
     remote_api_key_env: str = "OLLAMA_API_KEY"
     timeout_s: float = Field(180.0, gt=0)
-    temperature: float = Field(0.1, ge=0.0, le=2.0)
+    temperature: float = Field(0.1, ge=0.0, le=2.0, json_schema_extra={"scope": "shared"})
 
     model_config = ConfigDict(extra="forbid")
 
