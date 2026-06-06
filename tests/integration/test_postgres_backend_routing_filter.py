@@ -212,6 +212,13 @@ class TestBackfillEndToEndOnlyEmbedsClaimedChunks:
         mock_config.backend.dsn = "postgresql://x"
         mock_config.backend.schema = "corpus"
         mock_config.embedders = [text_cfg, code_cfg]
+        # RFC fleet-2 claim path: host_id() and [embed] reach SQL params —
+        # a bare MagicMock can't be adapted by psycopg ("cannot adapt type
+        # 'MagicMock'"). Concrete values; the silent-heartbeat → first-claim
+        # FK-violation → fallback demotion is an exercised, supported path.
+        mock_config.host_id.return_value = "rf-e2e-host"
+        mock_config.embed.claim_lease_ttl = 600
+        mock_config.embed.lanes = []
 
         # Use concrete attribute carriers — backend.register_embedder reads
         # provider/model_id/dimension/etc. as JSON-serialisable scalars.
