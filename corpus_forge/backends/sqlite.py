@@ -1503,6 +1503,40 @@ class SQLiteBackend:
             "SQLite backend does not support fleet federation (RFC fleet-2)."
         )
 
+    # ── Fleet 3 — federated config publish / pull ─────────────────────────
+    #
+    # Federated config sharing (RFC fleet-3) coordinates multiple hosts
+    # through a shared Postgres; SQLite is single-machine by construction so
+    # both helpers raise :class:`FederationUnsupported` (RFC non-goal: no
+    # SQLite federation), same as the fleet-2 claim methods above.
+
+    def get_shared_config(self) -> tuple[int, dict] | None:
+        """Unsupported on SQLite — raises :class:`FederationUnsupported`."""
+        raise FederationUnsupported(
+            "get_shared_config requires a shared Postgres backend; the SQLite "
+            "backend is single-machine and does not support fleet federation "
+            "(RFC fleet-3)."
+        )
+
+    def put_shared_config(
+        self,
+        body: dict,
+        expected_version: int,
+        published_by: str,
+    ) -> int:
+        """Unsupported on SQLite — raises :class:`FederationUnsupported`.
+
+        Arguments are accepted for Protocol signature parity but never used
+        (the method always raises); ``del`` consumes them so the unused-arg
+        linter stays green without a suppression comment.
+        """
+        del body, expected_version, published_by
+        raise FederationUnsupported(
+            "put_shared_config requires a shared Postgres backend; the SQLite "
+            "backend is single-machine and does not support fleet federation "
+            "(RFC fleet-3)."
+        )
+
     def pending_documents(
         self, *, dataset_id: int | None = None, limit: int = 5
     ) -> tuple[int, list[str]]:

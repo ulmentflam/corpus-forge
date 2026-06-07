@@ -796,6 +796,7 @@ app.add_typer(_logs_app, name="logs")
 # Five sub-apps for inspecting and editing the deployment without
 # hand-editing ``config.toml``.  Each module owns its verb wiring;
 # we just register the Typer apps onto the root.
+from corpus_forge.admin import federation  # noqa: E402
 from corpus_forge.admin.bench import bench_app as _bench_app  # noqa: E402
 from corpus_forge.admin.config import config_app as _config_app  # noqa: E402
 from corpus_forge.admin.dataset import dataset_app as _dataset_app  # noqa: E402
@@ -807,6 +808,10 @@ from corpus_forge.admin.ollama import ollama_app as _ollama_app  # noqa: E402
 from corpus_forge.admin.service import service_app as _service_app  # noqa: E402
 from corpus_forge.admin.source import source_app as _source_app  # noqa: E402
 
+# fleet-3 federation verbs (`config publish/pull/diff`) decorate
+# `config_app` at import time; the assertion makes the side-effect
+# import explicit (and keeps it un-flagged as unused).
+assert federation.config_app is _config_app
 app.add_typer(_config_app, name="config")
 app.add_typer(_embedder_app, name="embedder")
 app.add_typer(_ollama_app, name="ollama")

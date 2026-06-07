@@ -34,6 +34,24 @@ class FederationUnsupported(RuntimeError):
     :meth:`StorageBackend.release_claims`, and
     :meth:`StorageBackend.expire_stale_claims` raise this on SQLite rather
     than silently letting two hosts duplicate compute.
+
+    Federated config sharing (RFC ``fleet-3``) relies on the same shared
+    Postgres, so :meth:`StorageBackend.get_shared_config` and
+    :meth:`StorageBackend.put_shared_config` raise this on SQLite too.
+    """
+
+
+class SharedConfigVersionConflict(RuntimeError):
+    """Raised when a :meth:`StorageBackend.put_shared_config` write loses the
+    optimistic-concurrency race.
+
+    Federated config publish (RFC ``fleet-3``) is optimistic: the
+    publisher passes the ``version`` it last pulled, and the write only
+    lands if the DB is still at that version. When a peer published in the
+    meantime — or another host did the very first publish concurrently —
+    the conditional write affects zero rows and this is raised instead of
+    silently clobbering the newer config. The operator's fix is always the
+    same: pull the current shared config first, then re-publish on top.
     """
 
 
@@ -270,6 +288,52 @@ class StorageBackend(Protocol):
         chunks *other* hosts have reserved are work this host will never
         do, so they're subtracted from the missing-embeddings total
         (floored at 0). SQLite raises :class:`FederationUnsupported`.
+        """
+        ...
+
+    # --- Fleet 3 — federated config publish / pull ------------------------
+
+    def get_shared_config(self) -> "tuple[int, dict] | None":
+        """Return the corpus's shared config as ``(version, body)``, or None.
+
+        Fleet-3 (RFC ``rfc-fleet-3-federated-config-and-setup``) read side.
+        Returns ``None`` when no host has ever published (the table is
+        empty), so a fresh fleet's first ``config publish`` passes
+        ``expected_version=0``. Otherwise returns the current ``version``
+        and the decoded ``body`` dict.
+
+        SQLite raises :class:`FederationUnsupported`.
+        """
+        ...
+
+    def put_shared_config(
+        self,
+        body: dict,
+        expected_version: int,
+        published_by: str,
+    ) -> int:
+        """Atomically publish ``body`` as the next shared-config version.
+
+        Fleet-3 write side, optimistic-concurrency guarded. The caller
+        passes ``expected_version`` — the version it last pulled (``0`` for
+        the very first publish) — and the new version
+        (``expected_version + 1``) is returned on success.
+
+        The write is a single conditional statement:
+
+        * ``expected_version == 0`` (first publish) →
+          ``INSERT ... ON CONFLICT (corpus_id) DO NOTHING RETURNING version``;
+          a row already present means another host published first, so no
+          row comes back.
+        * otherwise →
+          ``UPDATE ... SET version = version + 1, ... WHERE corpus_id = 1
+          AND version = %s RETURNING version``; the ``version = %s`` guard
+          fails (zero rows) when the DB has moved past ``expected_version``.
+
+        Either way, no returned row means the optimistic-concurrency check
+        lost the race, and :class:`SharedConfigVersionConflict` is raised
+        telling the operator to pull first. SQLite raises
+        :class:`FederationUnsupported`.
         """
         ...
 
