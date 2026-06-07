@@ -368,9 +368,23 @@ def main() -> NoReturn:
     config = Config.load()
     run_daemon(config)
 
-    # Block until ``run_daemon``'s signal handler exits the process.
+    # RFC fleet-3 item 4 — federation drift detection. Construct the
+    # checker ONCE, and only when ``[federation] enabled = true`` AND the
+    # backend is postgres. With the default (``enabled=False``) this
+    # returns ``None`` and the blocking loop below never touches shared
+    # config — the hard backcompat bar.
+    drift_checker = _make_federation_drift_checker(config)
+
+    # Block until ``run_daemon``'s signal handler exits the process. When
+    # a drift checker exists, wake on its check interval and run the
+    # throttled, best-effort check each wakeup; otherwise sleep long.
+    sleep_interval = (
+        config.federation.drift_check_interval_s if drift_checker is not None else 3600.0
+    )
     while True:
-        time.sleep(3600)
+        time.sleep(sleep_interval)
+        if drift_checker is not None:
+            drift_checker()
 
     # Unreachable — kept for type-checker satisfaction (``NoReturn``).
     logger.info("Daemon stopped")
@@ -407,6 +421,94 @@ def _log_embedder_drift_warning() -> None:
                 d.now_model_id,
                 d.chunks_to_rerun,
             )
+
+
+def _make_federation_drift_checker(config) -> Callable[[], None] | None:
+    """Return a throttled, best-effort federation drift checker, or ``None``.
+
+    RFC ``rfc-fleet-3-federated-config-and-setup`` item 4. The returned
+    callable is meant to be invoked once per daemon loop wakeup. It
+    compares the corpus's *published* shared-config version against this
+    host's *last-pulled* version and logs ONE WARNING when the corpus is
+    ahead — pointing the operator at ``corpus-forge config pull``. It
+    NEVER applies anything (RFC non-goal: "No auto-apply ... no
+    background config mutation, ever").
+
+    Returns ``None`` — so no checker runs at all — unless BOTH:
+
+    - ``config.federation.enabled`` is True, AND
+    - the configured backend kind is ``postgres`` (federation requires
+      the shared Postgres; SQLite is single-host).
+
+    With the default (``enabled=False``) this is ``None`` and the daemon
+    reads no shared config — the hard backcompat bar.
+
+    Throttling: the returned closure holds a ``last_checked`` timestamp
+    and skips the DB read until ``drift_check_interval_s`` has elapsed
+    since the previous *successful or attempted* check. The first call
+    always checks (``last_checked`` starts at ``-inf``).
+
+    Failure isolation: EVERY failure mode — :class:`FederationUnsupported`
+    (backend somehow can't federate), an unreachable backend, a
+    state-file read problem, anything — is swallowed at DEBUG. The check
+    must never crash or slow the daemon.
+    """
+
+    if not getattr(config.federation, "enabled", False):
+        return None
+    if getattr(config.backend, "kind", "postgres") != "postgres":
+        # Federation requires the shared Postgres backend (RFC non-goal:
+        # no SQLite support). Don't even build the checker.
+        logger.debug(
+            "federation.enabled=true but backend.kind=%r; drift check disabled "
+            "(federation requires the postgres backend)",
+            getattr(config.backend, "kind", None),
+        )
+        return None
+
+    interval = float(config.federation.drift_check_interval_s)
+    # Mutable cell for the last-checked timestamp; ``-inf`` forces the
+    # first invocation to actually check.
+    state = {"last_checked": float("-inf")}
+
+    def _check() -> None:
+        now = time.monotonic()
+        if now - state["last_checked"] < interval:
+            return
+        state["last_checked"] = now
+        # Lazy imports: keep daemon startup light and avoid the
+        # cli -> daemon -> cli import cycle. ``federation`` is the admin
+        # helper module (NOT this daemon) — reuse its state bookkeeping.
+        from contextlib import suppress  # noqa: PLC0415
+
+        with suppress(Exception):
+            from corpus_forge.admin.federation import (  # noqa: PLC0415
+                read_last_pulled_version,
+            )
+
+            backend = _get_any_backend(config)
+            if backend is None:
+                logger.debug("federation drift check: no reachable backend; skipping")
+                return
+            try:
+                fetched = backend.get_shared_config()
+            except Exception as exc:  # FederationUnsupported, conn errors, ...
+                logger.debug("federation drift check: get_shared_config failed (%r)", exc)
+                return
+            if fetched is None:
+                # Nothing published yet — no drift possible.
+                return
+            published_version = int(fetched[0])
+            last_pulled = read_last_pulled_version()
+            if published_version > last_pulled:
+                logger.warning(
+                    "shared config v%s is published but this host last pulled v%s "
+                    "— run `corpus-forge config pull` to review (then --apply)",
+                    published_version,
+                    last_pulled,
+                )
+
+    return _check
 
 
 if __name__ == "__main__":
