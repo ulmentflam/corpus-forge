@@ -34,6 +34,12 @@ def open_conn(cfg: Any) -> Any:
     if kind == "sqlite":
         return sqlite3.connect(dsn)
     elif kind == "postgres":
+        # RFC fleet-4 — resolve a ``ts://<pg-host>[:port]/<db>`` DSN to a
+        # connectable ``postgresql://…`` URL. Non-``ts://`` DSNs pass
+        # through unchanged (no Tailscale import on that path).
+        from corpus_forge.net import resolve_endpoint_for
+
+        dsn = resolve_endpoint_for(dsn, cfg, default_scheme="postgresql")
         # Lazy import psycopg so CLI startup is unaffected on environments
         # that have only the SQLite extra installed.
         import psycopg

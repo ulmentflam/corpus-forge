@@ -1,15 +1,20 @@
 """Embedder registry for corpus-forge."""
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .base import Embedder
+
+if TYPE_CHECKING:  # pragma: no cover — typing only
+    from corpus_forge.config import TailscaleConfig
 from .llama_cpp import LlamaCppEmbedder
 from .model2vec import Model2VecEmbedder
 from .openai import OpenAIEmbedder
 from .sentence_transformers import SentenceTransformersEmbedder
 
 
-def _per_provider_extras(embedder_config) -> dict[str, Any]:
+def _per_provider_extras(
+    embedder_config, tailscale: "TailscaleConfig | None" = None
+) -> dict[str, Any]:
     """Build the provider-specific kwargs dict for ``EmbedderRegistry.register``.
 
     Different providers accept different optional kwargs:
@@ -61,10 +66,25 @@ def _per_provider_extras(embedder_config) -> dict[str, Any]:
         extras["api_key_env"] = getattr(embedder_config, "api_key_env", "OPENAI_API_KEY")
         base_url = getattr(embedder_config, "base_url", None)
         if base_url is not None:
-            # ``base_url`` may be a pydantic AnyHttpUrl — cast to str
-            # and strip the trailing slash so the OpenAI SDK accepts
-            # it unchanged.
-            extras["base_url"] = str(base_url).rstrip("/")
+            # RFC fleet-4 — ``base_url`` accepts a ``ts://name[:port]``
+            # tailnet endpoint; resolve it to a connectable URL at this
+            # consumption point. Non-``ts://`` values (the common case)
+            # pass through ``resolve_endpoint`` unchanged with no
+            # Tailscale import. ``rstrip('/')`` keeps the OpenAI SDK
+            # happy. When ``tailscale`` is None (duck-typed callers /
+            # tests) resolution is skipped — a plain ``str()`` cast, the
+            # pre-RFC behaviour.
+            url_str = str(base_url)
+            if tailscale is not None:
+                from corpus_forge.net import resolve_endpoint  # noqa: PLC0415
+
+                url_str = resolve_endpoint(
+                    url_str,
+                    tailscale_enabled=tailscale.enabled,
+                    prefer_magicdns=tailscale.prefer_magicdns,
+                    default_scheme="http",
+                )
+            extras["base_url"] = url_str.rstrip("/")
     elif provider == "llama-cpp":
         # Forward llama.cpp-specific knobs to the constructor.
         # ``gguf_path`` is forwarded ONLY when truthy so the
@@ -94,19 +114,29 @@ def _per_provider_extras(embedder_config) -> dict[str, Any]:
     return extras
 
 
-def register_from_config(registry: "EmbedderRegistry", embedder_config) -> Embedder:
+def register_from_config(
+    registry: "EmbedderRegistry",
+    embedder_config,
+    tailscale: "TailscaleConfig | None" = None,
+) -> Embedder:
     """Register an embedder using the per-provider kwarg policy.
 
     Every call site that builds an :class:`Embedder` from a config
     object should route through here so the provider-specific
     kwargs don't drift between ingest, search, and admin paths.
+
+    RFC fleet-4: pass ``tailscale=config.tailscale`` so an OpenAI
+    provider's ``ts://name[:port]`` ``base_url`` is resolved to a
+    connectable URL at registration time. Omitting it (the default)
+    skips resolution — preserves the pre-RFC behaviour for duck-typed
+    callers and unit tests.
     """
     return registry.register(
         name=embedder_config.name,
         provider=embedder_config.provider,
         model_id=embedder_config.model_id,
         dimension=embedder_config.dimension,
-        **_per_provider_extras(embedder_config),
+        **_per_provider_extras(embedder_config, tailscale),
     )
 
 

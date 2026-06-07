@@ -42,6 +42,32 @@ if TYPE_CHECKING:
 # readable without a ruff ``PLR2004`` magic-number flag.
 _LEGACY_CHUNK_TUPLE_LEN = 2
 
+
+def _resolve_dsn_endpoint(dsn: str) -> str:
+    """RFC fleet-4 — resolve a ``ts://`` backend DSN at connection time.
+
+    The RFC accepts ``backend.dsn = "ts://<pg-host>[:port]/<db>"`` as the
+    fleet-ergonomic form: the host segment is a tailnet MagicDNS name. A
+    non-``ts://`` DSN (a plain ``postgresql://…`` URL or a libpq
+    ``key=value`` string) is returned unchanged with zero side effects —
+    the Tailscale module is never imported on that path, honouring the
+    RFC's "no hard dependency" bar.
+
+    Resolution is lazy by design (RFC "Approach": config stays inert,
+    resolution happens where the connection is attempted). The tailscale
+    settings are read from the *global* loaded config — the same config
+    that produced this DSN in every real call path — only when a
+    ``ts://`` DSN is actually present, so plain-DSN backends (and tests
+    that construct a backend without any loaded config) are unaffected.
+    """
+    if not dsn.startswith("ts://"):
+        return dsn
+    from corpus_forge.config import get_config  # noqa: PLC0415
+    from corpus_forge.net import resolve_endpoint_for  # noqa: PLC0415
+
+    return resolve_endpoint_for(dsn, get_config(), default_scheme="postgresql")
+
+
 #: Postgres protocol bind-parameter cap. PG limits the parameter
 #: count per statement to a 16-bit unsigned integer (65,535).
 #: Multi-row ``INSERT ... VALUES (?, ?), (?, ?), ...`` statements
@@ -202,7 +228,7 @@ class PostgresBackend(StorageBackend):
         pool_min_size: int = 0,
         pool_max_size: int = 8,
     ):
-        self.dsn = dsn
+        self.dsn = _resolve_dsn_endpoint(dsn)
         self.schema = schema
         self._setup_connection()
         # Connection pool. Replaces the previous per-call ``psycopg.connect``

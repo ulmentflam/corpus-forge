@@ -107,9 +107,13 @@ def get_active_vlm(config: Config) -> VLMBackend:
                 "Ollama backend selected but `corpus_forge.vlm.ollama` could not "
                 "be imported — install the `[ocr]` extra (`uv sync --extra ocr`)."
             )
+        from corpus_forge.net import resolve_endpoint_for  # noqa: PLC0415
+
         backend = cls(
             model=vlm_cfg.ollama_model,
-            ollama_url=str(vlm_cfg.ollama_url).rstrip("/"),
+            ollama_url=resolve_endpoint_for(
+                str(vlm_cfg.ollama_url), config, default_scheme="http"
+            ).rstrip("/"),
             timeout_s=vlm_cfg.timeout_s,
         )
         registry.register(backend)
@@ -128,10 +132,14 @@ def get_active_vlm(config: Config) -> VLMBackend:
                 "Mistral backend selected but `corpus_forge.vlm.mistral` could "
                 "not be imported — install the `[ocr]` extra."
             )
+        from corpus_forge.net import resolve_endpoint_for  # noqa: PLC0415
+
         backend = cls(
             api_key=api_key,
             model=vlm_cfg.mistral_model,
-            base_url=str(vlm_cfg.mistral_base_url).rstrip("/"),
+            base_url=resolve_endpoint_for(
+                str(vlm_cfg.mistral_base_url), config, default_scheme="http"
+            ).rstrip("/"),
             timeout_s=vlm_cfg.timeout_s,
         )
         registry.register(backend)
