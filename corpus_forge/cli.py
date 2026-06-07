@@ -468,6 +468,18 @@ def setup(
             "Each name must match a configured [[embedders]] entry."
         ),
     ),
+    join: str | None = typer.Option(
+        None,
+        "--join",
+        envvar="CF_JOIN_DSN",
+        help=(
+            "Join an existing corpus-forge fleet at this Postgres DSN "
+            "(RFC fleet-3): connect, register this host, and render a "
+            "local config.toml pre-loaded with the fleet's shared scope. "
+            "The fleet's primary owns the schema — join never migrates. "
+            "Works interactively and with --non-interactive."
+        ),
+    ),
 ) -> None:
     """Post-install setup wizard.
 
@@ -487,6 +499,36 @@ def setup(
     first. ``secrets.env`` is preserved if it already exists.
     """
     from .setup import run_non_interactive, run_quick, run_wizard
+
+    # RFC fleet-3 item 5 — ``--join <dsn>`` short-circuits the question
+    # tree entirely: it connects to the fleet's shared Postgres, registers
+    # this host, and renders a local config pre-loaded with the published
+    # shared scope. The flag also reads ``CF_JOIN_DSN`` so the install
+    # scripts' non-interactive path can pass the target through the env.
+    if join is not None:
+        from .setup import JoinError, run_join
+
+        if not non_interactive:
+            from .ui import render_banner
+
+            render_banner("corpus-forge", subtitle="Join a fleet.")
+        try:
+            config_path, awaiting = run_join(
+                join,
+                config_dir=config_dir,
+                interactive=not non_interactive,
+            )
+        except JoinError as exc:
+            ui_error(str(exc))
+            raise typer.Exit(code=1) from None
+        ui_ok(f"Joined fleet — wrote {config_path}")
+        if awaiting:
+            ui_info(
+                "Fleet datasets awaiting a local source: "
+                + ", ".join(awaiting)
+                + " — uncomment their [[datasets]] blocks and add sources."
+            )
+        return
 
     # RFC fleet-2 item 4 — surface ``--embed-lanes`` to the wizard via the
     # same ``CF_EMBED_LANES`` env knob the non-interactive path reads, so

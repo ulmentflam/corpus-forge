@@ -25,15 +25,19 @@ from __future__ import annotations
 import contextlib
 import json as _json
 import os
+import socket
 import sys
 import tomllib
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO
+from typing import IO, TYPE_CHECKING, Any
 
 from corpus_forge.acceleration import detect_accelerator, recommend_embedder_preset
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 # Canonical question tree ships INSIDE the corpus_forge package (not in
 # repo-root ``packaging/``) so it's bundled in the wheel and the wizard
@@ -1206,3 +1210,351 @@ def run_quick(
     answers.setdefault("create_corpusignore", quick_env.get("CF_CREATE_CORPUSIGNORE", "yes"))
     _apply_corpusignore(answers, resolved_dir)
     return config_path, secrets_path, answers
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Join flow (RFC fleet-3 item 5)
+# ───────────────────────────────────────────────────────────────────────────
+#
+# ``corpus-forge setup --join <dsn>`` takes a fresh machine from
+# *installed* to *registered host with the fleet's shared config* in one
+# command.  The flow:
+#
+# 1. Connect to the shared Postgres and verify the corpus schema is
+#    present (a primary host has run ``migrate``).  We NEVER auto-migrate
+#    on join — the fleet's primary owns the schema lifecycle.
+# 2. Register this host in ``corpus.hosts`` (fleet-1 ``upsert_host``)
+#    with the accelerator probe payload.
+# 3. Render a minimal local ``config.toml`` (backend postgres + the join
+#    DSN, ``[daemon]``, ``datasets = []``) merged with the published
+#    shared scope via ``merge_shared_scope`` — EXCEPT shared datasets,
+#    which arrive name/kind-only (no ``sources``) and would fail
+#    ``Config.validate_dataset_sources``.  Those land as COMMENTED-OUT
+#    ``[[datasets]]`` blocks the operator un-comments after pointing each
+#    at a local source root.
+# 4. Record the pulled version locally (federation state file).
+#
+# The host-id derivation here mirrors :meth:`Config.host_id`'s fallback
+# (``socket.gethostname()``, persisted to ``<config_dir>/host_id``) —
+# but no config exists yet at join time, so we resolve it minimally and
+# seed the same ``host_id`` file the later loaded ``Config.host_id()``
+# will read, keeping the id stable across the join → first-run boundary.
+
+
+class JoinError(RuntimeError):
+    """A recoverable join failure the CLI surfaces as a clean exit-1.
+
+    Carries an operator-facing message (no traceback) — raised for an
+    unreachable DSN, a missing corpus schema, or an existing config the
+    non-interactive path refuses to clobber.
+    """
+
+
+def _resolve_join_host_id(config_dir: Path) -> str:
+    """Resolve this host's id the way :meth:`Config.host_id` will, sans config.
+
+    At join time no ``config.toml`` exists yet, so we can't call
+    :meth:`Config.host_id`.  Reimplement its *fallback* branch (the one
+    that fires when ``daemon.host_id`` is empty): read the persisted
+    ``host_id`` file if present, else use ``socket.gethostname()`` and
+    persist it.  We seed the SAME ``<config_dir>/host_id`` file the
+    later-loaded config's ``host_id()`` reads, so the id stays stable
+    across the join → first ``ingest`` / ``embed`` boundary instead of
+    being re-derived (and a host registered under one id then
+    heartbeating under another would orphan its ``corpus.hosts`` row).
+    """
+    host_id_path = config_dir / "host_id"
+    if host_id_path.exists():
+        existing = host_id_path.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    hostname = socket.gethostname()
+    host_id_path.parent.mkdir(parents=True, exist_ok=True)
+    host_id_path.write_text(hostname, encoding="utf-8")
+    return hostname
+
+
+def _connect_and_verify_schema(dsn: str) -> Any:
+    """Connect to ``dsn`` and verify the corpus schema is present.
+
+    Returns a live :class:`PostgresBackend`.  Raises :class:`JoinError`
+    with an operator-facing hint when the DSN is unreachable or the
+    ``corpus.hosts`` table is absent (no primary host has migrated).
+    NEVER migrates — the fleet's primary owns the schema.
+    """
+    from corpus_forge.backends.postgres import PostgresBackend  # noqa: PLC0415
+
+    try:
+        backend = PostgresBackend(dsn=dsn, schema="corpus")
+    except Exception as exc:  # connection / pool warm-up failure
+        raise JoinError(
+            f"could not connect to {dsn!r}: {exc}. Is the DSN right? "
+            "Is the shared Postgres reachable from this host?"
+        ) from exc
+
+    # Verify the schema exists WITHOUT migrating: probe the fleet-1
+    # ``corpus.hosts`` table directly (a primary host running ``migrate``
+    # creates it).  ``to_regclass`` returns NULL when the table is
+    # absent — cheaper and more portable than scraping information_schema.
+    try:
+        rows = backend._execute("SELECT to_regclass('corpus.hosts') AS reg")
+    except Exception as exc:
+        _close_join_backend(backend)
+        raise JoinError(
+            f"could not query {dsn!r}: {exc}. Is the DSN right? "
+            "Is the shared Postgres reachable from this host?"
+        ) from exc
+    present = bool(rows) and rows[0].get("reg") is not None
+    if not present:
+        _close_join_backend(backend)
+        raise JoinError(
+            "the corpus schema is missing on the target database "
+            "(corpus.hosts not found). Has a primary host run "
+            "`corpus-forge migrate`? Join never migrates the shared schema."
+        )
+    return backend
+
+
+def _close_join_backend(backend: Any) -> None:
+    """Best-effort backend close (mirrors the federation verbs)."""
+    closer = getattr(backend, "close", None)
+    if callable(closer):
+        with contextlib.suppress(Exception):
+            closer()
+
+
+def _render_skeleton_join_config(dsn: str) -> str:
+    """Render the minimal local skeleton the shared scope merges onto.
+
+    Backend postgres + the join DSN, an empty ``[daemon]`` block (daemon
+    defaults), and a root-scope ``datasets = []`` (no local datasets yet;
+    shared datasets land as commented blocks the operator fills in).  The
+    ``datasets = []`` bare key MUST precede any ``[section]`` header —
+    TOML binds bare keys to the most-recent table.
+    """
+    out: list[str] = [
+        "# Generated by `corpus-forge setup --join`. Edit freely after joining.",
+        "# Shared scope (embedders / retrieval / model choices) was pulled from",
+        "# the fleet's published config; local scope (DSN, sources) is yours.",
+        "",
+        # Root-scope key first (before any [table]).
+        "datasets = []",
+        "",
+        "[backend]",
+        'kind = "postgres"',
+        f"dsn  = {_quote_toml_str(dsn)}",
+        "",
+        "[daemon]",
+        "",
+    ]
+    return "\n".join(out) + "\n"
+
+
+def _render_commented_datasets(shared_datasets: list[dict[str, object]]) -> str:
+    """Render fleet datasets as COMMENTED-OUT ``[[datasets]]`` blocks.
+
+    THE VALIDATION TRAP: a shared dataset carries ``name`` / ``kind`` but
+    no ``sources`` (each machine ingests its own directories — that's a
+    feature).  A live ``[[datasets]]`` block with no ``sources`` fails
+    :meth:`Config.validate_dataset_sources` ("must have at least one
+    source"), so the merged file would not load.  We therefore emit each
+    shared dataset as a commented block the operator un-comments after
+    adding a local ``[[datasets.sources]]`` entry.  Returns ``""`` when
+    no shared datasets were published.
+    """
+    if not shared_datasets:
+        return ""
+    out: list[str] = [
+        "",
+        "# ── fleet datasets (awaiting local sources) ─────────────────────────",
+        "# These dataset names/kinds are shared across the fleet. Each machine",
+        "# ingests its OWN directories, so no sources were pulled. Uncomment a",
+        "# block and add your local [[datasets.sources]] entry to activate it.",
+    ]
+    for ds in shared_datasets:
+        name = ds.get("name")
+        kind = ds.get("kind", "text")
+        if not isinstance(name, str) or not name:
+            continue
+        kind_str = kind if isinstance(kind, str) and kind else "text"
+        out.append("")
+        out.append("# fleet dataset — uncomment and add your local [[datasets.sources]] block")
+        out.append("# [[datasets]]")
+        out.append(f"# name = {_quote_toml_str(name)}")
+        out.append(f"# kind = {_quote_toml_str(kind_str)}")
+        out.append(
+            '# sources = [{plugin = "filesystem", root = "~/path/to/data", chunker = "markdown"}]'
+        )
+    return "\n".join(out) + "\n"
+
+
+def render_join_config(dsn: str, shared_body: Mapping[str, Any] | None) -> tuple[str, list[str]]:
+    """Render the full join ``config.toml`` text + the awaiting-source names.
+
+    ``shared_body`` is the published shared-scope dict (or ``None`` when
+    nothing is published yet).  Shared datasets are split out and
+    rendered as commented blocks (the validation trap); every other
+    shared key (embedders / retrieval / model choices) is merged LIVE
+    onto the skeleton via :func:`merge_shared_scope`.  The returned text
+    is guaranteed to load via :meth:`Config.load` (verified by the
+    skeleton-render unit test).
+
+    Returns ``(config_text, awaiting_source_dataset_names)``.
+    """
+    from corpus_forge.config_scope import merge_shared_scope  # noqa: PLC0415
+
+    skeleton = _render_skeleton_join_config(dsn)
+
+    # Pull datasets out of the live merge — they would arrive sources-less
+    # and break Config validation. Everything else merges live.
+    shared_datasets: list[dict[str, object]] = []
+    live_shared: dict[str, Any] = {}
+    if shared_body:
+        for key, value in shared_body.items():
+            if key == "datasets" and isinstance(value, list):
+                shared_datasets = [d for d in value if isinstance(d, dict)]
+            else:
+                live_shared[key] = value
+
+    merged = merge_shared_scope(skeleton, live_shared) if live_shared else skeleton
+    commented = _render_commented_datasets(shared_datasets)
+    config_text = merged + commented if commented else merged
+
+    awaiting = [d["name"] for d in shared_datasets if isinstance(d.get("name"), str) and d["name"]]
+    return config_text, awaiting
+
+
+#: Post-join "next steps" — distinct from :data:`NEXT_STEPS` (fresh
+#: install) because the join host's first move is filling in local
+#: sources for the fleet datasets, then ingesting + calibrating, and
+#: it pulls (not publishes) shared config on a cadence.
+JOIN_NEXT_STEPS: tuple[str, ...] = (
+    "Next steps:",
+    "  1. Edit config.toml — uncomment each fleet [[datasets]] block and add a",
+    "     local [[datasets.sources]] entry pointing at this machine's data.",
+    "  corpus-forge ingest --once    # one-shot sync of the configured roots",
+    "  corpus-forge bench embed --all  # calibrate this machine's embedder "
+    "throughput (see `models list`)",
+    "  corpus-forge config pull --apply  # pull fleet shared-config updates on a cadence",
+)
+
+
+def render_join_next_steps(awaiting: list[str]) -> str:
+    """Return the post-join next-steps block, naming datasets awaiting sources."""
+    lines = list(JOIN_NEXT_STEPS)
+    if awaiting:
+        lines.append("  Datasets awaiting a local source: " + ", ".join(awaiting))
+    return "\n".join(lines) + "\n"
+
+
+def run_join(
+    dsn: str,
+    *,
+    config_dir: Path | None = None,
+    interactive: bool = True,
+    stream_out: IO[str] | None = None,
+) -> tuple[Path, list[str]]:
+    """Join an existing corpus-forge fleet (RFC fleet-3 item 5).
+
+    Connects to ``dsn``, verifies the corpus schema, registers this host
+    in ``corpus.hosts``, renders a minimal local ``config.toml`` merged
+    with the fleet's published shared scope, and records the pulled
+    version locally.
+
+    Args:
+        dsn: libpq DSN of the shared Postgres (the fleet's primary owns
+            the schema; join NEVER migrates).
+        config_dir: Output directory; defaults to ``~/.config/corpus-forge``.
+        interactive: When True, an existing ``config.toml`` triggers a
+            :class:`Confirm.ask` overwrite prompt (backup to
+            ``config.toml.bak`` on yes).  When False, an existing config
+            is refused with :class:`JoinError` (no ``--force`` in this
+            slice).
+        stream_out: Stream injection for testing the printed output.
+
+    Returns:
+        ``(config_path, awaiting_source_dataset_names)``.
+
+    Raises:
+        JoinError: unreachable DSN, missing schema, or refused overwrite.
+    """
+    from corpus_forge.admin.federation import write_last_pulled_version  # noqa: PLC0415
+
+    out_stream = stream_out or sys.stdout
+    resolved_dir = config_dir or DEFAULT_CONFIG_DIR
+    resolved_dir.mkdir(parents=True, exist_ok=True)
+    config_path = resolved_dir / "config.toml"
+
+    # ── Safety: existing config ────────────────────────────────────────
+    if config_path.exists():
+        if not interactive:
+            raise JoinError(
+                f"{config_path} already exists; refusing to overwrite in "
+                "non-interactive mode. Move it aside (or re-run interactively "
+                "to confirm) and try again."
+            )
+        from corpus_forge.ui.prompts import Confirm  # noqa: PLC0415
+
+        if not Confirm.ask(
+            f"{config_path} already exists. Overwrite (a backup is written to config.toml.bak)?",
+            default=False,
+        ):
+            raise JoinError("join aborted — existing config.toml left untouched.")
+        backup_path = config_path.with_name(config_path.name + ".bak")
+        backup_path.write_text(config_path.read_text(encoding="utf-8"), encoding="utf-8")
+        out_stream.write(
+            f"[corpus-forge setup --join] backed up existing config to {backup_path}\n"
+        )
+
+    # ── 1. Connect + verify schema (never migrate) ─────────────────────
+    backend = _connect_and_verify_schema(dsn)
+    try:
+        # ── 2. Register host (fleet-1 upsert) ──────────────────────────
+        import platform  # noqa: PLC0415
+
+        from corpus_forge.telemetry_registry import accelerator_payload  # noqa: PLC0415
+
+        host_id = _resolve_join_host_id(resolved_dir)
+        try:
+            backend.upsert_host(
+                host_id=host_id,
+                hostname=socket.gethostname(),
+                os=platform.platform(),
+                accelerator=accelerator_payload(),
+            )
+        except Exception as exc:
+            raise JoinError(f"could not register this host in corpus.hosts: {exc}") from exc
+
+        # ── 3. Fetch published shared scope + render config ────────────
+        fetched = backend.get_shared_config()
+    finally:
+        _close_join_backend(backend)
+
+    if fetched is None:
+        published_version = 0
+        shared_body: dict[str, Any] | None = None
+        out_stream.write(
+            "[corpus-forge setup --join] no shared config published yet — "
+            "rendering the skeleton with live local parts only.\n"
+        )
+    else:
+        published_version, shared_body = int(fetched[0]), fetched[1]
+
+    config_text, awaiting = render_join_config(dsn, shared_body)
+    config_path.write_text(config_text, encoding="utf-8")
+
+    # ── 4. Record the pulled version locally ───────────────────────────
+    # ``write_last_pulled_version`` writes beside the config resolved via
+    # ``resolve_config_path`` (CORPUS_FORGE_CONFIG-aware), which is the
+    # same file we just wrote — tests pin CORPUS_FORGE_CONFIG to it.
+    write_last_pulled_version(published_version)
+
+    # ── 5. Next-steps print ────────────────────────────────────────────
+    if awaiting:
+        out_stream.write(
+            "[corpus-forge setup --join] fleet datasets awaiting local sources: "
+            + ", ".join(awaiting)
+            + "\n"
+        )
+    out_stream.write(render_join_next_steps(awaiting))
+    return config_path, awaiting

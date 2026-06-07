@@ -18,22 +18,32 @@ Public entry points:
 """
 
 from .wizard import (
+    JOIN_NEXT_STEPS,
     NEXT_STEPS,
+    JoinError,
     Question,
     load_questions,
     render_config_toml,
+    render_join_config,
+    render_join_next_steps,
     render_next_steps,
+    run_join,
     run_non_interactive,
     run_quick,
     run_wizard,
 )
 
 __all__ = [
+    "JOIN_NEXT_STEPS",
     "NEXT_STEPS",
+    "JoinError",
     "Question",
     "load_questions",
     "render_config_toml",
+    "render_join_config",
+    "render_join_next_steps",
     "render_next_steps",
+    "run_join",
     "run_non_interactive",
     "run_quick",
     "run_wizard",
