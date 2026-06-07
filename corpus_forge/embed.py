@@ -19,6 +19,7 @@ import base64
 import logging
 from pathlib import Path
 
+from .backends.base import FederationUnsupported
 from .backends.postgres import PostgresBackend
 from .config import Config
 from .embedders.registry import register_from_config, registry
@@ -26,6 +27,16 @@ from .embedders.routing import route_for
 from .ui.progress import make_progress
 
 logger = logging.getLogger(__name__)
+
+#: RFC fleet-2 — canonical, never-patched reference to the Postgres
+#: backend class used by :func:`backfill_embedder` to decide whether the
+#: distributed claim/release path applies. Unit tests patch
+#: ``corpus_forge.embed.PostgresBackend`` (the constructor) to inject a
+#: MagicMock backend; this private alias is a *separate* module attribute
+#: those patches don't touch, so ``isinstance(backend, _RealPostgresBackend)``
+#: is reliably ``False`` for the mock (→ fallback path) and ``True`` only
+#: for a genuine Postgres backend (→ claim path).
+_RealPostgresBackend = PostgresBackend
 
 #: PR #81 — backend.chunks_missing_embedding now yields a
 #: ``(chunk_id, text, source_uri)`` 3-tuple. Pinned as a named constant so
@@ -86,6 +97,31 @@ def _write_embed_run_telemetry(
         logger.debug("embed telemetry: recorded embed-run row at %d chunks", processed)
     except Exception as exc:
         logger.debug("embed telemetry: embed-run write skipped (%r)", exc)
+
+
+#: RFC fleet-2 reviewer finding — sqlstate for a foreign-key violation.
+#: A silent ``_telemetry_heartbeat`` failure leaves no ``corpus.hosts`` row,
+#: so the first ``claim_chunks_for_embedding`` insert trips the
+#: ``embed_claims.host_id`` FK with ``psycopg.errors.ForeignKeyViolation``
+#: (sqlstate ``23503``). We detect it WITHOUT importing psycopg at module
+#: level — the import must stay lazy/optional so a sqlite-only install never
+#: pays for it — by sniffing the exception's ``sqlstate`` attribute (psycopg
+#: surfaces the SQLSTATE there) and, defensively, its class name.
+_FK_VIOLATION_SQLSTATE = "23503"
+
+
+def _is_fk_violation(exc: BaseException) -> bool:
+    """Return ``True`` if ``exc`` is a Postgres foreign-key violation.
+
+    Matched structurally so no ``import psycopg`` is needed at module load:
+    psycopg's ``Error`` exposes the SQLSTATE on a ``sqlstate`` attribute, and
+    the concrete class is named ``ForeignKeyViolation``. Either signal is
+    enough — checking both keeps the probe robust across psycopg minor
+    versions and any driver that mimics the DB-API ``sqlstate`` convention.
+    """
+    if getattr(exc, "sqlstate", None) == _FK_VIOLATION_SQLSTATE:
+        return True
+    return type(exc).__name__ == "ForeignKeyViolation"
 
 
 def _resolve_image_bytes(metadata: dict) -> bytes | None:
@@ -214,6 +250,24 @@ def backfill_embedder(
     # ``None`` (not ``[]``) keeps the back-compat SQL fast-path.
     _ext_filter: list[str] | None = list(embedder.extensions) if embedder.extensions else None
 
+    # RFC fleet-2 — distributed claim/release backfill.  On a real Postgres
+    # backend the loop reserves chunks in ``corpus.embed_claims`` so N hosts
+    # drain the same lane with zero duplicated GPU compute; SQLite (and the
+    # MagicMock backends in the unit suite) fall back to the single-host
+    # ``chunks_missing_embedding`` path, which stays byte-identical.
+    #
+    # ``_RealPostgresBackend`` (module top) is the never-patched class
+    # reference, so the gate is not fooled by tests that patch
+    # ``corpus_forge.embed.PostgresBackend`` — a MagicMock backend is
+    # correctly NOT an instance and takes the fallback path.
+    host_id = config.host_id()
+    lease_ttl = config.embed.claim_lease_ttl
+    # Heartbeat the host row up-front: the ``embed_claims.host_id`` FK
+    # requires a ``corpus.hosts`` row before any claim insert.  The shared
+    # telemetry heartbeat above (``_telemetry_heartbeat``) already upserts
+    # it (failure-isolated); ``use_claims`` only matters when that succeeded.
+    use_claims = isinstance(backend, _RealPostgresBackend)
+
     # Backfill embeddings — Phase L Wave 4: pre-count the work so the
     # progress bar carries an ETA, and wrap the loop in the shared
     # ``make_progress`` factory which auto-emits INFO bookends + ~every-
@@ -225,6 +279,22 @@ def backfill_embedder(
         )
     except (TypeError, AttributeError):
         total_missing = 0
+
+    # RFC fleet-2 — truthful progress total on the claim path: subtract the
+    # chunks *other* hosts have already reserved (work this host will never
+    # do), floored at 0, so concurrent workers each report their share of a
+    # shrinking pool.  The fallback path keeps today's exact total.
+    if use_claims:
+        try:
+            other_claims = int(backend.count_live_claims(embedder_id, exclude_host_id=host_id))
+            total_missing = max(total_missing - other_claims, 0)
+        except FederationUnsupported:
+            # Real Postgres always supports this; only here for symmetry
+            # with the claim/fallback decision made lazily in the loop.
+            use_claims = False
+        except (TypeError, AttributeError):
+            pass
+
     logger.info(f"Backfilling {embedder_name}: {total_missing} chunks pending")
     processed = 0
 
@@ -261,6 +331,10 @@ def backfill_embedder(
         # makes catchall backfills correct when the pending pool is
         # dominated by specialist-owned chunks — without it, ``continue``
         # would re-fetch the same non-matching first page forever.
+        # RFC fleet-2: the cursor only moves forward within a run, so a chunk
+        # another host releases behind this host's ``after_id`` is skipped
+        # now and picked up by the NEXT backfill invocation (the cursor
+        # resets to ``None`` each run).
         last_seen_id: int | None = None
         # Defense-in-depth alarm for the *specialist* path only: when a
         # backend honors ``extensions=`` correctly every page is dense with
@@ -270,6 +344,80 @@ def backfill_embedder(
         # fire there.
         _MAX_EMPTY_PAGE_STREAK = 10
         empty_page_streak = 0
+        # RFC fleet-2 — the FK-violation demotion (reviewer finding) only
+        # fires on the FIRST claim: a missing ``corpus.hosts`` row (silent
+        # heartbeat failure) trips the ``embed_claims.host_id`` FK there.
+        # After any successful claim the host row demonstrably exists, so a
+        # later 23503 is a genuine error and must propagate.
+        first_claim_attempt = True
+
+        def _fetch_page(after_id: int | None) -> list[tuple[int, str, str]]:
+            """Fetch one page of chunks to embed.
+
+            RFC fleet-2: on the claim path this atomically reserves the
+            page in ``corpus.embed_claims`` (so concurrent hosts never
+            double-embed); the fallback path is the byte-identical
+            ``chunks_missing_embedding`` fetch.  Both yield the same
+            ``(chunk_id, text, source_uri)`` 3-tuple shape, so the rest
+            of the loop is path-agnostic.
+
+            ``nonlocal use_claims`` lets a ``FederationUnsupported`` (the
+            backend can't federate) OR a first-claim foreign-key violation
+            (the heartbeat silently failed, so no ``corpus.hosts`` row backs
+            the ``embed_claims.host_id`` FK) demote the run to the fallback
+            path once — after that every page uses
+            ``chunks_missing_embedding`` (the single-host SQLite path stays
+            exactly as it was).
+            """
+            nonlocal use_claims, first_claim_attempt
+            if use_claims:
+                try:
+                    page = backend.claim_chunks_for_embedding(
+                        embedder_id,
+                        host_id,
+                        batch=1000,
+                        lease_ttl=lease_ttl,
+                        extensions=_ext_filter,
+                        after_id=after_id,
+                    )
+                    # A successful claim proves the host row exists; from now
+                    # on a 23503 would be a real error, never the missing-row
+                    # demotion case.
+                    first_claim_attempt = False
+                    return page
+                except FederationUnsupported:
+                    logger.info(
+                        "Backend does not support embed claims; falling back to "
+                        "the single-host chunks_missing_embedding path."
+                    )
+                    use_claims = False
+                except Exception as exc:
+                    # Reviewer finding: a silent heartbeat failure leaves no
+                    # ``corpus.hosts`` row, so the FIRST claim insert trips the
+                    # ``embed_claims.host_id`` FK (sqlstate 23503). Treat that
+                    # like FederationUnsupported — demote once, warn — but only
+                    # on the first attempt; a later FK violation is a real bug
+                    # and must propagate. Caught narrowly (FK only, first claim
+                    # only) so no other failure is swallowed.
+                    if first_claim_attempt and _is_fk_violation(exc):
+                        logger.warning(
+                            "First embed-claim insert hit a foreign-key violation "
+                            "(no corpus.hosts row — the telemetry heartbeat likely "
+                            "failed silently); falling back to the single-host "
+                            "chunks_missing_embedding path for this run."
+                        )
+                        use_claims = False
+                    else:
+                        raise
+            return list(
+                backend.chunks_missing_embedding(
+                    embedder_id,
+                    limit=1000,
+                    extensions=_ext_filter,
+                    after_id=after_id,
+                )
+            )
+
         while True:
             # Get chunks missing this embedder's embedding.  PR #81: the
             # backend now yields ``(chunk_id, text, source_uri)``; the
@@ -280,18 +428,20 @@ def backfill_embedder(
             # ``route_for`` filter below becomes a no-op on every page;
             # it's kept as defense-in-depth in case a custom backend
             # ignores the kwarg.
-            raw_rows = list(
-                backend.chunks_missing_embedding(
-                    embedder_id,
-                    limit=1000,
-                    extensions=_ext_filter,
-                    after_id=last_seen_id,
-                )
-            )
+            raw_rows = _fetch_page(last_seen_id)
 
             if not raw_rows:
                 logger.debug("No more chunks need embedding")
                 break
+
+            # RFC fleet-2 — on the claim path every row we just fetched is
+            # now reserved for THIS host. Track the reservations so the
+            # try/finally below releases any chunk we don't durably embed
+            # (routed out, dataset-filtered, limit-truncated, or
+            # NaN-skipped) — release-on-error makes a poison chunk
+            # immediately retryable elsewhere; lease expiry is only the
+            # crash path.
+            page_claimed_ids: set[int] = {row[0] for row in raw_rows} if use_claims else set()
 
             # Advance the cursor before the in-memory router has a chance to
             # drop rows. The cursor must track the LAST chunk_id the backend
@@ -299,184 +449,215 @@ def backfill_embedder(
             # — otherwise we re-fetch the same page on the next iteration.
             last_seen_id = max(row[0] for row in raw_rows)
 
-            # Defend against legacy 2-tuple stubs left over from old test
-            # fixtures — surface a clear error rather than silently
-            # routing every chunk to the catchall.
-            if raw_rows and len(raw_rows[0]) != _CHUNKS_MISSING_TUPLE_WIDTH:
-                raise ValueError(
-                    "backend.chunks_missing_embedding must yield "
-                    "(chunk_id, text, source_uri) 3-tuples after PR #81; got "
-                    f"{len(raw_rows[0])}-tuple — update the backend (or stub) "
-                    "to include source_uri."
-                )
-
-            # PR #81 — extension-based routing.  Filter rows down to those
-            # that the routing rule assigns to *this* embedder under the
-            # set of currently-active embedders.  When no specialist is
-            # in play (single-tower configs), every row passes through
-            # (the catchall claims everything by definition).
-            chunks_needing = [
-                (cid, text)
-                for (cid, text, src_uri) in raw_rows
-                if route_for(src_uri, active_embedders) is embedder
-            ]
-
-            if not chunks_needing:
-                # Cursor (``last_seen_id``) has already advanced above, so
-                # ``continue`` is safe — next iteration will fetch the next
-                # page rather than re-fetching this one.
-                #
-                # Defense-in-depth alarm: only specialists expect every
-                # page to be dense with matches (because the SQL filter is
-                # supposed to do the work). A streak of empty pages in
-                # that path means the backend ignored ``extensions=``.
-                # Catchall runs legitimately walk over all-skip pages
-                # while the cursor advances past specialist-owned rows,
-                # so don't trip the alarm for them.
-                if _ext_filter is not None:
-                    empty_page_streak += 1
-                    logger.warning(
-                        "Page of %d rows had no matches after in-memory "
-                        "route_for for specialist embedder %s (streak %d/%d). "
-                        "Likely cause: backend ignored extensions= and the "
-                        "page is dominated by non-matching chunks.",
-                        len(raw_rows),
-                        embedder.name,
-                        empty_page_streak,
-                        _MAX_EMPTY_PAGE_STREAK,
-                    )
-                    if empty_page_streak >= _MAX_EMPTY_PAGE_STREAK:
-                        raise RuntimeError(
-                            f"Backfill aborted for specialist embedder "
-                            f"{embedder.name!r}: {empty_page_streak} consecutive "
-                            "pages had zero matches after in-memory routing. "
-                            "The backend likely ignores the `extensions=` "
-                            "filter. Fix the backend's chunks_missing_embedding "
-                            "to honor extensions, or remove the embedder's "
-                            "extensions list to make it a catchall."
-                        )
-                continue
-
-            chunk_ids, texts = zip(*chunks_needing, strict=True) if chunks_needing else ([], [])
-
-            # Apply dataset filter if needed
-            if dataset_id is not None:
-                # Filter chunks by dataset
-                filtered_pairs = []
-                for chunk_id, text in zip(chunk_ids, texts, strict=True):
-                    # Check which dataset this chunk belongs to
-                    # This would require a JOIN query - simplified for now
-                    # In a real implementation, we'd modify the chunks_missing_embedding query
-                    filtered_pairs.append((chunk_id, text))
-                chunk_ids, texts = zip(*filtered_pairs, strict=True) if filtered_pairs else ([], [])
-
-                if not chunk_ids:
-                    logger.debug("No more chunks need embedding for this dataset")
-                    break
-
-            # Apply limit if specified
-            if limit is not None:
-                remaining = limit - processed
-                if remaining <= 0:
-                    break
-                if len(chunk_ids) > remaining:
-                    chunk_ids = chunk_ids[:remaining]
-                    texts = texts[:remaining]
-
-            # Generate embeddings (per-batch chatter demoted to DEBUG —
-            # the progress bar + milestone INFO replace it on stdout/log).
-            logger.debug(f"Generating embeddings for {len(texts)} chunks")
-            _t0 = _time.perf_counter()
-            embeddings = embedder.encode(texts)
-            _encode_elapsed = _time.perf_counter() - _t0
-
-            # Same bisection-recovery contract as ingest.py: skip
-            # chunk_ids whose corresponding text was bisected out by
-            # the embedder. The skipped chunks stay pending so the
-            # next ``corpus-forge embed`` pass retries them after the
-            # model recovers.
-            failed_indices: set[int] = set(getattr(embedder, "last_failed_indices", []))
-            if failed_indices:
-                chunk_ids = [cid for i, cid in enumerate(chunk_ids) if i not in failed_indices]
-                logger.warning(
-                    "Embedder %s skipped %d/%d chunks in this batch (NaN-shaped "
-                    "response or 5xx); they stay pending for retry.",
-                    embedder.name,
-                    len(failed_indices),
-                    len(texts),
-                )
-
-            # Write embeddings
-            pairs = list(zip(chunk_ids, embeddings, strict=True))
-
-            # Hang-guard: if every chunk in this fetch got bisected
-            # out (e.g. the active embedder is wedged across the whole
-            # backlog), ``pairs`` is empty AND the same chunk_ids
-            # would come back on the next ``chunks_missing_embedding``
-            # call — infinite loop. Break and let the operator
-            # re-run ``corpus-forge embed`` once the embedder
-            # recovers. The chunks stay in
-            # ``chunks_missing_embedding`` so no work is lost.
-            if not pairs:
-                logger.warning(
-                    "Embedder %s skipped every chunk in this batch (%d failed); "
-                    "exiting the embed loop to avoid an infinite retry cycle. "
-                    "Re-run `corpus-forge embed -e %s` after the embedder "
-                    "recovers; the skipped chunks stay pending.",
-                    embedder.name,
-                    len(failed_indices),
-                    embedder.name,
-                )
-                break
-
-            _t1 = _time.perf_counter()
-            backend.write_embeddings(embedder_id, pairs)
-            _write_elapsed = _time.perf_counter() - _t1
-            processed += len(pairs)
-            # Forward progress — reset the empty-page guard.
-            empty_page_streak = 0
-            progress.update(task, completed=processed)
-
-            # rfc-fleet-1 item 5 — checkpoint passive telemetry every
-            # ~10k chunks so a crashed run still reports its rate.
-            # Failure-isolated inside the helper.
-            if processed >= _next_telemetry_at:
-                _write_embed_run_telemetry(
-                    backend,
-                    config,
-                    embedder_config,
-                    transport=_telemetry_transport,
-                    device=_telemetry_device,
-                    processed=processed,
-                    elapsed_s=_time.perf_counter() - _run_started,
-                )
-                _next_telemetry_at += _TELEMETRY_CHECKPOINT_EVERY
-
-            # Wall-clock calibration — record this batch's embed rate
-            # AND the per-chunk DB-write rate so the on-disk profile
-            # converges on real hardware. Best-effort; ``record`` swallows
-            # any IO failure on the profile file.
+            # RFC fleet-2 — try/finally so claims never leak: every chunk
+            # reserved for this page that we don't durably embed (routed
+            # out, dataset-filtered, limit-truncated, NaN-skipped, or an
+            # exception mid-page) gets its claim released, making a poison
+            # chunk immediately retryable on another host. Persisted chunks
+            # are released too (the embedding row is the durable record).
             try:
-                if pairs:
-                    _record(
-                        "embed",
-                        units=len(pairs),
-                        seconds=_encode_elapsed,
-                        key=embedder.name,
+                # Defend against legacy 2-tuple stubs left over from old test
+                # fixtures — surface a clear error rather than silently
+                # routing every chunk to the catchall.
+                if raw_rows and len(raw_rows[0]) != _CHUNKS_MISSING_TUPLE_WIDTH:
+                    raise ValueError(
+                        "backend.chunks_missing_embedding must yield "
+                        "(chunk_id, text, source_uri) 3-tuples after PR #81; got "
+                        f"{len(raw_rows[0])}-tuple — update the backend (or stub) "
+                        "to include source_uri."
                     )
-                    _record(
-                        "db_write",
-                        units=len(pairs),
-                        seconds=_write_elapsed,
+
+                # PR #81 — extension-based routing.  Filter rows down to those
+                # that the routing rule assigns to *this* embedder under the
+                # set of currently-active embedders.  When no specialist is
+                # in play (single-tower configs), every row passes through
+                # (the catchall claims everything by definition).
+                chunks_needing = [
+                    (cid, text)
+                    for (cid, text, src_uri) in raw_rows
+                    if route_for(src_uri, active_embedders) is embedder
+                ]
+
+                if not chunks_needing:
+                    # Cursor (``last_seen_id``) has already advanced above, so
+                    # ``continue`` is safe — next iteration will fetch the next
+                    # page rather than re-fetching this one.
+                    #
+                    # Defense-in-depth alarm: only specialists expect every
+                    # page to be dense with matches (because the SQL filter is
+                    # supposed to do the work). A streak of empty pages in
+                    # that path means the backend ignored ``extensions=``.
+                    # Catchall runs legitimately walk over all-skip pages
+                    # while the cursor advances past specialist-owned rows,
+                    # so don't trip the alarm for them.
+                    if _ext_filter is not None:
+                        empty_page_streak += 1
+                        logger.warning(
+                            "Page of %d rows had no matches after in-memory "
+                            "route_for for specialist embedder %s (streak %d/%d). "
+                            "Likely cause: backend ignored extensions= and the "
+                            "page is dominated by non-matching chunks.",
+                            len(raw_rows),
+                            embedder.name,
+                            empty_page_streak,
+                            _MAX_EMPTY_PAGE_STREAK,
+                        )
+                        if empty_page_streak >= _MAX_EMPTY_PAGE_STREAK:
+                            raise RuntimeError(
+                                f"Backfill aborted for specialist embedder "
+                                f"{embedder.name!r}: {empty_page_streak} consecutive "
+                                "pages had zero matches after in-memory routing. "
+                                "The backend likely ignores the `extensions=` "
+                                "filter. Fix the backend's chunks_missing_embedding "
+                                "to honor extensions, or remove the embedder's "
+                                "extensions list to make it a catchall."
+                            )
+                    continue
+
+                chunk_ids, texts = zip(*chunks_needing, strict=True) if chunks_needing else ([], [])
+
+                # Apply dataset filter if needed
+                if dataset_id is not None:
+                    # Filter chunks by dataset
+                    filtered_pairs = []
+                    for chunk_id, text in zip(chunk_ids, texts, strict=True):
+                        # Check which dataset this chunk belongs to
+                        # This would require a JOIN query - simplified for now
+                        # In a real implementation, we'd modify the chunks_missing_embedding query
+                        filtered_pairs.append((chunk_id, text))
+                    chunk_ids, texts = (
+                        zip(*filtered_pairs, strict=True) if filtered_pairs else ([], [])
                     )
-            except Exception as exc:  # pragma: no cover — defensive
-                logger.debug("embed: calibration write failed: %s", exc)
 
-            logger.debug(f"Processed {processed} embeddings so far")
+                    if not chunk_ids:
+                        logger.debug("No more chunks need embedding for this dataset")
+                        break
 
-            # Break if we've hit the limit
-            if limit is not None and processed >= limit:
-                break
+                # Apply limit if specified
+                if limit is not None:
+                    remaining = limit - processed
+                    if remaining <= 0:
+                        break
+                    if len(chunk_ids) > remaining:
+                        chunk_ids = chunk_ids[:remaining]
+                        texts = texts[:remaining]
+
+                # Generate embeddings (per-batch chatter demoted to DEBUG —
+                # the progress bar + milestone INFO replace it on stdout/log).
+                logger.debug(f"Generating embeddings for {len(texts)} chunks")
+                _t0 = _time.perf_counter()
+                embeddings = embedder.encode(texts)
+                _encode_elapsed = _time.perf_counter() - _t0
+
+                # Same bisection-recovery contract as ingest.py: skip
+                # chunk_ids whose corresponding text was bisected out by
+                # the embedder. The skipped chunks stay pending so the
+                # next ``corpus-forge embed`` pass retries them after the
+                # model recovers.
+                failed_indices: set[int] = set(getattr(embedder, "last_failed_indices", []))
+                if failed_indices:
+                    chunk_ids = [cid for i, cid in enumerate(chunk_ids) if i not in failed_indices]
+                    logger.warning(
+                        "Embedder %s skipped %d/%d chunks in this batch (NaN-shaped "
+                        "response or 5xx); they stay pending for retry.",
+                        embedder.name,
+                        len(failed_indices),
+                        len(texts),
+                    )
+
+                # Write embeddings
+                pairs = list(zip(chunk_ids, embeddings, strict=True))
+
+                # Hang-guard: if every chunk in this fetch got bisected
+                # out (e.g. the active embedder is wedged across the whole
+                # backlog), ``pairs`` is empty AND the same chunk_ids
+                # would come back on the next ``chunks_missing_embedding``
+                # call — infinite loop. Break and let the operator
+                # re-run ``corpus-forge embed`` once the embedder
+                # recovers. The chunks stay in
+                # ``chunks_missing_embedding`` so no work is lost.
+                if not pairs:
+                    logger.warning(
+                        "Embedder %s skipped every chunk in this batch (%d failed); "
+                        "exiting the embed loop to avoid an infinite retry cycle. "
+                        "Re-run `corpus-forge embed -e %s` after the embedder "
+                        "recovers; the skipped chunks stay pending.",
+                        embedder.name,
+                        len(failed_indices),
+                        embedder.name,
+                    )
+                    break
+
+                _t1 = _time.perf_counter()
+                backend.write_embeddings(embedder_id, pairs)
+                _write_elapsed = _time.perf_counter() - _t1
+                processed += len(pairs)
+                # Forward progress — reset the empty-page guard.
+                empty_page_streak = 0
+                progress.update(task, completed=processed)
+
+                # rfc-fleet-1 item 5 — checkpoint passive telemetry every
+                # ~10k chunks so a crashed run still reports its rate.
+                # Failure-isolated inside the helper.
+                if processed >= _next_telemetry_at:
+                    _write_embed_run_telemetry(
+                        backend,
+                        config,
+                        embedder_config,
+                        transport=_telemetry_transport,
+                        device=_telemetry_device,
+                        processed=processed,
+                        elapsed_s=_time.perf_counter() - _run_started,
+                    )
+                    _next_telemetry_at += _TELEMETRY_CHECKPOINT_EVERY
+
+                # Wall-clock calibration — record this batch's embed rate
+                # AND the per-chunk DB-write rate so the on-disk profile
+                # converges on real hardware. Best-effort; ``record`` swallows
+                # any IO failure on the profile file.
+                try:
+                    if pairs:
+                        _record(
+                            "embed",
+                            units=len(pairs),
+                            seconds=_encode_elapsed,
+                            key=embedder.name,
+                        )
+                        _record(
+                            "db_write",
+                            units=len(pairs),
+                            seconds=_write_elapsed,
+                        )
+                except Exception as exc:  # pragma: no cover — defensive
+                    logger.debug("embed: calibration write failed: %s", exc)
+
+                logger.debug(f"Processed {processed} embeddings so far")
+
+                # Break if we've hit the limit
+                if limit is not None and processed >= limit:
+                    break
+            finally:
+                # RFC fleet-2 — release every claim made for this page.
+                # Persisted chunks: the embedding row is durable, so the
+                # reservation is no longer needed. Unpersisted chunks
+                # (skipped/failed/leaked): release makes them immediately
+                # retryable elsewhere — lease expiry is only the crash path.
+                # ``release_claims`` is host-scoped, so a slow host whose
+                # lease already expired and got reclaimed elsewhere won't
+                # clobber the new owner. Guarded so a release failure can't
+                # mask the real error propagating out of the try body.
+                if use_claims and page_claimed_ids:
+                    try:
+                        backend.release_claims(embedder_id, host_id, list(page_claimed_ids))
+                    except FederationUnsupported:
+                        # Path was demoted to fallback mid-run; nothing to release.
+                        pass
+                    except Exception as exc:  # pragma: no cover — defensive
+                        logger.warning(
+                            "embed: release_claims failed for %d chunk(s): %r",
+                            len(page_claimed_ids),
+                            exc,
+                        )
 
     # rfc-fleet-1 item 5 — end-of-run passive telemetry row.  Best-effort;
     # a zero-work run (processed == 0) is skipped inside the helper.
