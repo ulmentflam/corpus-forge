@@ -270,8 +270,17 @@ def _run_auto_ingest(config: Any, project_root: Path) -> None:
     from corpus_forge import ingest as ingest_mod  # noqa: PLC0415
 
     ingest_mod.ingest_once(config, roots=[project_root])  # type: ignore[attr-defined]
-    for embedder_cfg in getattr(config, "embedders", []) or []:
-        embed_mod.backfill_embedder(embedder_cfg, None, None)  # type: ignore[call-arg]
+    # RFC fleet-2 item 4 — honour this host's lane pinning on the
+    # implicit "embed every active embedder" path.  Empty ``[embed]
+    # lanes`` (the default) leaves the set unchanged (byte-identical to
+    # today); a non-empty list intersects so the host only works its
+    # pinned lanes.
+    embedder_cfgs = getattr(config, "embedders", []) or []
+    lanes = getattr(getattr(config, "embed", None), "lanes", []) or []
+    by_name = {cfg.name: cfg for cfg in embedder_cfgs}
+    selected_names = embed_mod.filter_embedders_by_lanes(list(by_name), lanes)
+    for name in selected_names:
+        embed_mod.backfill_embedder(by_name[name], None, None)  # type: ignore[call-arg]
 
 
 # ─────────────────────────────────────────────────────────────────────────

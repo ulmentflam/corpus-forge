@@ -391,7 +391,26 @@ def embed(
     With ``--image``, embed image-labeled chunks via a multi-modal
     embedder (CLIP family) and write to ``image_embeddings_<name>``.
     """
-    from .embed import main
+    from .embed import embedder_outside_lanes, main
+
+    # RFC fleet-2 item 4 — explicit ``-e`` OVERRIDES lane pinning: the
+    # operator's direct command always wins, but WARN when the named
+    # embedder isn't in this host's configured lanes so a typo or a
+    # cross-lane run is visible rather than silent.  Best-effort: a
+    # config-load failure here must not block the embed (``main`` reloads
+    # and surfaces real config errors).
+    if not image:
+        try:
+            from .config import Config
+
+            lanes = Config.load().embed.lanes
+        except Exception:
+            lanes = []
+        if embedder_outside_lanes(embedder, lanes):
+            ui_warn(
+                f"Embedder {embedder!r} is outside this host's pinned embed lanes "
+                f"({lanes!r}); proceeding anyway because -e is an explicit override."
+            )
 
     _maybe_handle_drift(ctx)
     main(embedder=embedder, dataset=dataset, limit=limit, image=image)
@@ -440,6 +459,15 @@ def setup(
         "--config-dir",
         help="Where to write config.toml + secrets.env.",
     ),
+    embed_lanes: str | None = typer.Option(
+        None,
+        "--embed-lanes",
+        help=(
+            "Comma-separated embedder lane names to pin this host to "
+            "(RFC fleet-2). Non-interactive only; sets [embed] lanes. "
+            "Each name must match a configured [[embedders]] entry."
+        ),
+    ),
 ) -> None:
     """Post-install setup wizard.
 
@@ -459,6 +487,22 @@ def setup(
     first. ``secrets.env`` is preserved if it already exists.
     """
     from .setup import run_non_interactive, run_quick, run_wizard
+
+    # RFC fleet-2 item 4 — surface ``--embed-lanes`` to the wizard via the
+    # same ``CF_EMBED_LANES`` env knob the non-interactive path reads, so
+    # the flag and the env var are one code path.  Interactive setup
+    # ignores the flag (it has its own fleet-detected prompt); warn so the
+    # operator isn't surprised the flag was a no-op.
+    if embed_lanes is not None:
+        if non_interactive:
+            import os
+
+            os.environ["CF_EMBED_LANES"] = embed_lanes
+        else:
+            ui_warn(
+                "--embed-lanes only applies with --non-interactive; the "
+                "interactive wizard prompts for lanes when a fleet is detected."
+            )
 
     # Banner: show in every interactive entry (full or quick). The
     # `--non-interactive` path stays silent — it's the machine-driven
