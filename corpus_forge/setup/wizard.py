@@ -22,6 +22,7 @@ Test scope:
 
 from __future__ import annotations
 
+import contextlib
 import json as _json
 import os
 import sys
@@ -70,6 +71,191 @@ def render_next_steps() -> str:
     stdout).
     """
     return "\n".join(NEXT_STEPS) + "\n"
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Lane pinning (RFC fleet-2 item 4)
+# ───────────────────────────────────────────────────────────────────────────
+
+#: Minimum heartbeated-host count that makes lane pinning worthwhile.
+#: A single-host install has nothing to distribute across, so the wizard
+#: only offers the lane prompt once a second host has appeared in the
+#: fleet-1 ``corpus.hosts`` registry.
+_MULTI_HOST_THRESHOLD = 2
+
+
+def _parse_lane_csv(raw: str) -> list[str]:
+    """Parse a comma-separated lane list (``--embed-lanes a,b``) → names.
+
+    Splits on commas, strips whitespace, and drops empties so ``"a, ,b"``
+    and ``"a,b"`` both yield ``["a", "b"]``.  Order-preserving and
+    de-duplicated (first occurrence wins) so a config the wizard renders
+    is stable.  Name *validity* against ``[[embedders]]`` is enforced by
+    ``Config._check_embed_lanes`` at load time — this is just lexing.
+    """
+    seen: set[str] = set()
+    lanes: list[str] = []
+    for part in raw.split(","):
+        name = part.strip()
+        if name and name not in seen:
+            seen.add(name)
+            lanes.append(name)
+    return lanes
+
+
+def _suggest_lanes_from_accelerator(active_embedder_names: list[str]) -> list[str]:
+    """Seed a lane suggestion from the host's accelerator probe.
+
+    Intentionally simple (and commented inline): the accelerator probe
+    tells us whether this box is a big-VRAM CUDA / Apple-Silicon machine
+    (→ suggest the *largest-dimension* lane, the heavy embedder) or a
+    CPU-only / low-VRAM box (→ suggest the *smallest-dimension* lane).
+    The dimension ranking reuses :func:`recommend_embedder_preset`'s
+    ``dimension`` so "big lane" / "small lane" track the same model-size
+    intuition the rest of the wizard uses.
+
+    Returns a single-element list (the suggested lane) or ``[]`` when no
+    embedders are active.  The operator confirms / overrides the
+    suggestion at the prompt — this is a default, not a decision.
+    """
+    if not active_embedder_names:
+        return []
+    info = detect_accelerator()
+    preset = recommend_embedder_preset(info)
+    # Heavy hardware (CUDA / MPS, or the high-VRAM CUDA preset) → the big
+    # lane; the CPU preset's full-CPU offload (n_gpu_layers == 0) → the
+    # small lane.  We can't read each configured embedder's dimension
+    # from a name alone, so the suggestion is the *first* active embedder
+    # for the small-hardware case and the *last* for the big-hardware
+    # case — config convention puts the heavier embedder later (the
+    # wizard emits the auto preset first, the explicit big models after).
+    big_hardware = preset.n_gpu_layers != 0
+    return [active_embedder_names[-1] if big_hardware else active_embedder_names[0]]
+
+
+def _count_heartbeated_hosts(answers: dict[str, str], db_path: Path) -> int | None:
+    """Return the number of hosts that have heartbeated, or ``None``.
+
+    ``None`` signals "could not tell" — backend unreachable, the
+    fleet-1 ``hosts`` table absent, or any probe failure.  The caller
+    degrades SILENTLY on ``None`` (no prompt, no error), per the RFC's
+    "degrade silently when the backend is unreachable" contract.  A real
+    integer (including ``0`` / ``1``) is a successful probe.
+
+    The backend is built read-only (no ``migrate()``): if hosts have
+    heartbeated the ``hosts`` table already exists, and a setup-time probe
+    should never mutate a shared fleet schema.  Imports are local and the
+    whole body is failure-isolated so the lane prompt never turns a
+    routine setup into a crash on a box whose Postgres happens to be down
+    at install time.
+    """
+    backend = None
+    try:
+        backend_kind = answers.get("backend", "sqlite")
+        if backend_kind == "sqlite":
+            from corpus_forge.backends.sqlite import SQLiteBackend  # noqa: PLC0415
+
+            backend = SQLiteBackend(path=db_path.as_posix(), schema="corpus")
+        else:
+            from corpus_forge.backends.postgres import PostgresBackend  # noqa: PLC0415
+
+            dsn = answers.get("postgres_dsn") or answers.get(
+                "backend_dsn", "postgresql://localhost:5432/corpus_forge"
+            )
+            backend = PostgresBackend(dsn=dsn, schema="corpus")
+        rows = list(backend.list_hosts_with_latest_rate())
+        return len(rows)
+    except Exception:
+        return None
+    finally:
+        closer = getattr(backend, "close", None)
+        if callable(closer):
+            # Best-effort close; a failed close must not mask the result.
+            with contextlib.suppress(Exception):
+                closer()
+
+
+def _active_embedder_names_from_answers(answers: dict[str, str]) -> list[str]:
+    """Best-effort list of the embedder names the rendered config will carry.
+
+    The wizard renders embedders from ``answers["embedder"]`` (and the
+    quick path derives a single name from the model id).  Re-derive the
+    same names here so the lane prompt lists exactly what the config will
+    contain.  Mirrors the name choices in :func:`render_config_toml`.
+    """
+    embedder = answers.get("embedder", "auto")
+    names: list[str] = []
+    if embedder == "auto":
+        names.append("nomic")
+    if embedder in {"st", "both"}:
+        names.append("qwen3_8b")
+    if embedder in {"openai", "both"}:
+        names.append("openai_3l")
+    return names
+
+
+def maybe_prompt_embed_lanes(
+    answers: dict[str, str],
+    *,
+    interactive: bool,
+    env: dict[str, str],
+    stream_in: IO[str] | None = None,
+    stream_out: IO[str] | None = None,
+) -> None:
+    """RFC fleet-2 item 4 — offer a lane-pinning prompt, in place.
+
+    Writes ``answers["embed_lanes"]`` (comma-separated) which
+    :func:`render_config_toml` turns into an ``[embed] lanes`` block.
+
+    Degrades SILENTLY (no prompt, no error, no ``embed_lanes`` key) when:
+
+    - **non-interactive** without an explicit ``--embed-lanes`` flag
+      (the flag lands in ``env["CF_EMBED_LANES"]`` — honoured here);
+    - the backend is **unreachable** at setup time;
+    - **fewer than 2 hosts** have heartbeated (single-machine install —
+      lane pinning is pointless).
+
+    Interactive + 2+ hosts + reachable backend → prompt, seeded from the
+    accelerator probe via :func:`_suggest_lanes_from_accelerator`.
+    """
+    out_stream = stream_out or sys.stdout
+    in_stream = stream_in or sys.stdin
+
+    # Non-interactive: only the explicit flag writes lanes; otherwise skip
+    # silently (no backend probe — CI installs shouldn't reach for the DB).
+    if not interactive:
+        flag = env.get("CF_EMBED_LANES", "")
+        lanes = _parse_lane_csv(flag)
+        if lanes:
+            answers["embed_lanes"] = ",".join(lanes)
+        return
+
+    # Probe the configured backend for heartbeated hosts.  Read-only and
+    # failure-isolated — any error degrades to a silent skip.
+    db_path = DEFAULT_CONFIG_DIR / "corpus.db"
+    host_count = _count_heartbeated_hosts(answers, db_path)
+    if host_count is None or host_count < _MULTI_HOST_THRESHOLD:
+        return
+
+    active = _active_embedder_names_from_answers(answers)
+    if not active:
+        return
+
+    suggested = _suggest_lanes_from_accelerator(active)
+    default_csv = ",".join(suggested)
+
+    out_stream.write(
+        f"\nFleet detected ({host_count} hosts). This host can be pinned to specific "
+        "embedder lanes so it only works those embedders.\n"
+        f"  Active embedders: {', '.join(active)}\n"
+        f"Embedder lanes for this host (comma-separated; blank = all) "
+        f"[default: {default_csv or 'all'}] "
+    )
+    out_stream.flush()
+    raw = in_stream.readline().rstrip("\n").rstrip("\r")
+    chosen = _parse_lane_csv(raw) if raw.strip() else suggested
+    if chosen:
+        answers["embed_lanes"] = ",".join(chosen)
 
 
 @dataclass(frozen=True)
@@ -324,6 +510,18 @@ def render_config_toml(answers: dict[str, str], db_path: Path) -> str:
             out.append(f"remote_api_key_env = {_quote_toml_str(key_env)}")
         out.append("")
 
+    # ── [embed] (lane pinning — RFC fleet-2 item 4) ────────────────────
+    # Only emitted when the lane-prompt produced a non-empty selection
+    # (multi-host fleet + a reachable backend, OR an explicit
+    # ``--embed-lanes`` flag in non-interactive mode).  Absent block ⇒
+    # all active embedders, today's behaviour.
+    embed_lanes = _parse_lane_csv(answers.get("embed_lanes", ""))
+    if embed_lanes:
+        rendered = ", ".join(_quote_toml_str(lane) for lane in embed_lanes)
+        out.append("[embed]")
+        out.append(f"lanes = [{rendered}]")
+        out.append("")
+
     # ── [classifier] ───────────────────────────────────────────────────
     chain = answers.get("classifier_chain", "rule")
     chain_list = '["rule"]' if chain == "rule" else '["rule", "llm"]'
@@ -561,6 +759,16 @@ def run_wizard(
         stream_in=stream_in,
         stream_out=stream_out,
     )
+    # RFC fleet-2 item 4 — offer lane pinning before the config is
+    # rendered (it writes ``answers["embed_lanes"]``).  Degrades silently
+    # off a multi-host fleet / reachable backend.
+    maybe_prompt_embed_lanes(
+        answers,
+        interactive=True,
+        env=dict(os.environ),
+        stream_in=stream_in,
+        stream_out=stream_out,
+    )
     resolved_dir = config_dir or DEFAULT_CONFIG_DIR
     config_path, secrets_path = _write_config(resolved_dir, answers)
     _apply_corpusignore(answers, resolved_dir)
@@ -577,11 +785,15 @@ def run_non_interactive(
 ) -> tuple[Path, Path, dict[str, str]]:
     """CI / unattended wizard. Reads answers from ``CF_*`` env vars."""
     questions = load_questions(questions_path)
+    resolved_env = env or dict(os.environ)
     answers = _collect_answers(
         questions,
         interactive=False,
-        env=env or dict(os.environ),
+        env=resolved_env,
     )
+    # RFC fleet-2 item 4 — ``CF_EMBED_LANES`` (from ``--embed-lanes a,b``)
+    # writes the lanes list; absent ⇒ no ``[embed]`` block (all lanes).
+    maybe_prompt_embed_lanes(answers, interactive=False, env=resolved_env)
     resolved_dir = config_dir or DEFAULT_CONFIG_DIR
     config_path, secrets_path = _write_config(resolved_dir, answers)
     _apply_corpusignore(answers, resolved_dir)

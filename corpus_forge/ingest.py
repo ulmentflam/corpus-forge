@@ -20,6 +20,7 @@ from .admin.source_caps import enforce_source_caps
 from .backends.base import IngestRunInProgressError, StorageBackend
 from .chunkers.base import Chunker, PassthroughChunker, TextChunk
 from .config import Config
+from .embed import filter_embedders_by_lanes
 from .embedders.base import Embedder
 from .embedders.openai import EmbedderWedged
 from .embedders.registry import registry
@@ -403,9 +404,22 @@ def get_active_embedders(config: Config) -> list[Embedder]:
     # crash on dense search against a local Ollama endpoint.
     from .embedders.registry import register_from_config  # noqa: PLC0415
 
+    # RFC fleet-2 item 4 — lane pinning. This function feeds every
+    # implicit multi-embedder surface (the daemon's ingest_once →
+    # _flush_all_pending_embeddings loop and the one-shot ingest
+    # flush), so the host-local ``[embed] lanes`` filter belongs here:
+    # a pinned host constructs (and embeds with) only its lanes.
+    # Empty/absent lanes → all active embedders, today's behaviour.
+    # ``getattr`` chain: real Config always has ``embed`` (default
+    # factory), but the test fleet's minimal mock configs predate the
+    # block — absent ⇒ no lanes ⇒ full active set, same as legacy.
+    lanes = list(getattr(getattr(config, "embed", None), "lanes", None) or [])
+    active_names = [ec.name for ec in config.embedders if ec.active]
+    lane_names = set(filter_embedders_by_lanes(active_names, lanes))
+
     embedders = []
     for embedder_config in config.embedders:
-        if not embedder_config.active:
+        if not embedder_config.active or embedder_config.name not in lane_names:
             continue
         embedder = register_from_config(registry, embedder_config)
         embedders.append(embedder)
