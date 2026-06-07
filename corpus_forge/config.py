@@ -828,6 +828,50 @@ class EstimateConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class EmbedConfig(BaseModel):
+    """RFC ``rfc-fleet-2-distributed-embedding`` — distributed embed knobs.
+
+    Tunes the claim/release backfill loop in
+    :func:`corpus_forge.embed.backfill_embedder`. On the Postgres backend
+    the loop reserves chunks in ``corpus.embed_claims`` so N hosts drain
+    the same embedder lane with zero duplicated GPU compute; on SQLite the
+    loop falls back to the single-host ``chunks_missing_embedding`` path
+    and this block is inert.
+
+    Migration: existing configs have no ``[embed]`` section. The default
+    field below means they continue to validate as-is —
+    ``Config(**old_toml)`` simply gets the default-constructed
+    ``EmbedConfig`` instance.
+
+    Fields:
+
+    - ``claim_lease_ttl``: seconds a claim row stays valid before the
+      opportunistic stale-claim sweep makes it reclaimable. Must
+      comfortably exceed worst-case batch wall clock so a live host
+      doesn't lose chunks mid-batch; the crash path relies on the lease
+      expiring. Default ``600`` (10 minutes). Must be ``> 0``.
+    - ``lanes``: per-host lane pinning (RFC fleet-2 item 4). When
+      non-empty, this host only works the named embedder lanes — the
+      embed-worker (``ingest.get_active_embedders``) and agent
+      auto-ingest intersect the active
+      embedder set with this list, so a CUDA box takes ``qwen3-4096``
+      while a weaker box takes ``nomic``. Empty (the default) means *all
+      active embedders*, which is today's behaviour and the hard
+      backcompat bar. Each name must match a declared ``[[embedders]]``
+      entry — validated at ``Config`` load time (see
+      ``Config._check_embed_lanes``), mirroring the fast-tier check, so a
+      typo surfaces before any backfill. Explicit ``corpus-forge embed -e
+      <name>`` OVERRIDES this list (the operator said so) and only warns.
+      This field is LOCAL to each host (never federated): two machines in
+      a fleet pin different lanes by design.
+    """
+
+    claim_lease_ttl: int = Field(default=600, gt=0)
+    lanes: list[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class EvalRegressionConfig(BaseModel):
     """RFC ``rfc-eval-framework-expansion`` — tolerance gating for regression eval.
 
@@ -1166,6 +1210,11 @@ class Config(BaseModel):
     # no-compression baseline so existing configs see no behaviour
     # change.
     estimate: EstimateConfig = Field(default_factory=EstimateConfig)
+    # RFC ``rfc-fleet-2-distributed-embedding`` — distributed embed
+    # backfill knobs (claim lease TTL). Defaulted so existing configs
+    # (which omit the ``[embed]`` block) keep validating; on SQLite the
+    # block is inert (the claim loop falls back to the single-host path).
+    embed: EmbedConfig = Field(default_factory=EmbedConfig)
     # Phase L Wave 7 — Ollama daemon endpoint used by the admin verbs.
     # Defaulted so existing configs (which omit the block) keep validating.
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
@@ -1261,6 +1310,30 @@ class Config(BaseModel):
         if name not in embedder_names:
             raise ValueError(
                 f"retrieval.fast_tier_embedder_name={name!r} does not match any "
+                f"[[embedders]] entry; declared embedders: {sorted(embedder_names)!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_embed_lanes(self) -> "Config":
+        """RFC fleet-2 item 4 — cross-reference ``embed.lanes`` names.
+
+        Every entry in ``embed.lanes`` MUST resolve to a declared
+        ``[[embedders]]`` entry.  Catches typos at config-load time
+        instead of silently pinning the host to an empty lane set (which
+        would embed *nothing* on the worker / ``--all`` path).  Mirrors
+        ``_check_fast_tier_embedder``'s error style so the message points
+        straight at the offending name(s) and lists the valid options.
+        Empty ``lanes`` (the default) is the no-op case — all active
+        embedders, today's behaviour.
+        """
+        if not self.embed.lanes:
+            return self
+        embedder_names = {e.name for e in self.embedders}
+        unknown = [lane for lane in self.embed.lanes if lane not in embedder_names]
+        if unknown:
+            raise ValueError(
+                f"embed.lanes contains name(s) {unknown!r} that do not match any "
                 f"[[embedders]] entry; declared embedders: {sorted(embedder_names)!r}"
             )
         return self

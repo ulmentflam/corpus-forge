@@ -1483,6 +1483,18 @@ class SQLiteBackend:
             "SQLite backend does not support fleet federation (RFC fleet-2)."
         )
 
+    def count_live_claims(
+        self,
+        embedder_id: int,
+        exclude_host_id: str | None = None,
+    ) -> int:
+        """Unsupported on SQLite — raises :class:`FederationUnsupported`."""
+        del embedder_id, exclude_host_id
+        raise FederationUnsupported(
+            "count_live_claims requires a shared Postgres backend; the "
+            "SQLite backend does not support fleet federation (RFC fleet-2)."
+        )
+
     # ── Fleet 3 — federated config publish / pull ─────────────────────────
     #
     # Federated config sharing (RFC fleet-3) coordinates multiple hosts
