@@ -245,6 +245,18 @@ class StorageBackend(Protocol):
         """
         ...
 
+    def count_stale_claims(self, embedder_id: int | None = None) -> int:
+        """Count claims past ``lease_until`` *without* deleting them.
+
+        The read-only counterpart to :meth:`expire_stale_claims` (which
+        DELETEs). Backs the informational ``embed_claims`` doctor check:
+        stale claims are self-healing — the next claim call sweeps them —
+        so the doctor wants the *count* but must not mutate state during a
+        diagnostic. ``embedder_id=None`` counts every lane. SQLite raises
+        :class:`FederationUnsupported`.
+        """
+        ...
+
     def count_live_claims(
         self,
         embedder_id: int,
