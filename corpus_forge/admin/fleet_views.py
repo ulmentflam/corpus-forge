@@ -239,8 +239,47 @@ def models_to_dict(rows: list[dict], *, now: datetime | None = None) -> dict[str
 # ── hosts list ─────────────────────────────────────────────────────────────
 
 
-def render_hosts_table(rows: list[dict], *, now: datetime | None = None) -> Table:
-    """Build the Rich table for ``hosts list`` (one row per host)."""
+# ── Tailscale online markers (RFC fleet-4 item 5) ───────────────────────────
+
+#: Marker glyphs for the optional "Tailscale" column. A host whose stored
+#: ``tailscale_name`` matches a live, online peer renders :data:`_ONLINE`;
+#: a host that is a known-but-offline peer OR has no matching peer renders
+#: :data:`_OFFLINE`. The column is omitted entirely when Tailscale is
+#: unavailable (``peer_status is None``), so the table is byte-identical to
+#: the pre-fleet-4 layout on a non-tailnet box.
+_ONLINE: str = "●"
+_OFFLINE: str = "○"
+
+
+def _host_online(row: dict, peer_status: dict[str, bool]) -> bool:
+    """Whether this host's ``tailscale_name`` matches a live online peer.
+
+    ``peer_status`` maps short MagicDNS name → online bool. A host with no
+    ``tailscale_name``, or one whose name isn't in the map, is offline
+    (``○``): it's either a known-but-offline peer or not a peer at all —
+    both render the same "not reachable right now" glyph.
+    """
+    name = row.get("tailscale_name")
+    if not isinstance(name, str) or not name:
+        return False
+    return peer_status.get(name, False)
+
+
+def render_hosts_table(
+    rows: list[dict],
+    *,
+    now: datetime | None = None,
+    peer_status: dict[str, bool] | None = None,
+) -> Table:
+    """Build the Rich table for ``hosts list`` (one row per host).
+
+    When ``peer_status`` is provided (Tailscale reachable — name → online
+    map), a leading "Tailscale" column marks each row ●/○ by matching its
+    ``tailscale_name``. When ``None`` (Tailscale unavailable / not
+    configured), the column is omitted and the table is identical to the
+    pre-fleet-4 layout.
+    """
+    show_ts = peer_status is not None
     table = Table(title="Fleet hosts", show_header=True)
     table.add_column("Host", style="accent.path")
     table.add_column("Hostname", style="muted")
@@ -249,8 +288,10 @@ def render_hosts_table(rows: list[dict], *, now: datetime | None = None) -> Tabl
     table.add_column("Models", justify="right")
     table.add_column("chunks/s", justify="right", style="accent.number")
     table.add_column("Last seen")
+    if show_ts:
+        table.add_column("Tailscale", justify="center")
     for row in rows:
-        table.add_row(
+        cells = [
             _cell(row.get("host_id")),
             _cell(row.get("hostname")),
             _cell(row.get("os")),
@@ -258,14 +299,30 @@ def render_hosts_table(rows: list[dict], *, now: datetime | None = None) -> Tabl
             _cell(row.get("models")),
             _fmt_rate(row.get("latest_chunks_per_s")),
             format_age(row.get("last_seen"), now=now),
-        )
+        ]
+        if peer_status is not None:
+            cells.append(_ONLINE if _host_online(row, peer_status) else _OFFLINE)
+        table.add_row(*cells)
     return table
 
 
-def hosts_to_dict(rows: list[dict], *, now: datetime | None = None) -> dict[str, Any]:
-    """Serialise ``hosts list`` rows to one JSON-able object (agent mode)."""
+def hosts_to_dict(
+    rows: list[dict],
+    *,
+    now: datetime | None = None,
+    peer_status: dict[str, bool] | None = None,
+) -> dict[str, Any]:
+    """Serialise ``hosts list`` rows to one JSON-able object (agent mode).
+
+    Each host carries an ``online`` field: ``True``/``False`` when
+    ``peer_status`` is provided (Tailscale reachable — matched against the
+    host's ``tailscale_name``), or ``None`` when Tailscale is unavailable
+    (no peer probe this run).
+    """
     out_rows: list[dict[str, Any]] = []
     for row in rows:
+        online: bool | None
+        online = _host_online(row, peer_status) if peer_status is not None else None
         out_rows.append(
             {
                 "host_id": row.get("host_id"),
@@ -276,9 +333,31 @@ def hosts_to_dict(rows: list[dict], *, now: datetime | None = None) -> dict[str,
                 "latest_chunks_per_s": row.get("latest_chunks_per_s"),
                 "last_seen": row.get("last_seen"),
                 "last_seen_age": format_age(row.get("last_seen"), now=now),
+                "tailscale_name": row.get("tailscale_name"),
+                "online": online,
             }
         )
     return {"hosts": out_rows, "count": len(out_rows)}
+
+
+def _probe_peer_status() -> dict[str, bool] | None:
+    """Probe live tailnet peers once → ``{name: online}``, or ``None``.
+
+    Returns ``None`` (degrade silently — omit the marker column) when
+    Tailscale is unavailable (:class:`TailscaleUnavailable`) or the
+    tailnet reports no peers. Otherwise the short-name → online map the
+    ``hosts list`` markers cross-reference against
+    ``corpus.hosts.tailscale_name``.
+    """
+    from corpus_forge.net.tailscale import TailscaleUnavailable, peers
+
+    try:
+        live = peers()
+    except TailscaleUnavailable:
+        return None
+    if not live:
+        return None
+    return {p.name: p.online for p in live}
 
 
 # ── Backend builder (mirrors admin.bench) ──────────────────────────────────
@@ -397,10 +476,15 @@ def cmd_hosts_list(
     finally:
         _close_backend(backend)
 
+    # RFC fleet-4 item 5 — probe live tailnet peers ONCE so each row can be
+    # marked ●/○ by matching ``tailscale_name``. ``None`` (Tailscale
+    # absent) omits the marker column / nulls the JSON ``online`` field.
+    peer_status = _probe_peer_status()
+
     if agent_mode:
-        print(json.dumps(hosts_to_dict(rows), indent=2, default=str))
+        print(json.dumps(hosts_to_dict(rows, peer_status=peer_status), indent=2, default=str))
     else:
-        ui_console.print(render_hosts_table(rows))
+        ui_console.print(render_hosts_table(rows, peer_status=peer_status))
 
 
 __all__ = [
