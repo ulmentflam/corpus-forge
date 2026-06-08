@@ -169,6 +169,43 @@ corpus-forge embedder repair-indexes --apply     # actually drop + recreate the 
 
 `migrate` does the same work as `repair-indexes --apply` but applied to every embedder atomically; `repair-indexes` is the targeted diagnostic.
 
+### Add a second machine (one-command fleet onboarding)
+
+When the user wants to add another host to an existing fleet (a new GPU
+box draining the embedding backlog, a laptop joining for search, etc.),
+**do not** walk them through `setup` interactively. The installer takes
+a `--join <dsn>` / `-Join <dsn>` pass-through that does it in one
+command:
+
+```bash
+# macOS / Linux / WSL
+curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh \
+  | bash -s -- --join 'postgresql://primary.fleet:5432/corpus'
+```
+
+```powershell
+# Windows
+iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1
+& $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
+```
+
+`CF_JOIN_DSN=<dsn>` is the env-var equivalent and works with the
+streaming `iwr | iex` form. A `ts://...` DSN (Tailscale-resolved) is
+also accepted — useful for tailnet-native fleets.
+
+The installer **skips the question tree** (the fleet's primary publishes
+the shared scope — embedders, retrieval tuning, classifier chains, even
+dataset names/kinds — and the joiner pulls all of it via `setup --join`)
+and **explicitly does NOT run `migrate`** — only the primary owns the
+schema lifecycle. After the one-liner finishes:
+
+- `doctor` already ran (smoke check). If it warned, re-run once the
+  primary is reachable.
+- `corpus-forge bench embed --all` — record the new host's per-lane
+  throughput so the fleet's claim loop knows what it's best at.
+- `corpus-forge service install` — install the daemon as a managed
+  service so the host drains backlog continuously.
+
 ## 7. Curation loop quickstart (for the assistant)
 
 When the user wants to improve corpus quality:

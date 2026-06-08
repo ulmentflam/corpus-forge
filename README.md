@@ -78,6 +78,44 @@ you start if I haven't already told you.
 [`AGENTS.md`](AGENTS.md) (any MCP client) and [`GEMINI.md`](GEMINI.md)
 (Gemini CLI / Code Assist) are the equivalents for non-Claude clients.
 
+### Add a second machine
+
+Once a primary host is running, a second box (your beefy Linux/Windows
+GPU rig, a laptop, a spare Mac mini) can join the same fleet with **one
+command**. The installer skips its question tree, pulls the shared
+scope (embedder choices, retrieval tuning, classifier chains) from the
+primary's published config, registers the new host in `corpus.hosts`,
+and renders a local `config.toml`. It does **not** run `migrate` — the
+primary owns the schema lifecycle.
+
+```bash
+# macOS / Linux / WSL
+curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh \
+  | bash -s -- --join 'postgresql://primary.fleet:5432/corpus'
+```
+
+```powershell
+# Windows (PowerShell)
+iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 `
+  -OutFile $env:TEMP\install.ps1
+& $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
+```
+
+`CF_JOIN_DSN=<dsn>` is the env-var equivalent of `--join` / `-Join`
+and works with the streaming `iwr | iex` form too. Tailnet operators
+can pass a [`ts://` DSN](#multi-host-deployment) — corpus-forge will
+resolve it via the Tailscale API so the DSN is portable across the
+mesh.
+
+What comes next on the joiner:
+
+- `corpus-forge doctor` already ran (smoke check, tolerates transient
+  failures). Re-run it once the primary is reachable if it warned.
+- `corpus-forge bench embed --all` — records this host's embedder
+  throughput so the fleet's claim loop knows what lanes it's best at.
+- `corpus-forge service install` — runs the daemon as a managed
+  service (launchd / systemd-user / Windows Service).
+
 ### Upgrade + diagnostics
 
 ```bash

@@ -138,6 +138,43 @@ corpus-forge search "what does the daemon log on startup" --k 5
 
 If `doctor` reports `embedder_indexes: WARN`, rerun `corpus-forge migrate` (rebuilds every drifted index) or `corpus-forge embedder repair-indexes --apply` (targeted rebuild). Both are idempotent.
 
+### Add a second machine
+
+When the user wants to onboard another host onto an existing fleet (a
+new GPU box, a laptop, a spare Mac mini), the installer takes a
+`--join <dsn>` / `-Join <dsn>` pass-through that handles it in one
+command — no question tree, no `migrate`, no per-host config drift.
+
+```bash
+# macOS / Linux / WSL
+curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh \
+  | bash -s -- --join 'postgresql://primary.fleet:5432/corpus'
+```
+
+```powershell
+# Windows
+iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1
+& $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
+```
+
+`CF_JOIN_DSN=<dsn>` is the env-var equivalent (works with `iwr | iex`).
+A `ts://host/db` DSN is resolved against Tailscale's API and stays
+portable across the tailnet.
+
+Mechanics: the installer **skips its question tree** (the fleet's
+primary owns the shared scope — embedders, retrieval tuning,
+classifier chains, even dataset names — and the joiner pulls all of it
+via `corpus-forge setup --non-interactive --join <dsn>`) and
+**explicitly does NOT run `corpus-forge migrate`** (the primary owns
+the schema lifecycle; joiners never migrate). After the command
+finishes:
+
+- `doctor` already ran as a smoke check; re-run if it warned.
+- `corpus-forge bench embed --all` — record this host's per-lane
+  embedder throughput so the fleet's claim loop knows what it's best at.
+- `corpus-forge service install` — install the daemon as a managed
+  service so the new host drains backlog continuously.
+
 ## 6. Curation loop (vendor-neutral playbook)
 
 When the user wants to improve corpus quality, follow this prompt skeleton — it works for any MCP-speaking assistant:
