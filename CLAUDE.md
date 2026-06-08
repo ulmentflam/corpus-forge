@@ -184,15 +184,15 @@ curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install
 ```
 
 ```powershell
-# Windows — env-var form (safe to paste as one block):
-$env:CF_JOIN_DSN = 'postgresql://primary.fleet:5432/corpus'
-iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 | iex
+# Windows — paste as one line; `;` chains the env-var set + the iwr|iex pipeline:
+$env:CF_JOIN_DSN = 'postgresql://primary.fleet:5432/corpus'; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 | iex
 ```
 
 `CF_JOIN_DSN=<dsn>` is the env-var equivalent of `--join` / `-Join`.
-The `-Join` parameter form is also supported, but PowerShell rejects
-a bare `&` between two pasted lines (it reads as a CMD-style operator),
-so use `;` to chain on a single line:
+A multi-line block works too if pasted line-by-line, but PowerShell
+rejects two statements concatenated without `;` (or `&` between them,
+which it reads as a banned CMD-style operator). The `-Join` parameter
+form is also supported when chained the same way:
 
 ```powershell
 iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
