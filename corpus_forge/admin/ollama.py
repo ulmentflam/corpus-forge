@@ -68,9 +68,10 @@ def _base_url() -> str:
     """
 
     from corpus_forge.config import Config
+    from corpus_forge.net import resolve_endpoint_for
 
     cfg = Config.load()
-    return str(cfg.ollama.base_url).rstrip("/")
+    return resolve_endpoint_for(str(cfg.ollama.base_url), cfg, default_scheme="http").rstrip("/")
 
 
 def _request_json(url: str, *, method: str = "GET", body: dict | None = None, timeout: float):

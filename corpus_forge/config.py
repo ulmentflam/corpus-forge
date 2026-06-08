@@ -32,6 +32,7 @@ from pydantic import (  # noqa: E402
     BaseModel,
     ConfigDict,
     Field,
+    TypeAdapter,
     field_validator,
     model_validator,
 )
@@ -63,6 +64,65 @@ EnvInterpolatedStr = Annotated[str, AfterValidator(interpolate_env_vars)]
 
 # Re-export for testing
 ExpandUser = expand_user
+
+
+# RFC fleet-4 item 2/3 — ``ts://<magicdns-name>[:port][/rest]`` endpoint
+# scheme. A bare peer name (``ts://gb10``) resolves to a connectable host
+# at the point each URL/DSN is consumed (see
+# :func:`corpus_forge.net.resolve_endpoint`); config itself stays inert.
+# This regex is the SAME shape ``resolve_endpoint`` parses, kept here so
+# the ``EndpointUrl`` field validator can accept ``ts://`` forms at parse
+# time without importing the net package (config stays lightweight).
+#   ts://<name>[:port][/rest]
+# ``name`` is a DNS-ish label run (letters / digits / dot / hyphen),
+# ``port`` an optional ``:NNNN``, ``rest`` an optional ``/...`` tail.
+_TS_ENDPOINT_RE = re.compile(
+    r"^ts://(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)"
+    r"(?P<port>:\d+)?(?P<rest>/.*)?$"
+)
+
+# Reuse pydantic's own ``AnyHttpUrl`` parsing for the http(s) branch of
+# ``EndpointUrl`` rather than re-implementing URL validation. ``pydantic``
+# is already imported at module top, so this adds no import-time cost.
+_HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
+
+
+def _validate_endpoint_url(value: str) -> str:
+    """Accept an http(s) URL OR a ``ts://name[:port][/rest]`` endpoint.
+
+    The RFC-named model-endpoint fields (``EmbedderConfig.base_url``,
+    ``ollama.base_url``, VLM / Whisper / classifier / enricher URLs) were
+    typed ``AnyHttpUrl``, which rejects ``ts://`` at parse time. This
+    ``AfterValidator`` widens the accepted set to *exactly* two shapes —
+    a parseable http(s) URL or a tailnet ``ts://`` endpoint — and rejects
+    everything else with a clear message. The field stays a plain ``str``
+    (resolution is lazy, at the consumption point) so downstream
+    ``str(field)`` call sites keep working unchanged.
+    """
+    if value.startswith("ts://"):
+        if not _TS_ENDPOINT_RE.match(value):
+            raise ValueError(
+                f"{value!r} is not a valid ts:// endpoint — expected "
+                "ts://<magicdns-name>[:port][/path] (e.g. 'ts://gb10', "
+                "'ts://gb10:11434', 'ts://gb10:5432/corpus')."
+            )
+        return value
+    # Validate http(s) via pydantic's own AnyHttpUrl adapter so we don't
+    # re-implement URL parsing.
+    try:
+        _HTTP_URL_ADAPTER.validate_python(value)
+    except Exception as exc:  # narrow re-raise as a clear ValueError
+        raise ValueError(
+            f"{value!r} is not a valid endpoint URL — expected an http(s) URL "
+            "or a tailnet 'ts://<name>[:port][/path]' endpoint."
+        ) from exc
+    return value
+
+
+# RFC fleet-4 — endpoint fields that accept either an http(s) URL or a
+# ``ts://`` tailnet endpoint. Swapped in for ``AnyHttpUrl`` on every
+# RFC-named model-endpoint field. Stays a ``str`` at runtime.
+EndpointUrl = Annotated[str, AfterValidator(_validate_endpoint_url)]
 
 
 class BackendConfig(BaseModel):
@@ -358,7 +418,9 @@ class EmbedderConfig(BaseModel):
     batch_size: int = Field(default=32, gt=0)
     device: str = Field(default="auto")
     api_key_env: str = Field(default="OPENAI_API_KEY")
-    base_url: AnyHttpUrl | None = Field(default=None)
+    # RFC fleet-4: accepts http(s) OR ``ts://name[:port]``. Resolution is
+    # lazy at the consumption point (``embedders/registry.py``).
+    base_url: EndpointUrl | None = Field(default=None)
     # ── llama-cpp provider knobs (ignored by other providers) ────────
     # Optional explicit GGUF file path.  Wins over the Ollama
     # ``~/.ollama/models/manifests/...`` auto-discover path keyed off
@@ -589,9 +651,11 @@ class VLMConfig(BaseModel):
     # timeouts stay LOCAL.
     backend: Literal["ollama", "mistral", "none"] = "none"
     ollama_model: str = Field(default="qwen2.5vl:7b", json_schema_extra={"scope": "shared"})
-    ollama_url: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
+    # RFC fleet-4: accepts http(s) OR ``ts://name[:port]`` (resolved lazily
+    # in ``vlm/registry.py``).
+    ollama_url: EndpointUrl = "http://localhost:11434"
     mistral_model: str = Field(default="mistral-ocr-2503", json_schema_extra={"scope": "shared"})
-    mistral_base_url: AnyHttpUrl = AnyHttpUrl("https://api.mistral.ai/v1")
+    mistral_base_url: EndpointUrl = "https://api.mistral.ai/v1"
     mistral_api_key_env: str = "MISTRAL_API_KEY"
     timeout_s: float = Field(120.0, gt=0)
 
@@ -643,7 +707,9 @@ class WhisperConfig(BaseModel):
     backend: Literal["local", "remote", "none"] = "none"
     model: str = Field(default="small", json_schema_extra={"scope": "shared"})
     local_compute_type: Literal["auto", "float16", "int8", "int8_float16"] = "auto"
-    remote_base_url: AnyHttpUrl = AnyHttpUrl("https://api.openai.com/v1")
+    # RFC fleet-4: accepts http(s) OR ``ts://name[:port]`` (resolved lazily
+    # in ``whisper/registry.py``).
+    remote_base_url: EndpointUrl = "https://api.openai.com/v1"
     remote_api_key_env: str = "OPENAI_API_KEY"
     timeout_s: float = Field(300.0, gt=0)
     language: str = ""
@@ -706,10 +772,10 @@ class ClassifierConfig(BaseModel):
     )
     # ── LLM fields ────────────────────────────────────────────────────
     llm_model: str = Field(default="qwen2.5:7b-instruct", json_schema_extra={"scope": "shared"})
-    # Pydantic v2 quirk: ``AnyHttpUrl`` defaults must be wrapped in the
-    # class (not bare strings). Mirrors the proven pattern from
-    # :attr:`VLMConfig.ollama_url`.
-    llm_url: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
+    # RFC fleet-4: accepts http(s) OR ``ts://name[:port]``. Now a plain
+    # ``str`` (``EndpointUrl``), so no ``AnyHttpUrl(...)`` default wrapper
+    # is needed. Resolution is lazy at the classifier consumption point.
+    llm_url: EndpointUrl = "http://localhost:11434"
     llm_api_key_env: str = ""
     llm_timeout_s: float = Field(default=60.0, gt=0)
     llm_temperature: float = Field(
@@ -764,11 +830,13 @@ class EnricherConfig(BaseModel):
     local_model: str = Field(
         default="qwen3.6:35b-a3b-instruct", json_schema_extra={"scope": "shared"}
     )
-    local_url: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
+    # RFC fleet-4: accept http(s) OR ``ts://name[:port]`` (resolved lazily
+    # in ``enrichers/__init__.py``).
+    local_url: EndpointUrl = "http://localhost:11434"
     remote_model: str = Field(
         default="qwen3.6:35b-a3b-instruct", json_schema_extra={"scope": "shared"}
     )
-    remote_url: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
+    remote_url: EndpointUrl = "http://localhost:11434"
     remote_api_shape: Literal["ollama", "openai"] = "ollama"
     remote_api_key_env: str = "OLLAMA_API_KEY"
     timeout_s: float = Field(180.0, gt=0)
@@ -798,7 +866,9 @@ class OllamaConfig(BaseModel):
     ``OllamaConfig`` instance.
     """
 
-    base_url: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
+    # RFC fleet-4: accepts http(s) OR ``ts://name[:port]`` (resolved lazily
+    # in ``admin/ollama.py``'s ``_base_url``).
+    base_url: EndpointUrl = "http://localhost:11434"
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1222,6 +1292,66 @@ class GrowthConfig(BaseModel):
         return _parse_bytes(value)
 
 
+class TailscaleConfig(BaseModel):
+    """RFC fleet-4 — tailnet-aware endpoint resolution controls.
+
+    Read-only Tailscale integration: corpus-forge never manages the
+    Tailscale lifecycle (no ``up``/``down``, no keys, no ACLs). This block
+    only gates whether ``ts://<magicdns-name>[:port]`` endpoints — usable
+    anywhere a host URL/DSN appears (``backend.dsn``,
+    ``EmbedderConfig.base_url``, ``ollama.base_url``, ``classifier.llm_url``,
+    enricher URLs, VLM / Whisper endpoints) — are resolved.
+
+    Migration: existing configs have no ``[tailscale]`` section. The
+    default ``enabled = False`` means they continue to validate as-is and
+    behave identically; a config that *uses* a ``ts://`` endpoint while
+    this block is absent / disabled fails validation at load time with a
+    fix-it message (see :meth:`Config._check_tailscale_endpoints`).
+
+    Fields:
+
+    - ``enabled``: master switch. ``False`` (default) → ``ts://`` endpoints
+      are a config error. ``True`` → they're resolved lazily at the point
+      each URL/DSN is consumed.
+    - ``prefer_magicdns``: when ``True`` (default), a bare peer name is
+      treated as a valid OS hostname and resolution is a no-op rename
+      (``ts://gb10 → gb10``), skipping the ``tailscale status`` shellout.
+      Flows through to :func:`corpus_forge.net.tailscale.resolve`.
+    """
+
+    enabled: bool = False
+    prefer_magicdns: bool = True
+
+    model_config = ConfigDict(extra="forbid")
+
+
+# The RFC-named string config fields scanned at load time for a stray
+# ``ts://`` while ``[tailscale]`` is disabled. Each entry is a
+# ``(dotted-path, value-getter)`` pair; the getter pulls the raw string
+# value(s) off a loaded :class:`Config`. ``backend.dsn`` is included even
+# though it's an ``EnvInterpolatedStr`` (not ``EndpointUrl``) because the
+# RFC names it as a ``ts://`` consumer.
+def _tailscale_endpoint_values(config: "Config") -> list[tuple[str, str]]:
+    """Yield ``(field-path, value)`` for every RFC-named endpoint field.
+
+    Used by the load-time validator to point the operator at the exact
+    field that carries a ``ts://`` endpoint when Tailscale is disabled.
+    """
+    pairs: list[tuple[str, str | None]] = [
+        ("backend.dsn", config.backend.dsn),
+        ("ollama.base_url", config.ollama.base_url),
+        ("vlm.ollama_url", config.vlm.ollama_url),
+        ("vlm.mistral_base_url", config.vlm.mistral_base_url),
+        ("classifier.llm_url", config.classifier.llm_url),
+        ("whisper.remote_base_url", config.whisper.remote_base_url),
+        ("code_enricher.local_url", config.code_enricher.local_url),
+        ("code_enricher.remote_url", config.code_enricher.remote_url),
+    ]
+    for idx, emb in enumerate(config.embedders):
+        pairs.append((f"embedders[{idx}].base_url", emb.base_url))
+    return [(path, value) for path, value in pairs if value is not None]
+
+
 class Config(BaseModel):
     """Main configuration for corpus-forge."""
 
@@ -1282,6 +1412,12 @@ class Config(BaseModel):
     # validate; the regression runner short-circuits if no baseline
     # JSON is passed in.
     eval_regression: EvalRegressionConfig = Field(default_factory=EvalRegressionConfig)
+    # RFC fleet-4 — tailnet-aware endpoint resolution. Defaults to
+    # ``enabled=False`` so existing configs without a ``[tailscale]`` block
+    # continue to validate and behave identically; a config that *uses* a
+    # ``ts://`` endpoint while disabled fails validation at load time (see
+    # ``_check_tailscale_endpoints``).
+    tailscale: TailscaleConfig = Field(default_factory=TailscaleConfig)
     # RFC ``rfc-fleet-3-federated-config-and-setup`` — federation drift
     # detection. Defaults to ``enabled=False`` so existing configs without
     # a ``[federation]`` block continue to validate and behave byte-for-byte
@@ -1382,6 +1518,34 @@ class Config(BaseModel):
             raise ValueError(
                 f"embed.lanes contains name(s) {unknown!r} that do not match any "
                 f"[[embedders]] entry; declared embedders: {sorted(embedder_names)!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_tailscale_endpoints(self) -> "Config":
+        """RFC fleet-4 item 3 — reject ``ts://`` endpoints while disabled.
+
+        Resolution stays lazy (at the consumption point), but a config
+        that *names* a ``ts://`` endpoint while ``[tailscale] enabled`` is
+        ``False`` is a guaranteed runtime failure — surface it at load
+        time with a fix-it message pointing at the offending field. When
+        ``enabled`` is ``True`` this validator is a no-op and resolution
+        happens lazily where the connection is attempted.
+        """
+        if self.tailscale.enabled:
+            return self
+        offenders = [
+            (path, value)
+            for path, value in _tailscale_endpoint_values(self)
+            if value.startswith("ts://")
+        ]
+        if offenders:
+            fields = ", ".join(f"{path}={value!r}" for path, value in offenders)
+            raise ValueError(
+                f"ts:// endpoint(s) configured while Tailscale is disabled: {fields}. "
+                "Add a [tailscale] block with `enabled = true` to config.toml "
+                "(corpus-forge never manages the Tailscale lifecycle — it only "
+                "resolves ts:// names; see `corpus-forge doctor`'s tailscale check)."
             )
         return self
 

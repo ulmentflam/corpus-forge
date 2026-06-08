@@ -130,8 +130,12 @@ def get_active_whisper(config: Config) -> WhisperBackend:
                 "Remote Whisper backend selected but `corpus_forge.whisper.remote` "
                 "could not be imported — install the `[whisper]` extra."
             )
+        from corpus_forge.net import resolve_endpoint_for  # noqa: PLC0415
+
         backend = cls(
-            base_url=str(cfg.remote_base_url).rstrip("/"),
+            base_url=resolve_endpoint_for(
+                str(cfg.remote_base_url), config, default_scheme="http"
+            ).rstrip("/"),
             model=cfg.model,
             api_key=api_key,
             timeout_s=cfg.timeout_s,

@@ -110,9 +110,13 @@ def get_active_enricher(config: Config) -> CodeEnricher:
                 "Local backend selected but `corpus_forge.enrichers.qwen_local` "
                 "could not be imported — ensure `requests` is installed."
             )
+        from corpus_forge.net import resolve_endpoint_for  # noqa: PLC0415
+
         instance = cls(
             model=cfg.local_model,
-            llm_url=str(cfg.local_url).rstrip("/"),
+            llm_url=resolve_endpoint_for(str(cfg.local_url), config, default_scheme="http").rstrip(
+                "/"
+            ),
             timeout_s=cfg.timeout_s,
             temperature=cfg.temperature,
         )
@@ -127,10 +131,14 @@ def get_active_enricher(config: Config) -> CodeEnricher:
                 "could not be imported — ensure `requests` is installed."
             )
         api_key = config.resolve_code_enricher_api_key()
+        from corpus_forge.net import resolve_endpoint_for  # noqa: PLC0415
+
         instance = cls(
             api_shape=cfg.remote_api_shape,
             model=cfg.remote_model,
-            base_url=str(cfg.remote_url).rstrip("/"),
+            base_url=resolve_endpoint_for(
+                str(cfg.remote_url), config, default_scheme="http"
+            ).rstrip("/"),
             api_key=api_key,
             timeout_s=cfg.timeout_s,
             temperature=cfg.temperature,

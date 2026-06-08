@@ -28,7 +28,7 @@ from .base import (
 from .registry import ClassifierRegistry
 
 if TYPE_CHECKING:
-    pass
+    from corpus_forge.config import TailscaleConfig
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,11 @@ _CLASSIFIER_REGISTRY: dict[str, tuple[str, str]] = {
 }
 
 
-def _load_classifier(name: str, config: object | None = None) -> Classifier:
+def _load_classifier(
+    name: str,
+    config: object | None = None,
+    tailscale: TailscaleConfig | None = None,
+) -> Classifier:
     """Lazy-import ``corpus_forge.classifiers.<submodule>.<class_name>``.
 
     Phase E P1 (C-10/11): when ``name == "llm"``, LLM-relevant fields
@@ -85,10 +89,24 @@ def _load_classifier(name: str, config: object | None = None) -> Classifier:
         ):
             if hasattr(config, cfg_attr):
                 value = getattr(config, cfg_attr)
-                # AnyHttpUrl is not a plain str — cast it so the
-                # backend's ``rstrip('/')`` works.
+                # ``llm_url`` is an ``EndpointUrl`` (plain str). RFC
+                # fleet-4: resolve a ``ts://name[:port]`` form to a
+                # connectable URL here, the classifier consumption point.
+                # Non-``ts://`` URLs pass through unchanged with no
+                # Tailscale import. When ``tailscale`` is None (duck-typed
+                # callers / tests) resolution is skipped — pre-RFC
+                # behaviour, a plain ``str()`` cast.
                 if kwarg == "llm_url":
                     value = str(value)
+                    if tailscale is not None:
+                        from corpus_forge.net import resolve_endpoint  # noqa: PLC0415
+
+                        value = resolve_endpoint(
+                            value,
+                            tailscale_enabled=tailscale.enabled,
+                            prefer_magicdns=tailscale.prefer_magicdns,
+                            default_scheme="http",
+                        )
                 kwargs[kwarg] = value
         # Optional bearer token. Empty env-var name (default) means
         # "open local Ollama"; setting it to e.g. ``OPENAI_API_KEY``
@@ -103,7 +121,9 @@ def _load_classifier(name: str, config: object | None = None) -> Classifier:
     return cls()
 
 
-def register_default_classifiers(config: object | None) -> ClassifierRegistry:
+def register_default_classifiers(
+    config: object | None, tailscale: TailscaleConfig | None = None
+) -> ClassifierRegistry:
     """Construct a :class:`ClassifierRegistry` from ``config``.
 
     ``config`` is duck-typed against the ``chain`` attribute exposed by
@@ -123,7 +143,7 @@ def register_default_classifiers(config: object | None) -> ClassifierRegistry:
 
     reg = ClassifierRegistry()
     for name in chain:
-        reg.register(_load_classifier(name, config))
+        reg.register(_load_classifier(name, config, tailscale))
     return reg
 
 
