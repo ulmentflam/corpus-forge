@@ -262,6 +262,140 @@ def maybe_prompt_embed_lanes(
         answers["embed_lanes"] = ",".join(chosen)
 
 
+# ───────────────────────────────────────────────────────────────────────────
+# Tailscale live-peer picker (RFC fleet-4 item 5)
+# ───────────────────────────────────────────────────────────────────────────
+
+#: Default ports appended to a bare ``ts://<peer>`` so the rendered value
+#: is connectable without the operator typing the port.  Keyed by a short
+#: "kind" the caller passes when offering the picker; the picker renders
+#: ``ts://<peer>:<port>`` for that kind.  Postgres speaks 5432; Ollama and
+#: most OpenAI-compatible local servers (vLLM defaults aside) listen on
+#: 11434, the Ollama port the rest of the wizard already defaults to.
+_TAILSCALE_DEFAULT_PORTS: dict[str, int] = {
+    "postgres": 5432,  # libpq default
+    "ollama": 11434,  # Ollama / OpenAI-compatible local server default
+}
+
+
+def maybe_pick_tailscale_endpoint(
+    answers: dict[str, str],
+    answer_key: str,
+    *,
+    kind: str,
+    label: str,
+    suffix: str = "",
+    interactive: bool,
+    stream_in: IO[str] | None = None,
+    stream_out: IO[str] | None = None,
+) -> None:
+    """RFC fleet-4 item 5 — offer live tailnet peers for one host field.
+
+    When :func:`corpus_forge.net.tailscale.peers` succeeds, lists the
+    *remote* peer names (self filtered out) as numbered choices for the
+    field named by ``answer_key`` (e.g. the Postgres DSN host, a remote
+    embedder ``base_url``).  Picking one rewrites
+    ``answers[answer_key]`` to ``ts://<peer>:<port><suffix>`` — the port
+    from :data:`_TAILSCALE_DEFAULT_PORTS` for ``kind`` (commented there),
+    and ``suffix`` for any trailing path the field needs (e.g. ``/v1`` on
+    an OpenAI-compatible embedder base_url).  Picking ``0`` (or blank)
+    keeps whatever the operator already typed.
+
+    Degrades SILENTLY — no prompt, no error, ``answers`` untouched — when:
+
+    - **non-interactive** (the existing ``ts://`` flags already flow
+      through ``render_config_toml`` unchanged; no new flag here);
+    - :func:`peers` raises :class:`TailscaleUnavailable` (Tailscale
+      absent / daemon down — exactly the lanes-prompt posture);
+    - :func:`peers` returns no *remote* peers (a one-node tailnet has
+      nothing to pick).
+
+    Mirrors :func:`maybe_prompt_embed_lanes`: probe, offer choices,
+    degrade silently.
+    """
+    if not interactive:
+        return
+
+    # Local import: net.tailscale shells out to ``tailscale status`` and
+    # the wizard is on every CLI cold-start path — keep it out of import.
+    from corpus_forge.net.tailscale import TailscaleUnavailable, peers  # noqa: PLC0415
+
+    try:
+        all_peers = peers()
+    except TailscaleUnavailable:
+        return
+    remote = [p for p in all_peers if not p.is_self]
+    if not remote:
+        return
+
+    out_stream = stream_out or sys.stdout
+    in_stream = stream_in or sys.stdin
+    port = _TAILSCALE_DEFAULT_PORTS.get(kind)
+
+    out_stream.write(f"\nTailscale peers available for {label}:\n")
+    out_stream.write("  0) keep current\n")
+    for idx, peer in enumerate(remote, start=1):
+        marker = " (offline)" if not peer.online else ""
+        out_stream.write(f"  {idx}) {peer.name}{marker}\n")
+    out_stream.write("Pick a peer by number (blank = keep current) [0] ")
+    out_stream.flush()
+
+    raw = in_stream.readline().rstrip("\n").rstrip("\r").strip()
+    if not raw:
+        return
+    try:
+        choice = int(raw)
+    except ValueError:
+        return
+    if choice < 1 or choice > len(remote):
+        return
+
+    picked = remote[choice - 1].name
+    endpoint = f"ts://{picked}:{port}" if port else f"ts://{picked}"
+    answers[answer_key] = f"{endpoint}{suffix}"
+
+
+def maybe_pick_tailscale_endpoints(
+    answers: dict[str, str],
+    *,
+    interactive: bool,
+    stream_in: IO[str] | None = None,
+    stream_out: IO[str] | None = None,
+) -> None:
+    """Offer the live-peer picker for every host field the full wizard set.
+
+    Walks the answer fields that name a remote host — the Postgres DSN
+    (when ``backend=postgres``) and the OpenAI-compatible embedder
+    ``base_url`` (when an OpenAI embedder is configured) — and offers
+    :func:`maybe_pick_tailscale_endpoint` for each.  Each call degrades
+    silently when Tailscale is absent, so on a non-tailnet box this is a
+    no-op that leaves ``answers`` byte-identical.
+    """
+    if answers.get("backend") == "postgres":
+        maybe_pick_tailscale_endpoint(
+            answers,
+            "postgres_dsn",
+            kind="postgres",
+            label="the PostgreSQL host",
+            interactive=interactive,
+            stream_in=stream_in,
+            stream_out=stream_out,
+        )
+    if answers.get("embedder") in {"openai", "both"}:
+        # OpenAI-compatible servers (Ollama / vLLM) expose ``/v1`` — the
+        # base_url needs that path suffix appended to the ts:// host.
+        maybe_pick_tailscale_endpoint(
+            answers,
+            "openai_base_url",
+            kind="ollama",
+            label="the remote embedder base_url",
+            suffix="/v1",
+            interactive=interactive,
+            stream_in=stream_in,
+            stream_out=stream_out,
+        )
+
+
 @dataclass(frozen=True)
 class Question:
     """One [[question]] block from ``questions.toml``."""
@@ -760,6 +894,15 @@ def run_wizard(
         questions,
         interactive=True,
         env=dict(os.environ),
+        stream_in=stream_in,
+        stream_out=stream_out,
+    )
+    # RFC fleet-4 item 5 — offer live tailnet peers for the host fields
+    # (Postgres DSN, remote embedder base_url) before the config is
+    # rendered.  Degrades silently when Tailscale is absent.
+    maybe_pick_tailscale_endpoints(
+        answers,
+        interactive=True,
         stream_in=stream_in,
         stream_out=stream_out,
     )

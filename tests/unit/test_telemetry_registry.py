@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -228,6 +229,93 @@ def test_record_host_heartbeat_passes_probe_payload(
 def test_record_host_heartbeat_isolates_backend_failure(cfg: _StubConfig) -> None:
     """A raising backend must NOT propagate out of record_host_heartbeat."""
     tr.record_host_heartbeat(_RaisingBackend(), cfg)  # no raise == pass
+
+
+# ---------------------------------------------------------------------------
+# tailscale_name on heartbeat (RFC fleet-4 item 5)
+# ---------------------------------------------------------------------------
+
+
+class _TailscaleCfg:
+    """Minimal Config surface carrying a ``[tailscale]`` block."""
+
+    def __init__(self, embedders: list[_StubEmbedder], *, enabled: bool) -> None:
+        self.embedders = embedders
+        self._host_id = "host-xyz"
+        self.tailscale = SimpleNamespace(enabled=enabled)
+
+    def host_id(self) -> str:
+        return self._host_id
+
+
+def _self_peers() -> list[Any]:
+    from corpus_forge.net.tailscale import Peer
+
+    return [
+        Peer(name="gb10", ips=("100.0.0.1",), online=True, is_self=True),
+        Peer(name="rig", ips=("100.0.0.2",), online=True),
+    ]
+
+
+def test_heartbeat_stamps_self_tailscale_name_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tr, "detect_accelerator", lambda: AcceleratorInfo(kind=Accelerator.CPU))
+    import corpus_forge.net.tailscale as ts
+
+    monkeypatch.setattr(ts, "peers", _self_peers)
+    cfg = _TailscaleCfg([_StubEmbedder("openai", "m", 1)], enabled=True)
+    backend = _RecordingBackend()
+    tr.record_host_heartbeat(backend, cfg)
+    assert backend.host_calls[0]["tailscale_name"] == "gb10"
+
+
+def test_heartbeat_omits_tailscale_name_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tr, "detect_accelerator", lambda: AcceleratorInfo(kind=Accelerator.CPU))
+    import corpus_forge.net.tailscale as ts
+
+    # Must not even probe peers() when the block is disabled.
+    def _should_not_call() -> list[Any]:
+        raise AssertionError("peers() must not be probed when tailscale disabled")
+
+    monkeypatch.setattr(ts, "peers", _should_not_call)
+    cfg = _TailscaleCfg([_StubEmbedder("openai", "m", 1)], enabled=False)
+    backend = _RecordingBackend()
+    tr.record_host_heartbeat(backend, cfg)
+    assert backend.host_calls[0]["tailscale_name"] is None
+
+
+def test_heartbeat_tailscale_name_none_when_peers_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tr, "detect_accelerator", lambda: AcceleratorInfo(kind=Accelerator.CPU))
+    import corpus_forge.net.tailscale as ts
+    from corpus_forge.net.tailscale import TailscaleUnavailable
+
+    def _boom() -> list[Any]:
+        raise TailscaleUnavailable("down", reason="daemon")
+
+    monkeypatch.setattr(ts, "peers", _boom)
+    cfg = _TailscaleCfg([_StubEmbedder("openai", "m", 1)], enabled=True)
+    backend = _RecordingBackend()
+    tr.record_host_heartbeat(backend, cfg)  # must not raise
+    assert backend.host_calls[0]["tailscale_name"] is None
+
+
+def test_heartbeat_tailscale_name_none_when_no_self_peer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tr, "detect_accelerator", lambda: AcceleratorInfo(kind=Accelerator.CPU))
+    import corpus_forge.net.tailscale as ts
+    from corpus_forge.net.tailscale import Peer
+
+    monkeypatch.setattr(ts, "peers", lambda: [Peer(name="rig", ips=(), online=True)])
+    cfg = _TailscaleCfg([_StubEmbedder("openai", "m", 1)], enabled=True)
+    backend = _RecordingBackend()
+    tr.record_host_heartbeat(backend, cfg)
+    assert backend.host_calls[0]["tailscale_name"] is None
 
 
 def test_record_model_registry_combines_embedders_and_ollama(

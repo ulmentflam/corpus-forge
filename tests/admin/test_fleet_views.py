@@ -196,6 +196,93 @@ class TestRenderAndSerialise:
         assert row["host_id"] == "h1"
         assert row["accelerator"] == "mps"  # collapsed, not the raw blob
         assert row["last_seen_age"] == "30m ago"
+        # No peer_status → online is null (Tailscale unavailable).
+        assert row["online"] is None
+
+
+class TestHostsTailscaleMarkers:
+    """RFC fleet-4 item 5 — ●/○ markers + the --json ``online`` field."""
+
+    @staticmethod
+    def _render_text(table: Any) -> str:
+        from rich.console import Console
+
+        from corpus_forge.ui import theme as _theme
+
+        console = Console(width=200, record=True, force_terminal=False, theme=_theme.build_theme())
+        console.print(table)
+        return console.export_text()
+
+    def test_no_peer_status_omits_column(self) -> None:
+        # peer_status=None → table identical to pre-fleet-4 (no column).
+        table = self._render_text(fv.render_hosts_table([_host_row(tailscale_name="gb10")]))
+        assert "Tailscale" not in table
+        assert "●" not in table and "○" not in table
+
+    def test_online_marker_when_name_matches_online_peer(self) -> None:
+        table = self._render_text(
+            fv.render_hosts_table([_host_row(tailscale_name="gb10")], peer_status={"gb10": True})
+        )
+        assert "Tailscale" in table
+        assert "●" in table
+
+    def test_offline_marker_when_peer_offline(self) -> None:
+        table = self._render_text(
+            fv.render_hosts_table([_host_row(tailscale_name="gb10")], peer_status={"gb10": False})
+        )
+        assert "○" in table
+
+    def test_offline_marker_when_not_a_peer(self) -> None:
+        # Host with a name that's NOT in the peer map → offline glyph.
+        table = self._render_text(
+            fv.render_hosts_table([_host_row(tailscale_name="ghost")], peer_status={"gb10": True})
+        )
+        assert "○" in table
+
+    def test_offline_marker_when_no_tailscale_name(self) -> None:
+        # Host that never reported a tailscale_name → offline glyph.
+        table = self._render_text(fv.render_hosts_table([_host_row()], peer_status={"gb10": True}))
+        assert "○" in table
+
+    def test_json_online_true_false_and_none(self) -> None:
+        # online True when matched + online.
+        out = fv.hosts_to_dict([_host_row(tailscale_name="gb10")], peer_status={"gb10": True})
+        assert out["hosts"][0]["online"] is True
+        # online False when matched + offline / not a peer.
+        out = fv.hosts_to_dict([_host_row(tailscale_name="gb10")], peer_status={"gb10": False})
+        assert out["hosts"][0]["online"] is False
+
+
+class TestProbePeerStatus:
+    def test_returns_name_online_map(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import corpus_forge.net.tailscale as ts
+        from corpus_forge.net.tailscale import Peer
+
+        monkeypatch.setattr(
+            ts,
+            "peers",
+            lambda: [
+                Peer(name="gb10", ips=(), online=True, is_self=True),
+                Peer(name="rig", ips=(), online=False),
+            ],
+        )
+        assert fv._probe_peer_status() == {"gb10": True, "rig": False}
+
+    def test_none_when_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import corpus_forge.net.tailscale as ts
+        from corpus_forge.net.tailscale import TailscaleUnavailable
+
+        def _boom() -> Any:
+            raise TailscaleUnavailable("down", reason="daemon")
+
+        monkeypatch.setattr(ts, "peers", _boom)
+        assert fv._probe_peer_status() is None
+
+    def test_none_when_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import corpus_forge.net.tailscale as ts
+
+        monkeypatch.setattr(ts, "peers", list)
+        assert fv._probe_peer_status() is None
 
 
 # ---------------------------------------------------------------------------
@@ -467,22 +554,56 @@ class TestModelsListCli:
         assert result.exit_code == 1
 
 
+def _no_tailscale(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch the CLI's peer probe to "Tailscale absent" (no real shellout)."""
+    monkeypatch.setattr(fv, "_probe_peer_status", lambda: None)
+
+
 class TestHostsListCli:
     def test_table_default(self, patched: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
         _force_human(monkeypatch)
+        _no_tailscale(monkeypatch)
         result = runner.invoke(app, ["hosts", "list"])
         assert result.exit_code == 0
         assert "Fleet hosts" in result.output
         assert "└" in result.output
+        # Tailscale absent → no marker column.
+        assert "Tailscale" not in result.output
 
     def test_json_payload(self, patched: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
         _force_human(monkeypatch)
+        _no_tailscale(monkeypatch)
         result = runner.invoke(app, ["hosts", "list", "--json"])
         assert result.exit_code == 0
         payload = _json.loads(result.stdout)
         assert payload["count"] == 1
         assert payload["hosts"][0]["host_id"] == "h1"
         assert payload["hosts"][0]["accelerator"] == "mps"
+        # Tailscale absent → online is null.
+        assert payload["hosts"][0]["online"] is None
+
+    def test_table_with_tailscale_markers(
+        self, patched: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _force_human(monkeypatch)
+        patched["backend"]._hosts = [_host_row(tailscale_name="gb10")]
+        monkeypatch.setattr(fv, "_probe_peer_status", lambda: {"gb10": True})
+        result = runner.invoke(app, ["hosts", "list"])
+        assert result.exit_code == 0
+        # Narrow CliRunner width truncates the header text; assert on the
+        # online glyph the marker column renders instead.
+        assert "●" in result.output
+
+    def test_json_online_field_when_tailscale_present(
+        self, patched: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _force_human(monkeypatch)
+        patched["backend"]._hosts = [_host_row(tailscale_name="gb10")]
+        monkeypatch.setattr(fv, "_probe_peer_status", lambda: {"gb10": False})
+        result = runner.invoke(app, ["hosts", "list", "--json"])
+        assert result.exit_code == 0
+        payload = _json.loads(result.stdout)
+        assert payload["hosts"][0]["online"] is False
 
     def test_backend_unreachable_exits_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _force_human(monkeypatch)
