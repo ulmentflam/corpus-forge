@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import socket
 import subprocess
 import sys
 import tomllib
@@ -1242,6 +1243,173 @@ def _embed_claims_ttl_warning(cfg: Config, backend: StorageBackend, ttl: int) ->
     return None
 
 
+# ── tailscale (rfc-fleet-4) ───────────────────────────────────────────────
+# Short, named TCP-connect budget for the per-name reachability probe. A
+# tailnet peer on the same mesh answers in single-digit milliseconds; 3 s
+# tolerates a cold path / sleepy node without letting one unreachable port
+# stall the whole doctor run.
+_TS_CONNECT_TIMEOUT_S = 3.0
+
+
+def _check_tailscale(cfg: Config) -> CheckResult:
+    """Informational/actionable report on Tailscale endpoint reachability (rfc-fleet-4).
+
+    Like :func:`_check_embed_claims` / :func:`_check_model_telemetry`, this
+    check NEVER hard-fails doctor — every outcome is ``OK`` or ``WARN``,
+    never ``FAIL``. Tailscale is an optional ergonomics layer; an absent
+    binary or an unreachable peer should never turn doctor red over what is
+    a read-only convenience.
+
+    Status logic:
+
+    - ``OK`` "not configured" — the ``[tailscale]`` block is disabled AND no
+      ``ts://`` endpoint appears in any RFC-named config field. This is the
+      common machine-without-Tailscale case: we early-return and DO NOT shell
+      out to ``tailscale`` at all (a clean OK on a box that's never heard of
+      Tailscale).
+    - Otherwise (``enabled`` OR a ``ts://`` value present), the configured
+      path runs:
+
+        a. **Binary + daemon state** via
+           :func:`corpus_forge.net.tailscale._load_status` (raises
+           ``TailscaleUnavailable(reason="daemon")`` for a missing binary,
+           a non-``Running`` backend state, a timeout, or unparseable
+           output). Caught → ``WARN`` carrying the error's own remediation.
+        b. **Per-name resolve + TCP connect**: for each distinct
+           ``ts://name[:port]`` in config, ``resolve(name)`` then a TCP
+           connect to ``(resolved_host, port)``. A ``ts://`` name with no
+           explicit port has no single port to probe — it's resolve-only,
+           and the detail says so. A ``reason="name"`` resolve failure or a
+           refused/timed-out connect → ``WARN`` naming THAT name and its
+           specific failure; all names are evaluated (failures collected,
+           never short-circuited).
+        c. ``OK`` "n ts:// endpoint(s) reachable" when every name resolves
+           and every probed port connects.
+    """
+    # Reuse #112's load-time scanner — the exact field walk the config
+    # validator uses, so the doctor check and the load-time error agree on
+    # which fields are ts:// consumers. Local import keeps doctor's
+    # import-time cost bounded and dodges any config↔doctor import cycle.
+    from corpus_forge.config import _tailscale_endpoint_values
+
+    enabled = bool(getattr(cfg.tailscale, "enabled", False))
+    prefer_magicdns = bool(getattr(cfg.tailscale, "prefer_magicdns", True))
+
+    # Collect distinct ts:// endpoints (name, optional port) from config.
+    ts_endpoints: list[tuple[str, int | None]] = []
+    seen: set[tuple[str, int | None]] = set()
+    for _path, value in _tailscale_endpoint_values(cfg):
+        parsed = _parse_ts_endpoint(value)
+        if parsed is None:
+            continue
+        if parsed in seen:
+            continue
+        seen.add(parsed)
+        ts_endpoints.append(parsed)
+
+    # ── not-configured fast path: no ts:// anywhere AND not enabled → clean
+    # OK, no shellout (a machine without Tailscale must get a clean OK).
+    if not enabled and not ts_endpoints:
+        return CheckResult(
+            "tailscale",
+            CheckStatus.OK,
+            "not configured (no [tailscale] block enabled and no ts:// endpoints)",
+        )
+
+    # ── configured path ───────────────────────────────────────────────
+    # a. binary + daemon state. We funnel through resolve() per-name below,
+    # but probe the daemon once up front (``_load_status``) so a missing
+    # binary / stopped daemon yields one clear WARN instead of N identical
+    # per-name ones.
+    from corpus_forge.net.tailscale import (
+        TailscaleUnavailable,
+        _load_status,
+        resolve,
+    )
+
+    try:
+        _load_status()
+    except TailscaleUnavailable as exc:
+        return CheckResult("tailscale", CheckStatus.WARN, str(exc))
+
+    if not ts_endpoints:
+        # Enabled but nothing uses ts:// yet — daemon is healthy; nothing to
+        # probe. OK, informational.
+        return CheckResult(
+            "tailscale",
+            CheckStatus.OK,
+            "Tailscale enabled and Running; no ts:// endpoints configured to probe",
+        )
+
+    # b. per-name resolve + TCP connect. Collect all failures.
+    failures: list[str] = []
+    resolve_only: list[str] = []
+    reachable = 0
+    for name, port in ts_endpoints:
+        try:
+            host = resolve(name, prefer_magicdns=prefer_magicdns)
+        except TailscaleUnavailable as exc:
+            failures.append(f"ts://{name}: resolve failed ({exc})")
+            continue
+        if port is None:
+            # No explicit port → nothing to connect to; resolve-only.
+            resolve_only.append(f"ts://{name} (resolve-only; no port to probe)")
+            continue
+        err = _tcp_probe(host, port)
+        if err is not None:
+            failures.append(f"ts://{name}:{port}: connect to {host}:{port} failed ({err})")
+            continue
+        reachable += 1
+
+    if failures:
+        detail = "; ".join(failures)
+        if resolve_only:
+            detail += "; " + "; ".join(resolve_only)
+        return CheckResult("tailscale", CheckStatus.WARN, detail)
+
+    parts: list[str] = []
+    if reachable:
+        parts.append(f"{reachable} ts:// endpoint(s) reachable")
+    parts.extend(resolve_only)
+    return CheckResult(
+        "tailscale",
+        CheckStatus.OK,
+        "; ".join(parts) if parts else "Tailscale Running; ts:// endpoints OK",
+    )
+
+
+def _parse_ts_endpoint(value: str) -> tuple[str, int | None] | None:
+    """Parse ``ts://name[:port][/rest]`` → ``(name, port|None)``; else None.
+
+    Reuses the endpoint parser #112 ships in
+    :mod:`corpus_forge.net.endpoint` (``_TS_RE``, same shape as
+    ``config._TS_ENDPOINT_RE``) — the regex is not re-invented here.
+    """
+    from corpus_forge.net.endpoint import _TS_RE
+
+    match = _TS_RE.match(value)
+    if match is None:
+        return None
+    name = match.group("name")
+    raw_port = match.group("port")
+    port = int(raw_port[1:]) if raw_port else None
+    return (name, port)
+
+
+def _tcp_probe(host: str, port: int) -> str | None:
+    """TCP-connect to ``(host, port)``; return None on success, else a message.
+
+    Wrapped so it never raises out of the doctor check. Tests patch
+    :func:`socket.create_connection` (success → a context-manager MagicMock;
+    failure → ``OSError`` / ``socket.timeout``).
+    """
+    try:
+        with socket.create_connection((host, port), timeout=_TS_CONNECT_TIMEOUT_S):
+            return None
+    except OSError as exc:
+        return str(exc) or exc.__class__.__name__
+
+
 def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
     """Run every registered check and return the aggregated report."""
     cfg = config_path if config_path is not None else DEFAULT_CONFIG_PATH
@@ -1294,6 +1462,13 @@ def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
                 "skipped (config not loaded)",
             )
         )
+        results.append(
+            CheckResult(
+                "tailscale",
+                CheckStatus.SKIP,
+                "skipped (config not loaded)",
+            )
+        )
     else:
         results.append(_check_corpusignore(loaded_cfg))
         results.append(_check_zotero(loaded_cfg))
@@ -1302,6 +1477,7 @@ def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
         results.append(_check_icloud_access(loaded_cfg))
         results.append(_check_model_telemetry(loaded_cfg))
         results.append(_check_embed_claims(loaded_cfg))
+        results.append(_check_tailscale(loaded_cfg))
     # The global ignore drift check is independent of whether the config
     # loaded — the global file lives at ~/.config/corpus-forge/ignore
     # regardless. Pass the (possibly None) config for feature derivation;
