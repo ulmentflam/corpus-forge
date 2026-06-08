@@ -8,6 +8,190 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+## [0.1.0b17] - 2026-06-08
+
+**The distributed-fleet release.** corpus-forge is no longer a
+single-machine tool. The four "fleet" RFCs land together — model and
+host telemetry (fleet-1), distributed embedding via claim-based
+backfill (fleet-2), federated config + one-command host onboarding
+(fleet-3), and Tailscale-native addressing (fleet-4) — so a second
+box (a Linux GPU rig, a Windows machine with a 5090, a spare Mac mini)
+can join an existing corpus, drain a specific embedder lane, and never
+duplicate work with the primary.
+
+### Fleet-1 — Model & host telemetry, `bench embed`
+
+- **New schema** (alembic revision `0018`): `corpus.hosts`,
+  `corpus.models`, `corpus.model_benchmarks`. Every host that has ever
+  touched the corpus has a row; every embedder, LLM, VLM, and Whisper
+  model the fleet has seen has a row; every benchmark and every real
+  embed-run drops a row tagged with host, transport (`local` / `api`),
+  device (`cuda` / `mps` / `cpu`), batch size, chunks/s, and p50/p95
+  latency. The data accumulates passively — `embed.py::backfill_embedder`
+  writes a `model_benchmarks` row at end-of-run and per-checkpoint, so
+  even a crashed run reports what it managed (PRs #96, #97).
+- **`corpus-forge bench embed [--all | -e name…] [--sample N] [--json]`** —
+  active sampling pass. Real pending chunks first (vectors persisted),
+  deterministic synthetic fallback when the lane has no backlog
+  (vectors never persisted). Rich table sorted by chunks/s; `--json`
+  for agents (PR #97).
+- **`corpus-forge models list`** and **`corpus-forge hosts list`** —
+  read verbs over the new tables. Latest benchmark per (host, model),
+  staleness hint, accelerator summary. Both `--json` (PR #98).
+- **Doctor `model_telemetry` informational check** — `OK` with
+  "n benchmarks, freshest X ago" or "no benchmarks yet — run
+  `corpus-forge bench embed`" (PR #98).
+- **Setup wizard hint** — both interactive and `CF_NON_INTERACTIVE`
+  paths now end by suggesting `corpus-forge bench embed --all` as the
+  post-setup calibration step (PR #98).
+
+### Fleet-2 — Distributed embedding via claim-based backfill
+
+- **New schema** (alembic revision `0019`): `corpus.embed_claims`
+  with `(embedder_id, chunk_id)` unique constraint and a lease-expiry
+  index. Lease TTL configurable via `[embed] claim_lease_ttl` (default
+  600 s) (PR #100).
+- **Backend primitives** on Postgres: `claim_chunks_for_embedding`
+  uses `FOR UPDATE SKIP LOCKED` so N hosts can drain the **same**
+  embedder concurrently with zero duplicated GPU compute;
+  `release_claims` deletes on completion (the embedding row is the
+  durable record); `expire_stale_claims` self-heals abandoned work
+  opportunistically at the top of each claim call. SQLite raises
+  `FederationUnsupported` on all three (PR #100).
+- **Backfill loop on claims, unconditionally** —
+  `embed.py::backfill_embedder` switches to claim/release for every
+  Postgres run. Single-host throughput is unchanged in effect (one
+  extra round-trip per batch). Progress totals subtract other hosts'
+  live claims so two concurrent workers each report their share of a
+  shrinking pool, not duplicate progress bars (PR #107).
+- **`[embed] lanes = ["name", …]`** — host-local lane pinning. A
+  CUDA box can be told to only work `qwen3-4096`; a weaker box takes
+  `nomic`. Absent block → all active embedders (today's behavior).
+  Explicit `corpus-forge embed -e <name>` overrides the pin
+  ("operator said so"). The setup wizard offers the prompt when more
+  than one host has heartbeated, seeded from the accelerator probe
+  ("CUDA ≥ 8 GB → suggest qwen3-4096"). `CF_NON_INTERACTIVE` accepts
+  `--embed-lanes a,b` (PR #108).
+- **Doctor `embed_claims` check** — stale-claim count, lease-TTL vs
+  observed-rate sanity (WARN when host's rate × batch approaches the
+  TTL), `FederationUnsupported` WARN when multiple hosts have
+  heartbeated against a SQLite corpus (PR #109).
+
+### Fleet-3 — Federated config + multi-host setup/join
+
+- **Scope annotations** on pydantic config models. `shared_scope_dict`
+  extracts the shared subset (dataset names/kinds, embedder
+  definitions + fingerprints + dimensions, retrieval settings,
+  classifier/enricher model choices); `merge_shared_scope` rewrites
+  only shared-scope keys via tomlkit, preserving comments and
+  ordering. Deny-list blocks path-shaped (`*_root`, `dsn`,
+  `gguf_path`) and secret-shaped (`api_key`, `*_password`) fields
+  from ever being extracted (PR #101).
+- **New schema** (alembic revision `0020`): `corpus.shared_config`
+  — versioned `jsonb` body, `published_by` host reference,
+  `published_at` timestamp. One row per corpus (PR #110).
+- **`corpus-forge config publish` / `config pull [--apply]` / `config
+  diff`** — extract → validate (deny-list re-scan) → bump version →
+  write. `publish` refuses to write when the DB version is newer than
+  the last version this host pulled (`SharedConfigVersionConflict` —
+  "pull first"). `pull` is dry-run by default (mirroring `prune`);
+  `--apply` rewrites shared keys in `config.toml`. `diff` is the
+  dry-run alias (PR #110).
+- **`[federation]` config block** (default `enabled = false`). When
+  absent or disabled, the federation tables are never read at runtime
+  — local-only setups are byte-for-byte unchanged. When enabled,
+  daemon startup compares hashes and logs **one** WARN per
+  throttled-interval on shared-config drift; no background mutation,
+  ever (PR #111).
+- **`corpus-forge setup --join <dsn>`** — one-command host
+  onboarding. Connects to the DSN, verifies schema, reads
+  `corpus.shared_config`, writes a minimal local `config.toml`
+  (backend block, pulled shared scope, generated `host_id`, empty
+  local blocks with commented examples for source roots and `[embed]
+  lanes`), and registers the host in `corpus.hosts`. Works
+  interactively and via `CF_JOIN_DSN`. A joined host explicitly does
+  **not** run `migrate` — the primary owns the schema lifecycle
+  (PR #113).
+- **`install.sh --join <dsn>` / `install.ps1 -Join <dsn>`** —
+  installer pass-through. `CF_JOIN_DSN` is the env-var equivalent for
+  streamed `curl | bash` / `iwr | iex` forms. In join mode the
+  installer skips its question tree (shared scope comes from the
+  primary), hands off to `setup --join`, runs `doctor` as a tolerant
+  smoke check, and skips `migrate`. The non-join path is
+  byte-equivalent to before (PR #117).
+
+### Fleet-4 — Tailscale-native configuration and discovery
+
+- **`corpus_forge/net/tailscale.py`** — read-only Tailscale
+  integration: `resolve(name)` (MagicDNS-first, `tailscale status
+  --json` fallback, 5 s timeout, process-lifetime cache), `peers()`
+  for wizard pickers + `hosts list` annotations. Failure shapes
+  mirror `ProcessDiscoveryUnavailable`: `TailscaleUnavailable`
+  distinguishes "no binary / not running" from "name not found in
+  tailnet" so the operator gets the right remediation (PR #102).
+- **`ts://<magicdns-name>[:port][/path]` scheme** accepted anywhere
+  a URL or DSN appears: `backend.dsn`, `EmbedderConfig.base_url`,
+  `ollama.base_url`, `classifier.llm_url`, enricher URLs, VLM /
+  Whisper endpoints. Resolution is lazy and applied at the point each
+  URL is consumed (config stays inert; errors surface with full
+  connection context). `[tailscale]` config block (default
+  `enabled = false`) controls behavior. `ts://` in config with
+  Tailscale disabled fails at config-load with a fix-it message
+  (PR #112).
+- **Doctor `tailscale` check** — binary present, backend state
+  `Running`, every `ts://` name resolves, TCP-probes the configured
+  port. `OK "not configured"` when the block is absent and no `ts://`
+  appears in config (PR #114).
+- **Wizard live-peer picker** — when `tailscale status` succeeds,
+  `setup` and `setup --join` present a peer picker for the Postgres
+  host and remote embedder URLs, rendering `ts://` names directly
+  into config. `hosts list` cross-references
+  `corpus.hosts.tailscale_name` against live peers and prints an
+  online/offline marker; heartbeat fills `tailscale_name` properly
+  (PR #115).
+
+### Docs
+
+- **"Add a second machine"** sections in `README.md`, `CLAUDE.md`,
+  and `AGENTS.md`. The README gains both an operator quick-start
+  (the install one-liner with `--join`, post-join steps:
+  `bench embed --all` then `service install`) near the install
+  commands, and a deeper "Fleet" chapter covering distributed embed,
+  config publish/pull, and `ts://` addressing (PRs #116, #117).
+- **Troubleshooting tables** in CLAUDE.md / AGENTS.md gain
+  `TailscaleUnavailable` and "second machine: no shared config after
+  `setup --join`" rows (PR #116).
+- **Fleet RFC series accepted** (PR e1b4e5a, then per-PR checkbox
+  syncs in #105, #106).
+
+### MCP
+
+- **`mcp__corpus-forge__check_update` tool** + cache-only
+  instructions advisory. Lets MCP clients (Claude Desktop, Claude
+  Code, mcp-cli) discover when a newer corpus-forge release is
+  available without invoking the CLI directly (PR #103).
+
+### Fixed
+
+- **`fix(ui): latch agent-mode emit() off after stdout broken pipe`**
+  — when a downstream agent process closed its stdin (the agent quit
+  early), corpus-forge's structured-event emitter would crash on the
+  next `print`. Now it latches off after the first `BrokenPipeError`
+  and continues writing to the rotating log (PR #95).
+
+### CI / Tests
+
+- **HF_TOKEN now passed through to the cold-path warm step** of the
+  HF cache job — secret was previously only available to the test
+  step, so cold-misses on a freshly-rotated cache hit the public
+  rate limit (PR #94).
+- **`test_logs follow` test no longer crashes xdist workers** —
+  deterministic `KeyboardInterrupt` injection replaces the previous
+  signal-race that lost shards under `-n auto` (PR #99).
+- **Config resolution isolated from the dev machine's environment**
+  — `tests/unit/test_config.py` no longer false-positives on a stray
+  `CORPUS_FORGE_*` in the dev shell (PR #104).
+
 ## [0.1.0b16] - 2026-06-04
 
 Supersedes 0.1.0b15 — same code (PR #91 + #92 + flake-stabilization
