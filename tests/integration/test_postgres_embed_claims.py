@@ -417,6 +417,14 @@ def test_simultaneous_same_lane_claims_are_disjoint(backend: PostgresBackend) ->
     the loser to the next free rows. A barrier maximises the overlap
     window; each claim runs on its own connection via a thread-local
     backend.
+
+    Each worker asks for ALL 8 chunks (``batch=8``): every row is
+    contended, and disjointness + full coverage still prove the SKIP
+    LOCKED semantics. (An earlier batch=4+4 split assumed each scan
+    returns exactly its quota — zero slack — and flaked on CI when one
+    statement came up a row short under contention; cover-all makes
+    completeness depend only on "every unlocked row gets claimed by
+    someone", which is the property under test.)
     """
     import threading
 
@@ -432,7 +440,7 @@ def test_simultaneous_same_lane_claims_are_disjoint(backend: PostgresBackend) ->
         try:
             barrier.wait(timeout=10)
             results[host_id] = b.claim_chunks_for_embedding(
-                emb, host_id=host_id, batch=4, lease_ttl=600
+                emb, host_id=host_id, batch=8, lease_ttl=600
             )
         except BaseException as exc:  # surfaced below — don't swallow in thread
             errors.append(exc)
