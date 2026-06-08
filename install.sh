@@ -30,6 +30,21 @@
 #         CF_MCP=yes CF_HF=yes ./install.sh
 #
 # All ``CF_*`` env vars are documented in ``packaging/install/questions.toml``.
+#
+# Join an existing fleet (one-line onboarding — RFC fleet-3 item 6):
+#
+#     curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh \
+#         | bash -s -- --join postgresql://primary.fleet:5432/corpus
+#
+# Or, equivalently:
+#
+#     CF_JOIN_DSN=postgresql://primary.fleet:5432/corpus ./install.sh
+#
+# In join mode the installer SKIPS the question tree (shared scope is
+# pulled from the fleet's primary), hands off to
+# ``corpus-forge setup --non-interactive --join <dsn>``, then runs
+# ``corpus-forge doctor`` as a smoke check.  It explicitly does NOT run
+# ``corpus-forge migrate`` — the primary owns schema lifecycle.
 
 # Fail loudly + early when streamed through a non-bash shell (Ubuntu /
 # Debian's ``/bin/sh`` is dash, which rejects ``set -o pipefail`` with
@@ -48,6 +63,48 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 
 set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# CLI args.  Today we only parse ``--join <dsn>`` / ``--join=<dsn>``;
+# unknown flags pass through untouched so future flags can be added
+# without revisiting this loop.  The DSN lands in ``CF_JOIN_DSN`` —
+# the same env var the Python wizard reads via the ``envvar=`` on its
+# ``--join`` typer option (see ``corpus_forge/cli.py``), so the flag
+# and the env-var entry points share one code path downstream.
+# ---------------------------------------------------------------------------
+
+# RFC fleet-3 item 6 — installer one-liner pass-through.
+_passthrough_args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --join)
+            shift
+            if [ $# -eq 0 ]; then
+                printf '%s\n' "Error: --join requires a DSN argument" >&2
+                exit 1
+            fi
+            CF_JOIN_DSN="$1"
+            export CF_JOIN_DSN
+            shift
+            ;;
+        --join=*)
+            CF_JOIN_DSN="${1#--join=}"
+            export CF_JOIN_DSN
+            shift
+            ;;
+        *)
+            _passthrough_args+=("$1")
+            shift
+            ;;
+    esac
+done
+# Restore any unknown flags as positional args so future feature work can
+# add its own parsing without colliding with this one.
+if [ ${#_passthrough_args[@]} -gt 0 ]; then
+    set -- "${_passthrough_args[@]}"
+else
+    set --
+fi
 
 # ---------------------------------------------------------------------------
 # Colour output (only when stdout is a TTY).
@@ -290,21 +347,32 @@ all_extras=""
 
 # Bash 3.2-compatible loop: hand the parsed lines to read via heredoc.
 parsed_questions="$(parse_questions "$QUESTIONS_PATH")"
-while IFS='|' read -r id type default_v extras_v env_v depends_v prompt_v warn_v; do
-    [ -z "$id" ] && continue
-    if ! dep_satisfied "$depends_v"; then
-        continue
-    fi
-    prompt_one "$id" "$type" "$default_v" "$env_v" "$prompt_v" "$warn_v" "$extras_v"
-    answer="$(get_answer "$id")"
-    # Collect extras only when the answer is yes / a non-"none" choice /
-    # non-empty text. ``extras_v`` may be a comma-separated list.
-    if [ -n "$extras_v" ] && [ "$answer" != "no" ] && [ "$answer" != "none" ] && [ -n "$answer" ]; then
-        all_extras="$all_extras,$extras_v"
-    fi
-done <<EOF
+
+# RFC fleet-3 item 6 — in join mode the question tree is SKIPPED. The
+# fleet's primary owns the shared scope (embedder choices, retrieval
+# tuning, classifier chains, …); the wizard pulls all of that via
+# ``setup --join <dsn>`` rather than asking the operator on a fresh
+# joiner. We still install ``corpus-forge`` (plain, no extras — the
+# operator can opt in to ``[hf]`` / ``[mcp]`` / etc. later).
+if [ -n "${CF_JOIN_DSN:-}" ]; then
+    info "Join mode — skipping question tree (shared scope comes from primary)."
+else
+    while IFS='|' read -r id type default_v extras_v env_v depends_v prompt_v warn_v; do
+        [ -z "$id" ] && continue
+        if ! dep_satisfied "$depends_v"; then
+            continue
+        fi
+        prompt_one "$id" "$type" "$default_v" "$env_v" "$prompt_v" "$warn_v" "$extras_v"
+        answer="$(get_answer "$id")"
+        # Collect extras only when the answer is yes / a non-"none" choice /
+        # non-empty text. ``extras_v`` may be a comma-separated list.
+        if [ -n "$extras_v" ] && [ "$answer" != "no" ] && [ "$answer" != "none" ] && [ -n "$answer" ]; then
+            all_extras="$all_extras,$extras_v"
+        fi
+    done <<EOF
 $parsed_questions
 EOF
+fi
 
 # ---------------------------------------------------------------------------
 # Always pull in the [sqlite] extra when backend=sqlite (the answer
@@ -317,8 +385,10 @@ if [ "$(get_answer backend)" = "sqlite" ]; then
 fi
 
 # Dedup + strip leading comma so ``uv tool install corpus-forge[...]``
-# is well-formed even when no extras land.
-extras_clean="$(printf '%s' "$all_extras" | tr ',' '\n' | sort -u | grep -v '^$' | paste -sd, -)"
+# is well-formed even when no extras land.  ``grep -v '^$' || true``
+# tolerates an empty pipeline (join mode skips the question tree, so
+# ``all_extras`` is empty and grep exits 1 under ``set -o pipefail``).
+extras_clean="$(printf '%s' "$all_extras" | tr ',' '\n' | sort -u | { grep -v '^$' || true; } | paste -sd, -)"
 
 echo
 ok "Selected pip extras: ${extras_clean:-<none>}"
@@ -371,17 +441,22 @@ ok "corpus-forge installed"
 # ---------------------------------------------------------------------------
 
 export_vars=""
-while IFS='|' read -r id type default_v extras_v env_v depends_v prompt_v warn_v; do
-    [ -z "$id" ] && continue
-    val="$(get_answer "$id")"
-    if [ -n "$val" ]; then
-        eval "export $env_v=\"\$val\""
-        export_vars="$export_vars $env_v"
-    fi
-    : "$type" "$default_v" "$extras_v" "$depends_v" "$prompt_v" "$warn_v"
-done <<EOF
+# In join mode the question tree was skipped, so there are no answers to
+# forward as CF_* env vars — the wizard pulls everything from the
+# fleet's published shared scope via ``--join``.
+if [ -z "${CF_JOIN_DSN:-}" ]; then
+    while IFS='|' read -r id type default_v extras_v env_v depends_v prompt_v warn_v; do
+        [ -z "$id" ] && continue
+        val="$(get_answer "$id")"
+        if [ -n "$val" ]; then
+            eval "export $env_v=\"\$val\""
+            export_vars="$export_vars $env_v"
+        fi
+        : "$type" "$default_v" "$extras_v" "$depends_v" "$prompt_v" "$warn_v"
+    done <<EOF
 $parsed_questions
 EOF
+fi
 
 # Use the freshly-installed entry-point. ``uv tool`` symlinks into
 # ``~/.local/bin`` by default; add it to PATH for the same shell so
@@ -393,37 +468,75 @@ esac
 
 # Post-install handoff. Wrapped in a function so tests/scripts/test_install_sh.py
 # can source and exercise this block without re-running uv provisioning.
+#
+# Branches on ``CF_JOIN_DSN``:
+#   - non-join (default): ``setup --non-interactive`` then ``migrate``.
+#   - join (RFC fleet-3 item 6): ``setup --non-interactive --join <dsn>``
+#     then ``doctor`` (tolerant of failure) — explicitly NO ``migrate``,
+#     because the fleet's primary owns the schema lifecycle.
 __cf_post_install_handoff() {
     info "Launching the post-install setup wizard"
     if command -v corpus-forge >/dev/null 2>&1; then
-        # ALWAYS pass --non-interactive. The CF_* env vars are already
-        # populated above (interactive prompts feed into them via
-        # ``set_answer``; non-interactive flow inherits them directly from
-        # the caller's environment). If we omit ``--non-interactive``, the
-        # wizard reprompts on the same stdin that this script has already
-        # consumed (or was never a TTY when piped via ``curl | sh``), so
-        # the prompts get empty replies and silently take defaults —
-        # discarding every answer the user just typed.  See PR fixing
-        # "install.sh post-install wizard ignores collected answers".
-        corpus-forge setup --non-interactive
+        if [ -n "${CF_JOIN_DSN:-}" ]; then
+            # Join mode — onboarding a new host onto an existing fleet.
+            # The wizard connects to the shared Postgres, verifies the
+            # corpus schema is present, registers this host in
+            # ``corpus.hosts``, and renders a local config pre-loaded
+            # with the fleet's published shared scope.
+            corpus-forge setup --non-interactive --join "$CF_JOIN_DSN"
 
-        # Run schema migrations now so first-run `ingest`/`embed` doesn't
-        # fail on an empty DB. Tolerate failure (e.g. Postgres unreachable
-        # at install time) — the installer prints a warning and exits 0
-        # instead of leaving the user with a half-installed CLI.
-        local cf_migrate_log
-        cf_migrate_log="$(mktemp -t corpus-forge-migrate.XXXXXX.log 2>/dev/null || mktemp)"
-        if ! corpus-forge migrate >"$cf_migrate_log" 2>&1; then
-            warn "corpus-forge migrate failed — see $cf_migrate_log for details. Re-run \`corpus-forge migrate\` once your database is reachable."
+            # Run ``doctor`` as a smoke check (DSN reachability, embedder
+            # config sanity, host-id stability). Tolerate failure for
+            # the same reason ``migrate`` is tolerated on the non-join
+            # path: a transient network blip shouldn't leave the
+            # operator with a half-installed CLI.
+            local cf_doctor_log
+            cf_doctor_log="$(mktemp -t corpus-forge-doctor.XXXXXX.log 2>/dev/null || mktemp)"
+            if ! corpus-forge doctor >"$cf_doctor_log" 2>&1; then
+                warn "corpus-forge doctor reported issues — see $cf_doctor_log for details. Re-run \`corpus-forge doctor\` once the fleet primary is reachable."
+            else
+                rm -f "$cf_doctor_log"
+            fi
+
+            echo
+            ok "Joined fleet at $CF_JOIN_DSN."
+            info "Next: \`corpus-forge bench embed --all\` (record this host's throughput), then \`corpus-forge service install\` (run the daemon)."
         else
-            rm -f "$cf_migrate_log"
+            # ALWAYS pass --non-interactive. The CF_* env vars are already
+            # populated above (interactive prompts feed into them via
+            # ``set_answer``; non-interactive flow inherits them directly from
+            # the caller's environment). If we omit ``--non-interactive``, the
+            # wizard reprompts on the same stdin that this script has already
+            # consumed (or was never a TTY when piped via ``curl | sh``), so
+            # the prompts get empty replies and silently take defaults —
+            # discarding every answer the user just typed.  See PR fixing
+            # "install.sh post-install wizard ignores collected answers".
+            corpus-forge setup --non-interactive
+
+            # Run schema migrations now so first-run `ingest`/`embed` doesn't
+            # fail on an empty DB. Tolerate failure (e.g. Postgres unreachable
+            # at install time) — the installer prints a warning and exits 0
+            # instead of leaving the user with a half-installed CLI.
+            local cf_migrate_log
+            cf_migrate_log="$(mktemp -t corpus-forge-migrate.XXXXXX.log 2>/dev/null || mktemp)"
+            if ! corpus-forge migrate >"$cf_migrate_log" 2>&1; then
+                warn "corpus-forge migrate failed — see $cf_migrate_log for details. Re-run \`corpus-forge migrate\` once your database is reachable."
+            else
+                rm -f "$cf_migrate_log"
+            fi
+
+            echo
+            ok "Done. Run \`corpus-forge --help\` to get started."
         fi
     else
-        warn "corpus-forge not on PATH yet. Open a new shell and run \`corpus-forge setup && corpus-forge migrate\`."
+        if [ -n "${CF_JOIN_DSN:-}" ]; then
+            warn "corpus-forge not on PATH yet. Open a new shell and run \`corpus-forge setup --join $CF_JOIN_DSN\`."
+        else
+            warn "corpus-forge not on PATH yet. Open a new shell and run \`corpus-forge setup && corpus-forge migrate\`."
+        fi
+        echo
+        ok "Done. Run \`corpus-forge --help\` to get started."
     fi
-
-    echo
-    ok "Done. Run \`corpus-forge --help\` to get started."
 }
 # END __cf_post_install_handoff
 
