@@ -42,7 +42,7 @@ curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install
 
 ```powershell
 # Windows (run from an elevated PowerShell if you also want the daemon service)
-iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
 ```
 
 **CI / unattended installs** — set `CF_NON_INTERACTIVE=1` plus the
@@ -96,13 +96,13 @@ curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install
 
 ```powershell
 # Windows (PowerShell) — env-var form, single line, always paste-safe:
-$env:CF_JOIN_DSN = 'postgresql://primary.fleet:5432/corpus'; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; $env:CF_JOIN_DSN = 'postgresql://primary.fleet:5432/corpus'; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
 ```
 
 Or with the `-Join` parameter form (same chained pattern):
 
 ```powershell
-iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
 ```
 
 > **Why `-OutFile + &` and not `iwr | iex`?** `Invoke-Expression`

@@ -37,7 +37,7 @@ scoop bucket add corpus-forge https://github.com/ulmentflam/scoop-corpus-forge
 scoop install corpus-forge
 
 # Windows / PowerShell one-liner (run elevated if you also want the service).
-iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
 ```
 
 Extras worth knowing:
@@ -185,14 +185,14 @@ curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install
 
 ```powershell
 # Windows — env-var form, single line, always paste-safe:
-$env:CF_JOIN_DSN = 'postgresql://primary.fleet:5432/corpus'; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; $env:CF_JOIN_DSN = 'postgresql://primary.fleet:5432/corpus'; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
 ```
 
 `CF_JOIN_DSN=<dsn>` is the env-var equivalent of `--join` / `-Join`.
 The `-Join` parameter form is also supported, chained the same way:
 
 ```powershell
-iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
 ```
 
 **Don't recommend `iwr | iex`** — `Invoke-Expression` doesn't

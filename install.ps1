@@ -20,7 +20,7 @@
     # One-line install — download then call.  Don't use ``iwr | iex``:
     # ``Invoke-Expression`` doesn't reliably parse scripts with a top-
     # level ``param()`` block, which this script has for ``-Join``.
-    iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
 
 .EXAMPLE
     # Non-interactive mode for CI matrices:
@@ -36,7 +36,7 @@
 
 .EXAMPLE
     # Or via env (works with streamed download + call):
-    $env:CF_JOIN_DSN = 'postgresql://primary.fleet:5432/corpus'; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; $env:CF_JOIN_DSN = 'postgresql://primary.fleet:5432/corpus'; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
 
 .NOTES
     All CF_* env vars are documented in ``packaging/install/questions.toml``.

@@ -37,7 +37,7 @@ scoop bucket add corpus-forge https://github.com/ulmentflam/scoop-corpus-forge
 scoop install corpus-forge
 
 # Windows / PowerShell one-liner (run elevated if you also want the service).
-iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
 ```
 
 Extras worth knowing:
