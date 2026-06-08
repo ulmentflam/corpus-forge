@@ -128,12 +128,41 @@ def _ollama_model_rows() -> list[dict]:
     return rows
 
 
+def _self_tailscale_name(config: Config) -> str | None:
+    """Best-effort short MagicDNS name of *this* host, or ``None``.
+
+    RFC fleet-4 item 5 — when ``[tailscale] enabled``, look up the local
+    node in ``tailscale status`` (the ``is_self`` peer) so the heartbeat
+    can stamp ``corpus.hosts.tailscale_name`` and ``hosts list`` can
+    cross-reference live peers.  Narrowly failure-isolated: a disabled
+    block, :class:`TailscaleUnavailable` (binary absent / daemon down),
+    no self peer, or any other failure all degrade to ``None`` so the
+    heartbeat never crashes or slows on a non-tailnet box.
+    """
+    tailscale_cfg = getattr(config, "tailscale", None)
+    if tailscale_cfg is None or not getattr(tailscale_cfg, "enabled", False):
+        return None
+    try:
+        from corpus_forge.net.tailscale import peers  # noqa: PLC0415
+
+        for peer in peers():
+            if peer.is_self:
+                return peer.name
+    except Exception as exc:  # TailscaleUnavailable or any probe failure
+        logger.debug("telemetry: tailscale self-name lookup skipped: %r", exc)
+    return None
+
+
 def record_host_heartbeat(backend: Any, config: Config) -> None:
     """Upsert this host's row in the ``hosts`` registry (failure-isolated).
 
     Any exception — unreachable backend, probe failure, missing
     ``host_id`` file — is logged at WARNING and swallowed so the caller
-    (daemon / embed) is never broken by a telemetry write.
+    (daemon / embed) is never broken by a telemetry write.  When
+    ``[tailscale] enabled`` and the local node is found in
+    ``tailscale status``, the host's short MagicDNS name is stamped into
+    ``corpus.hosts.tailscale_name`` (best-effort — omitted on any
+    failure, see :func:`_self_tailscale_name`).
     """
     try:
         backend.upsert_host(
@@ -141,6 +170,7 @@ def record_host_heartbeat(backend: Any, config: Config) -> None:
             hostname=socket.gethostname(),
             os=platform.platform(),
             accelerator=accelerator_payload(),
+            tailscale_name=_self_tailscale_name(config),
         )
         logger.debug("telemetry: host heartbeat recorded")
     except Exception as exc:
