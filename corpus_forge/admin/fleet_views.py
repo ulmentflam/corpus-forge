@@ -543,6 +543,8 @@ def plan_to_dict(lanes: list[dict[str, Any]]) -> dict[str, Any]:
             }
         )
     return {"lanes": out_rows, "count": len(out_rows)}
+
+
 def _probe_peer_status() -> dict[str, bool] | None:
     """Probe live tailnet peers once → ``{name: online}``, or ``None``.
 
