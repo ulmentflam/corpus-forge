@@ -152,12 +152,20 @@ curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install
 ```
 
 ```powershell
-# Windows
-iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1
-& $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
+# Windows — env-var form (safe to paste as one block):
+$env:CF_JOIN_DSN = 'postgresql://primary.fleet:5432/corpus'
+iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 | iex
 ```
 
-`CF_JOIN_DSN=<dsn>` is the env-var equivalent (works with `iwr | iex`).
+`CF_JOIN_DSN=<dsn>` is the env-var equivalent of `--join` / `-Join`
+and is the safer form when pasting into PowerShell (a bare `&`
+between two pasted lines parses as a banned CMD-style operator).
+If you prefer the `-Join` parameter form, chain with `;` on one line:
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
+```
+
 A `ts://host/db` DSN is resolved against Tailscale's API and stays
 portable across the tailnet.
 

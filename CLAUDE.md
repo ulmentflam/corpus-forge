@@ -184,14 +184,22 @@ curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install
 ```
 
 ```powershell
-# Windows
-iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1
-& $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
+# Windows — env-var form (safe to paste as one block):
+$env:CF_JOIN_DSN = 'postgresql://primary.fleet:5432/corpus'
+iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 | iex
 ```
 
-`CF_JOIN_DSN=<dsn>` is the env-var equivalent and works with the
-streaming `iwr | iex` form. A `ts://...` DSN (Tailscale-resolved) is
-also accepted — useful for tailnet-native fleets.
+`CF_JOIN_DSN=<dsn>` is the env-var equivalent of `--join` / `-Join`.
+The `-Join` parameter form is also supported, but PowerShell rejects
+a bare `&` between two pasted lines (it reads as a CMD-style operator),
+so use `;` to chain on a single line:
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
+```
+
+A `ts://...` DSN (Tailscale-resolved) is also accepted — useful for
+tailnet-native fleets.
 
 The installer **skips the question tree** (the fleet's primary publishes
 the shared scope — embedders, retrieval tuning, classifier chains, even

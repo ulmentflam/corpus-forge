@@ -95,17 +95,23 @@ curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install
 ```
 
 ```powershell
-# Windows (PowerShell)
-iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 `
-  -OutFile $env:TEMP\install.ps1
-& $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
+# Windows (PowerShell) — env-var form, safe to paste as one block:
+$env:CF_JOIN_DSN = 'postgresql://primary.fleet:5432/corpus'
+iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 | iex
 ```
 
-`CF_JOIN_DSN=<dsn>` is the env-var equivalent of `--join` / `-Join`
-and works with the streaming `iwr | iex` form too. Tailnet operators
-can pass a [`ts://` DSN](#multi-host-deployment) — corpus-forge will
-resolve it via the Tailscale API so the DSN is portable across the
-mesh.
+`CF_JOIN_DSN=<dsn>` is the env-var equivalent of `--join` / `-Join`.
+If you prefer the `-Join` parameter form, download then call — chain
+with `;` so a copy-paste as one line doesn't trip PowerShell's
+banned `&` operator:
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
+```
+
+Tailnet operators can pass a [`ts://` DSN](#multi-host-deployment) —
+corpus-forge will resolve it via the Tailscale API so the DSN is
+portable across the mesh.
 
 What comes next on the joiner:
 
