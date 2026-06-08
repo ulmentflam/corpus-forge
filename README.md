@@ -42,7 +42,7 @@ curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install
 
 ```powershell
 # Windows (run from an elevated PowerShell if you also want the daemon service)
-iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
 ```
 
 **CI / unattended installs** — set `CF_NON_INTERACTIVE=1` plus the
@@ -95,17 +95,23 @@ curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install
 ```
 
 ```powershell
-# Windows (PowerShell) — paste as one line; `;` chains the two statements:
-$env:CF_JOIN_DSN = 'postgresql://primary.fleet:5432/corpus'; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 | iex
+# Windows (PowerShell) — env-var form, single line, always paste-safe:
+$env:CF_JOIN_DSN = 'postgresql://primary.fleet:5432/corpus'; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
 ```
 
-`CF_JOIN_DSN=<dsn>` is the env-var equivalent of `--join` / `-Join`.
-The `-Join` parameter form is also supported — chain with `;` for the
-same paste-as-one-line behavior:
+Or with the `-Join` parameter form (same chained pattern):
 
 ```powershell
 iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
 ```
+
+> **Why `-OutFile + &` and not `iwr | iex`?** `Invoke-Expression`
+> doesn't reliably handle scripts with top-level `param()` blocks
+> (which install.ps1 has, for `-Join`) — its parser stumbles on the
+> preceding comment-based-help block. Downloading to a file and
+> running via the call operator routes the script through
+> PowerShell's normal `.ps1` loader, which handles `param()` and
+> `<# #>` blocks correctly.
 
 Tailnet operators can pass a [`ts://` DSN](#multi-host-deployment) —
 corpus-forge will resolve it via the Tailscale API so the DSN is

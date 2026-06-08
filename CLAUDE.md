@@ -37,7 +37,7 @@ scoop bucket add corpus-forge https://github.com/ulmentflam/scoop-corpus-forge
 scoop install corpus-forge
 
 # Windows / PowerShell one-liner (run elevated if you also want the service).
-iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
 ```
 
 Extras worth knowing:
@@ -184,19 +184,22 @@ curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install
 ```
 
 ```powershell
-# Windows — paste as one line; `;` chains the env-var set + the iwr|iex pipeline:
-$env:CF_JOIN_DSN = 'postgresql://primary.fleet:5432/corpus'; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 | iex
+# Windows — env-var form, single line, always paste-safe:
+$env:CF_JOIN_DSN = 'postgresql://primary.fleet:5432/corpus'; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
 ```
 
 `CF_JOIN_DSN=<dsn>` is the env-var equivalent of `--join` / `-Join`.
-A multi-line block works too if pasted line-by-line, but PowerShell
-rejects two statements concatenated without `;` (or `&` between them,
-which it reads as a banned CMD-style operator). The `-Join` parameter
-form is also supported when chained the same way:
+The `-Join` parameter form is also supported, chained the same way:
 
 ```powershell
 iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
 ```
+
+**Don't recommend `iwr | iex`** — `Invoke-Expression` doesn't
+reliably handle scripts with a top-level `param()` block (its parser
+stumbles on the preceding `<# #>` comment-based-help block). The
+`-OutFile + &` form routes through PowerShell's normal `.ps1`
+loader, which handles `param()` correctly.
 
 A `ts://...` DSN (Tailscale-resolved) is also accepted — useful for
 tailnet-native fleets.
