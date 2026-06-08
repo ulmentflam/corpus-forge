@@ -326,6 +326,23 @@ class TestRenderConfigToml:
         assert parsed["code_enricher"]["remote_url"] == "https://qwen.local"
         assert parsed["code_enricher"]["remote_api_shape"] == "openai"
 
+    def test_no_federation_block_by_default(self, tmp_path: Path) -> None:
+        """RFC fleet-3 hard backcompat bar: the default render must NOT
+        emit a ``[federation]`` block.
+
+        Federation drift detection is opt-in (``[federation] enabled =
+        true``); a freshly-wizarded config must look byte-for-byte like
+        today's local-only setup, which means no ``[federation]`` section
+        at all. The defaulted ``FederationConfig`` on ``Config`` still
+        materialises (enabled=False) when the block is absent — pinned by
+        ``test_federation_config.py`` — so omitting it from the render is
+        the correct, behaviour-preserving choice."""
+        answers = {"backend": "sqlite", "embedder": "st", "classifier_chain": "rule"}
+        text = render_config_toml(answers, tmp_path / "x.db")
+        assert "[federation]" not in text
+        # And it still parses + carries no federation section.
+        assert "federation" not in self._parse(text)
+
     def test_windows_style_path_does_not_corrupt_toml(self, tmp_path: Path) -> None:
         """Regression: a literal Windows-style path with backslashes
         must NOT trigger TOML basic-string ``\\U`` unicode-escape parse

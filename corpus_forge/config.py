@@ -942,6 +942,46 @@ class EmbedConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class FederationConfig(BaseModel):
+    """RFC ``rfc-fleet-3-federated-config-and-setup`` — federation toggles.
+
+    Governs the daemon's *drift detection* only. The verbs
+    (``config publish`` / ``pull`` / ``diff``) work regardless of this
+    block — an operator can always inspect or push shared config by
+    hand. What this block gates is the daemon's periodic, best-effort
+    "the corpus has a newer shared config than I last pulled" WARNING.
+
+    **Hard backcompat bar (RFC):** the default is ``enabled = False``,
+    and a local-only single-instance setup with no ``[federation]``
+    block must behave byte-for-byte as today. With the default the
+    daemon never constructs the drift checker at all — no extra SELECT,
+    no shared-config read, no behaviour change.
+
+    **Non-goal (RFC):** *No auto-apply.* The daemon only ever WARNs;
+    converging is a human action (``config pull --apply``). There is no
+    background config mutation, ever.
+
+    Migration: existing configs have no ``[federation]`` section. The
+    defaulted field on :class:`Config` means they continue to validate
+    as-is — ``Config(**old_toml)`` simply gets the default-constructed
+    ``FederationConfig`` instance with ``enabled=False``.
+
+    Fields:
+
+    - ``enabled``: master on/off switch for the daemon drift WARN.
+      Default ``False`` — the hard backcompat bar.
+    - ``drift_check_interval_s``: how often the daemon re-checks the
+      published shared-config version against the locally-recorded
+      last-pulled version. One cheap ``get_shared_config()`` SELECT per
+      check. Default ``300`` (5 minutes). Must be ``> 0``.
+    """
+
+    enabled: bool = False
+    drift_check_interval_s: float = Field(default=300.0, gt=0)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class EvalRegressionConfig(BaseModel):
     """RFC ``rfc-eval-framework-expansion`` — tolerance gating for regression eval.
 
@@ -1378,6 +1418,13 @@ class Config(BaseModel):
     # ``ts://`` endpoint while disabled fails validation at load time (see
     # ``_check_tailscale_endpoints``).
     tailscale: TailscaleConfig = Field(default_factory=TailscaleConfig)
+    # RFC ``rfc-fleet-3-federated-config-and-setup`` — federation drift
+    # detection. Defaults to ``enabled=False`` so existing configs without
+    # a ``[federation]`` block continue to validate and behave byte-for-byte
+    # as today (the hard backcompat bar): the daemon constructs no drift
+    # checker, reads no shared config, and never mutates config in the
+    # background.
+    federation: FederationConfig = Field(default_factory=FederationConfig)
 
     model_config = ConfigDict(
         str_strip_whitespace=True,
