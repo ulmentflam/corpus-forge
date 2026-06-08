@@ -160,6 +160,8 @@ In bulk mode, `next_curation_batch` groups candidates by `(source stem, classifi
 | Slow `search`, no rerank | Reranker is opt-in (`rerank=true`). First call triggers a one-time ~600 MB BGE download. Skip on latency-sensitive paths. |
 | "no embeddings for dataset" | Run `corpus-forge embed -e <embedder_name>` once after `ingest`. |
 | Postgres ENOSPC | `corpus-forge estimate <path>` *before* sync. Tune the `[estimate]` block in config to model your TOAST compression ratio. |
+| Add a second machine | `corpus-forge setup --join postgresql://user@pg-host/corpus` — registers the host and pulls shared config in one command (postgres only; SQLite is single-machine). Then `config pull --apply` for later updates. |
+| `TailscaleUnavailable` / `ts://` won't resolve | `corpus-forge doctor` names the failing endpoint. "daemon" reason → install/start Tailscale; "name" reason → peer not in this tailnet. `ts://` in config while `[tailscale] enabled = false` fails at load. |
 
 Full docs live under `docs/` in this repo. The `corpus-forge doctor --json` output is the quickest way to ship a diagnosis to the user.
 

@@ -190,6 +190,8 @@ For bulk mode (many similar entries, one chat): call `next_curation_batch(limit=
 | Slow `search`, no rerank | Reranker is opt-in (`rerank=true`). First call triggers a one-time ~600 MB BGE download. Skip on latency-sensitive paths. |
 | "no embeddings for dataset" | Run `corpus-forge embed -e <embedder_name>` once after `ingest`. |
 | Postgres ENOSPC | `corpus-forge estimate <path>` *before* sync. Tune the `[estimate]` block in config to model your TOAST compression ratio. |
+| `TailscaleUnavailable` / `ts://` won't resolve | `corpus-forge doctor` names the failing endpoint. "daemon" reason → install/start Tailscale (`tailscale status` should report `Running`); "name" reason → the peer name isn't in this tailnet (check spelling). `ts://` in config while `[tailscale] enabled = false` fails at load — flip it on. |
+| Second machine: no shared config after `setup --join` | `corpus-forge config pull` (dry-run) then `--apply`. "nothing published yet" means no host has run `config publish` — do it on the primary. Federation needs the `postgres` backend (SQLite WARNs in `doctor`). |
 
 Full docs live under `docs/` in this repo. The `corpus-forge doctor` command's `--json` output is the quickest way to ship a diagnosis to the user.
 

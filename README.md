@@ -714,6 +714,75 @@ corpus-forge embed
 
 Chunks already have content-hashes; the backfill encodes only what's missing.
 
+## Fleet: add a second machine
+
+corpus-forge runs as a **fleet** — many machines pointed at one shared
+Postgres, draining the same embedding backlog and sharing the same
+corpus-shaped config. One machine owns the schema (it ran
+`corpus-forge migrate`); every other machine *joins*.
+
+```bash
+# On the new machine — one command takes it from installed to a
+# registered fleet host with the shared config pulled.
+corpus-forge setup --join postgresql://user@pg-host:5432/corpus
+
+# Then add your local source roots (the join renders shared datasets
+# as commented-out blocks — each machine ingests its own directories)
+# and start working the backlog:
+corpus-forge ingest --once
+corpus-forge embed            # claims chunks; multiple hosts drain safely
+```
+
+**Distributed embedding (no babysitting).** Every host's
+`corpus-forge embed` / embed-worker *claims* chunks before encoding,
+so N machines drain the same lane with zero duplicated GPU work —
+crash-safe via lease expiry, no broker. Pin a machine to specific
+lanes when its hardware suits one model:
+
+```toml
+[embed]
+lanes = ["qwen3-4096"]   # this CUDA box only works the big-dim lane;
+                         # absent ⇒ all active embedders (single-host default)
+```
+
+**Shared config that can't silently fork.** Dataset names/kinds,
+embedder definitions, and retrieval settings are *shared scope*; DSNs,
+source roots, devices, and API-key env names stay *local*. Publish and
+pull the shared subset — comment-preserving, version-guarded:
+
+```bash
+corpus-forge config publish          # push this host's shared scope
+corpus-forge config pull             # dry-run: show the diff
+corpus-forge config pull --apply     # rewrite local config.toml (backs up .bak)
+corpus-forge config diff             # local vs published, no writes
+```
+
+`publish` refuses when the corpus has a newer version than you last
+pulled ("pull first"), so two machines can't clobber each other. With
+`[federation] enabled = true`, the daemon WARNs on drift — it never
+auto-applies; a human runs `config pull`.
+
+**Tailscale-native addressing (optional).** Point every box at a
+stable MagicDNS name instead of a hand-pinned 100.x IP — `ts://` is
+accepted anywhere a host URL/DSN appears:
+
+```toml
+[backend]
+dsn = "ts://pg-host:5432/corpus"
+
+[tailscale]
+enabled = true           # default false; ts:// errors clearly when off
+```
+
+`corpus-forge setup` offers a live-peer picker for the Postgres host
+and remote embedder endpoints when Tailscale is up; `corpus-forge
+hosts list` shows a ●/○ online marker per fleet host; `corpus-forge
+doctor` resolves every `ts://` name and TCP-probes its port.
+
+Requires the `postgres` backend — SQLite is single-machine by
+construction. See [`docs/`](docs/) and the `rfc-fleet-*` design notes
+under `.planning/rfcs/` for internals.
+
 ## For AI assistants
 
 corpus-forge ships ready-to-use setup guides for every major coding assistant. Hand one of these to your assistant (or read it yourself) and you'll be ingesting + searching + curating within a few commands:
