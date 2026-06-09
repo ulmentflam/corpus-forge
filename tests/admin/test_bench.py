@@ -17,6 +17,7 @@ model or DB.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 import numpy as np
@@ -631,3 +632,206 @@ def test_report_to_dict_shape(monkeypatch: pytest.MonkeyPatch) -> None:
         assert key in row
     assert row["source_kind"] == "real-pending"
     assert row["persisted"] is True
+
+
+# ---------------------------------------------------------------------------
+# Phase progress + cold-start accounting (rfc-bench-embed-progress)
+# ---------------------------------------------------------------------------
+
+
+class _Clock:
+    """Deterministic monotonic stand-in for ``time.perf_counter``.
+
+    Returns its current value on call; ``advance`` bumps it.  Lets a test
+    script the exact load/warmup/encode durations so cold-start vs encode
+    accounting is asserted to the millisecond without real sleeps.
+    """
+
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
+
+    def advance(self, dt: float) -> None:
+        self.t += dt
+
+
+class _ClockEmbedder(_StubEmbedder):
+    """Stub whose ``warmup``/``encode`` advance a fake clock by fixed deltas."""
+
+    def __init__(self, clock: _Clock, *, warmup_dt: float, encode_dt: float, dim: int = 4) -> None:
+        super().__init__("clock-emb", dim=dim)
+        self._clock = clock
+        self._warmup_dt = warmup_dt
+        self._encode_dt = encode_dt
+
+    def warmup(self) -> None:
+        self.warmed = True
+        self._clock.advance(self._warmup_dt)
+
+    def encode(self, texts: Any) -> Any:
+        self._clock.advance(self._encode_dt)
+        return np.array([[0.1] * self._dim for _ in texts], dtype="float32")
+
+
+def _run_with_clock(
+    monkeypatch: pytest.MonkeyPatch, *, warmup_dt: float, encode_dt: float, sample: int = 4
+) -> bench.BenchResult:
+    clock = _Clock()
+    emb = _ClockEmbedder(clock, warmup_dt=warmup_dt, encode_dt=encode_dt)
+    _patch_registry(monkeypatch, emb)
+    # Patch perf_counter on the bench module's ``time`` (the global time
+    # module) so the encode/cold-start windows read the scripted clock.
+    monkeypatch.setattr(bench.time, "perf_counter", clock)
+    backend = _StubBackend(pending=[])
+    cfg = _StubEmbedderConfig("clock-emb")
+    return bench.bench_one(backend, cfg, host_id="host-1", sample=sample)
+
+
+def test_cold_start_excluded_from_chunks_per_s(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A slow warmup must raise cold_start_s but leave chunks_per_s — which
+    # is n / encode_elapsed with t0 taken *after* warmup — untouched.
+    fast = _run_with_clock(monkeypatch, warmup_dt=1.0, encode_dt=2.0, sample=4)
+    slow = _run_with_clock(monkeypatch, warmup_dt=100.0, encode_dt=2.0, sample=4)
+
+    assert fast.chunks_per_s == slow.chunks_per_s == pytest.approx(4 / 2.0)
+    assert fast.cold_start_s == pytest.approx(1.0)
+    assert slow.cold_start_s == pytest.approx(100.0)
+
+
+def test_cold_start_recorded_on_load_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise(registry: Any, cfg: Any) -> Any:
+        raise RuntimeError("model not found")
+
+    monkeypatch.setattr("corpus_forge.embedders.registry.register_from_config", _raise)
+    monkeypatch.setattr(bench, "resolve_device", lambda t: "cpu")
+    backend = _StubBackend()
+    cfg = _StubEmbedderConfig("broken")
+
+    result = bench.bench_one(backend, cfg, host_id="host-1", sample=4)
+    assert result.error is not None and "load failed" in result.error
+    # Even a failed load reports how long we spent before giving up.
+    assert isinstance(result.cold_start_s, float)
+    assert result.cold_start_s >= 0.0
+
+
+def test_agent_mode_suppresses_progress_on_stdout(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Under agent mode bench_one must NOT open make_progress (its agent
+    # branch streams JSONL to stdout, which would corrupt the --json
+    # object); it logs milestones instead.
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("make_progress must not run under agent mode")
+
+    monkeypatch.setattr(bench, "make_progress", _boom)
+    emb = _StubEmbedder("local-emb")
+    _patch_registry(monkeypatch, emb)
+    backend = _StubBackend(pending=[])
+    cfg = _StubEmbedderConfig("local-emb")
+
+    result = bench.bench_one(backend, cfg, host_id="host-1", sample=4, agent_mode=True)
+    assert result.error is None
+    assert result.cold_start_s is not None
+    # Nothing written to stdout by the (suppressed) progress.
+    assert capsys.readouterr().out == ""
+
+    # api transport still drives the per-text advance (a no-op under agent
+    # mode) without opening make_progress or touching stdout.
+    api_cfg = _StubEmbedderConfig("api-emb", provider="openai", base_url="https://api.x/v1")
+    api_result = bench.bench_one(backend, api_cfg, host_id="host-1", sample=3, agent_mode=True)
+    assert api_result.error is None
+    assert capsys.readouterr().out == ""
+
+
+class _RecProgress:
+    """Recording Progress double: captures add_task / advance calls."""
+
+    def __init__(self) -> None:
+        self.added: list[tuple[int, str, int | None]] = []
+        self.advances: list[tuple[int, float]] = []
+        self._next = 0
+
+    def add_task(self, description: str, *, total: int | None = None, **_kw: Any) -> int:
+        tid = self._next
+        self._next += 1
+        self.added.append((tid, description, total))
+        return tid
+
+    def advance(self, task_id: int, n: float = 1) -> None:
+        self.advances.append((task_id, n))
+
+    def remove_task(self, task_id: int) -> None:
+        return None
+
+    def update(self, task_id: int, **_kw: Any) -> None:
+        return None
+
+
+def _install_rec_progress(monkeypatch: pytest.MonkeyPatch) -> _RecProgress:
+    rec = _RecProgress()
+
+    @contextlib.contextmanager
+    def _fake(_description: str, *, total: int | None = None, **_kw: Any):
+        yield rec
+
+    monkeypatch.setattr(bench, "make_progress", _fake)
+    return rec
+
+
+def test_api_encode_advances_bar_per_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    rec = _install_rec_progress(monkeypatch)
+    emb = _StubEmbedder("api-emb")
+    _patch_registry(monkeypatch, emb)
+    backend = _StubBackend(pending=[])
+    cfg = _StubEmbedderConfig("api-emb", provider="openai", base_url="https://api.x/v1")
+
+    bench.bench_one(backend, cfg, host_id="host-1", sample=5)
+
+    # The encode phase is bounded (total == n) and advances once per text.
+    encode = [(tid, total) for (tid, desc, total) in rec.added if desc.startswith("encode")]
+    assert len(encode) == 1
+    encode_tid, encode_total = encode[0]
+    assert encode_total == 5
+    assert sum(1 for (tid, _n) in rec.advances if tid == encode_tid) == 5
+
+
+def test_local_encode_phase_is_indeterminate(monkeypatch: pytest.MonkeyPatch) -> None:
+    rec = _install_rec_progress(monkeypatch)
+    emb = _StubEmbedder("local-emb")
+    _patch_registry(monkeypatch, emb)
+    backend = _StubBackend(pending=[])
+    cfg = _StubEmbedderConfig("local-emb")
+
+    bench.bench_one(backend, cfg, host_id="host-1", sample=5)
+
+    encode = [(tid, total) for (tid, desc, total) in rec.added if desc.startswith("encode")]
+    assert len(encode) == 1
+    encode_tid, encode_total = encode[0]
+    # Single batched call → indeterminate spinner (total None), no advances.
+    assert encode_total is None
+    assert all(tid != encode_tid for (tid, _n) in rec.advances)
+
+
+def test_cold_start_in_report_dict(monkeypatch: pytest.MonkeyPatch) -> None:
+    emb = _StubEmbedder("local-emb")
+    _patch_registry(monkeypatch, emb)
+    backend = _StubBackend(pending=[(1, "t1", "")])
+    cfg = _StubConfig([_StubEmbedderConfig("local-emb")])
+    report = bench.bench_embedders(backend, cfg, all_=True, sample=4)
+
+    row = bench.report_to_dict(report)["results"][0]
+    assert "cold_start_s" in row
+    assert row["cold_start_s"] is None or isinstance(row["cold_start_s"], float)
+
+
+def test_render_table_has_cold_start_column(monkeypatch: pytest.MonkeyPatch) -> None:
+    emb = _StubEmbedder("local-emb")
+    _patch_registry(monkeypatch, emb)
+    backend = _StubBackend(pending=[])
+    cfg = _StubConfig([_StubEmbedderConfig("local-emb")])
+    report = bench.bench_embedders(backend, cfg, all_=True, sample=4)
+
+    headers = [col.header for col in bench.render_table(report).columns]
+    assert "cold start" in headers

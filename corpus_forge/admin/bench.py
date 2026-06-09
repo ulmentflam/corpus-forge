@@ -49,9 +49,11 @@ others.  The process exits non-zero only when **every** target failed.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import time
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Annotated, Any
 
@@ -60,6 +62,7 @@ from rich.table import Table
 
 from corpus_forge.ui.console import console as ui_console
 from corpus_forge.ui.console import error as ui_error
+from corpus_forge.ui.progress import make_progress
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +133,13 @@ class BenchResult:
     source_kind: str  # "real-pending" | "synthetic" | "none"
     persisted: bool
     error: str | None = None
+    #: Wall-clock seconds for the *cold start* — ``register_from_config``
+    #: load plus ``embedder.warmup()`` — measured *before* ``t0`` and so
+    #: NEVER folded into ``chunks_per_s``.  Surfaced (table + ``--json``)
+    #: so a first run on a fresh box (model download/load) is
+    #: distinguishable from a warm steady-state run.  ``None`` when the
+    #: embedder failed to load before the cold-start clock could stop.
+    cold_start_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -336,12 +346,82 @@ def _sample_pending(
     return pairs
 
 
+# ── Phase-aware progress (rfc-bench-embed-progress) ────────────────────────
+
+#: A phase's advance hook.  Calling it bumps the phase's bar (api encode
+#: loop); a no-op for spinner phases and under agent mode.
+_Advance = Callable[..., None]
+
+
+@contextlib.contextmanager
+def _bench_progress(name: str, *, agent_mode: bool, sample: int) -> Iterator[Callable[..., Any]]:
+    """Yield a ``phase(label, total=None)`` context-manager factory for one ``bench_one``.
+
+    Two modes, picked by ``agent_mode``:
+
+    * **Human (Rich).** Open a single :func:`make_progress` (bounded
+      columns so the api encode phase can render a real bar) on the shared
+      ``ui.console`` — which is ``stderr=True``, so the live display never
+      touches stdout.  Each phase is a task added on entry and *removed* on
+      exit, so only the phase currently running is visible (no pile-up of
+      finished spinners under ``transient=True``).
+    * **Agent.** Emit one ``logger.info`` milestone per phase and yield a
+      no-op ``advance`` — we must NOT open :func:`make_progress` here
+      because its agent-mode branch streams JSONL to **stdout**, which
+      would corrupt the single clean ``--json`` object ``bench embed``
+      prints.  The cascade reads the milestones from the rotating log.
+
+    The factory yields an ``advance`` callable so call sites bump the bar
+    uniformly regardless of mode.  All progress bookkeeping lives *outside*
+    the encode ``t0..elapsed`` window, so it never alters ``chunks_per_s``.
+    """
+
+    if agent_mode:
+
+        @contextlib.contextmanager
+        def phase(label: str, *, total: int | None = None) -> Iterator[_Advance]:
+            suffix = f" ({total})" if total is not None else ""
+            logger.info("bench[%s]: %s%s", name, label, suffix)
+
+            def _advance(_n: float = 1) -> None:
+                return None
+
+            yield _advance
+
+        yield phase
+        return
+
+    # Human path: bounded columns (so the api encode phase shows a bar);
+    # spinner phases just add a total=None task which Rich pulses.  total
+    # is ``max(sample, 1)`` purely to select bounded columns — per-phase
+    # tasks carry their own totals.  No logger → no INFO bookends (the
+    # phases themselves are the human signal).
+    with make_progress(f"bench {name}", total=max(sample, 1)) as progress:
+
+        @contextlib.contextmanager
+        def phase(label: str, *, total: int | None = None) -> Iterator[_Advance]:
+            task = progress.add_task(label, total=total)
+
+            def _advance(n: float = 1) -> None:
+                progress.advance(task, n)
+
+            try:
+                yield _advance
+            finally:
+                # Drop the finished phase so only the active one shows.
+                with contextlib.suppress(Exception):
+                    progress.remove_task(task)
+
+        yield phase
+
+
 def bench_one(
     backend: Any,
     embedder_config: Any,
     *,
     host_id: str,
     sample: int,
+    agent_mode: bool = False,
 ) -> BenchResult:
     """Benchmark a single embedder and write its ``model_benchmarks`` row.
 
@@ -352,6 +432,15 @@ def bench_one(
     ``source="bench"`` row.  All failures collapse into a
     :class:`BenchResult` with ``error`` set — the caller continues with
     the next embedder.
+
+    Phase feedback (rfc-bench-embed-progress): the run is wrapped in a
+    :func:`_bench_progress` phase sequence so the human sees what it is
+    doing — *especially the cold start* (model load + warmup), rendered as
+    a live spinner instead of a frozen prompt.  The cold start is timed
+    separately as ``cold_start_s``; it stays *out* of ``chunks_per_s``,
+    which is still ``n / encode_elapsed`` with ``t0`` taken after warmup.
+    Under ``agent_mode`` the live display is replaced by ``logger.info``
+    milestones so the ``--json`` object on stdout is never polluted.
     """
 
     name = getattr(embedder_config, "name", "<unknown>")
@@ -361,7 +450,7 @@ def bench_one(
     transport = resolve_transport(embedder_config)
     device = resolve_device(transport)
 
-    def _error(msg: str) -> BenchResult:
+    def _error(msg: str, *, cold_start_s: float | None = None) -> BenchResult:
         return BenchResult(
             embedder_name=name,
             model_key=model_key,
@@ -375,98 +464,126 @@ def bench_one(
             source_kind="none",
             persisted=False,
             error=msg,
+            cold_start_s=cold_start_s,
         )
 
-    try:
-        from corpus_forge.embedders.registry import register_from_config, registry
-
-        embedder = register_from_config(registry, embedder_config)
-        embedder.warmup()
-        embedder_id = backend.register_embedder(embedder)
-    except Exception as exc:
-        logger.warning("bench: embedder %r failed to load: %r", name, exc)
-        return _error(f"load failed: {exc}")
-
-    # Sample: real pending first, synthetic fallback.
-    pending = _sample_pending(backend, embedder, embedder_id, sample)
-    if pending:
-        source_kind = "real-pending"
-        chunk_ids = [cid for cid, _ in pending]
-        texts = [text for _, text in pending]
-    else:
-        source_kind = "synthetic"
-        chunk_ids = []
-        texts = synthetic_sample(sample)
-
-    if not texts:
-        return _error("no chunks to sample (empty corpus and sample<=0)")
-
-    # Time the encode.  For API transports we encode per-text so we can
-    # build a latency distribution; for local transports a single batched
-    # wall clock is the meaningful number.
-    latencies_ms: list[float] = []
-    try:
-        if transport == "api":
-            vectors: list[Any] = []
-            t0 = time.perf_counter()
-            for text in texts:
-                r0 = time.perf_counter()
-                vec = embedder.encode([text])
-                latencies_ms.append((time.perf_counter() - r0) * 1000.0)
-                vectors.append(vec[0])
-            elapsed = time.perf_counter() - t0
-            embeddings: Any = vectors
-        else:
-            t0 = time.perf_counter()
-            embeddings = embedder.encode(texts)
-            elapsed = time.perf_counter() - t0
-    except Exception as exc:
-        logger.warning("bench: embedder %r failed to encode: %r", name, exc)
-        return _error(f"encode failed: {exc}")
-
-    n = len(texts)
-    chunks_per_s = (n / elapsed) if elapsed > 0 else None
-
-    token_total = count_tokens(embedder, texts)
-    tokens_per_s = (token_total / elapsed) if (token_total is not None and elapsed > 0) else None
-
-    p50 = p95 = None
-    if latencies_ms:
-        ordered = sorted(latencies_ms)
-        p50 = _percentile(ordered, 50.0)
-        p95 = _percentile(ordered, 95.0)
-
-    # Persist real-pending vectors only — the work counts.  Synthetic
-    # vectors have no chunk ids and are NEVER written.
-    persisted = False
-    if source_kind == "real-pending" and chunk_ids:
+    with _bench_progress(name, agent_mode=agent_mode, sample=sample) as phase:
+        # ── Cold start: load + warmup (timed, excluded from chunks_per_s) ──
+        cold_start_t0 = time.perf_counter()
         try:
-            pairs = list(zip(chunk_ids, embeddings, strict=True))
-            backend.write_embeddings(embedder_id, pairs)
-            persisted = True
-        except Exception as exc:
-            # A persist failure must not lose the benchmark numbers we
-            # already measured — log and report the row anyway.
-            logger.warning("bench: write_embeddings for %r failed (%r); benchmark kept", name, exc)
+            from corpus_forge.embedders.registry import register_from_config, registry
 
-    # Write the benchmark row (failure-isolated — a telemetry write never
-    # breaks the bench's reported numbers).
-    try:
-        backend.insert_model_benchmark(
-            host_id=host_id,
-            model_key=model_key,
-            source="bench",
-            transport=transport,
-            device=device,
-            batch_size=getattr(embedder_config, "batch_size", None),
-            sample_chunks=n,
-            chunks_per_s=chunks_per_s,
-            tokens_per_s=tokens_per_s,
-            latency_p50_ms=p50,
-            latency_p95_ms=p95,
+            with phase("load model (cold start)"):
+                embedder = register_from_config(registry, embedder_config)
+            with phase("warmup"):
+                embedder.warmup()
+            cold_start_s = time.perf_counter() - cold_start_t0
+            embedder_id = backend.register_embedder(embedder)
+        except Exception as exc:
+            logger.warning("bench: embedder %r failed to load: %r", name, exc)
+            return _error(f"load failed: {exc}", cold_start_s=time.perf_counter() - cold_start_t0)
+
+        # ── Sample: real pending first, synthetic fallback ──
+        with phase("sample"):
+            pending = _sample_pending(backend, embedder, embedder_id, sample)
+            if pending:
+                source_kind = "real-pending"
+                chunk_ids = [cid for cid, _ in pending]
+                texts = [text for _, text in pending]
+            else:
+                source_kind = "synthetic"
+                chunk_ids = []
+                texts = synthetic_sample(sample)
+
+        if not texts:
+            return _error(
+                "no chunks to sample (empty corpus and sample<=0)", cold_start_s=cold_start_s
+            )
+
+        n = len(texts)
+
+        # ── Encode (timed) ──
+        # API transports encode per-text (so we get a latency distribution)
+        # under a bounded bar that advances once per text.  Local transports
+        # are a single batched call under an indeterminate spinner — RFC
+        # Approach option (a): no sub-batching, so the recorded rate matches
+        # the production single-batch encode exactly.  The ``phase`` /
+        # ``advance`` calls sit *outside* the per-text timing window for the
+        # api path (advance fires after the latency sample), so the bar never
+        # alters what's measured.
+        latencies_ms: list[float] = []
+        try:
+            if transport == "api":
+                vectors: list[Any] = []
+                with phase(f"encode {n} chunks", total=n) as advance:
+                    t0 = time.perf_counter()
+                    for text in texts:
+                        r0 = time.perf_counter()
+                        vec = embedder.encode([text])
+                        latencies_ms.append((time.perf_counter() - r0) * 1000.0)
+                        vectors.append(vec[0])
+                        advance(1)
+                    elapsed = time.perf_counter() - t0
+                embeddings: Any = vectors
+            else:
+                with phase(f"encode {n} chunks"):
+                    t0 = time.perf_counter()
+                    embeddings = embedder.encode(texts)
+                    elapsed = time.perf_counter() - t0
+        except Exception as exc:
+            logger.warning("bench: embedder %r failed to encode: %r", name, exc)
+            return _error(f"encode failed: {exc}", cold_start_s=cold_start_s)
+
+        chunks_per_s = (n / elapsed) if elapsed > 0 else None
+
+        token_total = count_tokens(embedder, texts)
+        tokens_per_s = (
+            (token_total / elapsed) if (token_total is not None and elapsed > 0) else None
         )
-    except Exception as exc:
-        logger.warning("bench: insert_model_benchmark for %r failed (continuing): %r", name, exc)
+
+        p50 = p95 = None
+        if latencies_ms:
+            ordered = sorted(latencies_ms)
+            p50 = _percentile(ordered, 50.0)
+            p95 = _percentile(ordered, 95.0)
+
+        # ── Write: persist real-pending vectors + the benchmark row ──
+        with phase("write benchmark row"):
+            # Persist real-pending vectors only — the work counts.  Synthetic
+            # vectors have no chunk ids and are NEVER written.
+            persisted = False
+            if source_kind == "real-pending" and chunk_ids:
+                try:
+                    pairs = list(zip(chunk_ids, embeddings, strict=True))
+                    backend.write_embeddings(embedder_id, pairs)
+                    persisted = True
+                except Exception as exc:
+                    # A persist failure must not lose the benchmark numbers we
+                    # already measured — log and report the row anyway.
+                    logger.warning(
+                        "bench: write_embeddings for %r failed (%r); benchmark kept", name, exc
+                    )
+
+            # Write the benchmark row (failure-isolated — a telemetry write
+            # never breaks the bench's reported numbers).
+            try:
+                backend.insert_model_benchmark(
+                    host_id=host_id,
+                    model_key=model_key,
+                    source="bench",
+                    transport=transport,
+                    device=device,
+                    batch_size=getattr(embedder_config, "batch_size", None),
+                    sample_chunks=n,
+                    chunks_per_s=chunks_per_s,
+                    tokens_per_s=tokens_per_s,
+                    latency_p50_ms=p50,
+                    latency_p95_ms=p95,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "bench: insert_model_benchmark for %r failed (continuing): %r", name, exc
+                )
 
     return BenchResult(
         embedder_name=name,
@@ -481,6 +598,7 @@ def bench_one(
         source_kind=source_kind,
         persisted=persisted,
         error=None,
+        cold_start_s=cold_start_s,
     )
 
 
@@ -521,12 +639,15 @@ def bench_embedders(
     embedders: list[str] | None = None,
     all_: bool = False,
     sample: int = _DEFAULT_SAMPLE,
+    agent_mode: bool = False,
 ) -> BenchReport:
     """Benchmark the selected embedders and return a sorted :class:`BenchReport`.
 
     Heartbeats the host + model registry first (so the benchmark rows'
     foreign keys resolve), benches each target with per-embedder failure
     isolation, then sorts results by ``chunks_per_s`` descending.
+    ``agent_mode`` is threaded down to :func:`bench_one` so its phase
+    feedback degrades to log milestones (never a stdout-polluting bar).
     """
 
     from corpus_forge.telemetry_registry import heartbeat
@@ -538,7 +659,9 @@ def bench_embedders(
     targets = _select_targets(config, embedders, all_)
     results: list[BenchResult] = []
     for ec in targets:
-        results.append(bench_one(backend, ec, host_id=host_id, sample=sample))
+        results.append(
+            bench_one(backend, ec, host_id=host_id, sample=sample, agent_mode=agent_mode)
+        )
 
     # Sort by chunks/s desc; errored / unmeasured rows (None) sink to the
     # bottom via a -inf sort key.
@@ -572,6 +695,7 @@ def render_table(report: BenchReport) -> Table:
     table.add_column("tokens/s", justify="right", style="accent.number")
     table.add_column("p50 ms", justify="right")
     table.add_column("p95 ms", justify="right")
+    table.add_column("cold start", justify="right", style="muted")
     table.add_column("n", justify="right")
     for r in report.results:
         if r.error is not None:
@@ -584,6 +708,7 @@ def render_table(report: BenchReport) -> Table:
                 "—",
                 "—",
                 "—",
+                _fmt(r.cold_start_s, digits=2),
                 "0",
             )
             continue
@@ -596,6 +721,7 @@ def render_table(report: BenchReport) -> Table:
             _fmt(r.tokens_per_s),
             _fmt(r.latency_p50_ms),
             _fmt(r.latency_p95_ms),
+            _fmt(r.cold_start_s, digits=2),
             str(r.sample_chunks),
         )
     return table
@@ -618,6 +744,7 @@ def report_to_dict(report: BenchReport) -> dict[str, Any]:
                 "tokens_per_s": r.tokens_per_s,
                 "latency_p50_ms": r.latency_p50_ms,
                 "latency_p95_ms": r.latency_p95_ms,
+                "cold_start_s": r.cold_start_s,
                 "source_kind": r.source_kind,
                 "persisted": r.persisted,
                 "error": r.error,
@@ -711,6 +838,7 @@ def cmd_embed(
             embedders=list(embedder) if embedder else None,
             all_=all_,
             sample=sample,
+            agent_mode=agent_mode,
         )
     except ValueError as exc:
         # Unknown embedder name → usage error (exit 2).
