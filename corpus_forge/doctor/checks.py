@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from corpus_forge import __version__
-from corpus_forge.acceleration import detect_accelerator
+from corpus_forge.acceleration import Accelerator, detect_accelerator
 from corpus_forge.mcp.lifecycle import ProcessDiscoveryUnavailable, discover_mcp_servers
 
 if TYPE_CHECKING:
@@ -800,6 +800,78 @@ def _check_embedder_acceleration() -> CheckResult:
     return CheckResult("embedder_acceleration", CheckStatus.OK, preset.summary)
 
 
+def _llama_cpp_supports_gpu_offload() -> bool | None:
+    """Whether the installed ``llama-cpp-python`` build supports GPU offload.
+
+    ``True`` / ``False`` from the wheel's own ``llama_supports_gpu_offload``
+    (a model-free, near-instant probe — no GGUF load); ``None`` when the
+    library isn't installed or the probe is unavailable (older/newer wheel
+    that renamed it). Factored out so the check is fully unit-testable by
+    patching this one function rather than ``llama_cpp`` itself.
+    """
+    try:
+        import llama_cpp  # pyrefly: ignore[missing-import]
+    except ImportError:
+        return None
+    try:
+        return bool(llama_cpp.llama_supports_gpu_offload())
+    except Exception:  # pragma: no cover - defensive: API drift across wheels
+        return None
+
+
+def _check_llama_cpp_backend() -> CheckResult:
+    """Reconcile the installed ``llama-cpp-python`` build against the
+    detected accelerator (RFC fleet-7 item 4).
+
+    The wheel ``pip``/``uv`` resolves is CPU-only unless fetched against an
+    accelerator index — so on a CUDA / Apple-Silicon box a CPU-only build
+    silently runs in-process embedding on the CPU while the GPU idles (the
+    fleet-5 drain loop then "drains" the backlog at CPU speed). WARN with the
+    reinstall fix so the operator can recover. SKIP when llama-cpp-python
+    isn't installed (the in-process embedder simply isn't in use).
+
+    Like the sibling checks, every probe is wrapped so a runtime quirk can
+    never crash ``corpus-forge doctor`` — the fallback stays at OK.
+    """
+    name = "llama_cpp_backend"
+    supports_offload = _llama_cpp_supports_gpu_offload()
+    if supports_offload is None:
+        return CheckResult(
+            name,
+            CheckStatus.SKIP,
+            "llama-cpp-python not installed (or build-info probe unavailable)",
+        )
+
+    try:
+        info = detect_accelerator()
+    except Exception as exc:  # pragma: no cover - defensive: wedged nvidia-smi etc.
+        return CheckResult(name, CheckStatus.OK, f"accelerator detection unavailable: {exc}")
+
+    gpu = info.kind in (Accelerator.CUDA, Accelerator.MPS)
+    if gpu and not supports_offload:
+        flag = "cuda" if info.kind is Accelerator.CUDA else "metal"
+        device = f" ({info.device_name})" if info.device_name else ""
+        return CheckResult(
+            name,
+            CheckStatus.WARN,
+            f"{info.kind.value.upper()} GPU detected{device} but the installed "
+            "llama-cpp-python is CPU-only — in-process embedding runs on the CPU "
+            f"while the GPU idles. Reinstall with `--llama-backend {flag}` "
+            "(or set CF_LLAMA_BACKEND) to fetch the accelerated wheel.",
+        )
+    if gpu:
+        return CheckResult(
+            name,
+            CheckStatus.OK,
+            f"{info.kind.value.upper()} detected; llama-cpp-python supports GPU offload.",
+        )
+    return CheckResult(
+        name,
+        CheckStatus.OK,
+        "no GPU detected; CPU-only llama-cpp-python is the expected build.",
+    )
+
+
 def _check_mcp_servers() -> CheckResult:
     """Surface running ``corpus-forge mcp serve`` children + flag stale ones.
 
@@ -870,6 +942,7 @@ _CHECKS: tuple[Callable[[], CheckResult], ...] = (
     _check_ffmpeg,
     _check_daemon_activity,
     _check_embedder_acceleration,
+    _check_llama_cpp_backend,
     _check_mcp_servers,
 )
 
