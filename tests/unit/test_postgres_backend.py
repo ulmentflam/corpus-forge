@@ -462,20 +462,48 @@ class TestWriteEmbeddings:
                 backend.write_embeddings(1, [(1, embedding)])
 
     def test_write_embeddings_inserts(self):
+        """Post-fix contract: ONE batched ``executemany``, not N ``_execute``s.
+
+        See ``.planning/tdd/fleet2_claim_deadlock_investigation.md`` —
+        the per-pair ``_execute`` loop has been replaced by a single
+        ``cur.executemany`` inside one pool checkout so a 1000-pair
+        page is one transaction instead of 1001.
+        """
         with patch.object(PostgresBackend, "__init__", lambda self, dsn, schema="corpus": None):
             backend = PostgresBackend.__new__(PostgresBackend)
-            backend._execute = MagicMock(
-                side_effect=[
-                    [{"name": "test-embed", "dimension": 384}],  # embedder info
-                    [],  # INSERT embedding 1
-                    [],  # INSERT embedding 2
-                ]
-            )
+            # The embedder-info lookup still goes through _execute (its
+            # cached-fast-path is unchanged); the inserts no longer do.
+            backend._execute = MagicMock(return_value=[{"name": "test-embed", "dimension": 384}])
+
+            # Stub out the pool-checkout path so the test doesn't need a
+            # live ``self._pool``. The ``with backend._get_connection()
+            # as conn, conn.cursor() as cur`` path expects a context-
+            # manager-yielding chain; mirror that shape with MagicMock's
+            # default ``__enter__``/``__exit__`` semantics.
+            cur_mock = MagicMock()
+            conn_mock = MagicMock()
+            conn_mock.cursor.return_value.__enter__.return_value = cur_mock
+            conn_mock.cursor.return_value.__exit__.return_value = None
+            cm = MagicMock()
+            cm.__enter__.return_value = conn_mock
+            cm.__exit__.return_value = None
+            backend._get_connection = MagicMock(return_value=cm)
 
             embedding = np.zeros((2, 384), dtype=np.float32)
             backend.write_embeddings(1, [(1, embedding[0]), (2, embedding[1])])
-            # Should have called _execute for embedder lookup + 2x INSERT
-            assert backend._execute.call_count >= 3
+
+            # Embedder-info lookup is the ONLY _execute call now.
+            assert backend._execute.call_count == 1
+            # The two rows landed in a SINGLE batched executemany.
+            cur_mock.executemany.assert_called_once()
+            sql, params_seq = cur_mock.executemany.call_args.args
+            assert "INSERT INTO corpus.embeddings_test_embed" in sql
+            assert "ON CONFLICT (chunk_id) DO NOTHING" in sql
+            assert list(params_seq) == [
+                (1, 1, embedding[0].tolist()),
+                (2, 1, embedding[1].tolist()),
+            ]
+            conn_mock.commit.assert_called_once()
 
 
 class TestChunksMissingEmbedding:

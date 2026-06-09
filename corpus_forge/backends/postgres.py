@@ -1169,11 +1169,39 @@ class PostgresBackend(StorageBackend):
         return conv_id
 
     def write_embeddings(self, embedder_id: int, pairs: list[tuple[int, np.ndarray]]) -> None:
-        """Write embeddings for chunks."""
+        """Write embeddings for chunks in ONE batched transaction.
+
+        See ``.planning/tdd/fleet2_claim_deadlock_investigation.md`` for
+        the full diagnosis.  In short: the previous implementation
+        issued one ``_execute`` per pair, which translated to one pool
+        checkout + BEGIN/INSERT/COMMIT round-trip per pair.  On the
+        fleet-2 claim path a 1000-pair page therefore did ~1001
+        sequential pool checkouts; combined with Tailscale latency to
+        a remote Postgres LXC, that turned each page into a 14-second
+        pool-contention storm AND surfaced ``Connection [ACTIVE]``
+        warnings whenever a commit's ack didn't drain promptly. The
+        replacement collapses the loop into a single ``executemany``
+        in one transaction — ~3 round-trips per page total, regardless
+        of how many pairs.
+
+        Contract preserved:
+
+        * Empty ``pairs`` → no-op (caller doesn't have to guard).
+        * Unknown ``embedder_id`` → ``ValueError``, same shape as
+          before.
+        * ``ON CONFLICT (chunk_id) DO NOTHING`` — per-row idempotency
+          across re-runs is unchanged; ``executemany`` runs the same
+          INSERT N times under one transaction so the conflict guard
+          fires per row, not per batch.
+        * No behavioural change for the SQLite backend (separate
+          method) or for the legacy fallback embed path.
+        """
         if not pairs:
             return
 
-        # Get embedder info to know table name and dimension
+        # Get embedder info to know table name and dimension.
+        # Kept as a separate _execute so the cached path (and the
+        # ValueError on unknown id) stays identical to b16.
         embedder_info = self._execute(
             "SELECT name, dimension FROM corpus.embedders WHERE id = %s", (embedder_id,)
         )
@@ -1184,18 +1212,16 @@ class PostgresBackend(StorageBackend):
         embedder_name = embedder_info[0]["name"]
         table_name = f"embeddings_{embedder_name.replace('-', '_')}"
 
-        # Insert embeddings with ON CONFLICT DO NOTHING
-        for chunk_id, embedding in pairs:
-            # Convert numpy array to list for PostgreSQL
-            embedding_list = embedding.tolist()
-            self._execute(
-                f"""
-                INSERT INTO corpus.{table_name} (chunk_id, embedder_id, embedding)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (chunk_id) DO NOTHING
-                """,
-                (chunk_id, embedder_id, embedding_list),
-            )
+        insert_sql = (
+            f"INSERT INTO corpus.{table_name} (chunk_id, embedder_id, embedding) "
+            "VALUES (%s, %s, %s) ON CONFLICT (chunk_id) DO NOTHING"
+        )
+        # Materialise once so the tolist() cost is paid before we
+        # hold the connection (keeps the checkout window minimal).
+        params_seq = [(chunk_id, embedder_id, embedding.tolist()) for chunk_id, embedding in pairs]
+        with self._get_connection() as conn, conn.cursor() as cur:
+            cur.executemany(insert_sql, params_seq)  # pyrefly: ignore[bad-argument-type]
+            conn.commit()
 
     def chunks_missing_embedding(
         self,
