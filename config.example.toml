@@ -311,6 +311,11 @@ device    = "auto"  # 'auto'|'mps'|'cuda'|'cpu'
 # active       = false                       # opt-in
 # batch_size   = 32
 # n_ctx        = 8192
+# # nomic-embed is trained to terminate inputs with an EOS/SEP token; a
+# # GGUF that leaves `tokenizer.ggml.add_eos_token` unset drops it silently.
+# # Left unset, `append_eos` is inferred from the known-model registry
+# # (true for the nomic-embed family); set it explicitly to override.
+# append_eos   = true
 # # Specialist: matches chunks whose source_uri ends with any of these
 # # (case-insensitive). Tune to your corpus — these are reasonable
 # # mainstream defaults; prune to taste.

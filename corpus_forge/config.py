@@ -463,6 +463,20 @@ class EmbedderConfig(BaseModel):
     # ``_check_routing_invariant`` validator below which rejects
     # specialist-only configs that have no active catchall.
     extensions: list[str] = Field(default_factory=list, json_schema_extra={"scope": "shared"})
+    # ── EOS/SEP terminator correctness (RFC embedder-eos) ───────────────
+    # Whether to append the model's EOS/SEP terminator to each input
+    # client-side. The nomic-embed family (text + code) is trained to
+    # terminate inputs with an EOS token; a serving GGUF that leaves
+    # ``tokenizer.ggml.add_eos_token`` unset silently drops it, pooling the
+    # embedding over a sequence missing the token the model expects.
+    # Three-state: ``None`` (default) consults the known-model registry —
+    # see ``corpus_forge.embedders.known_models`` — which defaults
+    # nomic-embed to ``true``; ``true``/``false`` overrides it. SHARED: the
+    # terminator changes the vectors, so every host on a shared lane must
+    # agree (the cross-transport parity ``rfc-fleet-6`` aliasing needs).
+    # NOTE: this flag records intent; the transport-level append is a
+    # separate RFC item — setting it today does not yet mutate requests.
+    append_eos: bool | None = Field(default=None, json_schema_extra={"scope": "shared"})
 
     @field_validator("extensions")
     @classmethod
@@ -487,6 +501,20 @@ class EmbedderConfig(BaseModel):
                 )
             normalised.append(raw.lower())
         return normalised
+
+    def effective_append_eos(self) -> bool:
+        """Resolve whether this embedder appends the EOS/SEP terminator.
+
+        Explicit ``append_eos`` wins; otherwise the known-model registry
+        default for ``model_id``; otherwise ``False`` (unknown models are
+        left as-is). The registry import is lazy to keep ``config`` free of
+        an ``embedders`` import at module load.
+        """
+        from corpus_forge.embedders.known_models import (  # noqa: PLC0415 — lazy: avoid an embedders import at config load
+            resolve_append_eos,
+        )
+
+        return resolve_append_eos(self.model_id, self.append_eos)
 
 
 class RerankerConfig(BaseModel):
