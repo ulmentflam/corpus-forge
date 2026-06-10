@@ -109,6 +109,16 @@ def _per_provider_extras(
         n_ubatch = getattr(embedder_config, "n_ubatch", None)
         if n_ubatch is not None:
             extras["n_ubatch"] = n_ubatch
+        # RFC embedder-eos item 2 — resolve the three-state append_eos
+        # flag (explicit > known-model registry > False) to a bool here so
+        # the embedder construction stays config-shape-agnostic. Guarded so
+        # duck-typed configs / test doubles without the helper fall back to
+        # the raw flag.
+        resolver = getattr(embedder_config, "effective_append_eos", None)
+        if callable(resolver):
+            extras["append_eos"] = bool(resolver())
+        else:
+            extras["append_eos"] = bool(getattr(embedder_config, "append_eos", False))
     # ``model2vec`` and any future CPU-only / static providers fall
     # through with just the common kwargs.
     return extras
