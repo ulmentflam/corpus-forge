@@ -303,6 +303,41 @@ class TestMergeSharedScope:
         twice = merge_shared_scope(once, shared)
         assert once == twice
 
+    def test_inline_empty_array_placeholder_becomes_table_arrays(self) -> None:
+        """Issue #120: ``setup --join`` renders an inline ``datasets = []``
+        placeholder, which tomlkit parses as an ``Array`` (a ``list``
+        subclass that is NOT an ``AoT``). The old guard let it through and
+        appended full tables into the inline array, dumping unparseable
+        TOML. The merge must rebuild it as proper ``[[datasets]]`` blocks.
+        """
+        local = "datasets = []\n"
+        shared = shared_scope_dict(make_config())
+        merged = merge_shared_scope(local, shared)
+
+        # The whole point: the result must re-parse (the bug produced
+        # unparseable TOML), and render as table-array blocks, not an inline
+        # array of bare key-values.
+        doc = tomlkit.parse(merged)
+        assert [d["name"] for d in doc["datasets"]] == ["notes", "chats"]
+        assert "[[datasets]]" in merged
+        # Defensive: no inline-array remnant of the placeholder survived.
+        assert "datasets = [" not in merged
+
+    def test_inline_array_with_existing_inline_tables_is_preserved(self) -> None:
+        """A non-empty inline array of inline tables is also rebuilt as
+        table-arrays without dropping the local item — the merge carries the
+        existing inline-table data over before applying shared scope."""
+        local = 'datasets = [{ name = "notes", kind = "text" }]\n'
+        shared = shared_scope_dict(make_config())
+        merged = merge_shared_scope(local, shared)
+
+        doc = tomlkit.parse(merged)  # must parse
+        names = [d["name"] for d in doc["datasets"]]
+        # The pre-existing 'notes' item is preserved (merged by name), and
+        # the shared-only 'chats' is appended.
+        assert names == ["notes", "chats"]
+        assert "[[datasets]]" in merged
+
 
 # ─── hard backcompat bar ────────────────────────────────────────────────
 
