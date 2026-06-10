@@ -72,26 +72,55 @@ def _seconds_per_chunk() -> float:
 
 
 def _hash(
-    provider: str, model_id: str, dimension: int, normalize: bool, distance: str
+    provider: str,
+    model_id: str,
+    dimension: int,
+    normalize: bool,
+    distance: str,
+    append_eos: bool = False,
 ) -> Fingerprint:
-    canonical = "|".join(
-        [
-            provider.strip(),
-            model_id.strip(),
-            repr(int(dimension)),
-            repr(bool(normalize)),
-            distance.strip(),
-        ]
-    )
+    canonical_parts = [
+        provider.strip(),
+        model_id.strip(),
+        repr(int(dimension)),
+        repr(bool(normalize)),
+        distance.strip(),
+    ]
+    # ``append_eos`` changes the vectors a model produces (RFC embedder-eos),
+    # so it must drift the fingerprint — enabling it re-anchors the
+    # embedding (LAST-pooling models) and the corpus needs a re-embed. The
+    # marker is appended ONLY when True so an ``append_eos=False`` embedder
+    # hashes identically to the pre-RFC formula: no spurious drift for the
+    # models that never wanted a terminator.
+    if append_eos:
+        canonical_parts.append("append_eos=1")
+    canonical = "|".join(canonical_parts)
     full = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return Fingerprint(short=full[:16], full=full)
 
 
+def _resolve_append_eos(cfg) -> bool:
+    """Resolve an embedder config's effective ``append_eos`` to a bool.
+
+    Prefers the ``effective_append_eos()`` helper (explicit flag >
+    known-model registry > False); falls back to the raw ``append_eos``
+    attribute for duck-typed configs / test doubles that predate it.
+    """
+    resolver = getattr(cfg, "effective_append_eos", None)
+    if callable(resolver):
+        return bool(resolver())
+    return bool(getattr(cfg, "append_eos", False))
+
+
 def embedder_fingerprint(cfg: EmbedderConfig) -> Fingerprint:
-    """Stable SHA-256 over ``(provider, model_id, dimension, normalize, distance)``.
+    """Stable SHA-256 over ``(provider, model_id, dimension, normalize, distance)``,
+    plus an ``append_eos`` marker when the embedder terminates inputs.
 
     String fields are stripped; bool/int fields are ``repr()``'d.  The
-    canonical form is the five fields joined by ``"|"`` then SHA-256'd.
+    canonical form is the fields joined by ``"|"`` then SHA-256'd.  An
+    ``append_eos=False`` embedder is byte-identical to the pre-RFC
+    five-field formula (no migration churn); ``append_eos=True`` gets a
+    distinct hash so enabling it trips drift detection.
     Returns both the short (16-char) and full (64-char) hex forms.
     """
 
@@ -101,6 +130,7 @@ def embedder_fingerprint(cfg: EmbedderConfig) -> Fingerprint:
         cfg.dimension,
         cfg.normalize,
         cfg.distance,
+        _resolve_append_eos(cfg),
     )
 
 
@@ -131,7 +161,16 @@ def _stored_fingerprint(row: dict) -> Fingerprint:
     if normalize is None:
         normalize = bool(row.get("normalized", True))
     distance = cfg_blob.get("distance") or row.get("distance") or "cosine"
-    return _hash(str(provider), str(model_id), int(dimension), bool(normalize), str(distance))
+    # ``append_eos`` is only present in blobs written after the RFC
+    # embedder-eos migration; absent (legacy rows / vectors computed before
+    # the terminator existed) it defaults False, reproducing the old hash —
+    # so a now-``append_eos=True`` config drifts against its old vectors,
+    # and a re-embed + ``save_active_fingerprint`` (which persists the flag)
+    # settles it.
+    append_eos = bool(cfg_blob.get("append_eos", False))
+    return _hash(
+        str(provider), str(model_id), int(dimension), bool(normalize), str(distance), append_eos
+    )
 
 
 def _count_existing(backend, embedder_id: int) -> int:
@@ -216,6 +255,9 @@ def save_active_fingerprint(config: Config, backend) -> None:
             "dimension": int(cfg.dimension),
             "normalize": bool(cfg.normalize),
             "distance": cfg.distance,
+            # Persist the terminator flag so a later ``compare_active`` sees
+            # no drift once the EOS-terminated re-embed has run.
+            "append_eos": _resolve_append_eos(cfg),
             "fingerprint": fp.full,
         }
         try:
