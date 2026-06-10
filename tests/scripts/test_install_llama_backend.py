@@ -401,3 +401,106 @@ def test_ps1_cuda_variant_mapping(version: str, expected: str) -> None:
     assert result.stdout.strip() == expected, (
         f"Get-CudaVariant {version!r} → {result.stdout.strip()!r}, want {expected!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Install smoke-matrix — accelerator detection → wheel index, and the
+# "never source-builds" invariant (RFC fleet-7, the smoke-matrix item).
+# ---------------------------------------------------------------------------
+
+# Flags that would force uv to compile llama-cpp-python from an sdist
+# instead of resolving the prebuilt accelerator wheel. The whole point of
+# RFC fleet-7 is that a fresh install never pays the (slow, toolchain-
+# fragile) CMAKE source build — so none of these may appear on the install
+# line, in any accelerator scenario.
+_SOURCE_BUILD_MARKERS = ("--no-binary", "--no-build-isolation", "--no-binary-package")
+
+
+@pytest.mark.parametrize(
+    ("scenario", "nvidia_smi", "args", "extra_env", "expect_llama", "expect_index"),
+    [
+        # CUDA-detected → CUDA wheel index.
+        ("auto_cuda", "cuda:12.4", [], {"CF_EMBEDDER": "auto"}, True, "/whl/cu124"),
+        # No accelerator → CPU wheel index (and never a source build).
+        ("auto_cpu", "absent", [], {"CF_EMBEDDER": "auto"}, True, "/whl/cpu"),
+        # Explicit --llama-backend cpu is honored even for a non-auto embedder.
+        ("flag_cpu", "absent", ["--llama-backend", "cpu"], {"CF_EMBEDDER": "st"}, True, "/whl/cpu"),
+        # Explicit --llama-backend none drops the extra entirely.
+        ("flag_none", "absent", ["--llama-backend=none"], {"CF_EMBEDDER": "auto"}, False, None),
+    ],
+)
+def test_install_sh_smoke_matrix(
+    tmp_path: Path,
+    scenario: str,
+    nvidia_smi: str,
+    args: list[str],
+    extra_env: dict[str, str],
+    expect_llama: bool,
+    expect_index: str | None,
+) -> None:
+    """The accelerator-selection matrix in one place, with the cross-cutting
+    never-source-build invariant asserted on every row.
+
+    Individual branches have their own focused tests above; this matrix
+    pins the *contract* the RFC item names — (detected accelerator | flag)
+    → the right prebuilt wheel index, CPU never source-builds, and
+    ``cpu`` / ``none`` overrides honored — so a refactor can't quietly
+    regress one cell of it.
+    """
+    bin_dir = tmp_path / "bin"
+    result, uv_log = _run_install_sh(bin_dir, args, extra_env=extra_env, nvidia_smi=nvidia_smi)
+
+    assert result.returncode == 0, f"[{scenario}] stderr={result.stderr!r}"
+    lines = _tool_install_lines(uv_log)
+    assert lines, f"[{scenario}] uv tool install never ran; stdout={result.stdout!r}"
+    install_line = lines[0]
+
+    if expect_llama:
+        assert "llama-cpp" in install_line, (
+            f"[{scenario}] expected the [llama-cpp] extra; got {install_line!r}"
+        )
+        assert expect_index is not None and expect_index in install_line, (
+            f"[{scenario}] expected wheel index {expect_index!r}; got {install_line!r}"
+        )
+        # The never-source-build guarantee: a prebuilt-wheel extra-index plus
+        # the unsafe-best-match strategy that makes uv prefer that wheel over
+        # a PyPI sdist. Without these, uv would compile from source.
+        assert "--extra-index-url" in install_line, (
+            f"[{scenario}] wheel index must be threaded as an --extra-index-url; "
+            f"got {install_line!r}"
+        )
+        assert "--index-strategy" in install_line and "unsafe-best-match" in install_line, (
+            f"[{scenario}] must pin --index-strategy unsafe-best-match so uv resolves the "
+            f"prebuilt wheel rather than source-build; got {install_line!r}"
+        )
+    else:
+        assert "llama-cpp" not in install_line, (
+            f"[{scenario}] llama-cpp must be dropped; got {install_line!r}"
+        )
+        assert "--extra-index-url" not in install_line, (
+            f"[{scenario}] no extra-index when llama-cpp is dropped; got {install_line!r}"
+        )
+
+    # No accelerator scenario, in any row, may force a source build.
+    for marker in _SOURCE_BUILD_MARKERS:
+        assert marker not in install_line, (
+            f"[{scenario}] installer must never force a source build ({marker}); "
+            f"got {install_line!r}"
+        )
+
+
+def test_install_sh_no_accelerator_installs_once_no_source_fallback(tmp_path: Path) -> None:
+    """The no-accelerator CPU path resolves on the first try — it must not
+    retry (the accel→CPU fallback is for a *failed* accelerated fetch) and
+    must not source-build. Pins that the common laptop install is one clean
+    prebuilt-wheel install."""
+    bin_dir = tmp_path / "bin"
+    result, uv_log = _run_install_sh(
+        bin_dir, [], extra_env={"CF_EMBEDDER": "auto"}, nvidia_smi="absent"
+    )
+    assert result.returncode == 0, f"stderr={result.stderr!r}"
+    lines = _tool_install_lines(uv_log)
+    assert len(lines) == 1, f"CPU path must install exactly once; got {lines!r}"
+    assert "/whl/cpu" in lines[0], f"CPU wheel index expected; got {lines[0]!r}"
+    for marker in _SOURCE_BUILD_MARKERS:
+        assert marker not in lines[0]
