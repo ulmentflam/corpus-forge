@@ -934,10 +934,24 @@ class EmbedConfig(BaseModel):
       <name>`` OVERRIDES this list (the operator said so) and only warns.
       This field is LOCAL to each host (never federated): two machines in
       a fleet pin different lanes by design.
+    - ``claim_batch_size``: how many chunks one lane claims per sweep
+      (issue #125). Bigger batches amortise the per-claim round-trip;
+      smaller batches give finer progress reporting, lower peak DB write
+      pressure, and a smaller lease-window for a crashed host's claims.
+      Default ``1024`` (matches the historical hard-coded value). Must be
+      ``> 0``. LOCAL — a weak box can claim smaller batches than a GPU box.
+    - ``max_inflight_batches``: cap on how many claim/embed/release cycles
+      a single host runs concurrently (issue #125). The drain loop is
+      single-threaded today, so ``1`` (the default) is the de-facto
+      behaviour; the knob is pinned now so that when multi-threaded drain
+      lands it cannot multiply per-host DB load past this bound without an
+      explicit opt-in. Must be ``> 0``. LOCAL.
     """
 
     claim_lease_ttl: int = Field(default=600, gt=0)
     lanes: list[str] = Field(default_factory=list)
+    claim_batch_size: int = Field(default=1024, gt=0)
+    max_inflight_batches: int = Field(default=1, gt=0)
 
     model_config = ConfigDict(extra="forbid")
 

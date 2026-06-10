@@ -76,13 +76,11 @@ class EmbedDrainLoop:
         config: Any,
         *,
         host_id: str | None = None,
-        batch: int = _DEFAULT_BATCH,
+        batch: int | None = None,
         lease_ttl: int | None = None,
         idle_min: float = _DEFAULT_IDLE_MIN,
         idle_max: float = _DEFAULT_IDLE_MAX,
     ) -> None:
-        if batch <= 0:
-            raise ValueError("batch must be > 0")
         if idle_min <= 0:
             raise ValueError("idle_min must be > 0")
         if idle_max < idle_min:
@@ -90,11 +88,25 @@ class EmbedDrainLoop:
         self._backend = backend
         self._config = config
         self._host_id = host_id if host_id is not None else config.host_id()
-        self._batch = batch
         embed_cfg = getattr(config, "embed", None)
+        # Claim batch size: explicit arg wins, else ``[embed]
+        # claim_batch_size`` (issue #125), else the historical default.
+        resolved_batch = (
+            batch
+            if batch is not None
+            else int(getattr(embed_cfg, "claim_batch_size", _DEFAULT_BATCH))
+        )
+        if resolved_batch <= 0:
+            raise ValueError("batch must be > 0")
+        self._batch = resolved_batch
         self._lease_ttl = (
             lease_ttl if lease_ttl is not None else int(getattr(embed_cfg, "claim_lease_ttl", 600))
         )
+        # Forward-guard cap on concurrent in-flight claim/embed/release
+        # cycles (issue #125). The loop is single-threaded today, so this is
+        # 1 by construction; pinned here so multi-threaded drain can't
+        # silently multiply per-host DB load past the configured bound.
+        self._max_inflight = max(1, int(getattr(embed_cfg, "max_inflight_batches", 1)))
         self._idle_min = float(idle_min)
         self._idle_max = float(idle_max)
         self._lanes: list[_Lane] | None = None

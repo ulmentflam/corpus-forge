@@ -75,9 +75,17 @@ class _StubEmbedder:
 
 
 class _StubEmbedConfig:
-    def __init__(self, lanes: list[str] | None = None, claim_lease_ttl: int = 600) -> None:
+    def __init__(
+        self,
+        lanes: list[str] | None = None,
+        claim_lease_ttl: int = 600,
+        claim_batch_size: int = 1024,
+        max_inflight_batches: int = 1,
+    ) -> None:
         self.lanes = lanes or []
         self.claim_lease_ttl = claim_lease_ttl
+        self.claim_batch_size = claim_batch_size
+        self.max_inflight_batches = max_inflight_batches
 
 
 class _StubConfig:
@@ -277,6 +285,52 @@ def test_claim_passes_lease_ttl_and_extensions() -> None:
     assert call["batch"] == 64
     assert call["lease_ttl"] == 123
     assert call["extensions"] == [".py"]
+
+
+def test_claim_batch_size_resolves_from_config() -> None:
+    """Issue #125 item 4: with no explicit ``batch`` arg, the loop claims
+    ``[embed] claim_batch_size`` chunks per sweep."""
+    cfg = _StubEmbedderConfig("e1")
+    emb = _StubEmbedder("e1")
+    backend = _StubBackend(claim_batches=[[]])
+    config = _StubConfig([cfg])
+    config.embed.claim_batch_size = 50
+    loop = EmbedDrainLoop(backend, config, host_id="h")  # no batch= override
+
+    loop.drain_lane_once(_lane(cfg, emb, 2))
+    assert backend.claims_made[0]["batch"] == 50
+
+
+def test_explicit_batch_arg_overrides_config() -> None:
+    """An explicit ``batch=`` still wins over the config knob."""
+    cfg = _StubEmbedderConfig("e1")
+    emb = _StubEmbedder("e1")
+    backend = _StubBackend(claim_batches=[[]])
+    config = _StubConfig([cfg])
+    config.embed.claim_batch_size = 50
+    loop = EmbedDrainLoop(backend, config, host_id="h", batch=200)
+
+    loop.drain_lane_once(_lane(cfg, emb, 2))
+    assert backend.claims_made[0]["batch"] == 200
+
+
+def test_invalid_claim_batch_size_rejected() -> None:
+    """A non-positive resolved batch is a construction error, not a silent
+    no-op sweep."""
+    cfg = _StubEmbedderConfig("e1")
+    config = _StubConfig([cfg])
+    config.embed.claim_batch_size = 0
+    with pytest.raises(ValueError, match="batch must be > 0"):
+        EmbedDrainLoop(_StubBackend(claim_batches=[]), config, host_id="h")
+
+
+def test_max_inflight_batches_resolved_and_floored() -> None:
+    """The forward-guard cap is read from config and floored at 1."""
+    cfg = _StubEmbedderConfig("e1")
+    config = _StubConfig([cfg])
+    config.embed.max_inflight_batches = 4
+    loop = EmbedDrainLoop(_StubBackend(claim_batches=[]), config, host_id="h")
+    assert loop._max_inflight == 4
 
 
 # ---------------------------------------------------------------------------
