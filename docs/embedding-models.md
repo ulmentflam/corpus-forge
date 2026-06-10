@@ -204,7 +204,7 @@ the static-tier (`model2vec`) and multimodal examples — is in
 [`config.example.toml`](../config.example.toml), and the backend classes are
 under [`corpus_forge/embedders/`](../corpus_forge/embedders/). Remember the
 backfill workflow: add the block, keep existing embedders `active`, then
-`corpus-forge embed --embedder <name>` to encode only the missing vectors.
+`corpus-forge embed -e <name>` to encode only the missing vectors.
 
 ---
 
