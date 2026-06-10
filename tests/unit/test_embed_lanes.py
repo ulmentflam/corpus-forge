@@ -299,3 +299,35 @@ class TestGetActiveEmbeddersLaneFilter:
     def test_inactive_lane_still_dropped(self) -> None:
         # Pinning an inactive embedder doesn't resurrect it.
         assert self._names(["lane-b", "inactive-c"]) == ["lane-b"]
+
+
+class TestEmbedCliUnknownEmbedder:
+    """``corpus-forge embed -e <unknown>`` fails cleanly (issue: opaque
+    ValueError traceback on a typo'd embedder name)."""
+
+    def _invoke(self, names: list[str], embedder: str):
+        runner = CliRunner()
+        errors: list[str] = []
+        with (
+            patch("corpus_forge.embed.main") as mp,
+            patch("corpus_forge.config.Config.load", return_value=_FakeConfig(names, [])),
+            patch("corpus_forge.cli._maybe_handle_drift", lambda _ctx: None),
+            patch("corpus_forge.cli.ui_error", side_effect=errors.append),
+        ):
+            result = runner.invoke(app, ["embed", "-e", embedder])
+        return result, mp, errors
+
+    def test_unknown_embedder_exits_2_without_calling_main(self) -> None:
+        result, mp, errors = self._invoke(["qwen3_8b", "nomic"], "qwen3-typo")
+        assert result.exit_code == 2, result.output
+        mp.assert_not_called()  # never reached the embed run
+        # The error names the bad input AND lists the valid options.
+        joined = " ".join(errors)
+        assert "qwen3-typo" in joined
+        assert "qwen3_8b" in joined and "nomic" in joined
+
+    def test_known_embedder_proceeds_to_main(self) -> None:
+        result, mp, errors = self._invoke(["qwen3_8b", "nomic"], "qwen3_8b")
+        assert result.exit_code == 0, result.output
+        mp.assert_called_once()
+        assert errors == []
