@@ -224,6 +224,15 @@ def test_load_candidates_empty_array_raises(tmp_path: Path):
         load_candidates(p)
 
 
+def test_load_candidates_malformed_toml_raises_valueerror(tmp_path: Path):
+    """A syntactically-broken manifest surfaces as the documented
+    ValueError (not a raw tomllib.TOMLDecodeError)."""
+    p = tmp_path / "broken.toml"
+    p.write_text("this is = = not valid toml\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="not valid TOML"):
+        load_candidates(p)
+
+
 def test_load_candidates_rejects_bad_dimension(tmp_path: Path):
     p = tmp_path / "bad.toml"
     p.write_text(

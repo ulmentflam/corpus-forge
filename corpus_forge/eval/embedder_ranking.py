@@ -295,7 +295,12 @@ def load_candidates(path: Path | str) -> list[EmbedderCandidate]:
     if not p.exists():
         raise FileNotFoundError(f"candidate manifest not found: {p}")
 
-    data = tomllib.loads(p.read_text(encoding="utf-8"))
+    # A syntactically-broken manifest must surface as the documented
+    # ValueError, not an opaque TOMLDecodeError leaking the parser internals.
+    try:
+        data = tomllib.loads(p.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"{p}: manifest is not valid TOML: {exc}") from exc
     raw_candidates = data.get("candidates")
     if not isinstance(raw_candidates, list) or not raw_candidates:
         raise ValueError(f"{p}: manifest must define a non-empty `[[candidates]]` array")
