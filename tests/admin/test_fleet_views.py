@@ -176,6 +176,32 @@ class TestRenderAndSerialise:
         # model_id is carried through even though the table omits it.
         assert row["model_id"] == "m1"
 
+    def test_cold_start_renders_seconds_in_table(self) -> None:
+        """A row with ``cold_start_s`` shows ``"X.XXs"``; a None row dashes it."""
+        from rich.console import Console
+
+        from corpus_forge.ui import theme as _theme
+
+        table = fv.render_models_table(
+            [
+                _model_row(cold_start_s=1.25),
+                _model_row(host_id="h2", cold_start_s=None),
+            ]
+        )
+        console = Console(width=200, record=True, force_terminal=False, theme=_theme.build_theme())
+        console.print(table)
+        text = console.export_text()
+        assert "Cold start" in text  # new column header
+        assert "1.25s" in text  # measured cold start
+        assert "—" in text  # None cold start dashes
+
+    def test_cold_start_carried_in_models_to_dict(self) -> None:
+        out = fv.models_to_dict([_model_row(cold_start_s=2.5)])
+        assert out["models"][0]["cold_start_s"] == 2.5
+        # A row that never set cold_start_s serialises None (additive key).
+        out_none = fv.models_to_dict([_model_row()])
+        assert out_none["models"][0]["cold_start_s"] is None
+
     def test_hosts_table_smoke(self) -> None:
         from rich.console import Console
 

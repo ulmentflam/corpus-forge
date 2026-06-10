@@ -579,6 +579,7 @@ def bench_one(
                     tokens_per_s=tokens_per_s,
                     latency_p50_ms=p50,
                     latency_p95_ms=p95,
+                    cold_start_s=cold_start_s,
                 )
             except Exception as exc:
                 logger.warning(

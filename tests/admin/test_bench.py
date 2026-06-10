@@ -267,6 +267,12 @@ def test_bench_one_real_pending_persists(monkeypatch: pytest.MonkeyPatch) -> Non
     assert len(backend.benchmark_rows) == 1
     assert backend.benchmark_rows[0]["source"] == "bench"
     assert backend.benchmark_rows[0]["sample_chunks"] == 3
+    # cold_start_s (model load + warmup) is persisted alongside the row.
+    assert "cold_start_s" in backend.benchmark_rows[0]
+    cold = backend.benchmark_rows[0]["cold_start_s"]
+    assert cold is not None and cold >= 0.0
+    # ...and matches the value reported on the result.
+    assert cold == result.cold_start_s
 
 
 def test_bench_one_synthetic_never_persists(monkeypatch: pytest.MonkeyPatch) -> None:
