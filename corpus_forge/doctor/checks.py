@@ -687,6 +687,75 @@ def _check_embedder_drift(cfg: Config) -> CheckResult:
     return CheckResult("embedder_drift", CheckStatus.WARN, detail)
 
 
+def _check_embedder_eos(cfg: Config) -> CheckResult:
+    """Flag embedders that want an EOS/SEP terminator on a transport that
+    doesn't append one yet (RFC embedder-eos, the diagnostic goal).
+
+    The nomic-embed family (and any model the known-model registry marks)
+    is trained to terminate each input with the model's EOS/SEP token; a
+    pooled embedding computed without it is subtly wrong — for the
+    LAST-pooling ``nomic-embed-code`` the terminator anchors the *entire*
+    vector. corpus-forge appends the terminator client-side when
+    ``effective_append_eos()`` resolves True, but **only on the in-process
+    ``llama-cpp`` transport** (token-layer append). The
+    OpenAI-compatible/server transport append is not implemented yet, so an
+    ``append_eos``-wanting embedder served via ``provider = "openai"`` may
+    be producing un-terminated vectors unless the server itself sets
+    ``tokenizer.ggml.add_eos_token`` / appends the terminator.
+
+    Status logic:
+
+    - ``OK`` when no active embedder resolves ``append_eos=True``, or every
+      one that does is served via the ``llama-cpp`` provider (where the
+      append is wired and verified).
+    - ``WARN`` when at least one ``append_eos``-wanting embedder uses the
+      ``openai`` provider — names them and points at the fix (set
+      ``add_eos_token`` server-side, or switch to the ``llama-cpp``
+      provider). ``WARN``-not-``FAIL`` because retrieval still works; it's
+      just measurably worse, and a reachable server may already terminate.
+    """
+    gaps: list[str] = []
+    appends_ok: list[str] = []
+    for emb in cfg.embedders:
+        if not getattr(emb, "active", True):
+            continue
+        resolver = getattr(emb, "effective_append_eos", None)
+        wants_eos = (
+            bool(resolver()) if callable(resolver) else bool(getattr(emb, "append_eos", False))
+        )
+        if not wants_eos:
+            continue
+        if emb.provider == "llama-cpp":
+            appends_ok.append(emb.name)
+        elif emb.provider == "openai":
+            gaps.append(emb.name)
+        # sentence_transformers / model2vec tokenize via their own HF
+        # tokenizer, which adds the model's special tokens itself — not a
+        # corpus-forge gap, so they're not flagged here.
+
+    if not gaps:
+        if appends_ok:
+            return CheckResult(
+                "embedder_eos",
+                CheckStatus.OK,
+                f"append_eos terminator wired for {', '.join(appends_ok)} (llama-cpp token layer)",
+            )
+        return CheckResult(
+            "embedder_eos",
+            CheckStatus.OK,
+            "no embedder requests the EOS/SEP terminator",
+        )
+
+    detail = (
+        f"{', '.join(gaps)}: resolves append_eos=True but is served via the "
+        f"'openai' transport, which corpus-forge does not yet terminate "
+        f"client-side — vectors may be missing the EOS/SEP token the model "
+        f"expects. Set the terminator server-side (e.g. add_eos_token in the "
+        f"GGUF header) or serve it via the 'llama-cpp' provider."
+    )
+    return CheckResult("embedder_eos", CheckStatus.WARN, detail)
+
+
 def _check_icloud_access(cfg: Config) -> CheckResult:
     """Probe TCC access for each configured iCloud-rooted source.
 
@@ -1443,6 +1512,13 @@ def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
         )
         results.append(
             CheckResult(
+                "embedder_eos",
+                CheckStatus.SKIP,
+                "skipped (config not loaded)",
+            )
+        )
+        results.append(
+            CheckResult(
                 "icloud_access",
                 CheckStatus.SKIP,
                 "skipped (config not loaded)",
@@ -1474,6 +1550,7 @@ def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
         results.append(_check_zotero(loaded_cfg))
         results.append(_check_embedder_indexes(loaded_cfg))
         results.append(_check_embedder_drift(loaded_cfg))
+        results.append(_check_embedder_eos(loaded_cfg))
         results.append(_check_icloud_access(loaded_cfg))
         results.append(_check_model_telemetry(loaded_cfg))
         results.append(_check_embed_claims(loaded_cfg))
