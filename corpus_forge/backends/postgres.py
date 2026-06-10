@@ -1483,6 +1483,33 @@ class PostgresBackend(StorageBackend):
             )
         return int(rows[0]["n"]) if rows else 0
 
+    def server_load(self) -> dict[str, int]:
+        """Cheap read-only snapshot of Postgres connection + size pressure.
+
+        Returns ``{"backends", "max_connections", "db_size_bytes"}`` — the
+        proxy issue #125 names for "is the Postgres host hot before I add
+        another embed-worker?". ``backends`` is the total server-wide
+        connection count (``pg_stat_activity``), compared against the
+        server's ``max_connections``; ``db_size_bytes`` is the current
+        database's on-disk size. All three come from one round-trip and
+        touch no corpus table, so it's safe to call from ``doctor`` even on
+        a pre-migrate DB.
+        """
+        rows = self._execute(
+            "SELECT "
+            "(SELECT count(*) FROM pg_stat_activity) AS backends, "
+            "current_setting('max_connections')::int AS max_connections, "
+            "pg_database_size(current_database()) AS db_size_bytes"
+        )
+        if not rows:
+            return {"backends": 0, "max_connections": 0, "db_size_bytes": 0}
+        row = rows[0]
+        return {
+            "backends": int(row["backends"]),
+            "max_connections": int(row["max_connections"]),
+            "db_size_bytes": int(row["db_size_bytes"]),
+        }
+
     def count_live_claims(
         self,
         embedder_id: int,

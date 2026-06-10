@@ -1056,6 +1056,14 @@ def _check_model_telemetry(cfg: Config) -> CheckResult:
 # leaves < 1024 stale rows, comfortably under the bar.
 _STALE_CLAIMS_WARN_THRESHOLD = 1000
 
+# Fraction of the Postgres server's ``max_connections`` at/above which the
+# embed_claims check WARNs that the host is "hot" before an operator adds
+# another embed-worker (issue #125). Each host opens up to its
+# ``[backend] pool max_size`` connections, so a fleet can approach the
+# server limit fast; 0.8 leaves headroom for the operator's own
+# ``hosts list`` / ``doctor`` connections.
+_EMBED_CLAIMS_CONN_WARN_FRACTION = 0.8
+
 # Fraction of ``claim_lease_ttl`` that a host's worst-case batch wall-clock
 # may consume before we WARN. A batch that takes more than half the lease
 # leaves little headroom for GC pauses / model reloads / a slow tail before
@@ -1080,6 +1088,12 @@ def _check_embed_claims(cfg: Config) -> CheckResult:
       automatically on the next claim call" for any count at/under
       :data:`_STALE_CLAIMS_WARN_THRESHOLD`; ``WARN`` above it (a sign a
       worker may be crash-looping).
+    - **Server load** (postgres, issue #125): reads ``server_load()``
+      (``pg_stat_activity`` count vs ``max_connections`` + db size) and
+      ``WARN``s when connections reach
+      :data:`_EMBED_CLAIMS_CONN_WARN_FRACTION` of the server limit — the
+      "look before you add another embed-worker host" guard. Best-effort;
+      skipped silently if the backend can't report it.
     - **Lease-TTL vs observed rate** (postgres): when ``model_benchmarks``
       holds a rate for (this host, an active embedder), the worst-case
       batch wall-clock is ``batch_size / rate``; ``WARN`` when it exceeds
@@ -1163,6 +1177,14 @@ def _check_embed_claims(cfg: Config) -> CheckResult:
             ),
         )
 
+    # ── Server-load hint (issue #125): is the Postgres host hot before the
+    # operator adds another embed-worker? Read-only, best-effort — any
+    # failure (older backend without the method, pre-migrate, perms) is
+    # skipped silently rather than turned into a false WARN.
+    server_load_warning = _embed_claims_server_load_warning(backend)
+    if server_load_warning is not None:
+        return CheckResult("embed_claims", CheckStatus.WARN, server_load_warning)
+
     # ── Lease-TTL vs observed rate: WARN if worst-case batch wall-clock
     # nears the lease. Skipped silently per-embedder when no benchmark row.
     ttl = int(getattr(getattr(cfg, "embed", None), "claim_lease_ttl", _DEFAULT_CLAIM_LEASE_TTL))
@@ -1241,6 +1263,50 @@ def _embed_claims_ttl_warning(cfg: Config, backend: StorageBackend, ttl: int) ->
                 "Fix: raise [embed] claim_lease_ttl"
             )
     return None
+
+
+def _embed_claims_server_load_warning(backend: StorageBackend) -> str | None:
+    """Return a Postgres-saturation WARN message, or None when healthy.
+
+    Issue #125: a fleet of embed-workers all hammering one Postgres host can
+    exhaust its connections / CPU / RAM with no client-side guard. This is
+    the operator-facing "look before you add a host" signal — it reads
+    ``server_load()`` (``pg_stat_activity`` count vs ``max_connections`` +
+    db size) and WARNs when connections reach
+    :data:`_EMBED_CLAIMS_CONN_WARN_FRACTION` of the server limit.
+
+    Best-effort: a backend without ``server_load`` (sqlite, older builds) or
+    any read failure returns None — an optional hint must never turn doctor
+    red or fabricate a warning.
+    """
+    load_fn = getattr(backend, "server_load", None)
+    if not callable(load_fn):
+        return None
+    try:
+        load = load_fn()
+    except Exception:
+        return None
+    if not isinstance(load, dict):
+        return None
+    backends = load.get("backends")
+    max_conn = load.get("max_connections")
+    # isinstance narrows for the type checker AND defends against a backend
+    # returning a non-int (None / Mock): an optional hint must never raise.
+    if not isinstance(backends, int) or not isinstance(max_conn, int) or max_conn <= 0:
+        return None
+    fraction = backends / max_conn
+    if fraction < _EMBED_CLAIMS_CONN_WARN_FRACTION:
+        return None
+    db_size = load.get("db_size_bytes", 0)
+    db_mb = (db_size if isinstance(db_size, int) else 0) // (1024 * 1024)
+    return (
+        f"Postgres is busy: {backends}/{max_conn} connections "
+        f"({fraction:.0%} of max_connections), corpus DB ~{db_mb} MB. Each "
+        "host's embed-worker opens up to its [backend] pool max_size "
+        "connections, so adding another host may exhaust the server and "
+        "stall the fleet (issue #125). Lower [backend] pool max_size per "
+        "host, or give the Postgres host more headroom, before scaling out."
+    )
 
 
 # ── tailscale (rfc-fleet-4) ───────────────────────────────────────────────

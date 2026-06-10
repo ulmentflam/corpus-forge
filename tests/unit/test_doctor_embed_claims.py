@@ -23,10 +23,12 @@ from unittest.mock import MagicMock, patch
 
 from corpus_forge.backends.base import FederationUnsupported
 from corpus_forge.doctor.checks import (
+    _EMBED_CLAIMS_CONN_WARN_FRACTION,
     _LEASE_TTL_BATCH_FRACTION,
     _STALE_CLAIMS_WARN_THRESHOLD,
     CheckStatus,
     _check_embed_claims,
+    _embed_claims_server_load_warning,
     run_doctor,
 )
 
@@ -69,10 +71,18 @@ def _pg_backend(
     *,
     stale: int = 0,
     benchmark_rows: list | None = None,
+    server_load: dict | None = None,
 ) -> MagicMock:
     backend = MagicMock()
     backend.count_stale_claims.return_value = stale
     backend.list_models_with_latest_benchmark.return_value = benchmark_rows or []
+    # Default to a comfortably-idle server so server-load (issue #125) never
+    # WARNs unless a test opts into a hot snapshot.
+    backend.server_load.return_value = server_load or {
+        "backends": 5,
+        "max_connections": 100,
+        "db_size_bytes": 12 * 1024 * 1024,
+    }
     return backend
 
 
@@ -186,6 +196,88 @@ class TestLeaseTtlSanity:
             result = _check_embed_claims(cfg)
         assert result.status == CheckStatus.WARN
         assert "600s" in result.detail
+
+
+class TestServerLoad:
+    """Issue #125 — the Postgres saturation hint."""
+
+    def test_hot_server_warns_with_fix(self) -> None:
+        backend = _pg_backend(
+            stale=0,
+            server_load={"backends": 90, "max_connections": 100, "db_size_bytes": 5 << 30},
+        )
+        with patch("corpus_forge.backends.postgres.PostgresBackend", return_value=backend):
+            result = _check_embed_claims(_cfg("postgres"))
+        assert result.status == CheckStatus.WARN
+        assert "90/100" in result.detail
+        assert "max_size" in result.detail  # names the fix knob
+
+    def test_idle_server_ok(self) -> None:
+        backend = _pg_backend(
+            stale=0,
+            server_load={"backends": 5, "max_connections": 100, "db_size_bytes": 1 << 20},
+        )
+        with patch("corpus_forge.backends.postgres.PostgresBackend", return_value=backend):
+            result = _check_embed_claims(_cfg("postgres"))
+        assert result.status == CheckStatus.OK
+        assert "no stale claims" in result.detail
+
+    def test_server_load_warn_precedes_ttl_warn(self) -> None:
+        # Both a hot server AND a slow-rate lease risk: the saturation WARN
+        # (the more urgent "DB melting") is what surfaces.
+        ec = _embedder(name="qwen3-4096", batch_size=64)
+        backend = _pg_backend(
+            stale=0,
+            benchmark_rows=[
+                {"host_id": "host-A", "model_key": "openai:qwen3", "chunks_per_s": 0.1}
+            ],
+            server_load={"backends": 95, "max_connections": 100, "db_size_bytes": 1 << 20},
+        )
+        cfg = _cfg("postgres", embedders=[ec], host_id="host-A", claim_lease_ttl=600)
+        with patch("corpus_forge.backends.postgres.PostgresBackend", return_value=backend):
+            result = _check_embed_claims(cfg)
+        assert result.status == CheckStatus.WARN
+        assert "95/100" in result.detail
+        assert "claim_lease_ttl" not in result.detail  # server-load took precedence
+
+    # ── helper-level edge cases (best-effort, never raise) ───────────────
+
+    def test_helper_warns_at_threshold(self) -> None:
+        backend = MagicMock()
+        at = int(_EMBED_CLAIMS_CONN_WARN_FRACTION * 100)
+        backend.server_load.return_value = {
+            "backends": at,
+            "max_connections": 100,
+            "db_size_bytes": 0,
+        }
+        assert _embed_claims_server_load_warning(backend) is not None
+
+    def test_helper_none_below_threshold(self) -> None:
+        backend = MagicMock()
+        backend.server_load.return_value = {
+            "backends": 1,
+            "max_connections": 100,
+            "db_size_bytes": 0,
+        }
+        assert _embed_claims_server_load_warning(backend) is None
+
+    def test_helper_none_when_no_method(self) -> None:
+        backend = MagicMock(spec=[])  # no server_load attribute
+        assert _embed_claims_server_load_warning(backend) is None
+
+    def test_helper_none_when_read_raises(self) -> None:
+        backend = MagicMock()
+        backend.server_load.side_effect = Exception("permission denied for pg_stat_activity")
+        assert _embed_claims_server_load_warning(backend) is None
+
+    def test_helper_none_when_max_connections_zero(self) -> None:
+        backend = MagicMock()
+        backend.server_load.return_value = {
+            "backends": 5,
+            "max_connections": 0,
+            "db_size_bytes": 0,
+        }
+        assert _embed_claims_server_load_warning(backend) is None
 
 
 class TestSqliteMultiHost:
