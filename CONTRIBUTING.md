@@ -109,7 +109,17 @@ make typecheck   # pyrefly strict on corpus_forge/
 
 ## Releasing
 
-Maintainers only. Release tags are annotated + signed (SSH or GPG):
+Maintainers only.
+
+**Bump exactly one literal.** The version is single-sourced from
+`corpus_forge/__init__.py`'s `__version__`; `pyproject.toml` declares
+`version` as `dynamic` and the build derives the wheel's `Version:` from
+that literal (`[tool.hatch.version]`). To cut a release: bump
+`__version__`, update `CHANGELOG.md` — nothing else. The CI-3 packaging
+tests assert the built wheel's metadata equals `corpus_forge.__version__`,
+so the two can't drift.
+
+Release tags are annotated + signed (SSH or GPG):
 
 ```bash
 git tag -s v0.1.0b2 -m "corpus-forge v0.1.0b2 — Living Corpus beta"

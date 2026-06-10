@@ -76,8 +76,21 @@ class TestProjectMetadata:
         assert project_table.get("name") == "corpus-forge"
 
     def test_version_is_beta(self, project_table: dict) -> None:
-        assert project_table.get("version") == "0.1.0b17", (
-            f"Expected version 0.1.0b17 (PEP 440 beta marker); got {project_table.get('version')!r}"
+        """Post RFC version-SSOT: the version is a single literal in
+        ``corpus_forge/__init__.py`` and ``pyproject`` derives it
+        dynamically. Assert the *shape* of the canonical source (a PEP 440
+        beta marker) + that the build is wired to derive it — no release
+        literal to chase here.
+        """
+        from tests.support.version import CANONICAL_VERSION, is_beta_version
+
+        assert is_beta_version(CANONICAL_VERSION), (
+            f"corpus_forge.__version__ must be a PEP 440 beta marker "
+            f"(X.Y.ZbN); got {CANONICAL_VERSION!r}"
+        )
+        assert "version" in project_table.get("dynamic", []), (
+            "pyproject [project] must declare version as dynamic so the build "
+            "derives it from corpus_forge/__init__.py (RFC version-SSOT)"
         )
 
     def test_license_is_apache2_spdx(self, project_table: dict) -> None:
