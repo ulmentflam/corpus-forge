@@ -81,11 +81,13 @@ class _StubEmbedConfig:
         claim_lease_ttl: int = 600,
         claim_batch_size: int = 1024,
         max_inflight_batches: int = 1,
+        backpressure_max_load: float = 0.9,
     ) -> None:
         self.lanes = lanes or []
         self.claim_lease_ttl = claim_lease_ttl
         self.claim_batch_size = claim_batch_size
         self.max_inflight_batches = max_inflight_batches
+        self.backpressure_max_load = backpressure_max_load
 
 
 class _StubConfig:
@@ -504,3 +506,90 @@ def test_lease_ttl_defaults_from_config() -> None:
     config.embed.claim_lease_ttl = 999
     loop = EmbedDrainLoop(_StubBackend(), config)
     assert loop._lease_ttl == 999
+
+
+# ---------------------------------------------------------------------------
+# Postgres backpressure (issue #125 item 1)
+# ---------------------------------------------------------------------------
+
+
+def _loop_with_load(server_load, *, max_load: float = 0.9) -> EmbedDrainLoop:
+    """Build a drain loop whose backend reports ``server_load`` (a callable
+    or None) and whose [embed] backpressure threshold is ``max_load``."""
+    backend = _StubBackend(claim_batches=[[(1, "t1", "")]])
+    if server_load is not None:
+        backend.server_load = server_load  # attach the method per-instance
+    config = _StubConfig([_StubEmbedderConfig("e1")])
+    config.embed.backpressure_max_load = max_load
+    return EmbedDrainLoop(backend, config, host_id="h", idle_min=5, idle_max=40)
+
+
+class TestServerOverloaded:
+    def test_no_server_load_method_is_not_overloaded(self) -> None:
+        loop = _loop_with_load(None)  # plain stub backend has no server_load
+        assert loop._server_overloaded() is False
+
+    def test_disabled_threshold_never_overloaded(self) -> None:
+        loop = _loop_with_load(lambda: {"backends": 99, "max_connections": 100}, max_load=0.0)
+        assert loop._server_overloaded() is False
+
+    def test_below_threshold_not_overloaded(self) -> None:
+        loop = _loop_with_load(lambda: {"backends": 10, "max_connections": 100})
+        assert loop._server_overloaded() is False
+
+    def test_at_or_above_threshold_is_overloaded(self) -> None:
+        loop = _loop_with_load(lambda: {"backends": 90, "max_connections": 100})
+        assert loop._server_overloaded() is True
+
+    def test_read_error_is_not_overloaded(self) -> None:
+        def boom():
+            raise RuntimeError("pg_stat_activity denied")
+
+        loop = _loop_with_load(boom)
+        assert loop._server_overloaded() is False
+
+    def test_malformed_payload_is_not_overloaded(self) -> None:
+        loop = _loop_with_load(lambda: "nonsense")
+        assert loop._server_overloaded() is False
+
+    def test_zero_max_connections_is_not_overloaded(self) -> None:
+        loop = _loop_with_load(lambda: {"backends": 5, "max_connections": 0})
+        assert loop._server_overloaded() is False
+
+
+class TestBackpressureLoop:
+    def test_overloaded_backs_off_without_claiming(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        emb = _StubEmbedder("e1")
+        _patch_registry(monkeypatch, [emb])
+        loop = _loop_with_load(lambda: {"backends": 95, "max_connections": 100})
+
+        sleeps = _run_with_fake_sleep(loop, stop_after=3)
+        # Exponential backoff while the server stays hot...
+        assert sleeps == [5, 10, 20]
+        # ...and NOT a single claim was issued while overloaded.
+        assert loop._backend.claims_made == []
+
+    def test_disabled_backpressure_claims_despite_load(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        emb = _StubEmbedder("e1")
+        _patch_registry(monkeypatch, [emb])
+        # Hot server, but backpressure disabled → the loop claims as usual.
+        loop = _loop_with_load(lambda: {"backends": 99, "max_connections": 100}, max_load=0.0)
+        _run_with_fake_sleep(loop, stop_after=1)
+        assert len(loop._backend.claims_made) >= 1
+
+    def test_resumes_claiming_once_load_drops(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        emb = _StubEmbedder("e1")
+        _patch_registry(monkeypatch, [emb])
+        calls = {"n": 0}
+
+        def load():
+            calls["n"] += 1
+            # Hot for the first two checks, then healthy.
+            return {"backends": 95 if calls["n"] <= 2 else 5, "max_connections": 100}
+
+        loop = _loop_with_load(load)
+        _run_with_fake_sleep(loop, stop_after=3)
+        # Once load dropped, the loop resumed and claimed the scripted batch.
+        assert len(loop._backend.claims_made) >= 1

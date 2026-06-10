@@ -107,6 +107,12 @@ class EmbedDrainLoop:
         # 1 by construction; pinned here so multi-threaded drain can't
         # silently multiply per-host DB load past the configured bound.
         self._max_inflight = max(1, int(getattr(embed_cfg, "max_inflight_batches", 1)))
+        # Postgres-saturation backpressure threshold (issue #125): back off
+        # claiming when server connections reach this fraction of
+        # max_connections. 0.0 disables. Clamped to [0, 1].
+        self._backpressure_max_load = min(
+            1.0, max(0.0, float(getattr(embed_cfg, "backpressure_max_load", 0.9)))
+        )
         self._idle_min = float(idle_min)
         self._idle_max = float(idle_max)
         self._lanes: list[_Lane] | None = None
@@ -269,6 +275,41 @@ class EmbedDrainLoop:
         assert self._lanes is not None
         return sum(self.drain_lane_once(lane) for lane in self._lanes)
 
+    # ── Postgres backpressure (issue #125) ─────────────────────────────────
+
+    def _server_overloaded(self) -> bool:
+        """True when the Postgres host is too busy to claim against right now.
+
+        Reads the backend's ``server_load()`` snapshot (``pg_stat_activity``
+        count vs ``max_connections``) and compares against
+        ``[embed] backpressure_max_load``. Best-effort and graceful:
+
+        - disabled (``backpressure_max_load <= 0``) → never overloaded;
+        - a backend without ``server_load`` (SQLite, or a build predating
+          that method) → never overloaded (the guard simply doesn't engage);
+        - any read error or malformed payload → not overloaded (an optional
+          throttle must never crash the drain or wedge it shut).
+
+        So the only path that returns ``True`` is a live, parseable load
+        snapshot at/above the configured fraction.
+        """
+        if self._backpressure_max_load <= 0.0:
+            return False
+        load_fn = getattr(self._backend, "server_load", None)
+        if not callable(load_fn):
+            return False
+        try:
+            load = load_fn()
+        except Exception:
+            return False
+        if not isinstance(load, dict):
+            return False
+        backends = load.get("backends")
+        max_conn = load.get("max_connections")
+        if not isinstance(backends, int) or not isinstance(max_conn, int) or max_conn <= 0:
+            return False
+        return backends / max_conn >= self._backpressure_max_load
+
     # ── The loop ───────────────────────────────────────────────────────────
 
     def run(
@@ -294,6 +335,23 @@ class EmbedDrainLoop:
         wait = sleep if sleep is not None else stop_event.wait
         delay = self._idle_min
         while not stop_event.is_set():
+            # Postgres backpressure (issue #125): when the server is near
+            # connection saturation, back off (exponential, interruptible)
+            # WITHOUT claiming, so a fleet of drain loops can't drive the
+            # shared Postgres host to exhaustion. Reuses the idle-backoff
+            # ``delay`` schedule; a later healthy sweep resets it.
+            if self._server_overloaded():
+                logger.warning(
+                    "drain: Postgres backpressure (connections >= %.0f%% of "
+                    "max_connections); backing off %.1fs without claiming",
+                    self._backpressure_max_load * 100,
+                    delay,
+                )
+                if wait(delay):
+                    break  # stop_event fired during the backoff
+                delay = min(self._idle_max, delay * 2.0)
+                continue
+
             try:
                 embedded = self.drain_once()
             except FederationUnsupported:

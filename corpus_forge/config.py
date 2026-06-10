@@ -946,12 +946,23 @@ class EmbedConfig(BaseModel):
       behaviour; the knob is pinned now so that when multi-threaded drain
       lands it cannot multiply per-host DB load past this bound without an
       explicit opt-in. Must be ``> 0``. LOCAL.
+    - ``backpressure_max_load``: Postgres-saturation guard (issue #125).
+      Before each drain sweep the loop checks the server's connection
+      pressure (``pg_stat_activity`` count / ``max_connections``); when it
+      reaches this fraction the loop backs off (exponential, interruptible)
+      instead of claiming, so a fleet can't drive the Postgres host to
+      connection exhaustion. Default ``0.9`` — the doctor ``embed_claims``
+      check WARNs earlier at 0.8, so the operator gets a heads-up before
+      throttling kicks in. Set ``0.0`` to disable. Range ``[0.0, 1.0]``.
+      Degrades to a no-op when the backend can't report load (SQLite /
+      pre-``server_load`` builds). LOCAL.
     """
 
     claim_lease_ttl: int = Field(default=600, gt=0)
     lanes: list[str] = Field(default_factory=list)
     claim_batch_size: int = Field(default=1024, gt=0)
     max_inflight_batches: int = Field(default=1, gt=0)
+    backpressure_max_load: float = Field(default=0.9, ge=0.0, le=1.0)
 
     model_config = ConfigDict(extra="forbid")
 
