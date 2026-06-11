@@ -52,6 +52,16 @@ Extras worth knowing:
   user before you pull them.
 - `[rerank]`, `[retrieval]`, `[eval]`, `[analyze]`, `[fast-tier]`, `[tokens]`,
   `[openai]` — niche extras; see `pyproject.toml` for the full matrix.
+- `[llama-cpp]` — in-process llama.cpp embeddings. The installers
+  **auto-select the accelerated wheel**: `install.sh` / `install.ps1`
+  detect the host accelerator (`nvidia-smi` → CUDA, Apple Silicon →
+  Metal, else CPU) and install the matching prebuilt `llama-cpp-python`
+  wheel, so a CUDA box gets GPU offload by default (no hand-edited
+  `CMAKE_ARGS`). Override with `--llama-backend
+  {auto|cuda|cudaNNN|metal|cpu|none}` (`-LlamaBackend` on PowerShell) or
+  `CF_LLAMA_BACKEND`; `none` skips the extra. The `setup` `embedder=auto`
+  choice pulls `[llama-cpp]` in automatically (its recommended lanes are
+  all `provider="llama-cpp"`).
 
 ## 2. Configure
 
@@ -204,6 +214,23 @@ loader, which handles `param()` correctly.
 A `ts://...` DSN (Tailscale-resolved) is also accepted — useful for
 tailnet-native fleets.
 
+**GPU joiner → CUDA llama-cpp in one command.** A GPU box joins the
+fleet to drain the embedding backlog on its GPU, so the joiner
+auto-detects its accelerator and installs the matching
+`llama-cpp-python` wheel (CUDA / Metal) for in-process GPU embedding —
+the `--llama-backend` / `-LlamaBackend` flag threads through the same
+one-liner. Force it explicitly when detection can't see the GPU at
+install time (driver not yet on PATH):
+
+```bash
+curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.sh \
+  | bash -s -- --join 'postgresql://primary.fleet:5432/corpus' --llama-backend cuda
+```
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus' -LlamaBackend cuda
+```
+
 The installer **skips the question tree** (the fleet's primary publishes
 the shared scope — embedders, retrieval tuning, classifier chains, even
 dataset names/kinds — and the joiner pulls all of it via `setup --join`)
@@ -240,6 +267,7 @@ For bulk mode (many similar entries, one chat): call `next_curation_batch(limit=
 | Postgres ENOSPC | `corpus-forge estimate <path>` *before* sync. Tune the `[estimate]` block in config to model your TOAST compression ratio. |
 | `TailscaleUnavailable` / `ts://` won't resolve | `corpus-forge doctor` names the failing endpoint. "daemon" reason → install/start Tailscale (`tailscale status` should report `Running`); "name" reason → the peer name isn't in this tailnet (check spelling). `ts://` in config while `[tailscale] enabled = false` fails at load — flip it on. |
 | Second machine: no shared config after `setup --join` | `corpus-forge config pull` (dry-run) then `--apply`. "nothing published yet" means no host has run `config publish` — do it on the primary. Federation needs the `postgres` backend (SQLite WARNs in `doctor`). |
+| In-process embedding slow / GPU idle on a CUDA box | The installed `llama-cpp-python` is the CPU-only wheel (the host had no driver on PATH at install time, or `pip`/`uv install` was used directly instead of the installer). Reinstall with `install.sh --llama-backend cuda` (`-LlamaBackend cuda` on PowerShell), or set `CF_LLAMA_BACKEND=cuda`. Force a specific CUDA variant with `--llama-backend cuda124` if auto-detection picks the wrong one. |
 
 Full docs live under `docs/` in this repo. The `corpus-forge doctor` command's `--json` output is the quickest way to ship a diagnosis to the user.
 
