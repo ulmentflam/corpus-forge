@@ -1751,9 +1751,19 @@ class Config(BaseModel):
         if not config_path.exists():
             raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
-        # Load main config
+        # Load main config. ``config.toml`` is hand-edited, so a syntax error
+        # must surface as a clear, file-named message (with the parser's
+        # line/column) rather than an opaque ``tomllib.TOMLDecodeError``
+        # traceback the operator has to decode themselves.
         with config_path.open("rb") as f:
-            config_data = tomllib.load(f)
+            try:
+                config_data = tomllib.load(f)
+            except tomllib.TOMLDecodeError as exc:
+                raise ValueError(
+                    f"{config_path} is not valid TOML: {exc}. "
+                    "Fix the syntax error above (or re-run `corpus-forge setup` "
+                    "to regenerate it)."
+                ) from exc
 
         # Load secrets if provided and exists
         if secrets_path is None:
