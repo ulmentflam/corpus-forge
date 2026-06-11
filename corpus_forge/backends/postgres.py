@@ -166,6 +166,57 @@ def _coerce_to_textchunk(item: Any) -> TextChunk:
 
 logger = logging.getLogger(__name__)
 
+# ── Connection-pool defaults + env-var tuning ──────────────────────────────
+# Each PostgresBackend opens its own ConnectionPool, and a multi-worker host
+# (daemon + embed/ingest/claim/drain workers) builds several backends — so the
+# process can hold N pools, each up to ``max_size`` connections, against the shared
+# Postgres ``max_connections``.  These knobs let an operator cap a worker host's
+# footprint without touching code; resolution order is
+# ``explicit kwarg → CF_PG_POOL_* env var → default`` (see ``_resolve_pool_*``).
+#
+# ``max_idle`` is the load-bearing one: the pool previously passed *no*
+# ``max_idle`` and inherited psycopg's 600 s default, so a pool that spiked
+# toward ``max_size`` under load held those connections idle for 10 minutes.
+# We default it to 120 s so idle connections drain back to Postgres in ~2 min.
+_DEFAULT_POOL_MIN_SIZE: int = 0
+_DEFAULT_POOL_MAX_SIZE: int = 8
+_DEFAULT_POOL_MAX_IDLE: float = 120.0
+_DEFAULT_POOL_TIMEOUT: float = 30.0
+_DEFAULT_POOL_NUM_WORKERS: int = 3
+
+
+def _resolve_pool_int(explicit: int | None, env_name: str, default: int) -> int:
+    """Resolve a pool int: explicit kwarg → ``env_name`` → ``default``.
+
+    A non-integer env value is ignored with a warning (a typo must never crash
+    every backend in the process).
+    """
+
+    if explicit is not None:
+        return int(explicit)
+    raw = os.environ.get(env_name)
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning("ignoring non-integer %s=%r; using default %d", env_name, raw, default)
+    return default
+
+
+def _resolve_pool_float(explicit: float | None, env_name: str, default: float) -> float:
+    """Resolve a pool float: explicit kwarg → ``env_name`` → ``default`` (typo-safe)."""
+
+    if explicit is not None:
+        return float(explicit)
+    raw = os.environ.get(env_name)
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning("ignoring non-numeric %s=%r; using default %s", env_name, raw, default)
+    return default
+
+
 # Valid entity types for labels and feedback helpers (mirrors sqlite.py constants).
 _LABEL_ENTITY_TYPES: tuple[str, ...] = ("chunk", "document", "conversation")
 _FEEDBACK_ENTITY_TYPES: tuple[str, ...] = (*_LABEL_ENTITY_TYPES, "message")
@@ -225,12 +276,37 @@ class PostgresBackend(StorageBackend):
         dsn: str,
         schema: str = "corpus",
         *,
-        pool_min_size: int = 0,
-        pool_max_size: int = 8,
+        pool_min_size: int | None = None,
+        pool_max_size: int | None = None,
+        pool_max_idle: float | None = None,
+        pool_timeout: float | None = None,
+        pool_num_workers: int | None = None,
     ):
         self.dsn = _resolve_dsn_endpoint(dsn)
         self.schema = schema
         self._setup_connection()
+        # Resolve the pool knobs: explicit kwarg → CF_PG_POOL_* env → default.
+        # Lets a worker host cap its connection footprint (see the module-level
+        # defaults block) without any call-site edits.
+        min_size = _resolve_pool_int(pool_min_size, "CF_PG_POOL_MIN_SIZE", _DEFAULT_POOL_MIN_SIZE)
+        max_size = _resolve_pool_int(pool_max_size, "CF_PG_POOL_MAX_SIZE", _DEFAULT_POOL_MAX_SIZE)
+        max_idle = _resolve_pool_float(pool_max_idle, "CF_PG_POOL_MAX_IDLE", _DEFAULT_POOL_MAX_IDLE)
+        timeout = _resolve_pool_float(pool_timeout, "CF_PG_POOL_TIMEOUT", _DEFAULT_POOL_TIMEOUT)
+        num_workers = _resolve_pool_int(
+            pool_num_workers, "CF_PG_POOL_NUM_WORKERS", _DEFAULT_POOL_NUM_WORKERS
+        )
+        # Clamp so a typo'd env value can't hand psycopg-pool an invalid combo
+        # (it requires ``max_size >= 1`` and ``max_size >= min_size``).
+        min_size = max(0, min_size)
+        max_size = max(max_size, min_size, 1)
+        num_workers = max(1, num_workers)
+        self._pool_settings = {
+            "min_size": min_size,
+            "max_size": max_size,
+            "max_idle": max_idle,
+            "timeout": timeout,
+            "num_workers": num_workers,
+        }
         # Connection pool. Replaces the previous per-call ``psycopg.connect``
         # which cost ~41ms of TCP+TLS+auth handshake per backend op over
         # Tailscale (profiled 2026-05-27 against the maintainer's vault).
@@ -239,10 +315,17 @@ class PostgresBackend(StorageBackend):
         # search_path so unqualified table names in DDL still resolve.
         # (Session-scoped state; reusing a connection from the pool
         # preserves the search_path between checkouts.)
+        #
+        # ``max_idle`` is passed explicitly (default 120 s, was psycopg's 600 s)
+        # so idle connections spiked under load drain back to Postgres promptly
+        # — the multi-worker connection-pressure fix.
         self._pool = ConnectionPool(
             conninfo=os.path.expandvars(self.dsn),
-            min_size=pool_min_size,
-            max_size=pool_max_size,
+            min_size=min_size,
+            max_size=max_size,
+            max_idle=max_idle,
+            timeout=timeout,
+            num_workers=num_workers,
             configure=self._configure_connection,
             # ``open=True`` is default in psycopg-pool 3.2+ but it pre-warms
             # ``min_size`` connections — saves the first-query latency hit.
