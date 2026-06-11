@@ -1,16 +1,19 @@
-"""Unit tests pinning the alembic revision chain head to 0020_shared_config.
+"""Unit tests pinning 0020_shared_config's place in the alembic chain.
 
-rfc-fleet-3 (federated config + setup) — moves the pinned head from
-0019_embed_claims to 0020_shared_config.
+rfc-fleet-3 (federated config + setup) added 0020_shared_config on top of
+0019_embed_claims. ``rfc-bench-embed-progress`` (stretch) then stacked
+0021_benchmark_cold_start on top of 0020, so 0020 is no longer the head —
+the head identity is pinned in ``test_alembic_head_pins_0021.py``. These
+tests pin the still-true invariants for 0020 (mirroring the 0019→0020
+head transition recorded in ``test_alembic_head_pins_0019.py``):
 
-These tests assert:
 1. The revision file for 0020_shared_config exists at the expected path.
 2. The module declares ``revision = "0020_shared_config"`` and
    ``down_revision = "0019_embed_claims"``.
 3. The revision id fits in alembic's VARCHAR(32) ``version_num`` column.
-4. alembic's ScriptDirectory reports ``0020_shared_config`` as the single
-   current head revision.
-5. The head used by ``apply_migrations`` resolves to ``0020_shared_config``.
+4. alembic's ScriptDirectory can resolve 0020 and it chains onto 0019.
+5. 0020 has exactly one successor (0021_benchmark_cold_start) — chain
+   stayed linear.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ _VERSIONS_DIR = _REPO_ROOT / "corpus_forge" / "alembic" / "versions"
 
 _TARGET_REVISION = "0020_shared_config"
 _PRIOR_REVISION = "0019_embed_claims"
+_SUCCESSOR_REVISION = "0021_benchmark_cold_start"
 _REVISION_FILE = _VERSIONS_DIR / "0020_shared_config.py"
 _ALEMBIC_VERSION_NUM_MAX_LEN = 32  # alembic_version.version_num is VARCHAR(32)
 
@@ -68,33 +72,50 @@ def test_revision_id_fits_varchar32() -> None:
     )
 
 
-def test_alembic_script_directory_head_is_0020() -> None:
+def test_alembic_script_directory_knows_0020() -> None:
+    """alembic.script.ScriptDirectory must know about 0020_shared_config.
+
+    0020 is no longer the head (the bench-embed-progress stretch's
+    0021_benchmark_cold_start stacks on top — see
+    test_alembic_head_pins_0021.py), but it must remain a resolvable
+    revision in the chain that ``apply_migrations`` walks.
+    """
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     assert _ALEMBIC_INI.exists(), (
-        f"alembic.ini not found at {_ALEMBIC_INI}; cannot resolve head revision."
+        f"alembic.ini not found at {_ALEMBIC_INI}; cannot resolve revisions."
     )
 
     cfg = Config(str(_ALEMBIC_INI))
     cfg.set_main_option("script_location", str(_REPO_ROOT / "corpus_forge" / "alembic"))
 
     script = ScriptDirectory.from_config(cfg)
-    current_head = script.get_current_head()
-
-    assert current_head == _TARGET_REVISION, (
-        f"alembic ScriptDirectory reports head={current_head!r}; "
-        f"expected {_TARGET_REVISION!r}. "
-        "The 0020_shared_config.py file must exist and chain onto 0019 before this passes."
+    rev = script.get_revision(_TARGET_REVISION)
+    assert rev is not None and rev.revision == _TARGET_REVISION, (
+        f"alembic ScriptDirectory cannot resolve {_TARGET_REVISION!r}; "
+        "the 0020_shared_config.py file must exist and chain onto 0019."
     )
+    assert rev.down_revision == _PRIOR_REVISION
 
 
-def test_expected_head_revision_helper_returns_0020() -> None:
+def test_0020_has_single_successor() -> None:
+    """0020 must chain forward to exactly one successor revision.
+
+    The bench-embed-progress stretch added 0021_benchmark_cold_start on top
+    of 0020; this pins that the chain stayed linear (0020 has exactly one
+    child, not zero and not two).
+    """
+    from alembic.config import Config
     from alembic.script import ScriptDirectory
 
-    from corpus_forge.schema.migrate import _build_alembic_config
+    cfg = Config(str(_ALEMBIC_INI))
+    cfg.set_main_option("script_location", str(_REPO_ROOT / "corpus_forge" / "alembic"))
+    script = ScriptDirectory.from_config(cfg)
 
-    head = ScriptDirectory.from_config(_build_alembic_config()).get_current_head()
-    assert head == _TARGET_REVISION, (
-        f"_expected_head_revision() helper returned {head!r}; expected {_TARGET_REVISION!r}."
+    successors = [
+        rev.revision for rev in script.walk_revisions() if rev.down_revision == _TARGET_REVISION
+    ]
+    assert successors == [_SUCCESSOR_REVISION], (
+        f"Expected 0020 to have exactly one successor {_SUCCESSOR_REVISION!r}; got {successors!r}."
     )

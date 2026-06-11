@@ -166,6 +166,57 @@ def _coerce_to_textchunk(item: Any) -> TextChunk:
 
 logger = logging.getLogger(__name__)
 
+# ── Connection-pool defaults + env-var tuning ──────────────────────────────
+# Each PostgresBackend opens its own ConnectionPool, and a multi-worker host
+# (daemon + embed/ingest/claim/drain workers) builds several backends — so the
+# process can hold N pools, each up to ``max_size`` connections, against the shared
+# Postgres ``max_connections``.  These knobs let an operator cap a worker host's
+# footprint without touching code; resolution order is
+# ``explicit kwarg → CF_PG_POOL_* env var → default`` (see ``_resolve_pool_*``).
+#
+# ``max_idle`` is the load-bearing one: the pool previously passed *no*
+# ``max_idle`` and inherited psycopg's 600 s default, so a pool that spiked
+# toward ``max_size`` under load held those connections idle for 10 minutes.
+# We default it to 120 s so idle connections drain back to Postgres in ~2 min.
+_DEFAULT_POOL_MIN_SIZE: int = 0
+_DEFAULT_POOL_MAX_SIZE: int = 8
+_DEFAULT_POOL_MAX_IDLE: float = 120.0
+_DEFAULT_POOL_TIMEOUT: float = 30.0
+_DEFAULT_POOL_NUM_WORKERS: int = 3
+
+
+def _resolve_pool_int(explicit: int | None, env_name: str, default: int) -> int:
+    """Resolve a pool int: explicit kwarg → ``env_name`` → ``default``.
+
+    A non-integer env value is ignored with a warning (a typo must never crash
+    every backend in the process).
+    """
+
+    if explicit is not None:
+        return int(explicit)
+    raw = os.environ.get(env_name)
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning("ignoring non-integer %s=%r; using default %d", env_name, raw, default)
+    return default
+
+
+def _resolve_pool_float(explicit: float | None, env_name: str, default: float) -> float:
+    """Resolve a pool float: explicit kwarg → ``env_name`` → ``default`` (typo-safe)."""
+
+    if explicit is not None:
+        return float(explicit)
+    raw = os.environ.get(env_name)
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning("ignoring non-numeric %s=%r; using default %s", env_name, raw, default)
+    return default
+
+
 # Valid entity types for labels and feedback helpers (mirrors sqlite.py constants).
 _LABEL_ENTITY_TYPES: tuple[str, ...] = ("chunk", "document", "conversation")
 _FEEDBACK_ENTITY_TYPES: tuple[str, ...] = (*_LABEL_ENTITY_TYPES, "message")
@@ -225,12 +276,37 @@ class PostgresBackend(StorageBackend):
         dsn: str,
         schema: str = "corpus",
         *,
-        pool_min_size: int = 0,
-        pool_max_size: int = 8,
+        pool_min_size: int | None = None,
+        pool_max_size: int | None = None,
+        pool_max_idle: float | None = None,
+        pool_timeout: float | None = None,
+        pool_num_workers: int | None = None,
     ):
         self.dsn = _resolve_dsn_endpoint(dsn)
         self.schema = schema
         self._setup_connection()
+        # Resolve the pool knobs: explicit kwarg → CF_PG_POOL_* env → default.
+        # Lets a worker host cap its connection footprint (see the module-level
+        # defaults block) without any call-site edits.
+        min_size = _resolve_pool_int(pool_min_size, "CF_PG_POOL_MIN_SIZE", _DEFAULT_POOL_MIN_SIZE)
+        max_size = _resolve_pool_int(pool_max_size, "CF_PG_POOL_MAX_SIZE", _DEFAULT_POOL_MAX_SIZE)
+        max_idle = _resolve_pool_float(pool_max_idle, "CF_PG_POOL_MAX_IDLE", _DEFAULT_POOL_MAX_IDLE)
+        timeout = _resolve_pool_float(pool_timeout, "CF_PG_POOL_TIMEOUT", _DEFAULT_POOL_TIMEOUT)
+        num_workers = _resolve_pool_int(
+            pool_num_workers, "CF_PG_POOL_NUM_WORKERS", _DEFAULT_POOL_NUM_WORKERS
+        )
+        # Clamp so a typo'd env value can't hand psycopg-pool an invalid combo
+        # (it requires ``max_size >= 1`` and ``max_size >= min_size``).
+        min_size = max(0, min_size)
+        max_size = max(max_size, min_size, 1)
+        num_workers = max(1, num_workers)
+        self._pool_settings = {
+            "min_size": min_size,
+            "max_size": max_size,
+            "max_idle": max_idle,
+            "timeout": timeout,
+            "num_workers": num_workers,
+        }
         # Connection pool. Replaces the previous per-call ``psycopg.connect``
         # which cost ~41ms of TCP+TLS+auth handshake per backend op over
         # Tailscale (profiled 2026-05-27 against the maintainer's vault).
@@ -239,10 +315,17 @@ class PostgresBackend(StorageBackend):
         # search_path so unqualified table names in DDL still resolve.
         # (Session-scoped state; reusing a connection from the pool
         # preserves the search_path between checkouts.)
+        #
+        # ``max_idle`` is passed explicitly (default 120 s, was psycopg's 600 s)
+        # so idle connections spiked under load drain back to Postgres promptly
+        # — the multi-worker connection-pressure fix.
         self._pool = ConnectionPool(
             conninfo=os.path.expandvars(self.dsn),
-            min_size=pool_min_size,
-            max_size=pool_max_size,
+            min_size=min_size,
+            max_size=max_size,
+            max_idle=max_idle,
+            timeout=timeout,
+            num_workers=num_workers,
             configure=self._configure_connection,
             # ``open=True`` is default in psycopg-pool 3.2+ but it pre-warms
             # ``min_size`` connections — saves the first-query latency hit.
@@ -1169,11 +1252,39 @@ class PostgresBackend(StorageBackend):
         return conv_id
 
     def write_embeddings(self, embedder_id: int, pairs: list[tuple[int, np.ndarray]]) -> None:
-        """Write embeddings for chunks."""
+        """Write embeddings for chunks in ONE batched transaction.
+
+        See ``.planning/tdd/fleet2_claim_deadlock_investigation.md`` for
+        the full diagnosis.  In short: the previous implementation
+        issued one ``_execute`` per pair, which translated to one pool
+        checkout + BEGIN/INSERT/COMMIT round-trip per pair.  On the
+        fleet-2 claim path a 1000-pair page therefore did ~1001
+        sequential pool checkouts; combined with Tailscale latency to
+        a remote Postgres LXC, that turned each page into a 14-second
+        pool-contention storm AND surfaced ``Connection [ACTIVE]``
+        warnings whenever a commit's ack didn't drain promptly. The
+        replacement collapses the loop into a single ``executemany``
+        in one transaction — ~3 round-trips per page total, regardless
+        of how many pairs.
+
+        Contract preserved:
+
+        * Empty ``pairs`` → no-op (caller doesn't have to guard).
+        * Unknown ``embedder_id`` → ``ValueError``, same shape as
+          before.
+        * ``ON CONFLICT (chunk_id) DO NOTHING`` — per-row idempotency
+          across re-runs is unchanged; ``executemany`` runs the same
+          INSERT N times under one transaction so the conflict guard
+          fires per row, not per batch.
+        * No behavioural change for the SQLite backend (separate
+          method) or for the legacy fallback embed path.
+        """
         if not pairs:
             return
 
-        # Get embedder info to know table name and dimension
+        # Get embedder info to know table name and dimension.
+        # Kept as a separate _execute so the cached path (and the
+        # ValueError on unknown id) stays identical to b16.
         embedder_info = self._execute(
             "SELECT name, dimension FROM corpus.embedders WHERE id = %s", (embedder_id,)
         )
@@ -1184,18 +1295,16 @@ class PostgresBackend(StorageBackend):
         embedder_name = embedder_info[0]["name"]
         table_name = f"embeddings_{embedder_name.replace('-', '_')}"
 
-        # Insert embeddings with ON CONFLICT DO NOTHING
-        for chunk_id, embedding in pairs:
-            # Convert numpy array to list for PostgreSQL
-            embedding_list = embedding.tolist()
-            self._execute(
-                f"""
-                INSERT INTO corpus.{table_name} (chunk_id, embedder_id, embedding)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (chunk_id) DO NOTHING
-                """,
-                (chunk_id, embedder_id, embedding_list),
-            )
+        insert_sql = (
+            f"INSERT INTO corpus.{table_name} (chunk_id, embedder_id, embedding) "
+            "VALUES (%s, %s, %s) ON CONFLICT (chunk_id) DO NOTHING"
+        )
+        # Materialise once so the tolist() cost is paid before we
+        # hold the connection (keeps the checkout window minimal).
+        params_seq = [(chunk_id, embedder_id, embedding.tolist()) for chunk_id, embedding in pairs]
+        with self._get_connection() as conn, conn.cursor() as cur:
+            cur.executemany(insert_sql, params_seq)  # pyrefly: ignore[bad-argument-type]
+            conn.commit()
 
     def chunks_missing_embedding(
         self,
@@ -4128,6 +4237,7 @@ class PostgresBackend(StorageBackend):
         tokens_per_s: float | None = None,
         latency_p50_ms: float | None = None,
         latency_p95_ms: float | None = None,
+        cold_start_s: float | None = None,
     ) -> None:
         """Insert one ``model_benchmarks`` row, stamping ``measured_at`` (rfc-fleet-1)."""
         now = datetime.now(tz=UTC)
@@ -4136,8 +4246,8 @@ class PostgresBackend(StorageBackend):
             INSERT INTO corpus.model_benchmarks
                 (host_id, model_key, source, transport, device, batch_size,
                  sample_chunks, chunks_per_s, tokens_per_s, latency_p50_ms,
-                 latency_p95_ms, measured_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 latency_p95_ms, cold_start_s, measured_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 host_id,
@@ -4151,6 +4261,7 @@ class PostgresBackend(StorageBackend):
                 tokens_per_s,
                 latency_p50_ms,
                 latency_p95_ms,
+                cold_start_s,
                 now,
             ),
         )
@@ -4169,7 +4280,7 @@ class PostgresBackend(StorageBackend):
             WITH latest AS (
                 SELECT
                     host_id, model_key, chunks_per_s, transport, device,
-                    source, measured_at,
+                    source, cold_start_s, measured_at,
                     ROW_NUMBER() OVER (
                         PARTITION BY host_id, model_key
                         ORDER BY measured_at DESC
@@ -4179,7 +4290,7 @@ class PostgresBackend(StorageBackend):
             SELECT
                 m.model_key, m.kind, m.provider, m.model_id, m.dimension,
                 l.host_id, l.chunks_per_s, l.transport, l.device,
-                l.source, l.measured_at
+                l.source, l.cold_start_s, l.measured_at
             FROM corpus.models m
             LEFT JOIN latest l
                 ON l.model_key = m.model_key AND l.rn = 1
