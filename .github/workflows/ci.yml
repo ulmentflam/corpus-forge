@@ -127,6 +127,16 @@ jobs:
       # Windows runners have a Docker CLI without a daemon, which would
       # otherwise spuriously slip past _docker_available().
       CI_NO_DOCKER: ${{ matrix.os == 'windows-2022' && '1' || '' }}
+      # pytest-xdist worker count (consumed by `make test-unit`). `auto`
+      # resolves to *physical* cores = 2 on GitHub runners, leaving the
+      # other 2 logical CPUs idle. The Windows cells are wall-clock-bound
+      # (~14 min unit step vs ~7 min on Linux), so we give them 4 workers
+      # to use all 4 vCPUs; Linux/macOS keep `auto` (already fast, and
+      # this keeps their peak memory unchanged). Experimental: the unit
+      # suite imports torch/sentence-transformers in several modules, so
+      # 4 workers roughly doubles peak import RSS on the 16 GB runner —
+      # this PR's own Windows CI is the validation that it doesn't OOM.
+      PYTEST_WORKERS: ${{ matrix.os == 'windows-2022' && '4' || 'auto' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6

@@ -5,6 +5,15 @@
 # on macOS and to systemd-user on Linux. Detect OS once at the top.
 OS := $(shell uname -s)
 
+# pytest-xdist worker count for the unit suite. Defaults to `auto`, which
+# xdist resolves to the *physical* core count (2 on a standard GitHub
+# runner). Overridable from the environment (`?=` keeps an env-provided
+# value) so CI can dial it up where the runner has spare logical cores —
+# e.g. the Windows cells set PYTEST_WORKERS=4 to use all 4 vCPUs instead
+# of the 2 physical cores `auto` would pick. Left as `auto` locally and on
+# Linux/macOS, where the suite already finishes fast.
+PYTEST_WORKERS ?= auto
+
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?##"};{printf "  %-18s %s\n",$$1,$$2}'
 
@@ -45,7 +54,7 @@ typecheck: ## pyrefly strict (fails on any non-`missing-import` error)
 test: test-unit test-integration test-fuzz test-smoke ## All four test categories
 
 test-unit: _warmup-grammars ## Fast, parallel, no Docker, coverage-gated
-	uv run pytest tests/unit tests/ui tests/cli tests/admin tests/diagnostics tests/embedders tests/backends -v -n auto --timeout=60 --cov=corpus_forge --cov-report=term-missing --cov-fail-under=89
+	uv run pytest tests/unit tests/ui tests/cli tests/admin tests/diagnostics tests/embedders tests/backends -v -n $(PYTEST_WORKERS) --timeout=60 --cov=corpus_forge --cov-report=term-missing --cov-fail-under=89
 
 # Pre-warm the tree-sitter grammar cache in a single process so the
 # parallel pytest-xdist workers don't race on `pack.download()` writes.
