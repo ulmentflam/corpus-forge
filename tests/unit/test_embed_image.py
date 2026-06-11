@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import contextlib
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -192,7 +193,16 @@ def test_backfill_dataset_filter_unknown_raises() -> None:
 
 def test_cli_embed_image_flag_routes_to_image_path() -> None:
     runner = CliRunner()
-    with patch("corpus_forge.embed.main") as mp:
+    # Hermetic config (no dependency on ~/.config): the embedder name must
+    # be configured, since the CLI now validates ``-e`` before dispatch.
+    fake_cfg = SimpleNamespace(
+        embedders=[SimpleNamespace(name="clip_local")],
+        embed=SimpleNamespace(lanes=[]),
+    )
+    with (
+        patch("corpus_forge.embed.main") as mp,
+        patch("corpus_forge.config.Config.load", return_value=fake_cfg),
+    ):
         result = runner.invoke(app, ["embed", "-e", "clip_local", "--image"])
     assert result.exit_code == 0, result.output
     mp.assert_called_once()
@@ -202,7 +212,14 @@ def test_cli_embed_image_flag_routes_to_image_path() -> None:
 
 def test_cli_embed_without_image_flag_routes_to_text_path() -> None:
     runner = CliRunner()
-    with patch("corpus_forge.embed.main") as mp:
+    fake_cfg = SimpleNamespace(
+        embedders=[SimpleNamespace(name="qwen3_8b")],
+        embed=SimpleNamespace(lanes=[]),
+    )
+    with (
+        patch("corpus_forge.embed.main") as mp,
+        patch("corpus_forge.config.Config.load", return_value=fake_cfg),
+    ):
         runner.invoke(app, ["embed", "-e", "qwen3_8b"])
     mp.assert_called_once()
     _args, kwargs = mp.call_args

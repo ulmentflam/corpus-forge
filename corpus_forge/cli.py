@@ -393,20 +393,44 @@ def embed(
     """
     from .embed import embedder_outside_lanes, main
 
-    # RFC fleet-2 item 4 — explicit ``-e`` OVERRIDES lane pinning: the
-    # operator's direct command always wins, but WARN when the named
-    # embedder isn't in this host's configured lanes so a typo or a
-    # cross-lane run is visible rather than silent.  Best-effort: a
-    # config-load failure here must not block the embed (``main`` reloads
-    # and surfaces real config errors).
-    if not image:
-        try:
-            from .config import Config
+    # Best-effort config load: a load failure here must NOT block the embed
+    # (``main`` reloads and surfaces real config errors) — but when the
+    # config IS loadable, use it to (1) fail a typo'd embedder name with a
+    # clean message instead of the raw ValueError traceback ``main`` would
+    # raise, and (2) WARN on a lane override (RFC fleet-2 item 4).
+    try:
+        from .config import Config
 
-            lanes = Config.load().embed.lanes
-        except Exception:
-            lanes = []
-        if embedder_outside_lanes(embedder, lanes):
+        _cfg = Config.load()
+    except Exception:
+        _cfg = None
+
+    if _cfg is not None:
+        # A typo'd ``-e`` name is a common mistake; the name must match a
+        # configured ``[[embedders]]`` entry for both text and image paths
+        # (see embed.main's lookup). Emit a clean, actionable error listing
+        # the valid names rather than letting main raise an opaque
+        # ValueError traceback. ``getattr`` so a duck-typed config without
+        # ``embedders`` simply skips the check (main still validates).
+        cfg_embedders = getattr(_cfg, "embedders", None)
+        if cfg_embedders is not None:
+            valid_names = [e.name for e in cfg_embedders]
+            if embedder not in valid_names:
+                available = ", ".join(valid_names) if valid_names else "(none configured)"
+                ui_error(
+                    f"Embedder {embedder!r} not found in config. "
+                    f"Configured embedders: {available}. "
+                    "Check the name or add an [[embedders]] block."
+                )
+                raise typer.Exit(code=2)
+
+        # RFC fleet-2 item 4 — explicit ``-e`` OVERRIDES lane pinning: the
+        # operator's direct command always wins, but WARN when the named
+        # embedder isn't in this host's pinned lanes so a cross-lane run is
+        # visible rather than silent. Lane pinning applies to the text path.
+        embed_cfg = getattr(_cfg, "embed", None)
+        lanes = getattr(embed_cfg, "lanes", []) if embed_cfg is not None else []
+        if not image and embedder_outside_lanes(embedder, lanes):
             ui_warn(
                 f"Embedder {embedder!r} is outside this host's pinned embed lanes "
                 f"({lanes!r}); proceeding anyway because -e is an explicit override."
