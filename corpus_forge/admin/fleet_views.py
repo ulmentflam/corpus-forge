@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -43,6 +44,7 @@ from rich.table import Table
 
 from corpus_forge.ui.console import console as ui_console
 from corpus_forge.ui.console import error as ui_error
+from corpus_forge.ui.console import info as ui_info
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +178,47 @@ def _cell(value: Any) -> str:
     if value is None or value == "":
         return _DASH
     return str(value)
+
+
+# ── Duration formatting (hosts plan) ────────────────────────────────────────
+
+
+def format_duration(seconds: float | None) -> str:
+    """Render a projected-drain duration as a coarse ``~2h13m`` string.
+
+    The drain estimate is ``backlog / rate``; this collapses it to the two
+    most-significant non-zero units so the table cell stays short:
+
+    * under a minute → ``"~Ns"``
+    * under an hour → ``"~Nm"`` (seconds dropped — the estimate is coarse)
+    * under a day → ``"~NhMm"``
+    * else → ``"~NdMh"``
+
+    ``None`` or a non-finite / non-positive input renders :data:`_DASH`
+    (no benchmark → no rate → no estimate).  Rounds *up* to the nearest
+    whole second so a tiny residual backlog never shows ``~0s``.
+    """
+    if seconds is None:
+        return _DASH
+    try:
+        value = float(seconds)
+    except (TypeError, ValueError):
+        return _DASH
+    if not math.isfinite(value) or value <= 0:
+        # NaN / inf / non-positive → no estimate.
+        return _DASH
+    total = max(int(value + 0.999), 1)  # round up; never drop to ~0s.
+    if total < _SECONDS_PER_MINUTE:
+        return f"~{total}s"
+    if total < _SECONDS_PER_HOUR:
+        return f"~{total // _SECONDS_PER_MINUTE}m"
+    if total < _SECONDS_PER_DAY:
+        hours = total // _SECONDS_PER_HOUR
+        minutes = (total % _SECONDS_PER_HOUR) // _SECONDS_PER_MINUTE
+        return f"~{hours}h{minutes}m"
+    days = total // _SECONDS_PER_DAY
+    hours = (total % _SECONDS_PER_DAY) // _SECONDS_PER_HOUR
+    return f"~{days}d{hours}h"
 
 
 # ── models list ────────────────────────────────────────────────────────────
@@ -340,6 +383,168 @@ def hosts_to_dict(
     return {"hosts": out_rows, "count": len(out_rows)}
 
 
+# ── hosts plan (rfc-fleet-2 item 8 — stretch, print-only) ───────────────────
+
+#: Shown for a lane that has zero benchmarks on any host.
+_NO_BENCH_HINT: str = "no benchmark — run `corpus-forge bench embed`"
+
+
+def _fastest_host_for(
+    model_key: str, by_model: dict[str, list[tuple[str | None, float | None]]]
+) -> tuple[str, float] | None:
+    """Pick the highest-``chunks_per_s`` host for ``model_key`` (deterministic).
+
+    ``by_model`` maps each ``model_key`` to a list of ``(host_id, rate)``
+    candidates harvested from :meth:`list_models_with_latest_benchmark`.
+    Rows with no ``host_id`` (never-benchmarked registry rows) or a
+    ``None`` / non-positive rate are not assignable and are skipped.
+    Returns the ``(host_id, rate)`` with the highest rate; ties break on
+    ``host_id`` ascending so the recommendation is stable for tests.
+    Returns ``None`` when no host has a usable benchmark for the lane.
+    """
+    candidates: list[tuple[str, float]] = []
+    for host_id, rate in by_model.get(model_key, []):
+        if host_id is None or rate is None:
+            continue
+        try:
+            rate_f = float(rate)
+        except (TypeError, ValueError):
+            continue
+        if rate_f <= 0:
+            continue
+        candidates.append((host_id, rate_f))
+    if not candidates:
+        return None
+    # Highest rate wins; stable tie-break on host_id ascending.
+    candidates.sort(key=lambda hr: (-hr[1], hr[0]))
+    return candidates[0]
+
+
+def build_plan(
+    *,
+    embedders: list[Any],
+    model_rows: list[dict],
+    embedder_id_for: Any,
+    backlog_for: Any,
+    live_claims_for: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Compose benchmarks + per-lane backlog into a host→lane recommendation.
+
+    Pure / read-only: takes the active embedder configs, the
+    ``list_models_with_latest_benchmark`` rows, and three callables the
+    caller wires to the backend —
+
+    * ``embedder_id_for(embedder) -> int | None`` — resolve the lane's
+      ``corpus.embedders`` row id (``None`` if the lane was never
+      registered, i.e. nothing embedded yet → backlog unknown).
+    * ``backlog_for(embedder_id, extensions) -> int`` — chunks still
+      missing this embedder's embedding.
+    * ``live_claims_for(embedder_id) -> int`` — optional; in-flight
+      reservations by the fleet (nice-to-have; ``None`` skips it).
+
+    One result dict per active embedder (lane), each carrying ``lane``
+    (the config name), ``model_key``, ``backlog``, ``recommended_host``,
+    ``rate``, ``drain_seconds`` (raw float for the caller to format), and
+    ``in_flight``.  A lane with no benchmark on any host gets
+    ``recommended_host=None`` / ``rate=None`` / ``drain_seconds=None`` and
+    a ``note`` of :data:`_NO_BENCH_HINT`.  Deterministic for fixed input.
+    """
+    by_model: dict[str, list[tuple[str | None, float | None]]] = {}
+    for row in model_rows:
+        key = row.get("model_key")
+        if key is None:
+            continue
+        by_model.setdefault(key, []).append((row.get("host_id"), row.get("chunks_per_s")))
+
+    lanes: list[dict[str, Any]] = []
+    for ec in embedders:
+        model_key = f"{ec.provider}:{ec.model_id}"
+        extensions = list(ec.extensions) if getattr(ec, "extensions", None) else None
+        embedder_id = embedder_id_for(ec)
+        backlog = 0 if embedder_id is None else int(backlog_for(embedder_id, extensions))
+        in_flight: int | None = None
+        if live_claims_for is not None and embedder_id is not None:
+            in_flight = int(live_claims_for(embedder_id))
+
+        fastest = _fastest_host_for(model_key, by_model)
+        if fastest is None:
+            lanes.append(
+                {
+                    "lane": ec.name,
+                    "model_key": model_key,
+                    "backlog": backlog,
+                    "recommended_host": None,
+                    "rate": None,
+                    "drain_seconds": None,
+                    "in_flight": in_flight,
+                    "note": _NO_BENCH_HINT,
+                }
+            )
+            continue
+        host_id, rate = fastest
+        drain = backlog / rate if rate > 0 else None
+        lanes.append(
+            {
+                "lane": ec.name,
+                "model_key": model_key,
+                "backlog": backlog,
+                "recommended_host": host_id,
+                "rate": rate,
+                "drain_seconds": drain,
+                "in_flight": in_flight,
+                "note": None,
+            }
+        )
+    # Deterministic output order: lane name ascending.
+    lanes.sort(key=lambda lane: lane["lane"])
+    return lanes
+
+
+def render_plan_table(lanes: list[dict[str, Any]]) -> Table:
+    """Build the Rich table for ``hosts plan`` (one row per lane)."""
+    table = Table(title="Recommended host → lane assignment", show_header=True)
+    table.add_column("Lane", style="accent.path")
+    table.add_column("Backlog", justify="right", style="accent.number")
+    table.add_column("Recommended host", style="muted")
+    table.add_column("chunks/s", justify="right", style="accent.number")
+    table.add_column("Projected drain", justify="right")
+    for lane in lanes:
+        host_cell = lane.get("recommended_host")
+        rate_cell = _fmt_rate(lane.get("rate"))
+        drain_cell = format_duration(lane.get("drain_seconds"))
+        if host_cell is None:
+            # No benchmark — surface the hint in the host column.
+            host_cell = lane.get("note") or _NO_BENCH_HINT
+        table.add_row(
+            _cell(lane.get("lane")),
+            _cell(lane.get("backlog")),
+            _cell(host_cell),
+            rate_cell,
+            drain_cell,
+        )
+    return table
+
+
+def plan_to_dict(lanes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Serialise the plan to one JSON-able object (agent mode)."""
+    out_rows: list[dict[str, Any]] = []
+    for lane in lanes:
+        out_rows.append(
+            {
+                "lane": lane.get("lane"),
+                "model_key": lane.get("model_key"),
+                "backlog": lane.get("backlog"),
+                "recommended_host": lane.get("recommended_host"),
+                "rate": lane.get("rate"),
+                "drain_seconds": lane.get("drain_seconds"),
+                "drain": format_duration(lane.get("drain_seconds")),
+                "in_flight": lane.get("in_flight"),
+                "note": lane.get("note"),
+            }
+        )
+    return {"lanes": out_rows, "count": len(out_rows)}
+
+
 def _probe_peer_status() -> dict[str, bool] | None:
     """Probe live tailnet peers once → ``{name: online}``, or ``None``.
 
@@ -487,15 +692,112 @@ def cmd_hosts_list(
         ui_console.print(render_hosts_table(rows, peer_status=peer_status))
 
 
+def _emit_plan_status(status: str, message: str, *, agent_mode: bool) -> None:
+    """Print a degraded-shape status (empty / drained / sqlite); exit 0."""
+    if agent_mode:
+        print(json.dumps({"status": status, "message": message}))
+    else:
+        ui_info(message)
+
+
+@hosts_app.command("plan")
+def cmd_hosts_plan(
+    json_out: Annotated[
+        bool,
+        typer.Option("--json", help="Emit one JSON object instead of the Rich table (agent mode)."),
+    ] = False,
+) -> None:
+    """Recommend a host → lane assignment from fleet benchmarks (print-only).
+
+    For each ACTIVE configured embedder (a "lane") this picks the host with
+    the highest measured ``chunks_per_s`` for that model and projects a
+    drain time from the lane's current backlog (``backlog / rate``).  A
+    lane with no benchmark on any host is surfaced with a "run
+    ``corpus-forge bench embed``" hint.  Greedy + deterministic — the
+    RFC's stated non-solver approach (no automatic assignment; the
+    operator writes the config).  **Read-only:** never writes, never
+    mutates config.  Postgres-only (fleet federation).
+    """
+    from corpus_forge.ui import agent as ui_agent
+
+    agent_mode = json_out or ui_agent.is_agent_mode()
+    config = _load_config_or_exit()
+
+    # Fleet planning is a Postgres-only federation feature; mirror the
+    # sibling federation verbs' clean message on the single-machine backend.
+    if getattr(config.backend, "kind", "postgres") == "sqlite":
+        _emit_plan_status(
+            "unsupported", "federation requires the postgres backend", agent_mode=agent_mode
+        )
+        raise typer.Exit(code=0)
+
+    active = [ec for ec in config.embedders if ec.active]
+
+    try:
+        backend = _build_backend(config)
+    except Exception as exc:
+        ui_error(f"Could not reach backend: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        model_rows = list(backend.list_models_with_latest_benchmark())
+
+        def _embedder_id_for(ec: Any) -> int | None:
+            row = backend.find_embedder_row_by_name(ec.name)
+            return None if row is None else int(row["id"])
+
+        def _backlog_for(embedder_id: int, extensions: list[str] | None) -> int:
+            return int(backend.count_chunks_missing_embedding(embedder_id, extensions=extensions))
+
+        def _live_claims_for(embedder_id: int) -> int:
+            return int(backend.count_live_claims(embedder_id))
+
+        lanes = build_plan(
+            embedders=active,
+            model_rows=model_rows,
+            embedder_id_for=_embedder_id_for,
+            backlog_for=_backlog_for,
+            live_claims_for=_live_claims_for,
+        )
+    finally:
+        _close_backend(backend)
+
+    # Degraded shapes (exit 0): no benchmarks at all / nothing left to plan.
+    # A never-benchmarked registry row still carries a ``model_key`` but no
+    # ``host_id``; "no benchmarks" means no row was ever *measured* on a host.
+    if not any(row.get("host_id") is not None for row in model_rows):
+        _emit_plan_status(
+            "no_benchmarks",
+            "no benchmarks yet — run `corpus-forge bench embed --all` on your hosts first",
+            agent_mode=agent_mode,
+        )
+        raise typer.Exit(code=0)
+    if all(int(lane.get("backlog") or 0) == 0 for lane in lanes):
+        _emit_plan_status(
+            "all_drained", "all lanes drained — nothing to plan", agent_mode=agent_mode
+        )
+        raise typer.Exit(code=0)
+
+    if agent_mode:
+        print(json.dumps(plan_to_dict(lanes), indent=2, default=str))
+    else:
+        ui_console.print(render_plan_table(lanes))
+
+
 __all__ = [
     "accelerator_summary",
+    "build_plan",
     "cmd_hosts_list",
+    "cmd_hosts_plan",
     "cmd_models_list",
     "format_age",
+    "format_duration",
     "hosts_app",
     "hosts_to_dict",
     "models_app",
     "models_to_dict",
+    "plan_to_dict",
     "render_hosts_table",
     "render_models_table",
+    "render_plan_table",
 ]
