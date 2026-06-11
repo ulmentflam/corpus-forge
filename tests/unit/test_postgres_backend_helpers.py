@@ -1339,3 +1339,29 @@ class TestDenseIndexStrategy:
             assert search_expr == index_expr.replace("embedding", "e.embedding"), (
                 f"index/search expressions drifted at dim={dim}"
             )
+
+
+class TestServerLoad:
+    """`server_load()` — the read-only Postgres saturation snapshot (#125)."""
+
+    def test_parses_row_into_ints(self):
+        backend = _make_backend()
+        backend._execute = MagicMock(
+            return_value=[{"backends": 42, "max_connections": 100, "db_size_bytes": 123456789}]
+        )
+        load = backend.server_load()
+        assert load == {"backends": 42, "max_connections": 100, "db_size_bytes": 123456789}
+        # One round-trip, no params, touching no corpus table.
+        sql = backend._execute.call_args.args[0]
+        assert "pg_stat_activity" in sql
+        assert "max_connections" in sql
+        assert "pg_database_size" in sql
+
+    def test_empty_result_is_zeroed(self):
+        backend = _make_backend()
+        backend._execute = MagicMock(return_value=[])
+        assert backend.server_load() == {
+            "backends": 0,
+            "max_connections": 0,
+            "db_size_bytes": 0,
+        }
