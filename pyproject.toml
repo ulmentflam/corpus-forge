@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name            = "corpus-forge"
-version         = "0.1.0b17"
+version         = "0.1.0b18"
 description     = "Chat with your data. Forge a living, trainable corpus from your notes, code, and chat history."
 requires-python = ">=3.11,<3.14"
 license         = "Apache-2.0"
@@ -210,13 +210,18 @@ fast-tier = [
 # License posture: ``llama-cpp-python`` is MIT.  Does NOT widen the
 # AGPL surface introduced by ``[multi-format]``.
 #
-# Metal GPU offload on Apple Silicon requires building the wheel with
-# ``CMAKE_ARGS="-DGGML_METAL=on" pip install 'corpus-forge[llama-cpp]'``
-# — see the README's ``[llama-cpp]`` row for details.  The default
-# install runs CPU-only, which is correct on Linux servers and works
-# (slowly) on macOS while the user verifies the Metal build.  GGUF
-# weights are NOT bundled; the resolver locates a pre-installed
-# ``ollama pull <model>`` blob or an explicit ``gguf_path``.
+# Accelerated wheels: ``install.sh`` / ``install.ps1`` auto-select the
+# matching ``llama-cpp-python`` prebuilt wheel (CUDA ``cuXXX`` / Metal /
+# CPU) from the per-backend extra-index by detecting the host
+# accelerator at install time (RFC fleet-7) — override with
+# ``--llama-backend`` / ``-LlamaBackend``.  This dependency line is
+# wheel-backend-agnostic (the installer picks the index, not the spec).
+# The manual ``CMAKE_ARGS="-DGGML_METAL=on" pip install
+# 'corpus-forge[llama-cpp]'`` source build remains the escape hatch when
+# no prebuilt wheel matches the platform — see the README's
+# ``[llama-cpp]`` row.  A plain ``pip``/``uv install`` (no installer)
+# runs CPU-only.  GGUF weights are NOT bundled; the resolver locates a
+# pre-installed ``ollama pull <model>`` blob or an explicit ``gguf_path``.
 llama-cpp = [
   "llama-cpp-python>=0.3",
 ]

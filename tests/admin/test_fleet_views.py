@@ -176,6 +176,32 @@ class TestRenderAndSerialise:
         # model_id is carried through even though the table omits it.
         assert row["model_id"] == "m1"
 
+    def test_cold_start_renders_seconds_in_table(self) -> None:
+        """A row with ``cold_start_s`` shows ``"X.XXs"``; a None row dashes it."""
+        from rich.console import Console
+
+        from corpus_forge.ui import theme as _theme
+
+        table = fv.render_models_table(
+            [
+                _model_row(cold_start_s=1.25),
+                _model_row(host_id="h2", cold_start_s=None),
+            ]
+        )
+        console = Console(width=200, record=True, force_terminal=False, theme=_theme.build_theme())
+        console.print(table)
+        text = console.export_text()
+        assert "Cold start" in text  # new column header
+        assert "1.25s" in text  # measured cold start
+        assert "—" in text  # None cold start dashes
+
+    def test_cold_start_carried_in_models_to_dict(self) -> None:
+        out = fv.models_to_dict([_model_row(cold_start_s=2.5)])
+        assert out["models"][0]["cold_start_s"] == 2.5
+        # A row that never set cold_start_s serialises None (additive key).
+        out_none = fv.models_to_dict([_model_row()])
+        assert out_none["models"][0]["cold_start_s"] is None
+
     def test_hosts_table_smoke(self) -> None:
         from rich.console import Console
 
@@ -639,6 +665,426 @@ class TestBuildBackend:
         backend = fv._build_backend(cfg)
         # The migrated backend can answer the telemetry read immediately.
         assert backend.list_models_with_latest_benchmark() == []
+
+
+# ---------------------------------------------------------------------------
+# format_duration — projected-drain bucketing
+# ---------------------------------------------------------------------------
+
+
+class TestFormatDuration:
+    def test_none_renders_dash(self) -> None:
+        assert fv.format_duration(None) == "—"
+
+    def test_seconds_bucket(self) -> None:
+        assert fv.format_duration(42) == "~42s"
+
+    def test_minutes_bucket_drops_seconds(self) -> None:
+        assert fv.format_duration(5 * 60 + 10) == "~5m"
+
+    def test_hours_bucket_includes_minutes(self) -> None:
+        # 2h13m = 7980s.
+        assert fv.format_duration(2 * 3600 + 13 * 60) == "~2h13m"
+
+    def test_days_bucket_includes_hours(self) -> None:
+        # 1d5h.
+        assert fv.format_duration(1 * 86400 + 5 * 3600) == "~1d5h"
+
+    def test_tiny_positive_rounds_up_not_zero(self) -> None:
+        assert fv.format_duration(0.2) == "~1s"
+
+    def test_zero_renders_dash(self) -> None:
+        assert fv.format_duration(0) == "—"
+
+    def test_negative_renders_dash(self) -> None:
+        assert fv.format_duration(-10) == "—"
+
+    def test_nan_renders_dash(self) -> None:
+        assert fv.format_duration(float("nan")) == "—"
+
+    def test_inf_renders_dash(self) -> None:
+        assert fv.format_duration(float("inf")) == "—"
+
+    def test_unparseable_renders_dash(self) -> None:
+        bad: Any = "not-a-number"
+        assert fv.format_duration(bad) == "—"
+
+
+# ---------------------------------------------------------------------------
+# build_plan — greedy host→lane recommendation (pure)
+# ---------------------------------------------------------------------------
+
+
+class _Embedder:
+    """Minimal stand-in for an active EmbedderConfig (duck-typed)."""
+
+    def __init__(
+        self,
+        name: str,
+        provider: str,
+        model_id: str,
+        *,
+        extensions: list[str] | None = None,
+        active: bool = True,
+    ) -> None:
+        self.name = name
+        self.provider = provider
+        self.model_id = model_id
+        self.extensions = extensions or []
+        self.active = active
+
+
+class TestBuildPlan:
+    def test_picks_fastest_host_and_drain_math(self) -> None:
+        embedders = [
+            _Embedder("qwen", "st", "qwen3"),
+            _Embedder("nomic", "st", "nomic"),
+        ]
+        # qwen: h1=10/s, h2=50/s → h2 wins. nomic: h1=100/s, h2=20/s → h1 wins.
+        model_rows = [
+            {"model_key": "st:qwen3", "host_id": "h1", "chunks_per_s": 10.0},
+            {"model_key": "st:qwen3", "host_id": "h2", "chunks_per_s": 50.0},
+            {"model_key": "st:nomic", "host_id": "h1", "chunks_per_s": 100.0},
+            {"model_key": "st:nomic", "host_id": "h2", "chunks_per_s": 20.0},
+        ]
+        backlog = {1: 5000, 2: 1000}
+        id_for = {"qwen": 1, "nomic": 2}
+        lanes = fv.build_plan(
+            embedders=embedders,
+            model_rows=model_rows,
+            embedder_id_for=lambda ec: id_for[ec.name],
+            backlog_for=lambda eid, ext: backlog[eid],
+        )
+        by_lane = {lane["lane"]: lane for lane in lanes}
+        # qwen → fastest host h2 @ 50/s, backlog 5000 → 100s drain.
+        assert by_lane["qwen"]["recommended_host"] == "h2"
+        assert by_lane["qwen"]["rate"] == 50.0
+        assert by_lane["qwen"]["drain_seconds"] == 5000 / 50.0
+        # nomic → fastest host h1 @ 100/s, backlog 1000 → 10s drain.
+        assert by_lane["nomic"]["recommended_host"] == "h1"
+        assert by_lane["nomic"]["drain_seconds"] == 1000 / 100.0
+
+    def test_tie_breaks_on_host_id_ascending(self) -> None:
+        embedders = [_Embedder("e", "st", "m")]
+        model_rows = [
+            {"model_key": "st:m", "host_id": "hb", "chunks_per_s": 50.0},
+            {"model_key": "st:m", "host_id": "ha", "chunks_per_s": 50.0},
+        ]
+        lanes = fv.build_plan(
+            embedders=embedders,
+            model_rows=model_rows,
+            embedder_id_for=lambda ec: 1,
+            backlog_for=lambda eid, ext: 100,
+        )
+        assert lanes[0]["recommended_host"] == "ha"
+
+    def test_no_benchmark_lane_gets_hint(self) -> None:
+        embedders = [_Embedder("e", "st", "m")]
+        lanes = fv.build_plan(
+            embedders=embedders,
+            model_rows=[],
+            embedder_id_for=lambda ec: 1,
+            backlog_for=lambda eid, ext: 42,
+        )
+        assert lanes[0]["recommended_host"] is None
+        assert lanes[0]["rate"] is None
+        assert lanes[0]["drain_seconds"] is None
+        assert "bench embed" in lanes[0]["note"]
+
+    def test_unregistered_lane_has_zero_backlog(self) -> None:
+        embedders = [_Embedder("e", "st", "m")]
+        lanes = fv.build_plan(
+            embedders=embedders,
+            model_rows=[{"model_key": "st:m", "host_id": "h1", "chunks_per_s": 5.0}],
+            embedder_id_for=lambda ec: None,  # never registered
+            backlog_for=lambda eid, ext: pytest.fail("backlog must not be queried"),
+        )
+        assert lanes[0]["backlog"] == 0
+
+    def test_extensions_passed_through(self) -> None:
+        seen: dict[str, Any] = {}
+        embedders = [_Embedder("code", "st", "m", extensions=[".py", ".rs"])]
+
+        def _backlog(eid: int, ext: list[str] | None) -> int:
+            seen["ext"] = ext
+            return 0
+
+        fv.build_plan(
+            embedders=embedders,
+            model_rows=[],
+            embedder_id_for=lambda ec: 1,
+            backlog_for=_backlog,
+        )
+        assert seen["ext"] == [".py", ".rs"]
+
+    def test_live_claims_recorded_when_provided(self) -> None:
+        embedders = [_Embedder("e", "st", "m")]
+        lanes = fv.build_plan(
+            embedders=embedders,
+            model_rows=[{"model_key": "st:m", "host_id": "h1", "chunks_per_s": 5.0}],
+            embedder_id_for=lambda ec: 1,
+            backlog_for=lambda eid, ext: 50,
+            live_claims_for=lambda eid: 7,
+        )
+        assert lanes[0]["in_flight"] == 7
+
+    def test_zero_and_none_rates_skipped(self) -> None:
+        embedders = [_Embedder("e", "st", "m")]
+        model_rows = [
+            {"model_key": "st:m", "host_id": "h1", "chunks_per_s": 0.0},
+            {"model_key": "st:m", "host_id": "h2", "chunks_per_s": None},
+            {"model_key": "st:m", "host_id": "h3", "chunks_per_s": 9.0},
+        ]
+        lanes = fv.build_plan(
+            embedders=embedders,
+            model_rows=model_rows,
+            embedder_id_for=lambda ec: 1,
+            backlog_for=lambda eid, ext: 90,
+        )
+        assert lanes[0]["recommended_host"] == "h3"
+
+
+class TestPlanRenderAndSerialise:
+    def test_plan_table_smoke(self) -> None:
+        from rich.console import Console
+
+        from corpus_forge.ui import theme as _theme
+
+        lanes = [
+            {
+                "lane": "qwen",
+                "model_key": "st:qwen3",
+                "backlog": 5000,
+                "recommended_host": "h2",
+                "rate": 50.0,
+                "drain_seconds": 100.0,
+                "in_flight": None,
+                "note": None,
+            },
+            {
+                "lane": "nomic",
+                "model_key": "st:nomic",
+                "backlog": 10,
+                "recommended_host": None,
+                "rate": None,
+                "drain_seconds": None,
+                "in_flight": None,
+                "note": fv._NO_BENCH_HINT,
+            },
+        ]
+        table = fv.render_plan_table(lanes)
+        console = Console(width=200, record=True, force_terminal=False, theme=_theme.build_theme())
+        console.print(table)
+        text = console.export_text()
+        assert "qwen" in text
+        assert "Recommended host" in text
+        assert "bench embed" in text  # the no-benchmark hint surfaces
+
+    def test_plan_to_dict_shape(self) -> None:
+        lanes = [
+            {
+                "lane": "qwen",
+                "model_key": "st:qwen3",
+                "backlog": 5000,
+                "recommended_host": "h2",
+                "rate": 50.0,
+                "drain_seconds": 100.0,
+                "in_flight": 3,
+                "note": None,
+            }
+        ]
+        out = fv.plan_to_dict(lanes)
+        assert out["count"] == 1
+        row = out["lanes"][0]
+        assert row["lane"] == "qwen"
+        assert row["recommended_host"] == "h2"
+        assert row["drain"] == "~1m"  # 100s rounds into the minute bucket
+        assert row["in_flight"] == 3
+
+
+# ---------------------------------------------------------------------------
+# hosts plan — CLI surface
+# ---------------------------------------------------------------------------
+
+
+class _PlanBackend:
+    """Stub backend for ``hosts plan``; write methods fail the test if hit."""
+
+    def __init__(
+        self,
+        *,
+        models: list[dict] | None = None,
+        ids: dict[str, int] | None = None,
+        backlog: dict[int, int] | None = None,
+        claims: dict[int, int] | None = None,
+    ) -> None:
+        self._models = models or []
+        self._ids = ids or {}
+        self._backlog = backlog or {}
+        self._claims = claims or {}
+        self.closed = False
+
+    def list_models_with_latest_benchmark(self) -> list[dict]:
+        return self._models
+
+    def find_embedder_row_by_name(self, name: str) -> dict | None:
+        eid = self._ids.get(name)
+        return None if eid is None else {"id": eid, "name": name}
+
+    def count_chunks_missing_embedding(
+        self, embedder_id: int, *, extensions: list[str] | None = None
+    ) -> int:
+        return self._backlog.get(embedder_id, 0)
+
+    def count_live_claims(self, embedder_id: int, exclude_host_id: str | None = None) -> int:
+        return self._claims.get(embedder_id, 0)
+
+    def close(self) -> None:
+        self.closed = True
+
+    # ── Write methods: any call is a read-only contract violation. ──────
+    def write_embeddings(self, *a: Any, **k: Any) -> None:  # pragma: no cover
+        raise AssertionError("hosts plan must be read-only — write_embeddings called")
+
+    def claim_chunks_for_embedding(self, *a: Any, **k: Any) -> Any:  # pragma: no cover
+        raise AssertionError("hosts plan must be read-only — claim_chunks_for_embedding called")
+
+    def register_embedder(self, *a: Any, **k: Any) -> int:  # pragma: no cover
+        raise AssertionError("hosts plan must be read-only — register_embedder called")
+
+
+def _cfg_with_embedders(embedders: list[Any], *, kind: str = "postgres") -> Any:
+    cfg = type("C", (), {})()
+    cfg.backend = type("B", (), {"kind": kind, "dsn": "x", "schema": "corpus"})()
+    cfg.embedders = embedders
+    return cfg
+
+
+@pytest.fixture
+def plan_patched(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Patch config + backend so ``hosts plan`` never touches disk / DB."""
+    from corpus_forge.config import Config
+
+    cfg = _cfg_with_embedders(
+        [
+            _Embedder("qwen", "st", "qwen3"),
+            _Embedder("nomic", "st", "nomic"),
+            # Inactive lane — exercises the active-filter (must be excluded).
+            _Embedder("off", "st", "x", active=False),
+        ]
+    )
+    monkeypatch.setattr(Config, "load", classmethod(lambda c: cfg))
+    backend = _PlanBackend(
+        models=[
+            {"model_key": "st:qwen3", "host_id": "h2", "chunks_per_s": 50.0},
+            {"model_key": "st:nomic", "host_id": "h1", "chunks_per_s": 100.0},
+        ],
+        ids={"qwen": 1, "nomic": 2},
+        backlog={1: 5000, 2: 1000},
+        claims={1: 2},
+    )
+    holder: dict[str, Any] = {"backend": backend, "cfg": cfg}
+    monkeypatch.setattr(fv, "_build_backend", lambda config: holder["backend"])
+    return holder
+
+
+class TestHostsPlanCli:
+    def test_table_default(
+        self, plan_patched: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _force_human(monkeypatch)
+        result = runner.invoke(app, ["hosts", "plan"])
+        assert result.exit_code == 0
+        assert "Recommended host" in result.output
+        assert "└" in result.output
+        assert plan_patched["backend"].closed is True
+
+    def test_json_payload(
+        self, plan_patched: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _force_human(monkeypatch)
+        result = runner.invoke(app, ["hosts", "plan", "--json"])
+        assert result.exit_code == 0
+        payload = _json.loads(result.stdout)
+        assert payload["count"] == 2
+        by_lane = {lane["lane"]: lane for lane in payload["lanes"]}
+        assert by_lane["qwen"]["recommended_host"] == "h2"
+        assert by_lane["qwen"]["drain_seconds"] == 100.0
+        assert by_lane["qwen"]["in_flight"] == 2
+
+    def test_no_benchmarks_exits_0_with_hint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _force_human(monkeypatch)
+        from corpus_forge.config import Config
+
+        cfg = _cfg_with_embedders([_Embedder("e", "st", "m")])
+        monkeypatch.setattr(Config, "load", classmethod(lambda c: cfg))
+        # Registry row exists (never benchmarked → host_id None), backlog>0.
+        backend = _PlanBackend(
+            models=[{"model_key": "st:m", "host_id": None, "chunks_per_s": None}],
+            ids={"e": 1},
+            backlog={1: 99},
+        )
+        monkeypatch.setattr(fv, "_build_backend", lambda config: backend)
+        result = runner.invoke(app, ["hosts", "plan"])
+        assert result.exit_code == 0
+        assert "no benchmarks yet" in result.output
+
+    def test_all_drained_exits_0(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _force_human(monkeypatch)
+        from corpus_forge.config import Config
+
+        cfg = _cfg_with_embedders([_Embedder("e", "st", "m")])
+        monkeypatch.setattr(Config, "load", classmethod(lambda c: cfg))
+        backend = _PlanBackend(
+            models=[{"model_key": "st:m", "host_id": "h1", "chunks_per_s": 5.0}],
+            ids={"e": 1},
+            backlog={1: 0},
+        )
+        monkeypatch.setattr(fv, "_build_backend", lambda config: backend)
+        result = runner.invoke(app, ["hosts", "plan"])
+        assert result.exit_code == 0
+        assert "all lanes drained" in result.output
+
+    def test_sqlite_backend_federation_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _force_human(monkeypatch)
+        from corpus_forge.config import Config
+
+        cfg = _cfg_with_embedders([], kind="sqlite")
+        monkeypatch.setattr(Config, "load", classmethod(lambda c: cfg))
+
+        # _build_backend must never be reached on the sqlite gate.
+        def _boom(config: Any) -> Any:
+            raise AssertionError("sqlite must short-circuit before building a backend")
+
+        monkeypatch.setattr(fv, "_build_backend", _boom)
+        result = runner.invoke(app, ["hosts", "plan"])
+        assert result.exit_code == 0
+        assert "federation requires the postgres backend" in result.output
+
+    def test_sqlite_json_status(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _force_human(monkeypatch)
+        from corpus_forge.config import Config
+
+        cfg = _cfg_with_embedders([], kind="sqlite")
+        monkeypatch.setattr(Config, "load", classmethod(lambda c: cfg))
+        result = runner.invoke(app, ["hosts", "plan", "--json"])
+        assert result.exit_code == 0
+        payload = _json.loads(result.stdout)
+        assert payload["status"] == "unsupported"
+
+    def test_backend_unreachable_exits_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _force_human(monkeypatch)
+        from corpus_forge.config import Config
+
+        cfg = _cfg_with_embedders([_Embedder("e", "st", "m")])
+        monkeypatch.setattr(Config, "load", classmethod(lambda c: cfg))
+
+        def _boom(config: Any) -> Any:
+            raise RuntimeError("no db")
+
+        monkeypatch.setattr(fv, "_build_backend", _boom)
+        result = runner.invoke(app, ["hosts", "plan"])
+        assert result.exit_code == 1
 
 
 class TestSmallHelpers:

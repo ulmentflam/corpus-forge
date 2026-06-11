@@ -178,6 +178,9 @@ class TestSharedScopeDict:
             "distance": "cosine",
             "active": True,
             "extensions": [".py", ".ts"],
+            # RFC fleet-6: the model-identity alias set is shared scope (the
+            # fleet must agree on identity); empty here, federated in item 5.
+            "model_aliases": [],
         }
 
     def test_retrieval_settings_shared_reranker_split(self) -> None:

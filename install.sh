@@ -45,6 +45,19 @@
 # ``corpus-forge setup --non-interactive --join <dsn>``, then runs
 # ``corpus-forge doctor`` as a smoke check.  It explicitly does NOT run
 # ``corpus-forge migrate`` — the primary owns schema lifecycle.
+#
+# Pick the llama-cpp-python accelerator wheel (RFC fleet-7):
+#
+#     ./install.sh --llama-backend cuda      # force a CUDA wheel
+#     CF_LLAMA_BACKEND=cpu ./install.sh      # force the CPU wheel
+#
+# ``--llama-backend {auto|cuda|cudaNNN|metal|cpu|none}`` (default
+# ``auto``) selects which prebuilt ``llama-cpp-python`` wheel the
+# installer fetches.  ``auto`` detects the host accelerator
+# (``nvidia-smi`` → CUDA, Apple-Silicon → Metal, else CPU); ``none``
+# skips the ``[llama-cpp]`` extra entirely.  ``$CF_LLAMA_BACKEND`` is
+# the env-var equivalent; both thread through the ``--join`` one-liner,
+# so a GPU box joins the fleet AND gets a CUDA wheel in one command.
 
 # Fail loudly + early when streamed through a non-bash shell (Ubuntu /
 # Debian's ``/bin/sh`` is dash, which rejects ``set -o pipefail`` with
@@ -65,15 +78,17 @@ fi
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# CLI args.  Today we only parse ``--join <dsn>`` / ``--join=<dsn>``;
-# unknown flags pass through untouched so future flags can be added
-# without revisiting this loop.  The DSN lands in ``CF_JOIN_DSN`` —
-# the same env var the Python wizard reads via the ``envvar=`` on its
-# ``--join`` typer option (see ``corpus_forge/cli.py``), so the flag
-# and the env-var entry points share one code path downstream.
+# CLI args.  We parse ``--join <dsn>`` / ``--join=<dsn>`` (RFC fleet-3)
+# and ``--llama-backend <val>`` / ``--llama-backend=<val>`` (RFC
+# fleet-7); unknown flags pass through untouched so future flags can be
+# added without revisiting this loop.  Each lands in a ``CF_*`` env var
+# (``CF_JOIN_DSN`` / ``CF_LLAMA_BACKEND``) so the flag and env-var entry
+# points share one code path downstream — and so they thread through the
+# ``--join`` one-liner together (a GPU box joins the fleet AND gets the
+# CUDA llama-cpp wheel in a single command).
 # ---------------------------------------------------------------------------
 
-# RFC fleet-3 item 6 — installer one-liner pass-through.
+# RFC fleet-3 item 6 / fleet-7 item 3 — installer one-liner pass-through.
 _passthrough_args=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -90,6 +105,21 @@ while [ $# -gt 0 ]; do
         --join=*)
             CF_JOIN_DSN="${1#--join=}"
             export CF_JOIN_DSN
+            shift
+            ;;
+        --llama-backend)
+            shift
+            if [ $# -eq 0 ]; then
+                printf '%s\n' "Error: --llama-backend requires a value (auto|cuda|cudaNNN|metal|cpu|none)" >&2
+                exit 1
+            fi
+            CF_LLAMA_BACKEND="$1"
+            export CF_LLAMA_BACKEND
+            shift
+            ;;
+        --llama-backend=*)
+            CF_LLAMA_BACKEND="${1#--llama-backend=}"
+            export CF_LLAMA_BACKEND
             shift
             ;;
         *)
@@ -390,6 +420,144 @@ fi
 # ``all_extras`` is empty and grep exits 1 under ``set -o pipefail``).
 extras_clean="$(printf '%s' "$all_extras" | tr ',' '\n' | sort -u | { grep -v '^$' || true; } | paste -sd, -)"
 
+# ---------------------------------------------------------------------------
+# RFC fleet-7 — select the llama-cpp-python wheel backend.
+#
+# A plain ``uv tool install`` takes whatever ``llama-cpp-python`` wheel
+# resolves: CPU-only unless fetched against an accelerator backend. So a
+# CUDA box silently embeds on the CPU while its GPU idles. ``llama-cpp-python``
+# publishes prebuilt accelerated wheels behind per-backend extra-index URLs
+# (cpu / metal / cuXXX); we detect the host accelerator with the SAME signals
+# ``corpus_forge/acceleration.py`` uses at runtime (``nvidia-smi`` for CUDA +
+# its reported version; Apple-Silicon ``uname`` for Metal; else CPU) so the
+# install-time wheel and the runtime probe agree, then point ``uv`` at the
+# matching index.  CPU always resolves (no surprise source build); an
+# accelerated-fetch failure falls back to CPU + WARN.  Override with
+# ``--llama-backend`` / ``$CF_LLAMA_BACKEND``.
+# ---------------------------------------------------------------------------
+
+CF_LLAMA_INDEX_BASE="${CF_LLAMA_INDEX_BASE:-https://abetlen.github.io/llama-cpp-python/whl}"
+
+# BEGIN __cf_llama_backend_helpers
+# Probe nvidia-smi for the driver's reported CUDA runtime version. Echoes
+# "MAJOR.MINOR" (e.g. "12.4") on success, empty otherwise. The plain
+# ``nvidia-smi`` text header prints "CUDA Version: 12.4" — parse that.
+__cf_detect_cuda_version() {
+    command -v nvidia-smi >/dev/null 2>&1 || return 0
+    local out
+    out="$(nvidia-smi 2>/dev/null)" || return 0
+    printf '%s\n' "$out" \
+        | sed -n 's/.*CUDA Version: \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
+        | head -n1
+}
+
+# Detect the accelerator KIND: echoes cuda|metal|cpu. CUDA wins (matches
+# acceleration.detect_accelerator's CUDA→MPS→CPU priority).
+__cf_detect_accelerator() {
+    if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+        printf 'cuda\n'; return 0
+    fi
+    if [ "$(uname -s 2>/dev/null)" = "Darwin" ] && [ "$(uname -m 2>/dev/null)" = "arm64" ]; then
+        printf 'metal\n'; return 0
+    fi
+    printf 'cpu\n'
+}
+
+# Map a CUDA version "MAJOR.MINOR" to the closest published
+# llama-cpp-python wheel variant (cuXXX). The abetlen index publishes
+# cu118 + cu121..cu125; clamp into that range. Empty/unparsed input or an
+# unsupported major echoes the documented default (cu121) so a parse miss
+# still lands a working CUDA wheel rather than silently dropping to CPU.
+__cf_cuda_variant() {
+    local ver="$1" major minor
+    major="${ver%%.*}"
+    minor="${ver#*.}"; minor="${minor%%.*}"
+    case "$major" in
+        12)
+            case "$minor" in
+                ''|0|1) printf 'cu121\n' ;;
+                2)      printf 'cu122\n' ;;
+                3)      printf 'cu123\n' ;;
+                4)      printf 'cu124\n' ;;
+                *)      printf 'cu125\n' ;;
+            esac
+            ;;
+        11) printf 'cu118\n' ;;
+        *)  printf 'cu121\n' ;;
+    esac
+}
+# END __cf_llama_backend_helpers
+
+# Resolve the requested backend → a wheel variant (cpu|metal|cuXXX) or
+# empty for "no llama-cpp". ``llama_explicit_accel=1`` records that the
+# operator forced an accelerator value (so we install llama-cpp even if
+# the question tree didn't ask for it).
+llama_backend="${CF_LLAMA_BACKEND:-auto}"
+llama_variant=""
+llama_explicit_accel=0
+case "$llama_backend" in
+    none)  llama_variant="" ;;
+    cpu)   llama_variant="cpu";   llama_explicit_accel=1 ;;
+    metal) llama_variant="metal"; llama_explicit_accel=1 ;;
+    cuda)  llama_variant="$(__cf_cuda_variant "$(__cf_detect_cuda_version)")"; llama_explicit_accel=1 ;;
+    cuda[0-9]*) llama_variant="cu${llama_backend#cuda}"; llama_explicit_accel=1 ;;
+    auto|*)
+        if [ "$llama_backend" != "auto" ]; then
+            warn "Unknown --llama-backend '$llama_backend' — falling back to auto-detect."
+            llama_backend="auto"
+        fi
+        case "$(__cf_detect_accelerator)" in
+            cuda)  llama_variant="$(__cf_cuda_variant "$(__cf_detect_cuda_version)")" ;;
+            metal) llama_variant="metal" ;;
+            *)     llama_variant="cpu" ;;
+        esac
+        ;;
+esac
+
+# Decide whether llama-cpp is installed at all. It is when: already in the
+# resolved extras; an accelerator backend was forced; the recommended
+# ``embedder=auto`` lane was chosen (acceleration.recommend_embedder_preset
+# is always a llama-cpp lane, so auto installs need the extra — closes a
+# latent gap); OR a fleet joiner (no question tree) auto-detected a GPU and
+# joined for it. ``none`` always wins (drops the extra).
+llama_in_extras=0
+case ",$extras_clean," in *,llama-cpp,*) llama_in_extras=1 ;; esac
+want_llama=0
+if [ "$llama_backend" = "none" ]; then
+    want_llama=0
+elif [ "$llama_in_extras" -eq 1 ] || [ "$llama_explicit_accel" -eq 1 ]; then
+    want_llama=1
+elif [ "$(get_answer embedder)" = "auto" ]; then
+    want_llama=1
+elif [ -n "${CF_JOIN_DSN:-}" ] && [ -n "$llama_variant" ] && [ "$llama_variant" != "cpu" ]; then
+    # Join + auto + a GPU (metal/cuXXX): the box joined the fleet for its
+    # accelerator — give it in-process GPU embedding by default.
+    want_llama=1
+fi
+
+# Apply the decision to the extras list.
+if [ "$want_llama" -eq 1 ] && [ "$llama_in_extras" -eq 0 ]; then
+    # ``printf '%s\n'`` (not ``%s``) so the trailing element keeps its
+    # newline — otherwise ``echo llama-cpp`` would concatenate onto it
+    # (``…,tokensllama-cpp``) instead of becoming a fresh list entry.
+    extras_clean="$( { printf '%s\n' "$extras_clean" | tr ',' '\n'; echo 'llama-cpp'; } | sort -u | { grep -v '^$' || true; } | paste -sd, -)"
+elif [ "$want_llama" -eq 0 ] && [ "$llama_in_extras" -eq 1 ]; then
+    extras_clean="$(printf '%s\n' "$extras_clean" | tr ',' '\n' | { grep -vx 'llama-cpp' || true; } | { grep -v '^$' || true; } | paste -sd, -)"
+fi
+
+# Announce the choice + build the uv extra-index args.
+llama_index_args=()
+if [ "$want_llama" -eq 1 ] && [ -n "$llama_variant" ]; then
+    llama_index_args=(--extra-index-url "$CF_LLAMA_INDEX_BASE/$llama_variant" --index-strategy unsafe-best-match)
+    case "$llama_variant" in
+        cu*)   info "llama-cpp backend: NVIDIA CUDA → CUDA-enabled llama-cpp-python ($llama_variant wheel) [override: --llama-backend]" ;;
+        metal) info "llama-cpp backend: Apple Silicon → Metal-enabled llama-cpp-python [override: --llama-backend]" ;;
+        cpu)   info "llama-cpp backend: no accelerator detected → CPU llama-cpp-python wheel [override: --llama-backend]" ;;
+    esac
+elif [ "$llama_backend" = "none" ]; then
+    info "llama-cpp backend: skipped (--llama-backend none)"
+fi
+
 echo
 ok "Selected pip extras: ${extras_clean:-<none>}"
 echo
@@ -429,8 +597,26 @@ fi
 # version (e.g. ``3.12`` on a host with multiple installed).
 pin_python="${CF_PYTHON:-3.11}"
 
-info "Running: $UV_CMD tool install --python $pin_python '$pkg_spec' --upgrade"
-"$UV_CMD" tool install --python "$pin_python" "$pkg_spec" --upgrade
+if [ ${#llama_index_args[@]} -gt 0 ]; then
+    info "Running: $UV_CMD tool install --python $pin_python '$pkg_spec' --upgrade ${llama_index_args[*]}"
+    # Accelerated/explicit llama-cpp wheel: try the selected index, and on
+    # failure fall back to the CPU wheel + WARN (offline index, unsupported
+    # CUDA version, arch with no prebuilt wheel) — never hard-fail the
+    # accelerator step.  ``if !`` guards the failure so ``set -e`` doesn't
+    # abort before the fallback runs.
+    if ! "$UV_CMD" tool install --python "$pin_python" "$pkg_spec" --upgrade "${llama_index_args[@]}"; then
+        if [ "$llama_variant" != "cpu" ]; then
+            warn "Accelerated llama-cpp-python wheel ($llama_variant) could not be installed — retrying with the CPU wheel. Re-run with \`--llama-backend $llama_backend\` once the accelerated index is reachable."
+            "$UV_CMD" tool install --python "$pin_python" "$pkg_spec" --upgrade \
+                --extra-index-url "$CF_LLAMA_INDEX_BASE/cpu" --index-strategy unsafe-best-match
+        else
+            fail "uv tool install failed for the CPU llama-cpp wheel. See output above."
+        fi
+    fi
+else
+    info "Running: $UV_CMD tool install --python $pin_python '$pkg_spec' --upgrade"
+    "$UV_CMD" tool install --python "$pin_python" "$pkg_spec" --upgrade
+fi
 
 ok "corpus-forge installed"
 

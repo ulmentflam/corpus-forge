@@ -30,9 +30,26 @@
     $env:CF_MCP = "yes"
     .\install.ps1
 
+.PARAMETER LlamaBackend
+    Pick the llama-cpp-python accelerator wheel (RFC fleet-7):
+    ``{auto|cuda|cudaNNN|metal|cpu|none}`` (default ``auto``). ``auto``
+    detects the host accelerator (``nvidia-smi`` → CUDA, Apple-Silicon →
+    Metal, else CPU) and installs the matching prebuilt wheel; ``none``
+    skips the ``[llama-cpp]`` extra entirely. ``$env:CF_LLAMA_BACKEND``
+    is the env-var equivalent. Threads through ``-Join`` so a GPU box
+    joins the fleet AND gets a CUDA wheel in one command.
+
 .EXAMPLE
     # Onboard a second machine onto an existing fleet — one-line form:
     .\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
+
+.EXAMPLE
+    # Force a CUDA llama-cpp-python wheel on a GPU box:
+    .\install.ps1 -LlamaBackend cuda
+
+.EXAMPLE
+    # GPU joiner — fleet join AND CUDA wheel in one command:
+    .\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus' -LlamaBackend cuda
 
 .EXAMPLE
     # Or via env (works with streamed download + call):
@@ -47,7 +64,15 @@ param(
     # join requested"; we then fall back to ``$env:CF_JOIN_DSN`` so the
     # ``iwr | iex`` form (which can't pass positional params) can drive
     # the same code path via env.
-    [string]$Join = ''
+    [string]$Join = '',
+
+    # RFC fleet-7 item 3 — pick the llama-cpp-python accelerator wheel.
+    # ``{auto|cuda|cudaNNN|metal|cpu|none}`` (default ``auto``). Empty
+    # means "not passed on the command line"; we then fall back to
+    # ``$env:CF_LLAMA_BACKEND`` so the streamed-download form can drive
+    # it via env. See the bash mirror in install.sh for the full
+    # semantics.
+    [string]$LlamaBackend = ''
 )
 
 # RFC fleet-3 item 6 — wire the -Join param through to the env var the
@@ -60,6 +85,13 @@ if (-not [string]::IsNullOrEmpty($Join)) {
 }
 $JoinDsn = $env:CF_JOIN_DSN
 $IsJoinMode = -not [string]::IsNullOrEmpty($JoinDsn)
+
+# RFC fleet-7 item 3 — wire -LlamaBackend through to $env:CF_LLAMA_BACKEND
+# (same flag-wins-over-env precedence as -Join) so the two parameters
+# thread through the streamed-download / --join one-liner together.
+if (-not [string]::IsNullOrEmpty($LlamaBackend)) {
+    $env:CF_LLAMA_BACKEND = $LlamaBackend
+}
 
 # StrictMode helps surface typos before they trash the user's config.
 Set-StrictMode -Version Latest
@@ -283,6 +315,140 @@ if ($IsJoinMode) {
 }
 
 $extrasClean = ($allExtras | Sort-Object) -join ','
+
+# ---------------------------------------------------------------------------
+# RFC fleet-7 — select the llama-cpp-python wheel backend (PowerShell
+# mirror of install.sh). Detect the host accelerator with the same
+# signals corpus_forge/acceleration.py uses (nvidia-smi → CUDA + its
+# reported version; Apple-Silicon → Metal; else CPU), then point uv at
+# the matching prebuilt-wheel extra-index. CPU always resolves (no
+# surprise source build); an accelerated-fetch failure falls back to CPU
+# + WARN. Override with -LlamaBackend / $env:CF_LLAMA_BACKEND.
+# ---------------------------------------------------------------------------
+
+$LlamaIndexBase = if ($env:CF_LLAMA_INDEX_BASE) { $env:CF_LLAMA_INDEX_BASE } else { 'https://abetlen.github.io/llama-cpp-python/whl' }
+
+# BEGIN __cf_llama_backend_helpers
+function Get-CudaVersion {
+    # Echo the driver's reported CUDA runtime version "MAJOR.MINOR" or ''.
+    if (-not (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) { return '' }
+    try { $out = & nvidia-smi 2>$null } catch { return '' }
+    if (-not $out) { return '' }
+    $m = [regex]::Match(($out -join "`n"), 'CUDA Version:\s*([0-9]+\.[0-9]+)')
+    if ($m.Success) { return $m.Groups[1].Value }
+    return ''
+}
+
+function Test-IsAppleSiliconPwsh {
+    # StrictMode-safe Apple-Silicon check ($IsMacOS is undefined on
+    # Windows PowerShell 5.1, which StrictMode would throw on).
+    try {
+        $mac = Get-Variable -Name IsMacOS -ValueOnly -ErrorAction SilentlyContinue
+        if (-not $mac) { return $false }
+        return ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -eq 'Arm64')
+    } catch { return $false }
+}
+
+function Get-AcceleratorKind {
+    # cuda|metal|cpu — CUDA wins (matches acceleration.detect_accelerator).
+    if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+        try {
+            & nvidia-smi *> $null
+            if ($LASTEXITCODE -eq 0) { return 'cuda' }
+        } catch { }
+    }
+    if (Test-IsAppleSiliconPwsh) { return 'metal' }
+    return 'cpu'
+}
+
+function Get-CudaVariant {
+    # Map "MAJOR.MINOR" → the closest published llama-cpp-python wheel
+    # variant. The abetlen index publishes cu118 + cu121..cu125; clamp
+    # into that range. Empty/unparsed → cu121 (safe broad default) so a
+    # parse miss still lands a working CUDA wheel rather than silent CPU.
+    param([string]$Ver)
+    $parts = $Ver.Split('.')
+    $major = if ($parts.Count -ge 1) { $parts[0] } else { '' }
+    $minor = if ($parts.Count -ge 2) { $parts[1] } else { '' }
+    switch ($major) {
+        '12' {
+            switch ($minor) {
+                { $_ -in @('', '0', '1') } { return 'cu121' }
+                '2' { return 'cu122' }
+                '3' { return 'cu123' }
+                '4' { return 'cu124' }
+                default { return 'cu125' }
+            }
+        }
+        '11' { return 'cu118' }
+        default { return 'cu121' }
+    }
+}
+# END __cf_llama_backend_helpers
+
+# Resolve the requested backend → a wheel variant (cpu|metal|cuXXX) or ''.
+$LlamaBackendVal = if ($env:CF_LLAMA_BACKEND) { $env:CF_LLAMA_BACKEND } else { 'auto' }
+$LlamaVariant = ''
+$LlamaExplicitAccel = $false
+switch -Regex ($LlamaBackendVal) {
+    '^none$'       { $LlamaVariant = '';      break }
+    '^cpu$'        { $LlamaVariant = 'cpu';   $LlamaExplicitAccel = $true; break }
+    '^metal$'      { $LlamaVariant = 'metal'; $LlamaExplicitAccel = $true; break }
+    '^cuda$'       { $LlamaVariant = (Get-CudaVariant (Get-CudaVersion)); $LlamaExplicitAccel = $true; break }
+    '^cuda[0-9]+$' { $LlamaVariant = 'cu' + $LlamaBackendVal.Substring(4); $LlamaExplicitAccel = $true; break }
+    default {
+        if ($LlamaBackendVal -ne 'auto') {
+            Write-Warn2 "Unknown -LlamaBackend '$LlamaBackendVal' — falling back to auto-detect."
+            $LlamaBackendVal = 'auto'
+        }
+        switch (Get-AcceleratorKind) {
+            'cuda'  { $LlamaVariant = (Get-CudaVariant (Get-CudaVersion)) }
+            'metal' { $LlamaVariant = 'metal' }
+            default { $LlamaVariant = 'cpu' }
+        }
+    }
+}
+
+# Decide whether llama-cpp is installed at all (mirrors install.sh): when
+# already in extras; an accelerator was forced; the recommended
+# embedder=auto lane was chosen (always a llama-cpp lane — closes a latent
+# gap); OR a fleet joiner auto-detected a GPU and joined for it. ``none``
+# wins (drops the extra).
+$LlamaInExtras = (($extrasClean -split ',') -contains 'llama-cpp')
+$WantLlama = $false
+if ($LlamaBackendVal -eq 'none') {
+    $WantLlama = $false
+} elseif ($LlamaInExtras -or $LlamaExplicitAccel) {
+    $WantLlama = $true
+} elseif ($Answers['embedder'] -eq 'auto') {
+    $WantLlama = $true
+} elseif ($IsJoinMode -and $LlamaVariant -and $LlamaVariant -ne 'cpu') {
+    $WantLlama = $true
+}
+
+# Apply the decision to the extras set.
+if ($WantLlama -and -not $LlamaInExtras) {
+    [void]$allExtras.Add('llama-cpp')
+    $extrasClean = ($allExtras | Sort-Object) -join ','
+} elseif (-not $WantLlama -and $LlamaInExtras) {
+    $extrasClean = (($allExtras | Where-Object { $_ -ne 'llama-cpp' }) | Sort-Object) -join ','
+}
+
+# Announce the choice + build the uv extra-index args.
+$LlamaIndexArgs = @()
+if ($WantLlama -and $LlamaVariant) {
+    $LlamaIndexArgs = @('--extra-index-url', "$LlamaIndexBase/$LlamaVariant", '--index-strategy', 'unsafe-best-match')
+    if ($LlamaVariant -like 'cu*') {
+        Write-Info "llama-cpp backend: NVIDIA CUDA -> CUDA-enabled llama-cpp-python ($LlamaVariant wheel) [override: -LlamaBackend]"
+    } elseif ($LlamaVariant -eq 'metal') {
+        Write-Info "llama-cpp backend: Apple Silicon -> Metal-enabled llama-cpp-python [override: -LlamaBackend]"
+    } else {
+        Write-Info "llama-cpp backend: no accelerator detected -> CPU llama-cpp-python wheel [override: -LlamaBackend]"
+    }
+} elseif ($LlamaBackendVal -eq 'none') {
+    Write-Info "llama-cpp backend: skipped (-LlamaBackend none)"
+}
+
 Write-Host ''
 Write-Ok "Selected pip extras: $(if ($extrasClean) { $extrasClean } else { '<none>' })"
 Write-Host ''
@@ -320,10 +486,32 @@ if ($env:CF_INSTALL_FROM) {
 # user wants a specific version (e.g. ``3.12``).
 $pinPython = if ($env:CF_PYTHON) { $env:CF_PYTHON } else { '3.11' }
 
-Write-Info "Running: $UvCmd tool install --python $pinPython '$pkgSpec' --upgrade"
-& $UvCmd tool install --python $pinPython $pkgSpec --upgrade
-if ($LASTEXITCODE -ne 0) {
-    Write-Fail "uv tool install exited with code $LASTEXITCODE"
+if ($LlamaIndexArgs.Count -gt 0) {
+    Write-Info "Running: $UvCmd tool install --python $pinPython '$pkgSpec' --upgrade $($LlamaIndexArgs -join ' ')"
+    # Accelerated/explicit llama-cpp wheel: try the selected index; on
+    # failure fall back to the CPU wheel + WARN — never hard-fail the
+    # accelerator step. uv is a native exe so it sets $LASTEXITCODE rather
+    # than throwing under $ErrorActionPreference='Stop'.
+    $LASTEXITCODE = 0
+    & $UvCmd tool install --python $pinPython $pkgSpec --upgrade @LlamaIndexArgs
+    if ($LASTEXITCODE -ne 0) {
+        if ($LlamaVariant -ne 'cpu') {
+            Write-Warn2 "Accelerated llama-cpp-python wheel ($LlamaVariant) could not be installed — retrying with the CPU wheel. Re-run with ``-LlamaBackend $LlamaBackendVal`` once the accelerated index is reachable."
+            $LASTEXITCODE = 0
+            & $UvCmd tool install --python $pinPython $pkgSpec --upgrade --extra-index-url "$LlamaIndexBase/cpu" --index-strategy unsafe-best-match
+            if ($LASTEXITCODE -ne 0) {
+                Write-Fail "uv tool install exited with code $LASTEXITCODE (CPU fallback)"
+            }
+        } else {
+            Write-Fail "uv tool install exited with code $LASTEXITCODE"
+        }
+    }
+} else {
+    Write-Info "Running: $UvCmd tool install --python $pinPython '$pkgSpec' --upgrade"
+    & $UvCmd tool install --python $pinPython $pkgSpec --upgrade
+    if ($LASTEXITCODE -ne 0) {
+        Write-Fail "uv tool install exited with code $LASTEXITCODE"
+    }
 }
 Write-Ok 'corpus-forge installed'
 
