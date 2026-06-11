@@ -25,9 +25,11 @@ Forward-compatibility
 
 Future evaluator kinds will extend the ``eval_kind`` literal. Adding
 ``"distill"`` to that literal is a one-line change here; consumers
-that filter on the field upgrade by widening their own match. Today
-the literal already covers the four kinds the RFC scopes:
-``classifier``, ``quality``, ``retrieval``, ``regression``.
+that filter on the field upgrade by widening their own match. The
+literal covers the four kinds the RFC scopes (``classifier``,
+``quality``, ``retrieval``, ``regression``) plus ``embedder_ranking``
+(the leaderboard harness in ``corpus_forge.eval.embedder_ranking``,
+which marshals into this envelope like the rest).
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-EvalKind = Literal["classifier", "quality", "retrieval", "regression"]
+EvalKind = Literal["classifier", "quality", "retrieval", "regression", "embedder_ranking"]
 
 
 def _utc_now_iso() -> str:
@@ -61,7 +63,8 @@ class EvalOutput(BaseModel):
     Fields:
 
     - ``eval_kind``: which evaluator produced this record. One of
-      ``"classifier"``, ``"quality"``, ``"retrieval"``, ``"regression"``.
+      ``"classifier"``, ``"quality"``, ``"retrieval"``, ``"regression"``,
+      ``"embedder_ranking"``.
     - ``dataset``: the dataset name the evaluator ran against.
     - ``git_commit``: the commit SHA the evaluator was run against, or
       ``None`` when the working tree is detached / not a git checkout

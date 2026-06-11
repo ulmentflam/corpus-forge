@@ -22,7 +22,9 @@ from corpus_forge.eval._schema import EvalKind, EvalOutput, _utc_now_iso
 class TestEvalOutputConstruction:
     """The envelope accepts each documented kind + defaults sensibly."""
 
-    @pytest.mark.parametrize("kind", ["classifier", "quality", "retrieval", "regression"])
+    @pytest.mark.parametrize(
+        "kind", ["classifier", "quality", "retrieval", "regression", "embedder_ranking"]
+    )
     def test_accepts_each_documented_kind(self, kind: str) -> None:
         out = EvalOutput(eval_kind=kind, dataset="ds")  # type: ignore[arg-type]
         assert out.eval_kind == kind
