@@ -428,6 +428,28 @@ def cmd_pull(
         _render_diff(plan, agent_mode, with_apply_hint=True)
         return
 
+    # Validate the merge BEFORE touching disk — never clobber a working
+    # config.toml with one that won't load. This mirrors how Config.load
+    # validates (``Config(**tomllib.loads(text))``), so the guard rejects
+    # exactly what the app would reject at startup. A merge can be valid
+    # TOML yet fail Config validation (e.g. a shared value the local
+    # config's other fields make invalid).
+    import tomllib
+
+    from corpus_forge.config import Config
+
+    try:
+        Config(**tomllib.loads(plan.merged_text))
+    except Exception as exc:
+        if agent_mode:
+            print(json.dumps({"status": "invalid_merge", "error": str(exc)}))
+        else:
+            ui_error(
+                f"refusing to apply: the merged config does not validate "
+                f"({exc}); {plan.config_path} is unchanged"
+            )
+        raise typer.Exit(code=3) from None
+
     # Apply: back up then write the merged text, record the version.
     backup_path = plan.config_path.with_name(plan.config_path.name + ".bak")
     if plan.config_path.exists():

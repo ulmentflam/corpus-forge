@@ -305,6 +305,53 @@ def test_pull_apply_writes_merged_and_backup(cfg: Path, monkeypatch: pytest.Monk
     assert fed.read_last_pulled_version() == 2
 
 
+def _bad_merge_plan(cfg: Path, merged_text: str):
+    return fed.PullPlan(
+        published_version=2,
+        local_version=0,
+        local_text=cfg.read_text(encoding="utf-8"),
+        merged_text=merged_text,
+        config_path=cfg,
+    )
+
+
+def test_pull_apply_aborts_on_invalid_toml_merge(
+    cfg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A merge that isn't valid TOML must NOT be written — config unchanged,
+    no .bak, version not advanced, exit 3."""
+    original = cfg.read_text(encoding="utf-8")
+    plan = _bad_merge_plan(cfg, "this is = = not valid toml\n")
+    monkeypatch.setattr(fed, "compute_pull_plan", lambda backend, *, local_version: plan)
+    _patch_backend(monkeypatch, _StubBackend(shared=(2, {})))
+
+    result = runner.invoke(app, ["config", "pull", "--apply", "--json"])
+    assert result.exit_code == 3, result.output
+    assert json.loads(result.stdout)["status"] == "invalid_merge"
+    # The working config is untouched; no backup written; version not bumped.
+    assert cfg.read_text(encoding="utf-8") == original
+    assert not cfg.with_name(cfg.name + ".bak").exists()
+    assert fed.read_last_pulled_version() == 0
+
+
+def test_pull_apply_aborts_on_valid_toml_but_invalid_config(
+    cfg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A merge that parses as TOML but fails Config validation (here:
+    ``backend`` is a string, not a table) is also refused — the subtler
+    case the guard exists for."""
+    original = cfg.read_text(encoding="utf-8")
+    plan = _bad_merge_plan(cfg, 'backend = "not-a-table"\n')
+    monkeypatch.setattr(fed, "compute_pull_plan", lambda backend, *, local_version: plan)
+    _patch_backend(monkeypatch, _StubBackend(shared=(2, {})))
+
+    result = runner.invoke(app, ["config", "pull", "--apply", "--json"])
+    assert result.exit_code == 3, result.output
+    assert json.loads(result.stdout)["status"] == "invalid_merge"
+    assert cfg.read_text(encoding="utf-8") == original
+    assert not cfg.with_name(cfg.name + ".bak").exists()
+
+
 def test_pull_nothing_published(cfg: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     backend = _StubBackend(shared=None)
     _patch_backend(monkeypatch, backend)
