@@ -93,6 +93,23 @@ def test_bench_embed_json(patched: dict[str, Any]) -> None:
     assert payload["results"][0]["chunks_per_s"] == 12.5
 
 
+def test_bench_embed_json_threads_agent_mode(patched: dict[str, Any]) -> None:
+    # --json forces agent mode → bench_embedders gets agent_mode=True so the
+    # phase progress degrades to log milestones (never a stdout-polluting bar).
+    runner.invoke(app, ["bench", "embed", "--json"])
+    assert patched["agent_mode"] is True
+
+
+def test_bench_embed_human_threads_agent_mode_false(
+    patched: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from corpus_forge.ui import agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "is_agent_mode", lambda detection=None: False)
+    runner.invoke(app, ["bench", "embed", "--sample", "4"])
+    assert patched["agent_mode"] is False
+
+
 def test_bench_embed_passes_embedder_and_all(patched: dict[str, Any]) -> None:
     runner.invoke(app, ["bench", "embed", "-e", "a", "-e", "b"])
     assert patched["embedders"] == ["a", "b"]

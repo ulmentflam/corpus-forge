@@ -147,10 +147,10 @@ task:
   - [ ] api per-text path advances the bar `sample` times; local path
         shows the indeterminate encode phase.
   - [ ] ≥90% line coverage on the new code (`make test-unit` gate).
-- [ ] (Stretch) alembic revision adding nullable
+- [x] (Stretch) alembic revision adding nullable
       `model_benchmarks.cold_start_s`; `bench` writes it; `models list`
       surfaces it. Idempotent re-run test, head-pin transition like the
-      0018→0019 precedent.
+      0018→0019 precedent. _(0021_benchmark_cold_start; this PR)_
 
 ## Verification
 
