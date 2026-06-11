@@ -378,6 +378,29 @@ class DatasetConfig(BaseModel):
         return self
 
 
+class ModelAlias(BaseModel):
+    """One ``(provider, model_id)`` pair declared equivalent to an embedder's own.
+
+    RFC fleet-6: the same underlying model served under different provider
+    names (e.g. Ollama ``manutic/nomic-embed-code:latest`` vs. an
+    OpenAI-compatible ``text-embedding-nomic-embed-code``). Declaring the
+    equivalents under ``[[embedders]].model_aliases`` lets the fingerprint
+    and the fleet ``model_key`` resolve every name to one canonical identity
+    (see :mod:`corpus_forge.embedders.identity`), so a host/provider swap is
+    no longer a false re-embed and the fleet shares one lane. ``provider`` is
+    validated against the same set as :class:`EmbedderConfig.provider`; the
+    pair carries no dimension/space fields of its own — aliasing *asserts*
+    vector compatibility, and the config-load guard (``_check_model_aliases``)
+    rejects a declared identity whose embedders disagree on dimension/space.
+    """
+
+    provider: str = Field(
+        pattern=r"^(sentence_transformers|openai|model2vec|llama\-cpp)$",
+        json_schema_extra={"scope": "shared"},
+    )
+    model_id: str = Field(json_schema_extra={"scope": "shared"})
+
+
 class EmbedderConfig(BaseModel):
     """Configuration for a single embedder.
 
@@ -463,6 +486,14 @@ class EmbedderConfig(BaseModel):
     # ``_check_routing_invariant`` validator below which rejects
     # specialist-only configs that have no active catchall.
     extensions: list[str] = Field(default_factory=list, json_schema_extra={"scope": "shared"})
+    # RFC fleet-6: provider/name aliases for the SAME underlying model. Shared
+    # scope — the fleet must agree on model identity or it forks into two lanes
+    # (fleet-3 federation publishes the alias set; item 5). Empty (the default)
+    # → canonical identity == ``(provider, model_id)``, i.e. today's behaviour
+    # byte-for-byte. See :mod:`corpus_forge.embedders.identity`.
+    model_aliases: list[ModelAlias] = Field(
+        default_factory=list, json_schema_extra={"scope": "shared"}
+    )
 
     @field_validator("extensions")
     @classmethod
@@ -1544,6 +1575,70 @@ class Config(BaseModel):
                 f"embed.lanes contains name(s) {unknown!r} that do not match any "
                 f"[[embedders]] entry; declared embedders: {sorted(embedder_names)!r}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _check_model_aliases(self) -> "Config":
+        """RFC fleet-6 item 1 — alias declarations must not collapse incompatible spaces.
+
+        Embedders whose identity sets (own ``(provider, model_id)`` pair plus
+        ``model_aliases``) **intersect** denote one underlying model, so they
+        MUST agree on the fields that define the vector space — ``dimension``,
+        ``normalize``, ``distance``. Two endpoints aliased together at different
+        dimensions would silently corrupt a shared space; we reject that at
+        load with a message naming the offenders and the field. The grouping is
+        transitive (A aliases B's pair → same identity even if B declares no
+        alias back), computed by union-find over the shared pairs. No aliases
+        anywhere → every embedder is its own singleton group → no-op (the
+        backcompat bar).
+        """
+
+        from corpus_forge.embedders.identity import model_identity_pairs  # noqa: PLC0415
+
+        embedders = list(self.embedders)
+        if not embedders:
+            return self
+
+        # Union-find over embedder indices that share any identity pair.
+        parent = list(range(len(embedders)))
+
+        def _find(i: int) -> int:
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        def _union(i: int, j: int) -> None:
+            parent[_find(i)] = _find(j)
+
+        pair_owner: dict[tuple[str, str], int] = {}
+        idx_pairs = [model_identity_pairs(ec) for ec in embedders]
+        for idx, pairs in enumerate(idx_pairs):
+            for pair in pairs:
+                prior = pair_owner.get(pair)
+                if prior is None:
+                    pair_owner[pair] = idx
+                else:
+                    _union(prior, idx)
+
+        # Within each identity component, dimension/normalize/distance must match.
+        groups: dict[int, list[int]] = {}
+        for idx in range(len(embedders)):
+            groups.setdefault(_find(idx), []).append(idx)
+
+        for members in groups.values():
+            if len(members) <= 1:
+                continue  # a singleton identity has nothing to disagree with
+            for field in ("dimension", "normalize", "distance"):
+                values = {getattr(embedders[i], field) for i in members}
+                if len(values) > 1:
+                    names = sorted(embedders[i].name for i in members)
+                    raise ValueError(
+                        f"embedders {names!r} are declared as the same model via "
+                        f"model_aliases but disagree on {field!r} "
+                        f"({sorted(map(repr, values))}); aliasing asserts vector "
+                        f"compatibility — fix the mismatch or remove the alias."
+                    )
         return self
 
     @model_validator(mode="after")
