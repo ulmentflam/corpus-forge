@@ -105,20 +105,20 @@ issue from PR #91's CI flake).
 - [x] `corpus_forge/net/tailscale.py`: `resolve` / `peers` /
       `TailscaleUnavailable` (MagicDNS-first, status-JSON fallback,
       5 s timeout, process-lifetime cache).
-- [ ] `ts://` scheme accepted by every URL/DSN config field via a
+- [x] `ts://` scheme accepted by every URL/DSN config field via a
       lazy `resolve_endpoint` helper at consumption points; clear
-      unresolved-name error naming the doctor check.
-- [ ] `[tailscale]` config block (default off) + validation
+      unresolved-name error naming the doctor check. _(merged via #112)_
+- [x] `[tailscale]` config block (default off) + validation
       (`ts://` present while disabled → config error at load with a
-      fix-it message).
-- [ ] Doctor `tailscale` check (binary / state / per-name resolve +
-      TCP connect; OK "not configured" path).
-- [ ] Wizard + join-flow live-peer picker (graceful skip without
+      fix-it message). _(merged via #112)_
+- [x] Doctor `tailscale` check (binary / state / per-name resolve +
+      TCP connect; OK "not configured" path). _(merged via #114)_
+- [x] Wizard + join-flow live-peer picker (graceful skip without
       Tailscale); `hosts list` online markers; heartbeat fills
-      `tailscale_name`.
-- [ ] Docs: README + CLAUDE.md fleet section — "point every box at
+      `tailscale_name`. _(merged via #115)_
+- [x] Docs: README + CLAUDE.md fleet section — "point every box at
       ts://pg-host, done"; troubleshooting row for
-      `TailscaleUnavailable`.
+      `TailscaleUnavailable`. _(merged via #116)_
 
 ## Verification
 

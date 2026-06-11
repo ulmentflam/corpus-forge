@@ -42,7 +42,7 @@ curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install
 
 ```powershell
 # Windows (run from an elevated PowerShell if you also want the daemon service)
-iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 | iex
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
 ```
 
 **CI / unattended installs** — set `CF_NON_INTERACTIVE=1` plus the
@@ -95,17 +95,27 @@ curl -sSf https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install
 ```
 
 ```powershell
-# Windows (PowerShell)
-iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 `
-  -OutFile $env:TEMP\install.ps1
-& $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
+# Windows (PowerShell) — env-var form, single line, always paste-safe:
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; $env:CF_JOIN_DSN = 'postgresql://primary.fleet:5432/corpus'; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1
 ```
 
-`CF_JOIN_DSN=<dsn>` is the env-var equivalent of `--join` / `-Join`
-and works with the streaming `iwr | iex` form too. Tailnet operators
-can pass a [`ts://` DSN](#multi-host-deployment) — corpus-forge will
-resolve it via the Tailscale API so the DSN is portable across the
-mesh.
+Or with the `-Join` parameter form (same chained pattern):
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; iwr -useb https://raw.githubusercontent.com/ulmentflam/corpus-forge/main/install.ps1 -OutFile $env:TEMP\install.ps1; & $env:TEMP\install.ps1 -Join 'postgresql://primary.fleet:5432/corpus'
+```
+
+> **Why `-OutFile + &` and not `iwr | iex`?** `Invoke-Expression`
+> doesn't reliably handle scripts with top-level `param()` blocks
+> (which install.ps1 has, for `-Join`) — its parser stumbles on the
+> preceding comment-based-help block. Downloading to a file and
+> running via the call operator routes the script through
+> PowerShell's normal `.ps1` loader, which handles `param()` and
+> `<# #>` blocks correctly.
+
+Tailnet operators can pass a [`ts://` DSN](#multi-host-deployment) —
+corpus-forge will resolve it via the Tailscale API so the DSN is
+portable across the mesh.
 
 What comes next on the joiner:
 
