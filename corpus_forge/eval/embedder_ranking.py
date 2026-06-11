@@ -22,10 +22,10 @@ Public surface
 - :func:`load_candidates` — parse a TOML candidate manifest.
 - :func:`build_envelope` — leaderboard envelope builder.
 
-TODO: adopt ``corpus_forge.eval._schema`` envelope once PR #38 lands.
-``_schema.py`` does not exist on this branch yet; the envelope shape below
-is hand-rolled to match that PR's planned ``eval_kind`` envelope so the
-swap is a drop-in replacement (no consumer changes).
+The leaderboard marshals into the shared
+:class:`corpus_forge.eval._schema.EvalOutput` envelope
+(``eval_kind = "embedder_ranking"``), like every other ``corpus-forge
+eval`` subcommand, so a dashboard can plot all eval kinds on one timeline.
 """
 
 from __future__ import annotations
@@ -34,13 +34,13 @@ import time
 import tomllib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from corpus_forge.eval._schema import EvalKind, EvalOutput
 from corpus_forge.retrieval.types import RetrievalMetrics
 
-EVAL_KIND = "embedder_ranking"
+EVAL_KIND: EvalKind = "embedder_ranking"
 DEFAULT_PRIMARY_METRIC = "ndcg@10"
 DEFAULT_K_VALUES: tuple[int, ...] = (1, 5, 10)
 
@@ -181,20 +181,24 @@ def build_envelope(
     ``ranking`` must already be sorted (descending by ``primary_metric``);
     :func:`rank_embedders` is the canonical caller and does that sort.
 
-    TODO: replace this hand-rolled envelope with the
-    ``corpus_forge.eval._schema`` envelope once PR #38 lands.
+    Marshals into the shared :class:`~corpus_forge.eval._schema.EvalOutput`
+    envelope and returns ``model_dump()`` so the output stays a plain dict
+    for existing consumers. ``ts`` defaults to the envelope's UTC "now" when
+    not overridden.
     """
-    return {
+    fields: dict[str, Any] = {
         "eval_kind": EVAL_KIND,
         "dataset": dataset,
         "git_commit": git_commit,
-        "ts": ts if ts is not None else datetime.now(UTC).isoformat(),
         "metrics": {
             "ranking": [r.to_dict() for r in ranking],
             "primary_metric": primary_metric,
         },
         "config": config if config is not None else {},
     }
+    if ts is not None:
+        fields["ts"] = ts
+    return EvalOutput(**fields).model_dump()
 
 
 # ── pure injectable core ──────────────────────────────────────────────────────
@@ -291,7 +295,12 @@ def load_candidates(path: Path | str) -> list[EmbedderCandidate]:
     if not p.exists():
         raise FileNotFoundError(f"candidate manifest not found: {p}")
 
-    data = tomllib.loads(p.read_text(encoding="utf-8"))
+    # A syntactically-broken manifest must surface as the documented
+    # ValueError, not an opaque TOMLDecodeError leaking the parser internals.
+    try:
+        data = tomllib.loads(p.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"{p}: manifest is not valid TOML: {exc}") from exc
     raw_candidates = data.get("candidates")
     if not isinstance(raw_candidates, list) or not raw_candidates:
         raise ValueError(f"{p}: manifest must define a non-empty `[[candidates]]` array")

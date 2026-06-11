@@ -8,6 +8,94 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+## [0.1.0b18] - 2026-06-08
+
+**Hotfix on top of the distributed-fleet release.** Fixes a real-world
+fleet-2 deadlock observed on the operator's two-host Mac + Windows
+5090 setup pointed at a remote Postgres LXC over Tailscale. The
+underlying bug was a write-amplification regression (older than fleet-2)
+that fleet-2's `embed_claims` paper trail made *visible*: on real
+distributed setups the embed-worker would wedge after the first
+"Generating embeddings for 1000 chunks" log line with claims held but
+zero rows written. Also collects two follow-up items filed as issues.
+
+### Fixed
+
+- **`PostgresBackend.write_embeddings` now batches into one
+  `executemany` under one connection checkout + COMMIT** (PR #124).
+  The previous implementation did one `_execute` per
+  `(chunk_id, embedding)` pair → ~1001 pool checkouts per 1000-pair
+  batch. Over Tailscale to a remote Postgres LXC (~14 ms/checkout),
+  each batch became a 14-second pool-contention storm. Combined with
+  the fleet-2 claim loop's per-batch claim/release cycle, this
+  produced the wedge symptom the operator observed: 0.2% CPU, all
+  threads in `__psynch_cvwait`, `corpus.embed_claims` accumulating
+  unembedded claims, `psycopg "another command is already in
+  progress"` warnings on shutdown. The fix preserves the per-row
+  `ON CONFLICT (chunk_id) DO NOTHING` semantics — `executemany`
+  runs the same INSERT N times under one txn so the guard still
+  fires per row. SQLite backend untouched (no Tailscale latency, no
+  pool, cheap single-machine path).
+
+  Per-host write pressure on Postgres drops ~50×. This bug existed
+  in the legacy `chunks_missing_embedding` fallback path too; fleet-2
+  didn't introduce the regression but surfaced it. Single-host
+  setups also benefit — any operator with non-trivial Postgres RTT
+  was paying this cost silently.
+
+  See `.planning/tdd/fleet2_claim_deadlock_investigation.md` for the
+  full diagnostic writeup, hypothesis reconciliation, and the
+  RED-anchor integration test
+  (`tests/integration/test_postgres_write_embeddings_batched.py`)
+  that wraps the connection pool with a checkout counter and asserts
+  ≤ 4 checkouts for a 500-pair write. Pre-fix: 201 checkouts; post-fix:
+  2.
+
+### Docs
+
+- **RFC: `bench embed` progress + cold-start handling** (PR #123) —
+  operator-requested refinement of the bench surface based on the
+  multi-minute model-load + first-batch latency we observed in the
+  field. Lays out incremental progress reporting and warm-state vs
+  cold-load attribution.
+
+### Known follow-ups (filed)
+
+- **#125** — _Guards / throttling to prevent embed-workers from
+  saturating the Postgres host (fleet-2)._ The operator's Postgres LXC
+  (4 vCPU / 16 GiB RAM / 512 MiB swap) hit 97% CPU, 98% RAM, 100% swap
+  during the two-host fleet drain — Tailscale connections began timing
+  out, the daemon's `pg_stat_activity` queries queued behind autovacuum,
+  and the LXC needed a reboot. The deadlock fix in #124 collapses
+  ~3000 pool round-trips per batch to ~3, so per-worker peak write
+  pressure drops ~50× — but the *steady-state* CPU + memory cost of N
+  concurrent claim workers all hitting the same Postgres still has no
+  client-side guard. Issue #125 captures the missing pieces:
+  `pg_stat`-based backpressure, per-host concurrency cap,
+  pool-size-vs-`max_connections` doctor check, configurable
+  `claim_batch_size`, and a "size your fleet" docs callout in
+  CLAUDE.md / AGENTS.md.
+
+- **PR #120** — _`config pull --apply` writes malformed TOML when
+  rewriting an existing inline `datasets = []` array._ Observed during
+  Windows-host onboarding: `setup --join` renders a skeleton config
+  with `datasets = []`; the next `config pull --apply` substitutes
+  table-array content into the inline-array slot without inserting
+  `{ }` braces or `,` between key-value pairs. Operator workaround:
+  hand-edit the embedder blocks out of the dry-run diff instead of
+  `--apply`. Fix is in `merge_shared_scope` (tomlkit array-of-tables
+  detection).
+
+### CI / Tests
+
+- **Test version pins refreshed to `0.1.0b18`** —
+  `tests/unit/test_phase_ci3_pyproject.py::test_version_is_beta`,
+  `test_phase_ci3_wheel_metadata.py::test_wheel_filename`, and
+  `test_metadata_version` hard-code the expected version string. Each
+  release that bumps `pyproject.toml` must bump these too or the
+  release-CI gate fails (and the publish-to-PyPI step never runs —
+  this is what happened to b17's first tag).
+
 ## [0.1.0b17] - 2026-06-08
 
 **The distributed-fleet release.** corpus-forge is no longer a

@@ -111,3 +111,77 @@ corpus-forge mcp serve
 The response includes `chunk_count` and `document_count` aggregated
 across all contributing hosts, confirming that cross-host data is
 reachable through the shared central Postgres.
+
+## Resource sizing — before you add a host
+
+Claim-based distributed embedding (RFC fleet-2) is *greedy*: every
+embed-worker races to claim the next batch of un-embedded chunks and
+writes the vectors straight back to the central Postgres. There is no
+cluster scheduler holding the fleet back — a host that can claim, claims.
+That's the right default for throughput, but it means **the central
+Postgres host, not the GPUs, is the shared bottleneck**, and adding
+workers past what it can serve degrades the whole fleet rather than
+speeding it up.
+
+A real failure seen in the field: a two-host fleet (a Mac + a Windows
+5090) pointed at a 4-vCPU / 16 GiB Postgres LXC drove the database host
+to ~98% CPU, ~98% RAM, and a fully-exhausted swap. The symptoms cascade
+and look like a *network* problem rather than a capacity one:
+
+- intermittent connection timeouts to `:5432` from every client,
+- embed-workers wedged mid-batch while still holding live `embed_claims`,
+- even read-only commands like `corpus-forge hosts list` failing with
+  `could not receive data from server`.
+
+Size the central host up front to avoid it.
+
+### Rule of thumb
+
+A Postgres host comfortably serves roughly **2–3 active embed-workers per
+vCPU**. The 4-vCPU / 16 GiB host above is comfortable with ~2–3 concurrent
+embedders; a third or fourth worker is where it starts to swap. CPU and
+RAM on the database host — not GPU count — set the ceiling, because every
+worker's writes, the HNSW index maintenance, and the claim/release
+bookkeeping all land there.
+
+### Connection-pool footprint
+
+Each host opens its own psycopg pool, up to `max_size` connections
+(**default `8`**). N hosts therefore consume up to `N × 8` of the
+server's `max_connections` (typically `100`), *plus* the operator's own
+ad-hoc `doctor` / `hosts list` / `psql` connections. Keep the fleet's
+steady-state usage under ~half the limit so those interactive commands
+never get starved:
+
+```text
+per_host_max_size  ≈  floor(max_connections / N / 2)
+```
+
+For `max_connections = 100` and a 4-host fleet that is `floor(100/4/2) =
+12` — comfortably above the default `8`, so the default is fine up to ~6
+hosts. Past that, either lower each host's pool ceiling or raise
+`max_connections` on the server (and its `shared_buffers` / `work_mem` to
+match — see [deployment/postgres.md](deployment/postgres.md#tuning)).
+
+### Pre-flight check
+
+Before you start a worker on a new host, run `doctor` against the central
+database from any existing host:
+
+```bash
+corpus-forge doctor
+```
+
+The `embed_claims` check reads the server's live connection count
+(`pg_stat_activity`) against `max_connections` and **WARNs when the host
+is already at ≥ 80% of its connection limit** — the "look before you add
+another embed-worker" guard. If it warns, the central Postgres is hot:
+add capacity (vCPU / RAM, or a higher `max_connections`) before adding a
+worker, rather than after the fleet wedges. `corpus-forge estimate <path>`
+(no network, no model calls) tells you the storage footprint a new root
+will add before you sync it.
+
+During the first backfill on a freshly-added host, watch the database
+host's CPU / RAM / swap (Proxmox, `htop`, or `pg_stat_activity`). Steady
+swap usage is the early-warning sign that you have one worker too many for
+the current database size.

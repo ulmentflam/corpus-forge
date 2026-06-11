@@ -313,3 +313,99 @@ def test_save_active_fingerprint_skips_backend_without_blob_helper():
     # this from the constructor, so we have to overwrite it manually).
     cfg.embedders[0].name = "e1"
     save_active_fingerprint(cfg, _LegacyBackend())  # must not raise
+
+
+# ── RFC embedder-eos: append_eos folds into the fingerprint ────────────────
+
+
+def _cfg(**kw):
+    """EmbedderConfig with EOS-relevant defaults, overridable per test."""
+    from corpus_forge.config import EmbedderConfig
+
+    base = {
+        "name": "nomic-code",
+        "provider": "llama-cpp",
+        "model_id": "manutic/nomic-embed-code:latest",
+        "dimension": 3584,
+        "normalize": True,
+        "distance": "cosine",
+    }
+    base.update(kw)
+    return EmbedderConfig(**base)
+
+
+def test_append_eos_true_changes_fingerprint():
+    """Enabling append_eos drifts the fingerprint (so a re-embed is forced)."""
+    from corpus_forge.embedders.fingerprint import embedder_fingerprint
+
+    off = embedder_fingerprint(_cfg(model_id="some-model:1", append_eos=False))
+    on = embedder_fingerprint(_cfg(model_id="some-model:1", append_eos=True))
+    assert off.full != on.full
+
+
+def test_append_eos_false_matches_pre_rfc_five_field_hash():
+    """append_eos=False is byte-identical to the legacy 5-field formula —
+    no spurious drift for models that never wanted a terminator."""
+    from corpus_forge.embedders.fingerprint import _hash, embedder_fingerprint
+
+    cfg = _cfg(model_id="plain-model:1", append_eos=False)
+    legacy = _hash("llama-cpp", "plain-model:1", 3584, True, "cosine")
+    assert embedder_fingerprint(cfg).full == legacy.full
+
+
+def test_append_eos_inferred_true_for_nomic_via_registry():
+    """With append_eos unset, the nomic family resolves True from the
+    known-model registry and so fingerprints differently from a model that
+    resolves False."""
+    from corpus_forge.embedders.fingerprint import embedder_fingerprint
+
+    nomic = embedder_fingerprint(_cfg(model_id="manutic/nomic-embed-code:latest"))
+    # Same five base fields, but an unknown model resolves append_eos False.
+    plain = embedder_fingerprint(_cfg(model_id="mystery-embed:1"))
+    assert nomic.full != plain.full
+
+
+def test_stored_fingerprint_reads_append_eos_from_blob():
+    """A stored blob carrying append_eos=True recomputes to the True-form,
+    so drift settles after a re-embed persists the flag."""
+    from corpus_forge.embedders.fingerprint import _stored_fingerprint, embedder_fingerprint
+
+    cfg = _cfg(model_id="x:1", append_eos=True)
+    fp_live = embedder_fingerprint(cfg)
+    row_with = {
+        "provider": "llama-cpp",
+        "model_id": "x:1",
+        "dimension": 3584,
+        "config": {
+            "provider": "llama-cpp",
+            "model_id": "x:1",
+            "dimension": 3584,
+            "normalize": True,
+            "distance": "cosine",
+            "append_eos": True,
+        },
+    }
+    assert _stored_fingerprint(row_with).full == fp_live.full
+
+
+def test_stored_fingerprint_legacy_blob_drifts_against_enabled_config():
+    """A legacy blob (no append_eos) recomputes to the False-form and so
+    drifts against a now-append_eos=True config — this is what forces the
+    one-time re-embed migration."""
+    from corpus_forge.embedders.fingerprint import _stored_fingerprint, embedder_fingerprint
+
+    cfg = _cfg(model_id="x:1", append_eos=True)
+    fp_live = embedder_fingerprint(cfg)
+    legacy_row = {
+        "provider": "llama-cpp",
+        "model_id": "x:1",
+        "dimension": 3584,
+        "config": {
+            "provider": "llama-cpp",
+            "model_id": "x:1",
+            "dimension": 3584,
+            "normalize": True,
+            "distance": "cosine",
+        },
+    }
+    assert _stored_fingerprint(legacy_row).full != fp_live.full

@@ -119,12 +119,15 @@ def redact_string(s: str) -> tuple[str, int]:
     return out, total
 
 
-def redact_toml_dict(doc: TOMLDocument | Table | InlineTable | AoT) -> tuple[Any, int]:
+def redact_toml_dict(
+    doc: TOMLDocument | Table | InlineTable | AoT,
+) -> tuple[TOMLDocument | Table | InlineTable | AoT, int]:
     """Walk ``doc`` and redact string values at secret-named keys.
 
     Preserves comments and ordering by editing the tomlkit AST in
     place.  Returns ``(doc, count)`` where ``count`` is the number of
-    string values replaced.
+    string values replaced. ``doc`` is the same object passed in (edited
+    in place), so the returned node type matches the input.
     """
 
     count = _walk_toml(doc)

@@ -769,6 +769,7 @@ class StorageBackend(Protocol):
         tokens_per_s: float | None = None,
         latency_p50_ms: float | None = None,
         latency_p95_ms: float | None = None,
+        cold_start_s: float | None = None,
     ) -> None:
         """Insert one ``model_benchmarks`` throughput sample (rfc-fleet-1).
 
@@ -779,7 +780,9 @@ class StorageBackend(Protocol):
         ``"local"`` / ``"api"`` and ``device`` the accelerator lane
         (``cuda`` / ``mps`` / ``cpu`` / ``remote``).  The optional
         latency / token columns stay ``None`` when not measurable for
-        the lane.  Foreign keys point at :meth:`upsert_host` /
+        the lane.  ``cold_start_s`` is the model load + warmup wall clock
+        (``bench`` measures it; the passive ``embed-run`` path leaves it
+        ``None``).  Foreign keys point at :meth:`upsert_host` /
         :meth:`upsert_models` rows, so callers heartbeat first.
         """
         ...

@@ -80,6 +80,50 @@ is the strongest documented option. (Sources: [CoIR paper](https://arxiv.org/abs
 / [CoIR org](https://huggingface.co/CoIR-Retrieval), [MTEB leaderboard](https://huggingface.co/spaces/mteb/leaderboard)
 Code tab, [voyage-code-3 announcement](https://blog.voyageai.com/2024/12/04/voyage-code-3/).)
 
+### EOS/SEP terminator — `append_eos`
+
+The **nomic-embed** family (text *and* code) is trained to terminate each
+input with the model's EOS/SEP token; its pooled sentence embedding assumes
+that terminator is present. `nomic-embed-code` in particular uses
+**last-token pooling** (the embedding *is* the final token's hidden state),
+so a missing terminator doesn't merely dilute the vector — it anchors the
+whole embedding on the wrong token. A GGUF served with
+`tokenizer.ggml.add_eos_token` unset (the common `manutic/nomic-embed-code`
+blob does) drops the terminator silently, which is what the per-input
+`... at least one last token ... is not SEP ... add_eos_token should be set
+to 'true'` server warning is telling you.
+
+corpus-forge fixes this client-side with the per-embedder `append_eos`
+flag, so correctness no longer depends on each host's GGUF header:
+
+```toml
+[[embedders]]
+name      = "nomic-code"
+provider  = "llama-cpp"
+model_id  = "manutic/nomic-embed-code:latest"
+# append_eos is inferred from the known-model registry (true for the
+# nomic-embed family); set it explicitly to override.
+append_eos = true
+```
+
+Left unset, `append_eos` is resolved from a small known-model registry
+(`corpus_forge/embedders/known_models.py`) that defaults the nomic-embed
+family to `true`. For the in-process `llama-cpp` transport the terminator
+is appended at the **token layer** (the EOS is a no-surface-form special
+token, so a string append can't reproduce it).
+
+> **Re-embed after enabling.** Turning `append_eos` on changes the vectors
+> a model produces, so it is folded into the embedder **fingerprint**:
+> enabling it makes the embedder show as *drifted* against the vectors
+> already in your corpus. `corpus-forge doctor` surfaces the drift and the
+> estimated re-embed cost, and the daemon's re-embed loop recomputes the
+> affected embedder's vectors (or run `corpus-forge embed -e <name>` to
+> backfill). Re-embedding is deliberate, **not** an implicit consequence of
+> upgrading — until it runs, old (un-terminated) and new (terminated)
+> vectors coexist in the same table and retrieve inconsistently. An
+> `append_eos=False` embedder keeps its existing fingerprint, so models that
+> never wanted a terminator are untouched.
+
 ---
 
 ## Multilingual
@@ -160,7 +204,7 @@ the static-tier (`model2vec`) and multimodal examples — is in
 [`config.example.toml`](../config.example.toml), and the backend classes are
 under [`corpus_forge/embedders/`](../corpus_forge/embedders/). Remember the
 backfill workflow: add the block, keep existing embedders `active`, then
-`corpus-forge embed --embedder <name>` to encode only the missing vectors.
+`corpus-forge embed -e <name>` to encode only the missing vectors.
 
 ---
 

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from corpus_forge import __version__
-from corpus_forge.acceleration import detect_accelerator
+from corpus_forge.acceleration import Accelerator, detect_accelerator
 from corpus_forge.mcp.lifecycle import ProcessDiscoveryUnavailable, discover_mcp_servers
 
 if TYPE_CHECKING:
@@ -687,6 +687,75 @@ def _check_embedder_drift(cfg: Config) -> CheckResult:
     return CheckResult("embedder_drift", CheckStatus.WARN, detail)
 
 
+def _check_embedder_eos(cfg: Config) -> CheckResult:
+    """Flag embedders that want an EOS/SEP terminator on a transport that
+    doesn't append one yet (RFC embedder-eos, the diagnostic goal).
+
+    The nomic-embed family (and any model the known-model registry marks)
+    is trained to terminate each input with the model's EOS/SEP token; a
+    pooled embedding computed without it is subtly wrong — for the
+    LAST-pooling ``nomic-embed-code`` the terminator anchors the *entire*
+    vector. corpus-forge appends the terminator client-side when
+    ``effective_append_eos()`` resolves True, but **only on the in-process
+    ``llama-cpp`` transport** (token-layer append). The
+    OpenAI-compatible/server transport append is not implemented yet, so an
+    ``append_eos``-wanting embedder served via ``provider = "openai"`` may
+    be producing un-terminated vectors unless the server itself sets
+    ``tokenizer.ggml.add_eos_token`` / appends the terminator.
+
+    Status logic:
+
+    - ``OK`` when no active embedder resolves ``append_eos=True``, or every
+      one that does is served via the ``llama-cpp`` provider (where the
+      append is wired and verified).
+    - ``WARN`` when at least one ``append_eos``-wanting embedder uses the
+      ``openai`` provider — names them and points at the fix (set
+      ``add_eos_token`` server-side, or switch to the ``llama-cpp``
+      provider). ``WARN``-not-``FAIL`` because retrieval still works; it's
+      just measurably worse, and a reachable server may already terminate.
+    """
+    gaps: list[str] = []
+    appends_ok: list[str] = []
+    for emb in cfg.embedders:
+        if not getattr(emb, "active", True):
+            continue
+        resolver = getattr(emb, "effective_append_eos", None)
+        wants_eos = (
+            bool(resolver()) if callable(resolver) else bool(getattr(emb, "append_eos", False))
+        )
+        if not wants_eos:
+            continue
+        if emb.provider == "llama-cpp":
+            appends_ok.append(emb.name)
+        elif emb.provider == "openai":
+            gaps.append(emb.name)
+        # sentence_transformers / model2vec tokenize via their own HF
+        # tokenizer, which adds the model's special tokens itself — not a
+        # corpus-forge gap, so they're not flagged here.
+
+    if not gaps:
+        if appends_ok:
+            return CheckResult(
+                "embedder_eos",
+                CheckStatus.OK,
+                f"append_eos terminator wired for {', '.join(appends_ok)} (llama-cpp token layer)",
+            )
+        return CheckResult(
+            "embedder_eos",
+            CheckStatus.OK,
+            "no embedder requests the EOS/SEP terminator",
+        )
+
+    detail = (
+        f"{', '.join(gaps)}: resolves append_eos=True but is served via the "
+        f"'openai' transport, which corpus-forge does not yet terminate "
+        f"client-side — vectors may be missing the EOS/SEP token the model "
+        f"expects. Set the terminator server-side (e.g. add_eos_token in the "
+        f"GGUF header) or serve it via the 'llama-cpp' provider."
+    )
+    return CheckResult("embedder_eos", CheckStatus.WARN, detail)
+
+
 def _check_icloud_access(cfg: Config) -> CheckResult:
     """Probe TCC access for each configured iCloud-rooted source.
 
@@ -800,6 +869,78 @@ def _check_embedder_acceleration() -> CheckResult:
     return CheckResult("embedder_acceleration", CheckStatus.OK, preset.summary)
 
 
+def _llama_cpp_supports_gpu_offload() -> bool | None:
+    """Whether the installed ``llama-cpp-python`` build supports GPU offload.
+
+    ``True`` / ``False`` from the wheel's own ``llama_supports_gpu_offload``
+    (a model-free, near-instant probe — no GGUF load); ``None`` when the
+    library isn't installed or the probe is unavailable (older/newer wheel
+    that renamed it). Factored out so the check is fully unit-testable by
+    patching this one function rather than ``llama_cpp`` itself.
+    """
+    try:
+        import llama_cpp  # pyrefly: ignore[missing-import]
+    except ImportError:
+        return None
+    try:
+        return bool(llama_cpp.llama_supports_gpu_offload())
+    except Exception:  # pragma: no cover - defensive: API drift across wheels
+        return None
+
+
+def _check_llama_cpp_backend() -> CheckResult:
+    """Reconcile the installed ``llama-cpp-python`` build against the
+    detected accelerator (RFC fleet-7 item 4).
+
+    The wheel ``pip``/``uv`` resolves is CPU-only unless fetched against an
+    accelerator index — so on a CUDA / Apple-Silicon box a CPU-only build
+    silently runs in-process embedding on the CPU while the GPU idles (the
+    fleet-5 drain loop then "drains" the backlog at CPU speed). WARN with the
+    reinstall fix so the operator can recover. SKIP when llama-cpp-python
+    isn't installed (the in-process embedder simply isn't in use).
+
+    Like the sibling checks, every probe is wrapped so a runtime quirk can
+    never crash ``corpus-forge doctor`` — the fallback stays at OK.
+    """
+    name = "llama_cpp_backend"
+    supports_offload = _llama_cpp_supports_gpu_offload()
+    if supports_offload is None:
+        return CheckResult(
+            name,
+            CheckStatus.SKIP,
+            "llama-cpp-python not installed (or build-info probe unavailable)",
+        )
+
+    try:
+        info = detect_accelerator()
+    except Exception as exc:  # pragma: no cover - defensive: wedged nvidia-smi etc.
+        return CheckResult(name, CheckStatus.OK, f"accelerator detection unavailable: {exc}")
+
+    gpu = info.kind in (Accelerator.CUDA, Accelerator.MPS)
+    if gpu and not supports_offload:
+        flag = "cuda" if info.kind is Accelerator.CUDA else "metal"
+        device = f" ({info.device_name})" if info.device_name else ""
+        return CheckResult(
+            name,
+            CheckStatus.WARN,
+            f"{info.kind.value.upper()} GPU detected{device} but the installed "
+            "llama-cpp-python is CPU-only — in-process embedding runs on the CPU "
+            f"while the GPU idles. Reinstall with `--llama-backend {flag}` "
+            "(or set CF_LLAMA_BACKEND) to fetch the accelerated wheel.",
+        )
+    if gpu:
+        return CheckResult(
+            name,
+            CheckStatus.OK,
+            f"{info.kind.value.upper()} detected; llama-cpp-python supports GPU offload.",
+        )
+    return CheckResult(
+        name,
+        CheckStatus.OK,
+        "no GPU detected; CPU-only llama-cpp-python is the expected build.",
+    )
+
+
 def _check_mcp_servers() -> CheckResult:
     """Surface running ``corpus-forge mcp serve`` children + flag stale ones.
 
@@ -870,6 +1011,7 @@ _CHECKS: tuple[Callable[[], CheckResult], ...] = (
     _check_ffmpeg,
     _check_daemon_activity,
     _check_embedder_acceleration,
+    _check_llama_cpp_backend,
     _check_mcp_servers,
 )
 
@@ -1056,6 +1198,14 @@ def _check_model_telemetry(cfg: Config) -> CheckResult:
 # leaves < 1024 stale rows, comfortably under the bar.
 _STALE_CLAIMS_WARN_THRESHOLD = 1000
 
+# Fraction of the Postgres server's ``max_connections`` at/above which the
+# embed_claims check WARNs that the host is "hot" before an operator adds
+# another embed-worker (issue #125). Each host opens up to its
+# ``[backend] pool max_size`` connections, so a fleet can approach the
+# server limit fast; 0.8 leaves headroom for the operator's own
+# ``hosts list`` / ``doctor`` connections.
+_EMBED_CLAIMS_CONN_WARN_FRACTION = 0.8
+
 # Fraction of ``claim_lease_ttl`` that a host's worst-case batch wall-clock
 # may consume before we WARN. A batch that takes more than half the lease
 # leaves little headroom for GC pauses / model reloads / a slow tail before
@@ -1080,6 +1230,12 @@ def _check_embed_claims(cfg: Config) -> CheckResult:
       automatically on the next claim call" for any count at/under
       :data:`_STALE_CLAIMS_WARN_THRESHOLD`; ``WARN`` above it (a sign a
       worker may be crash-looping).
+    - **Server load** (postgres, issue #125): reads ``server_load()``
+      (``pg_stat_activity`` count vs ``max_connections`` + db size) and
+      ``WARN``s when connections reach
+      :data:`_EMBED_CLAIMS_CONN_WARN_FRACTION` of the server limit — the
+      "look before you add another embed-worker host" guard. Best-effort;
+      skipped silently if the backend can't report it.
     - **Lease-TTL vs observed rate** (postgres): when ``model_benchmarks``
       holds a rate for (this host, an active embedder), the worst-case
       batch wall-clock is ``batch_size / rate``; ``WARN`` when it exceeds
@@ -1163,6 +1319,14 @@ def _check_embed_claims(cfg: Config) -> CheckResult:
             ),
         )
 
+    # ── Server-load hint (issue #125): is the Postgres host hot before the
+    # operator adds another embed-worker? Read-only, best-effort — any
+    # failure (older backend without the method, pre-migrate, perms) is
+    # skipped silently rather than turned into a false WARN.
+    server_load_warning = _embed_claims_server_load_warning(backend)
+    if server_load_warning is not None:
+        return CheckResult("embed_claims", CheckStatus.WARN, server_load_warning)
+
     # ── Lease-TTL vs observed rate: WARN if worst-case batch wall-clock
     # nears the lease. Skipped silently per-embedder when no benchmark row.
     ttl = int(getattr(getattr(cfg, "embed", None), "claim_lease_ttl", _DEFAULT_CLAIM_LEASE_TTL))
@@ -1241,6 +1405,50 @@ def _embed_claims_ttl_warning(cfg: Config, backend: StorageBackend, ttl: int) ->
                 "Fix: raise [embed] claim_lease_ttl"
             )
     return None
+
+
+def _embed_claims_server_load_warning(backend: StorageBackend) -> str | None:
+    """Return a Postgres-saturation WARN message, or None when healthy.
+
+    Issue #125: a fleet of embed-workers all hammering one Postgres host can
+    exhaust its connections / CPU / RAM with no client-side guard. This is
+    the operator-facing "look before you add a host" signal — it reads
+    ``server_load()`` (``pg_stat_activity`` count vs ``max_connections`` +
+    db size) and WARNs when connections reach
+    :data:`_EMBED_CLAIMS_CONN_WARN_FRACTION` of the server limit.
+
+    Best-effort: a backend without ``server_load`` (sqlite, older builds) or
+    any read failure returns None — an optional hint must never turn doctor
+    red or fabricate a warning.
+    """
+    load_fn = getattr(backend, "server_load", None)
+    if not callable(load_fn):
+        return None
+    try:
+        load = load_fn()
+    except Exception:
+        return None
+    if not isinstance(load, dict):
+        return None
+    backends = load.get("backends")
+    max_conn = load.get("max_connections")
+    # isinstance narrows for the type checker AND defends against a backend
+    # returning a non-int (None / Mock): an optional hint must never raise.
+    if not isinstance(backends, int) or not isinstance(max_conn, int) or max_conn <= 0:
+        return None
+    fraction = backends / max_conn
+    if fraction < _EMBED_CLAIMS_CONN_WARN_FRACTION:
+        return None
+    db_size = load.get("db_size_bytes", 0)
+    db_mb = (db_size if isinstance(db_size, int) else 0) // (1024 * 1024)
+    return (
+        f"Postgres is busy: {backends}/{max_conn} connections "
+        f"({fraction:.0%} of max_connections), corpus DB ~{db_mb} MB. Each "
+        "host's embed-worker opens up to its [backend] pool max_size "
+        "connections, so adding another host may exhaust the server and "
+        "stall the fleet (issue #125). Lower [backend] pool max_size per "
+        "host, or give the Postgres host more headroom, before scaling out."
+    )
 
 
 # ── tailscale (rfc-fleet-4) ───────────────────────────────────────────────
@@ -1443,6 +1651,13 @@ def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
         )
         results.append(
             CheckResult(
+                "embedder_eos",
+                CheckStatus.SKIP,
+                "skipped (config not loaded)",
+            )
+        )
+        results.append(
+            CheckResult(
                 "icloud_access",
                 CheckStatus.SKIP,
                 "skipped (config not loaded)",
@@ -1474,6 +1689,7 @@ def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
         results.append(_check_zotero(loaded_cfg))
         results.append(_check_embedder_indexes(loaded_cfg))
         results.append(_check_embedder_drift(loaded_cfg))
+        results.append(_check_embedder_eos(loaded_cfg))
         results.append(_check_icloud_access(loaded_cfg))
         results.append(_check_model_telemetry(loaded_cfg))
         results.append(_check_embed_claims(loaded_cfg))

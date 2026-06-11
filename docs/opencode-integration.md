@@ -21,7 +21,7 @@ If you just want the JSON: see [`examples/mcp-config/`](../examples/mcp-config/)
    export CORPUS_FORGE_CONFIG="$HOME/.config/corpus-forge/config.toml"
    corpus-forge migrate
    corpus-forge ingest --once
-   corpus-forge stats     # confirms non-zero chunks/embeddings
+   corpus-forge dataset list   # confirms non-zero documents (corpus ingested)
    ```
 
 3. A recent OpenCode install (`sst/opencode` — the CLI agent, not the
@@ -144,7 +144,7 @@ research question.
 |------------------------------------------------------|----------------------------------------------------------------|--------------------------------------------------------------------------------------------------|
 | Client says "MCP server `corpus-forge` not found"    | Drop-in JSON not at the expected path / not reloaded.          | Re-copy the snippet from `examples/mcp-config/` and restart the client.                          |
 | `corpus-forge: command not found` in the client logs | The client's shell `PATH` doesn't include the `corpus-forge` console script. | Use an absolute `command` path in the JSON, e.g. `/Users/…/.venv/bin/corpus-forge`.              |
-| `search` returns empty `hits`                        | Corpus not yet ingested, or query is off-topic.                | Run `corpus-forge ingest --once` and confirm `corpus-forge stats` shows non-zero chunks.         |
+| `search` returns empty `hits`                        | Corpus not yet ingested, or query is off-topic.                | Run `corpus-forge ingest --once` and confirm `corpus-forge dataset list` shows non-zero documents.         |
 | First call with `rerank=true` hangs ~30s             | Cross-encoder weights are downloading (one-time **600 MB**).   | Let it finish; subsequent calls reuse the cached weights. Stay `rerank=false` if you don't need precision. |
 | `tools/list` shows tools you didn't ask for          | A different MCP server is also registered.                     | Inspect the client's MCP config; corpus-forge always advertises exactly `search` / `get_chunk` / `list_datasets`. |
 | `schema validation` errors from the client           | Argument type mismatch (e.g. `k` passed as a string).          | The `search` schema requires `k: int`, `dataset: str \| null`, `rerank: bool`. Confirm types.    |

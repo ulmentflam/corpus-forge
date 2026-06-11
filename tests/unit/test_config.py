@@ -34,6 +34,23 @@ def test_interpolate_env_vars_validator():
     del os.environ["TEST_VAR"]
 
 
+def test_config_load_missing_file_raises_clear_error(tmp_path):
+    """A non-existent config path raises FileNotFoundError naming the path."""
+    missing = tmp_path / "nope.toml"
+    with pytest.raises(FileNotFoundError, match="Configuration file not found"):
+        Config.load(config_path=missing)
+
+
+def test_config_load_malformed_toml_raises_clear_value_error(tmp_path):
+    """A syntactically-broken config.toml surfaces as a clear ValueError
+    naming the file — not an opaque tomllib.TOMLDecodeError. Operators
+    hand-edit this file, so the message must point at the problem."""
+    config_file = tmp_path / "config.toml"
+    config_file.write_text('[backend]\nkind = = "postgres"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="is not valid TOML"):
+        Config.load(config_path=config_file)
+
+
 def test_config_load_minimal(tmp_path):
     """Test loading a minimal valid configuration."""
     # Create config file

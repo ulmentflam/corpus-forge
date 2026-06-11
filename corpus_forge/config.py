@@ -378,6 +378,29 @@ class DatasetConfig(BaseModel):
         return self
 
 
+class ModelAlias(BaseModel):
+    """One ``(provider, model_id)`` pair declared equivalent to an embedder's own.
+
+    RFC fleet-6: the same underlying model served under different provider
+    names (e.g. Ollama ``manutic/nomic-embed-code:latest`` vs. an
+    OpenAI-compatible ``text-embedding-nomic-embed-code``). Declaring the
+    equivalents under ``[[embedders]].model_aliases`` lets the fingerprint
+    and the fleet ``model_key`` resolve every name to one canonical identity
+    (see :mod:`corpus_forge.embedders.identity`), so a host/provider swap is
+    no longer a false re-embed and the fleet shares one lane. ``provider`` is
+    validated against the same set as :class:`EmbedderConfig.provider`; the
+    pair carries no dimension/space fields of its own — aliasing *asserts*
+    vector compatibility, and the config-load guard (``_check_model_aliases``)
+    rejects a declared identity whose embedders disagree on dimension/space.
+    """
+
+    provider: str = Field(
+        pattern=r"^(sentence_transformers|openai|model2vec|llama\-cpp)$",
+        json_schema_extra={"scope": "shared"},
+    )
+    model_id: str = Field(json_schema_extra={"scope": "shared"})
+
+
 class EmbedderConfig(BaseModel):
     """Configuration for a single embedder.
 
@@ -463,6 +486,28 @@ class EmbedderConfig(BaseModel):
     # ``_check_routing_invariant`` validator below which rejects
     # specialist-only configs that have no active catchall.
     extensions: list[str] = Field(default_factory=list, json_schema_extra={"scope": "shared"})
+    # ── EOS/SEP terminator correctness (RFC embedder-eos) ───────────────
+    # Whether to append the model's EOS/SEP terminator to each input
+    # client-side. The nomic-embed family (text + code) is trained to
+    # terminate inputs with an EOS token; a serving GGUF that leaves
+    # ``tokenizer.ggml.add_eos_token`` unset silently drops it, pooling the
+    # embedding over a sequence missing the token the model expects.
+    # Three-state: ``None`` (default) consults the known-model registry —
+    # see ``corpus_forge.embedders.known_models`` — which defaults
+    # nomic-embed to ``true``; ``true``/``false`` overrides it. SHARED: the
+    # terminator changes the vectors, so every host on a shared lane must
+    # agree (the cross-transport parity ``rfc-fleet-6`` aliasing needs).
+    # NOTE: this flag records intent; the transport-level append is a
+    # separate RFC item — setting it today does not yet mutate requests.
+    append_eos: bool | None = Field(default=None, json_schema_extra={"scope": "shared"})
+    # RFC fleet-6: provider/name aliases for the SAME underlying model. Shared
+    # scope — the fleet must agree on model identity or it forks into two lanes
+    # (fleet-3 federation publishes the alias set; item 5). Empty (the default)
+    # → canonical identity == ``(provider, model_id)``, i.e. today's behaviour
+    # byte-for-byte. See :mod:`corpus_forge.embedders.identity`.
+    model_aliases: list[ModelAlias] = Field(
+        default_factory=list, json_schema_extra={"scope": "shared"}
+    )
 
     @field_validator("extensions")
     @classmethod
@@ -487,6 +532,20 @@ class EmbedderConfig(BaseModel):
                 )
             normalised.append(raw.lower())
         return normalised
+
+    def effective_append_eos(self) -> bool:
+        """Resolve whether this embedder appends the EOS/SEP terminator.
+
+        Explicit ``append_eos`` wins; otherwise the known-model registry
+        default for ``model_id``; otherwise ``False`` (unknown models are
+        left as-is). The registry import is lazy to keep ``config`` free of
+        an ``embedders`` import at module load.
+        """
+        from corpus_forge.embedders.known_models import (  # noqa: PLC0415 — lazy: avoid an embedders import at config load
+            resolve_append_eos,
+        )
+
+        return resolve_append_eos(self.model_id, self.append_eos)
 
 
 class RerankerConfig(BaseModel):
@@ -934,10 +993,35 @@ class EmbedConfig(BaseModel):
       <name>`` OVERRIDES this list (the operator said so) and only warns.
       This field is LOCAL to each host (never federated): two machines in
       a fleet pin different lanes by design.
+    - ``claim_batch_size``: how many chunks one lane claims per sweep
+      (issue #125). Bigger batches amortise the per-claim round-trip;
+      smaller batches give finer progress reporting, lower peak DB write
+      pressure, and a smaller lease-window for a crashed host's claims.
+      Default ``1024`` (matches the historical hard-coded value). Must be
+      ``> 0``. LOCAL — a weak box can claim smaller batches than a GPU box.
+    - ``max_inflight_batches``: cap on how many claim/embed/release cycles
+      a single host runs concurrently (issue #125). The drain loop is
+      single-threaded today, so ``1`` (the default) is the de-facto
+      behaviour; the knob is pinned now so that when multi-threaded drain
+      lands it cannot multiply per-host DB load past this bound without an
+      explicit opt-in. Must be ``> 0``. LOCAL.
+    - ``backpressure_max_load``: Postgres-saturation guard (issue #125).
+      Before each drain sweep the loop checks the server's connection
+      pressure (``pg_stat_activity`` count / ``max_connections``); when it
+      reaches this fraction the loop backs off (exponential, interruptible)
+      instead of claiming, so a fleet can't drive the Postgres host to
+      connection exhaustion. Default ``0.9`` — the doctor ``embed_claims``
+      check WARNs earlier at 0.8, so the operator gets a heads-up before
+      throttling kicks in. Set ``0.0`` to disable. Range ``[0.0, 1.0]``.
+      Degrades to a no-op when the backend can't report load (SQLite /
+      pre-``server_load`` builds). LOCAL.
     """
 
     claim_lease_ttl: int = Field(default=600, gt=0)
     lanes: list[str] = Field(default_factory=list)
+    claim_batch_size: int = Field(default=1024, gt=0)
+    max_inflight_batches: int = Field(default=1, gt=0)
+    backpressure_max_load: float = Field(default=0.9, ge=0.0, le=1.0)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1522,6 +1606,70 @@ class Config(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _check_model_aliases(self) -> "Config":
+        """RFC fleet-6 item 1 — alias declarations must not collapse incompatible spaces.
+
+        Embedders whose identity sets (own ``(provider, model_id)`` pair plus
+        ``model_aliases``) **intersect** denote one underlying model, so they
+        MUST agree on the fields that define the vector space — ``dimension``,
+        ``normalize``, ``distance``. Two endpoints aliased together at different
+        dimensions would silently corrupt a shared space; we reject that at
+        load with a message naming the offenders and the field. The grouping is
+        transitive (A aliases B's pair → same identity even if B declares no
+        alias back), computed by union-find over the shared pairs. No aliases
+        anywhere → every embedder is its own singleton group → no-op (the
+        backcompat bar).
+        """
+
+        from corpus_forge.embedders.identity import model_identity_pairs  # noqa: PLC0415
+
+        embedders = list(self.embedders)
+        if not embedders:
+            return self
+
+        # Union-find over embedder indices that share any identity pair.
+        parent = list(range(len(embedders)))
+
+        def _find(i: int) -> int:
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        def _union(i: int, j: int) -> None:
+            parent[_find(i)] = _find(j)
+
+        pair_owner: dict[tuple[str, str], int] = {}
+        idx_pairs = [model_identity_pairs(ec) for ec in embedders]
+        for idx, pairs in enumerate(idx_pairs):
+            for pair in pairs:
+                prior = pair_owner.get(pair)
+                if prior is None:
+                    pair_owner[pair] = idx
+                else:
+                    _union(prior, idx)
+
+        # Within each identity component, dimension/normalize/distance must match.
+        groups: dict[int, list[int]] = {}
+        for idx in range(len(embedders)):
+            groups.setdefault(_find(idx), []).append(idx)
+
+        for members in groups.values():
+            if len(members) <= 1:
+                continue  # a singleton identity has nothing to disagree with
+            for field in ("dimension", "normalize", "distance"):
+                values = {getattr(embedders[i], field) for i in members}
+                if len(values) > 1:
+                    names = sorted(embedders[i].name for i in members)
+                    raise ValueError(
+                        f"embedders {names!r} are declared as the same model via "
+                        f"model_aliases but disagree on {field!r} "
+                        f"({sorted(map(repr, values))}); aliasing asserts vector "
+                        f"compatibility — fix the mismatch or remove the alias."
+                    )
+        return self
+
+    @model_validator(mode="after")
     def _check_tailscale_endpoints(self) -> "Config":
         """RFC fleet-4 item 3 — reject ``ts://`` endpoints while disabled.
 
@@ -1603,9 +1751,19 @@ class Config(BaseModel):
         if not config_path.exists():
             raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
-        # Load main config
+        # Load main config. ``config.toml`` is hand-edited, so a syntax error
+        # must surface as a clear, file-named message (with the parser's
+        # line/column) rather than an opaque ``tomllib.TOMLDecodeError``
+        # traceback the operator has to decode themselves.
         with config_path.open("rb") as f:
-            config_data = tomllib.load(f)
+            try:
+                config_data = tomllib.load(f)
+            except tomllib.TOMLDecodeError as exc:
+                raise ValueError(
+                    f"{config_path} is not valid TOML: {exc}. "
+                    "Fix the syntax error above (or re-run `corpus-forge setup` "
+                    "to regenerate it)."
+                ) from exc
 
         # Load secrets if provided and exists
         if secrets_path is None:

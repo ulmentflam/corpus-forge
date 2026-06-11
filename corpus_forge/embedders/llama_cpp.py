@@ -363,6 +363,58 @@ def _load_llama_handle(
     return handle
 
 
+class _EosAppendingTokenizer:
+    """Tokenizer wrapper that terminates every input with the EOS/SEP token.
+
+    RFC ``embedder-eos`` item 2 (the in-process half). The nomic-embed
+    family is trained to terminate each input with the model's EOS/SEP
+    token, and its pooled sentence embedding assumes that terminator is
+    present — for ``nomic-embed-code`` the GGUF uses **LAST-token pooling**
+    (``pooling_type=3``), so the embedding *is* the final token's hidden
+    state and a missing terminator re-anchors the whole vector. A GGUF that
+    leaves ``tokenizer.ggml.add_eos_token`` unset (the observed
+    ``manutic/nomic-embed-code`` blob does) drops it silently — the source
+    of the per-input ``... not SEP ... add_eos_token should be set to true``
+    warning.
+
+    We append at the **token layer**, not as a string: the Qwen2 EOS
+    (``<|im_end|>``, id 151645) has no surface form, and
+    :meth:`llama_cpp.Llama.embed` tokenizes with ``special=False``, so a
+    surface-string append could never reproduce the special token. Wrapping
+    the tokenizer is the seam ``llama_cpp.Llama`` itself exposes
+    (``self.tokenizer_``) and it covers every embed call —
+    ``create_embedding`` routes through ``embed`` → ``tokenize`` →
+    ``self.tokenizer_.tokenize``.
+
+    Composition (not subclassing :class:`llama_cpp.llama_tokenizer.LlamaTokenizer`)
+    keeps the class importable and unit-testable without the optional
+    ``[llama-cpp]`` extra: the base it wraps need only expose
+    ``tokenize`` / ``detokenize``.
+
+    Idempotent: if the wrapped tokenizer already terminated the sequence
+    (a GGUF that *does* set ``add_eos_token``), the EOS is not doubled.
+    """
+
+    def __init__(self, base: Any, eos_token_id: int):
+        self._base = base
+        self._eos_token_id = eos_token_id
+
+    def tokenize(self, text: bytes, add_bos: bool = True, special: bool = False) -> list[int]:
+        tokens = list(self._base.tokenize(text, add_bos, special))
+        if not tokens or tokens[-1] != self._eos_token_id:
+            tokens.append(self._eos_token_id)
+        return tokens
+
+    def detokenize(
+        self,
+        tokens: list[int],
+        prev_tokens: list[int] | None = None,
+        special: bool = False,
+    ) -> bytes:
+        # Pass-through — the EOS append happens only on the way in.
+        return self._base.detokenize(tokens, prev_tokens=prev_tokens, special=special)
+
+
 class LlamaCppEmbedder(BaseEmbedder):
     """In-process embedder powered by ``llama-cpp-python``.
 
@@ -438,6 +490,7 @@ class LlamaCppEmbedder(BaseEmbedder):
         n_ubatch: int | None = None,
         batch_size: int = 32,
         extensions: list[str] | None = None,
+        append_eos: bool = False,
         **_unused_kwargs: Any,
     ):
         super().__init__(
@@ -465,6 +518,12 @@ class LlamaCppEmbedder(BaseEmbedder):
         self.n_batch = n_batch if n_batch is not None else n_ctx
         self.n_ubatch = n_ubatch if n_ubatch is not None else n_ctx
         self.batch_size = batch_size
+        # RFC embedder-eos item 2 — when True, terminate every embed input
+        # with the model's EOS/SEP token at the token layer (see
+        # :class:`_EosAppendingTokenizer`). Resolved from the per-embedder
+        # ``append_eos`` flag + known-model registry by the registry's
+        # ``effective_append_eos()`` before construction.
+        self.append_eos = append_eos
         self._llama: Any | None = None
         # Per-instance latch for the once-per-load runtime introspection
         # log line. See :meth:`encode` for the actual lookup; the latch
@@ -515,6 +574,46 @@ class LlamaCppEmbedder(BaseEmbedder):
             "Embedder %s ready in %.1fs",
             self.name,
             time.perf_counter() - started,
+        )
+        if self.append_eos:
+            self._install_eos_tokenizer()
+
+    def _install_eos_tokenizer(self) -> None:
+        """Wrap the handle's tokenizer so every input is EOS/SEP-terminated.
+
+        RFC embedder-eos item 2 (in-process path). No-op when the handle
+        didn't load (minimal install / test double without a tokenizer
+        seam) or the model reports no EOS token. See
+        :class:`_EosAppendingTokenizer` for why this happens at the token
+        layer rather than via a surface-string append.
+        """
+        llama = self._llama
+        if llama is None:
+            return
+        # ``hasattr`` guards the minimal-install / test-double case where
+        # the handle has no tokenizer seam; the direct call on the
+        # ``Any``-typed handle keeps ``token_eos()``'s return as ``Any``
+        # (a Python int at runtime) without an ``int(...)`` coercion that
+        # pyrefly mis-resolves on a ``getattr``-sourced callable.
+        if not hasattr(llama, "token_eos"):
+            return
+        eos_token_id: int = llama.token_eos()
+        if eos_token_id < 0:
+            # No EOS in this vocab — nothing safe to append.
+            loader_logger.warning(
+                "LlamaCppEmbedder %s: append_eos requested but model %r "
+                "reports no EOS token; leaving inputs unterminated.",
+                self.name,
+                self.model_id,
+            )
+            return
+        llama.tokenizer_ = _EosAppendingTokenizer(llama.tokenizer_, eos_token_id)
+        loader_logger.info(
+            "LlamaCppEmbedder %s: appending EOS token %d to every input "
+            "(append_eos=True, model=%s).",
+            self.name,
+            eos_token_id,
+            self.model_id,
         )
 
     # ── helpers ────────────────────────────────────────────────────────

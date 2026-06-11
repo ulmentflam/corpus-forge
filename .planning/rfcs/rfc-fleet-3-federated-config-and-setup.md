@@ -123,21 +123,22 @@ produces today's wizard verbatim (snapshot test on the prompt tree).
 - [x] Scope annotations on config models + `shared_scope_dict` /
       `merge_shared_scope` (tomlkit, comment-preserving) + deny-list
       test (no path-shaped / secret-bearing field ever extracted).
-- [ ] Alembic revision: `corpus.shared_config` (versioned jsonb);
-      idempotent re-run test.
-- [ ] `config publish` / `config pull [--apply]` / `config diff`
-      verbs; version-conflict refusal; dry-run default.
-- [ ] `[federation]` block (default off); daemon drift WARN; frozen-
-      config backcompat regression + wizard snapshot test.
-- [ ] `setup --join <dsn>` (wizard question + non-interactive flag);
+- [x] Alembic revision: `corpus.shared_config` (versioned jsonb);
+      idempotent re-run test. _(merged via #110)_
+- [x] `config publish` / `config pull [--apply]` / `config diff`
+      verbs; version-conflict refusal; dry-run default. _(merged via #110)_
+- [x] `[federation]` block (default off); daemon drift WARN; frozen-
+      config backcompat regression + wizard snapshot test. _(merged via #111)_
+- [x] `setup --join <dsn>` (wizard question + non-interactive flag);
       host registration + minimal local config render + next-steps
-      print.
-- [ ] `install.sh --join` / `install.ps1 -Join` pass-through; CI
+      print. _(merged via #113)_
+- [x] `install.sh --join` / `install.ps1 -Join` pass-through; CI
       install-script matrix exercises the flag against a disposable
       Postgres (or stubs the DSN check where containers are
-      unavailable).
-- [ ] Docs: CLAUDE.md / AGENTS.md / README "add a second machine"
-      section (install one-liner with `--join`).
+      unavailable). _(merged via #117 — shell-driven tests in
+      `tests/scripts/test_install_sh_join.py`)_
+- [x] Docs: CLAUDE.md / AGENTS.md / README "add a second machine"
+      section (install one-liner with `--join`). _(merged via #116, #117)_
 
 ## Verification
 
