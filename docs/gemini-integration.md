@@ -22,7 +22,7 @@ and [`examples/gemini-extension/`](../examples/gemini-extension/).
    export CORPUS_FORGE_CONFIG="$HOME/.config/corpus-forge/config.toml"
    corpus-forge migrate
    corpus-forge ingest --once
-   corpus-forge stats     # confirms non-zero chunks/embeddings
+   corpus-forge dataset list   # confirms non-zero documents (corpus ingested)
    ```
 
 3. A recent [Gemini CLI](https://github.com/google-gemini/gemini-cli) install:
@@ -155,7 +155,7 @@ gemini --system-instruction gemini-agent.md "What does the corpus say about pgve
 |---------|---------------|-----|
 | Gemini says "tool not found" | Extension not installed or `settings.json` not reloaded. | Re-copy the snippet and restart the Gemini CLI. |
 | `corpus-forge: command not found` in logs | The CLI's shell `PATH` doesn't include the `corpus-forge` console script. | Use an absolute `command` path, e.g. `/Users/…/.venv/bin/corpus-forge`. |
-| `search` returns empty `hits` | Corpus not yet ingested, or query is off-topic. | Run `corpus-forge ingest --once` and confirm `corpus-forge stats` shows non-zero chunks. |
+| `search` returns empty `hits` | Corpus not yet ingested, or query is off-topic. | Run `corpus-forge ingest --once` and confirm `corpus-forge dataset list` shows non-zero documents. |
 | First call with `rerank=true` hangs ~30s | Cross-encoder weights are downloading (one-time **600 MB**). | Let it finish; subsequent calls reuse the cached weights. Stay `rerank=false` if you don't need precision. |
 | `contextFileName` not loaded | Gemini CLI version too old (pre-extension support). | Upgrade to the latest Gemini CLI release. |
 | Tools appear but GEMINI.md guidance is ignored | The `contextFileName` path in the manifest is wrong. | Confirm `GEMINI.md` sits next to `gemini-extension.json` in the extension directory. |
