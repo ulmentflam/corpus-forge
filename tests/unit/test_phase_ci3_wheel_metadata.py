@@ -121,9 +121,13 @@ def metadata(built_wheel: Path) -> dict:
 
 class TestWheelIdentity:
     def test_wheel_filename(self, built_wheel: Path) -> None:
-        # Either underscore or hyphen normalisation depending on hatchling.
-        assert built_wheel.name.startswith("corpus_forge-0.1.0b18"), (
-            f"Expected wheel name to start with corpus_forge-0.1.0b18; got {built_wheel.name}"
+        # Pin the wheel name's *shape* and that it tracks the canonical
+        # source (RFC version-SSOT) — no release literal to bump here.
+        from tests.support.version import CANONICAL_VERSION
+
+        assert built_wheel.name.startswith(f"corpus_forge-{CANONICAL_VERSION}"), (
+            f"Expected wheel name to start with corpus_forge-{CANONICAL_VERSION}; "
+            f"got {built_wheel.name}"
         )
         assert built_wheel.name.endswith("-py3-none-any.whl"), (
             f"Expected universal py3 wheel; got {built_wheel.name}"
@@ -133,7 +137,12 @@ class TestWheelIdentity:
         assert metadata["Name"] == "corpus-forge"
 
     def test_metadata_version(self, metadata: dict) -> None:
-        assert metadata["Version"] == "0.1.0b18"
+        # The core drift detector: the built wheel's Version equals what the
+        # source declares. With the dynamic-version build (RFC version-SSOT)
+        # they derive from one literal, so this needs no release edit.
+        from tests.support.version import CANONICAL_VERSION
+
+        assert metadata["Version"] == CANONICAL_VERSION
 
     def test_requires_python(self, metadata: dict) -> None:
         # Hatchling re-canonicalises the spec; the two parts may swap order

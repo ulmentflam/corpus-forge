@@ -468,7 +468,6 @@ wheels = [
 
 [[package]]
 name = "corpus-forge"
-version = "0.1.0b18"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
@@ -632,7 +631,7 @@ requires-dist = [
     { name = "umap-learn", marker = "extra == 'analyze'", specifier = ">=0.5" },
     { name = "watchdog", specifier = ">=4.0" },
 ]
-provides-extras = ["openai", "hf", "tokens", "sqlite", "retrieval", "eval", "rerank", "mcp", "code", "multi-format", "ocr", "whisper", "fast-tier", "llama-cpp", "analyze"]
+provides-extras = ["analyze", "code", "eval", "fast-tier", "hf", "llama-cpp", "mcp", "multi-format", "ocr", "openai", "rerank", "retrieval", "sqlite", "tokens", "whisper"]
 
 [package.metadata.requires-dev]
 dev = [
