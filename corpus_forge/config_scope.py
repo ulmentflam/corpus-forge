@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING
 import tomlkit
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
+from tomlkit.items import AoT
 
 if TYPE_CHECKING:
     from corpus_forge.config import Config
@@ -135,8 +136,25 @@ def _merge_aot(container: _TomlTable, key: str, shared_items: list[dict[str, obj
     counterpart are appended as fresh tables.
     """
     existing = container.get(key)
-    if not isinstance(existing, list):  # tomlkit's AoT subclasses list
+    # Must be an array-of-tables specifically — NOT just any list. The local
+    # file may carry this key as an *inline* array (notably the
+    # ``datasets = []`` placeholder ``setup --join`` renders), which tomlkit
+    # parses as an ``Array``: a ``list`` subclass that is NOT an ``AoT``.
+    # Appending full ``[[table]]`` blocks to an inline ``Array`` dumps
+    # malformed TOML (no ``{}`` / commas — issue #120). Rebuild it as a real
+    # array-of-tables, carrying over any inline-table items already present
+    # so local data isn't dropped.
+    if not isinstance(existing, AoT):
+        carried = (
+            [dict(item) for item in existing if isinstance(item, MutableMapping)]
+            if isinstance(existing, list)
+            else []
+        )
         existing = tomlkit.aot()
+        for item in carried:
+            table = tomlkit.table()
+            table.update(item)
+            existing.append(table)
         container[key] = existing
     by_name: dict[object, _TomlTable] = {
         item[_IDENTITY_KEY]: item
