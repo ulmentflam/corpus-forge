@@ -94,7 +94,18 @@ jobs:
   test:
     name: Tests (${{ matrix.os }} / py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    # Windows cells run the same 7.6k-test suite ~2x slower per test than
+    # Linux/macOS (no fork() — every xdist worker re-imports the full
+    # torch/sentence-transformers stack; Defender real-time scanning; slow
+    # NTFS small-file IO). With the old 25-min cap the Windows unit step
+    # (~14 min on a warm cache, more on a cold one) routinely tipped the
+    # whole job over the edge: py3.11 squeaked in at ~22 min while py3.12 /
+    # py3.13 hit exactly 25.3 min and were cancelled — so every push to
+    # main landed as a cancelled (red) required cell. 40 min gives Windows
+    # comfortable headroom for runner-perf variance while still catching a
+    # genuinely hung job. The Defender-exclusion step below attacks the
+    # root slowness so the typical run finishes far under this ceiling.
+    timeout-minutes: 40
     needs: [actionlint]
     strategy:
       fail-fast: false
@@ -141,6 +152,23 @@ jobs:
           restore-keys: |
             uv-${{ runner.os }}-py${{ matrix.python-version }}-
             uv-${{ runner.os }}-
+
+      # Windows Defender's real-time scan inspects every file the test run
+      # touches — each .py import, every .pyc write, the pytest temp dirs,
+      # the sqlite/grammar caches — which is a large, well-documented tax on
+      # Python CI (the dominant reason these cells run ~2x slower than
+      # Linux/macOS). Excluding the workspace + runner temp from the scan
+      # typically reclaims 20-40% of the wall time. No-op on a runner where
+      # Defender is already disabled; SilentlyContinue keeps a missing
+      # cmdlet from failing the job.
+      - name: Exclude workspace from Defender real-time scan (Windows speedup)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-MpPreference -ExclusionPath "${{ github.workspace }}" -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionPath "$env:RUNNER_TEMP" -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionProcess "python.exe" -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionProcess "uv.exe" -ErrorAction SilentlyContinue
 
       - name: Unit tests (parallel, timeout-gated, coverage-gated)
         env:
