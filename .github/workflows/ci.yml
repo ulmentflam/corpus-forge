@@ -116,6 +116,17 @@ jobs:
         # / torch wheels stabilize; revisit weekly.
         # windows-2022 is now required after Phase I-01 closed the
         # portability blockers — three green CI runs on this PR.
+        #
+        # Windows cells run ~2x slower than Linux/macOS (see #142), so the
+        # 3-version Windows matrix is the most expensive corner of CI. Drop
+        # the *interior* version (py3.12) on Windows only: py3.11 and py3.13
+        # bracket the supported range, so a Windows-specific portability
+        # break (encoding, path, fork) would still surface on one of the
+        # endpoints. Linux/macOS keep the full 3x3 grid. Net: -1 of the
+        # three slow Windows cells per run.
+        exclude:
+          - os: windows-2022
+            python-version: "3.12"
         include:
           - os: macos-14
             python-version: "3.13"
