@@ -183,6 +183,20 @@ class TestSharedScopeDict:
             "model_aliases": [],
         }
 
+    def test_model_aliases_federate_as_shared_scope(self) -> None:
+        """RFC fleet-6 item 5: a non-empty ``model_aliases`` set is shared
+        scope, so `config publish` propagates it and every host agrees on the
+        model identity. (The empty-default case is covered above; this proves
+        declared aliases actually federate.)"""
+        from corpus_forge.config import ModelAlias
+
+        cfg = make_config()
+        cfg.embedders[0].model_aliases = [ModelAlias(provider="llama-cpp", model_id="nomic-code")]
+        shared = shared_scope_dict(cfg)
+        assert shared["embedders"][0]["model_aliases"] == [
+            {"provider": "llama-cpp", "model_id": "nomic-code"}
+        ]
+
     def test_retrieval_settings_shared_reranker_split(self) -> None:
         shared = shared_scope_dict(make_config())
         retrieval = shared["retrieval"]
