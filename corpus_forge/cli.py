@@ -504,6 +504,26 @@ def setup(
             "Works interactively and with --non-interactive."
         ),
     ),
+    embed_drain: bool | None = typer.Option(
+        None,
+        "--embed-drain/--no-embed-drain",
+        envvar="CF_EMBED_DRAIN",
+        help=(
+            "With --join (RFC fleet-5): seed [service] embed_drain in the "
+            "joined host's config so the managed service drains the shared "
+            "embed backlog. Defaults on for a joined host."
+        ),
+    ),
+    ingest_watch: bool | None = typer.Option(
+        None,
+        "--ingest-watch/--no-ingest-watch",
+        envvar="CF_INGEST_WATCH",
+        help=(
+            "With --join (RFC fleet-5): seed [service] ingest_watch. Pass "
+            "--no-ingest-watch for a pure-drain GPU box. Defaults off when "
+            "a capable GPU is detected, on otherwise."
+        ),
+    ),
 ) -> None:
     """Post-install setup wizard.
 
@@ -541,6 +561,8 @@ def setup(
                 join,
                 config_dir=config_dir,
                 interactive=not non_interactive,
+                embed_drain=embed_drain,
+                ingest_watch=ingest_watch,
             )
         except JoinError as exc:
             ui_error(str(exc))
@@ -904,6 +926,25 @@ export_app = typer.Typer(
 app.add_typer(export_app, name="export")
 
 
+def _export_require_config() -> None:
+    """Fail cleanly if no config file exists — matches the sync/eval idiom.
+
+    The ``export`` verbs load config one level down (in
+    ``corpus_forge.export._build_default_backend``), so without this guard a
+    missing config surfaces as a raw ``FileNotFoundError`` traceback instead
+    of the actionable "run setup" message every other config-dependent
+    command already emits (see ``sync status`` / ``eval``). Exit code 2
+    matches those siblings.
+    """
+    from corpus_forge.config import Config
+
+    try:
+        Config.load()
+    except FileNotFoundError:
+        ui_warn("No configuration found; run `corpus-forge setup` to create one.")
+        raise typer.Exit(code=2) from None
+
+
 @export_app.command("chat")
 def export_chat_cmd(
     dataset: Annotated[str, typer.Option("--dataset", "-d", help="Dataset name to export.")],
@@ -925,6 +966,7 @@ def export_chat_cmd(
     ] = None,
 ) -> None:
     """Export a dataset's chat conversations as templated HF-format rows."""
+    _export_require_config()
     from corpus_forge.export import export_chat
 
     export_chat(
@@ -965,6 +1007,7 @@ def export_sdft_cmd(
     ] = None,
 ) -> None:
     """Export SDFT demonstrations as HF-format rows."""
+    _export_require_config()
     from corpus_forge.export import export_sdft
 
     sources = [s.strip() for s in include_sources.split(",")] if include_sources else None
@@ -997,6 +1040,7 @@ def export_feedback_pairs_cmd(
     ] = None,
 ) -> None:
     """Export feedback events as templated training rows."""
+    _export_require_config()
     from corpus_forge.export import export_feedback_pairs
 
     export_feedback_pairs(
@@ -1076,16 +1120,57 @@ def _state_dir_path():
     return p
 
 
-def _spawn_background_embed(drifts) -> None:
-    """Detach a re-embed worker per drifting embedder."""
+def _drain_loop_owns_lane(config, embedder_name: str) -> bool:
+    """RFC fleet-5 item 4 — does the managed service already drain this lane?
+
+    True only when the managed daemon is running AND `[service] embed_drain`
+    is on AND this embedder is one of the lanes the host drains (empty
+    `[embed] lanes` → all lanes owned; otherwise the name must be pinned).
+    When True, the detached drift-prompt re-embed worker must NOT spawn for
+    this lane — the service's `EmbedDrainLoop` already claims and embeds it
+    (fleet-2 claims would dedupe anyway, but we want one status owner and no
+    redundant process). Defaults to False for every non-fleet user (no
+    daemon and/or `embed_drain` off), so today's behaviour is unchanged.
+    """
+    from corpus_forge.admin import foreground as _fg
+    from corpus_forge.admin.service import DAEMON_COMPONENT
+
+    if _fg.read_pid(DAEMON_COMPONENT) is None:
+        return False
+    if getattr(getattr(config, "service", None), "embed_drain", False) is not True:
+        return False
+    lanes = list(getattr(getattr(config, "embed", None), "lanes", []) or [])
+    return (not lanes) or (embedder_name in lanes)
+
+
+def _spawn_background_embed(drifts, config) -> None:
+    """Detach a re-embed worker per drifting embedder.
+
+    Lanes the managed service already drains (see `_drain_loop_owns_lane`)
+    are skipped — the service owns them — so two supervisors don't both work
+    one lane. Only the remaining (unowned) drifts get a detached worker.
+    """
 
     import subprocess
     import sys
 
+    to_spawn = []
+    for d in drifts:
+        if _drain_loop_owns_lane(config, d.name):
+            ui_info(
+                f"drain loop active in the managed service for lane {d.name!r}; "
+                "not spawning a detached embed-worker."
+            )
+            continue
+        to_spawn.append(d)
+
+    if not to_spawn:
+        return
+
     state_dir = _state_dir_path()
     pid_file = state_dir / "embed-worker.pid"
     last_pid: int | None = None
-    for d in drifts:
+    for d in to_spawn:
         proc = subprocess.Popen(
             [sys.executable, "-m", "corpus_forge", "embed", "-e", d.name],
             stdin=subprocess.DEVNULL,
@@ -1147,7 +1232,7 @@ def _handle_drift(config, backend, *, background: bool, non_interactive: bool) -
 
     if decision == "now":
         if background:
-            _spawn_background_embed(actionable)
+            _spawn_background_embed(actionable, config)
         else:
             _run_foreground_embed(actionable)
             try:
@@ -1798,10 +1883,15 @@ def eval_rag(
 
     rows = []
     with queries.open(encoding="utf-8") as fh:
-        for _line in fh:
+        for lineno, _line in enumerate(fh, start=1):
             stripped = _line.strip()
-            if stripped:
+            if not stripped:
+                continue
+            try:
                 rows.append(_json.loads(stripped))
+            except _json.JSONDecodeError as exc:
+                ui_error(f"Malformed JSON in {queries} at line {lineno}: {exc}")
+                raise typer.Exit(code=2) from None
 
     try:
         result = run_rag_eval(
@@ -1879,10 +1969,15 @@ def eval_cag(
 
     rows = []
     with queries.open(encoding="utf-8") as fh:
-        for _line in fh:
+        for lineno, _line in enumerate(fh, start=1):
             stripped = _line.strip()
-            if stripped:
+            if not stripped:
+                continue
+            try:
                 rows.append(_json.loads(stripped))
+            except _json.JSONDecodeError as exc:
+                ui_error(f"Malformed JSON in {queries} at line {lineno}: {exc}")
+                raise typer.Exit(code=2) from None
 
     try:
         result = run_cag_eval(
@@ -2344,6 +2439,17 @@ def search(
 
     from corpus_forge.retrieval.types import SearchOptions
 
+    # Validate --fusion / --alpha up front — BEFORE building the reranker or
+    # retriever (which load config). A bad flag must fail fast with a clean
+    # BadParameter, not surface a confusing config/backend error first; this
+    # also makes the validation config-independent. ``fusion_resolved`` is
+    # reused when constructing SearchOptions below.
+    fusion_resolved: str = fusion if fusion is not None else "rrf"
+    if fusion_resolved not in ("rrf", "alpha"):
+        raise typer.BadParameter(f"--fusion must be 'rrf' or 'alpha'; got {fusion_resolved!r}")
+    if alpha is not None and not (0.0 <= alpha <= 1.0):
+        raise typer.BadParameter(f"--alpha must be between 0.0 and 1.0; got {alpha}")
+
     # Agent-chunk-explorer T4: `--json -` is the clean-stdout sentinel.
     json_stdout_mode = json_out == "-"
     _noisy_loggers = ("alembic", "alembic.runtime.migration", "corpus_forge")
@@ -2379,9 +2485,6 @@ def search(
 
     retriever = _build_retriever_for_eval(fusion=fusion, alpha=alpha, reranker=reranker)
 
-    fusion_resolved: str = fusion if fusion is not None else "rrf"
-    if fusion_resolved not in ("rrf", "alpha"):
-        raise typer.BadParameter(f"--fusion must be 'rrf' or 'alpha'; got {fusion_resolved!r}")
     options = SearchOptions(
         k=k,
         dataset=dataset,
