@@ -8,6 +8,19 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Embedder drift detection now folds through `model_aliases`
+  (rfc-fleet-6 item 2).** `embedder_fingerprint` hashes the *canonical*
+  `(provider, model_id)` (the lexicographically smallest declared alias
+  pair), and `compare_active` canonicalizes the stored row's identity
+  through the active embedder's alias set — so renaming an embedder's
+  provider/model_id to a declared alias (e.g. the same model served via
+  `llama-cpp` vs `openai`) no longer triggers a false "model drift" + full
+  re-embed prompt. A genuine model change (an identity *not* in the alias
+  set, or a dimension/space change) still drifts. With no `model_aliases`,
+  the canonical identity is the embedder's own pair, so fingerprints are
+  byte-identical to before (no migration churn).
 ### Tests
 
 - **Pinned the SDFT held-out split *routing rule*** in `export_sdft`
