@@ -4268,6 +4268,7 @@ class SQLiteBackend:
         tokens_per_s: "float | None" = None,
         latency_p50_ms: "float | None" = None,
         latency_p95_ms: "float | None" = None,
+        cold_start_s: "float | None" = None,
     ) -> None:
         """Insert one ``model_benchmarks`` row, stamping ``measured_at`` (rfc-fleet-1)."""
         now = self._now_iso()
@@ -4276,8 +4277,8 @@ class SQLiteBackend:
             INSERT INTO model_benchmarks
                 (host_id, model_key, source, transport, device, batch_size,
                  sample_chunks, chunks_per_s, tokens_per_s, latency_p50_ms,
-                 latency_p95_ms, measured_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 latency_p95_ms, cold_start_s, measured_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 host_id,
@@ -4291,6 +4292,7 @@ class SQLiteBackend:
                 tokens_per_s,
                 latency_p50_ms,
                 latency_p95_ms,
+                cold_start_s,
                 now,
             ),
         )
@@ -4309,7 +4311,7 @@ class SQLiteBackend:
             WITH latest AS (
                 SELECT
                     host_id, model_key, chunks_per_s, transport, device,
-                    source, measured_at,
+                    source, measured_at, cold_start_s,
                     ROW_NUMBER() OVER (
                         PARTITION BY host_id, model_key
                         ORDER BY measured_at DESC
@@ -4319,7 +4321,7 @@ class SQLiteBackend:
             SELECT
                 m.model_key, m.kind, m.provider, m.model_id, m.dimension,
                 l.host_id, l.chunks_per_s, l.transport, l.device,
-                l.source, l.measured_at
+                l.source, l.measured_at, l.cold_start_s
             FROM models m
             LEFT JOIN latest l
                 ON l.model_key = m.model_key AND l.rn = 1

@@ -190,6 +190,7 @@ def render_models_table(rows: list[dict], *, now: datetime | None = None) -> Tab
     table.add_column("Dim", justify="right")
     table.add_column("Host", style="muted")
     table.add_column("chunks/s", justify="right", style="accent.number")
+    table.add_column("cold start (s)", justify="right", style="accent.number")
     table.add_column("Transport")
     table.add_column("Device")
     table.add_column("Last benchmark")
@@ -201,6 +202,7 @@ def render_models_table(rows: list[dict], *, now: datetime | None = None) -> Tab
             _cell(row.get("dimension")),
             _cell(row.get("host_id")),
             _fmt_rate(row.get("chunks_per_s")),
+            _fmt_rate(row.get("cold_start_s")),
             _cell(row.get("transport")),
             _cell(row.get("device")),
             format_age(row.get("measured_at"), now=now),
@@ -226,6 +228,7 @@ def models_to_dict(rows: list[dict], *, now: datetime | None = None) -> dict[str
                 "dimension": row.get("dimension"),
                 "host_id": row.get("host_id"),
                 "chunks_per_s": row.get("chunks_per_s"),
+                "cold_start_s": row.get("cold_start_s"),
                 "transport": row.get("transport"),
                 "device": row.get("device"),
                 "source": row.get("source"),

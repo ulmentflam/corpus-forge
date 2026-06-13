@@ -147,10 +147,15 @@ task:
   - [ ] api per-text path advances the bar `sample` times; local path
         shows the indeterminate encode phase.
   - [ ] ≥90% line coverage on the new code (`make test-unit` gate).
-- [ ] (Stretch) alembic revision adding nullable
+- [x] (Stretch) alembic revision adding nullable
       `model_benchmarks.cold_start_s`; `bench` writes it; `models list`
       surfaces it. Idempotent re-run test, head-pin transition like the
-      0018→0019 precedent.
+      0018→0019 precedent. — revision `0021_benchmark_cold_start`
+      (ADD COLUMN IF NOT EXISTS on PG, PRAGMA-probe on SQLite); `bench_one`
+      times load+warmup → `BenchResult.cold_start_s` → `insert_model_benchmark`;
+      `list_models_with_latest_benchmark` + `render_models_table` +
+      `models_to_dict` surface it; head-pin moved 0020→0021; idempotency +
+      round-trip tests added.
 
 ## Verification
 

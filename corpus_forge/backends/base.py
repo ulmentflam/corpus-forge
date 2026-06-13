@@ -769,6 +769,7 @@ class StorageBackend(Protocol):
         tokens_per_s: float | None = None,
         latency_p50_ms: float | None = None,
         latency_p95_ms: float | None = None,
+        cold_start_s: float | None = None,
     ) -> None:
         """Insert one ``model_benchmarks`` throughput sample (rfc-fleet-1).
 

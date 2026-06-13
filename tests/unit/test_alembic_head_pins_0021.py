@@ -1,16 +1,17 @@
-"""Unit tests pinning the alembic revision chain head to 0020_shared_config.
+"""Unit tests pinning the alembic revision chain head to 0021_benchmark_cold_start.
 
-rfc-fleet-3 (federated config + setup) — moves the pinned head from
-0019_embed_claims to 0020_shared_config.
+rfc-bench-embed-progress (stretch) — moves the pinned head from
+0020_shared_config to 0021_benchmark_cold_start, which adds the nullable
+``model_benchmarks.cold_start_s`` column.
 
 These tests assert:
-1. The revision file for 0020_shared_config exists at the expected path.
-2. The module declares ``revision = "0020_shared_config"`` and
-   ``down_revision = "0019_embed_claims"``.
+1. The revision file for 0021_benchmark_cold_start exists at the expected path.
+2. The module declares ``revision = "0021_benchmark_cold_start"`` and
+   ``down_revision = "0020_shared_config"``.
 3. The revision id fits in alembic's VARCHAR(32) ``version_num`` column.
-4. alembic's ScriptDirectory reports ``0020_shared_config`` as the single
-   current head revision.
-5. The head used by ``apply_migrations`` resolves to ``0020_shared_config``.
+4. alembic's ScriptDirectory reports ``0021_benchmark_cold_start`` as the
+   single current head revision.
+5. The head used by ``apply_migrations`` resolves to ``0021_benchmark_cold_start``.
 """
 
 from __future__ import annotations
@@ -22,9 +23,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ALEMBIC_INI = _REPO_ROOT / "alembic.ini"
 _VERSIONS_DIR = _REPO_ROOT / "corpus_forge" / "alembic" / "versions"
 
-_TARGET_REVISION = "0020_shared_config"
-_PRIOR_REVISION = "0019_embed_claims"
-_REVISION_FILE = _VERSIONS_DIR / "0020_shared_config.py"
+_TARGET_REVISION = "0021_benchmark_cold_start"
+_PRIOR_REVISION = "0020_shared_config"
+_REVISION_FILE = _VERSIONS_DIR / "0021_benchmark_cold_start.py"
 _ALEMBIC_VERSION_NUM_MAX_LEN = 32  # alembic_version.version_num is VARCHAR(32)
 
 
@@ -39,7 +40,7 @@ def _load_revision_module(path: Path):
 def test_revision_file_exists() -> None:
     assert _REVISION_FILE.exists(), (
         f"Migration file not found at {_REVISION_FILE}. "
-        "The coder must create corpus_forge/alembic/versions/0020_shared_config.py."
+        "The coder must create corpus_forge/alembic/versions/0021_benchmark_cold_start.py."
     )
     assert _REVISION_FILE.is_file(), f"{_REVISION_FILE} exists but is not a regular file."
 
@@ -51,7 +52,7 @@ def test_revision_id_is_correct() -> None:
     )
 
 
-def test_down_revision_points_at_0019() -> None:
+def test_down_revision_points_at_0020() -> None:
     mod = _load_revision_module(_REVISION_FILE)
     assert mod.down_revision == _PRIOR_REVISION, (
         f"Expected down_revision={_PRIOR_REVISION!r}, got {mod.down_revision!r}. "
@@ -68,7 +69,7 @@ def test_revision_id_fits_varchar32() -> None:
     )
 
 
-def test_alembic_script_directory_head_is_0020() -> None:
+def test_alembic_script_directory_head_is_0021() -> None:
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
@@ -85,11 +86,11 @@ def test_alembic_script_directory_head_is_0020() -> None:
     assert current_head == _TARGET_REVISION, (
         f"alembic ScriptDirectory reports head={current_head!r}; "
         f"expected {_TARGET_REVISION!r}. "
-        "The 0020_shared_config.py file must exist and chain onto 0019 before this passes."
+        "The 0021_benchmark_cold_start.py file must exist and chain onto 0020 before this passes."
     )
 
 
-def test_expected_head_revision_helper_returns_0020() -> None:
+def test_expected_head_revision_helper_returns_0021() -> None:
     from alembic.script import ScriptDirectory
 
     from corpus_forge.schema.migrate import _build_alembic_config

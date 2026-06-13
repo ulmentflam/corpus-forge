@@ -130,6 +130,7 @@ class BenchResult:
     source_kind: str  # "real-pending" | "synthetic" | "none"
     persisted: bool
     error: str | None = None
+    cold_start_s: float | None = None  # model load + warmup seconds (None on error)
 
 
 @dataclass(frozen=True)
@@ -377,6 +378,10 @@ def bench_one(
             error=msg,
         )
 
+    # Time the cold start: model load + warmup (the dominant fixed cost a
+    # warm second run avoids).  Captured even when sampling later fails so
+    # the operator still sees how long the lane took to spin up.
+    cold_start_t0 = time.perf_counter()
     try:
         from corpus_forge.embedders.registry import register_from_config, registry
 
@@ -386,6 +391,7 @@ def bench_one(
     except Exception as exc:
         logger.warning("bench: embedder %r failed to load: %r", name, exc)
         return _error(f"load failed: {exc}")
+    cold_start_s = time.perf_counter() - cold_start_t0
 
     # Sample: real pending first, synthetic fallback.
     pending = _sample_pending(backend, embedder, embedder_id, sample)
@@ -464,6 +470,7 @@ def bench_one(
             tokens_per_s=tokens_per_s,
             latency_p50_ms=p50,
             latency_p95_ms=p95,
+            cold_start_s=cold_start_s,
         )
     except Exception as exc:
         logger.warning("bench: insert_model_benchmark for %r failed (continuing): %r", name, exc)
@@ -481,6 +488,7 @@ def bench_one(
         source_kind=source_kind,
         persisted=persisted,
         error=None,
+        cold_start_s=cold_start_s,
     )
 
 
@@ -618,6 +626,7 @@ def report_to_dict(report: BenchReport) -> dict[str, Any]:
                 "tokens_per_s": r.tokens_per_s,
                 "latency_p50_ms": r.latency_p50_ms,
                 "latency_p95_ms": r.latency_p95_ms,
+                "cold_start_s": r.cold_start_s,
                 "source_kind": r.source_kind,
                 "persisted": r.persisted,
                 "error": r.error,

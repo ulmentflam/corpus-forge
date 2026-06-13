@@ -8,6 +8,15 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Added
+
+- **`bench embed` now persists `cold_start_s`** (model load + warmup
+  seconds) to `model_benchmarks` (alembic revision
+  `0021_benchmark_cold_start`, nullable column — no backfill). `models
+  list` surfaces it in both the Rich table and the `--json` agent output,
+  so the fixed spin-up cost a warm run avoids is durable and queryable.
+  Closes the stretch task of `rfc-bench-embed-progress`.
+
 ## [0.1.0b17] - 2026-06-08
 
 **The distributed-fleet release.** corpus-forge is no longer a
