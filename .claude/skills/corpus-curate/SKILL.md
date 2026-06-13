@@ -5,6 +5,7 @@ allowed-tools:
   - mcp__corpus-forge__next_curation_target
   - mcp__corpus-forge__next_curation_batch
   - mcp__corpus-forge__commit_curation
+  - mcp__corpus-forge__create_enhancement_chunk
   - mcp__corpus-forge__list_datasets
   - mcp__corpus-forge__get_chunk
   - mcp__corpus-forge__search
@@ -86,6 +87,42 @@ Follow the five-step loop:
 5. **Loop** — ask "next one?". Yes → step 1. No → emit a short summary
    of what was changed this session (chunk_ids touched + counts per
    kind).
+
+### Minting an enhancement chunk (creating data, not just editing it)
+
+`commit_curation` only *edits* the entry you picked. When the curation
+conversation produces *new* material worth keeping as its own
+corpus row — a worked correction, a clarified explanation, a recommended
+enhancement, or the salient back-and-forth that resolved a confusion —
+call `create_enhancement_chunk` to persist it:
+
+```
+create_enhancement_chunk(
+  dataset="<name>",
+  text="<the conversation snippet + recommended enhancement>",
+  derived_from_chunk_id=<the chunk you were curating>,   # optional but encouraged
+  heading="<short title>",                                 # optional
+  metadata={...},                                          # optional extra keys
+  dry_run=true,                                            # preview big writes first
+)
+```
+
+It appends the new chunk to a per-dataset synthetic document
+`corpus-forge://curation/<dataset>` (created lazily) and stamps lineage
+metadata `{"kind": "curation_enhancement", "derived_from_chunk_id": ...,
+"curation_session_id": ...}`. Returns `{chunk_id, document_id,
+audit_id}`. The new chunk is embedded on the normal backfill lane and is
+immediately lexically searchable.
+
+When to mint vs. edit: edit (`commit_curation`) when the existing entry's
+labels/description/metadata are wrong or thin; mint
+(`create_enhancement_chunk`) when the *fix is new text* that should
+stand on its own as a training row. You can do both in one pass — edit
+the source chunk, then mint the enhancement that links back to it via
+`derived_from_chunk_id`.
+
+To exclude these synthetic rows from retrieval or eval, filter on
+`metadata.kind == "curation_enhancement"`.
 
 ## Response handling
 
@@ -181,5 +218,6 @@ assistant client.
 |------|-------------|
 | `record_demonstration` | Capture a generalizable curated edit as an SDFT triple |
 | `commit_curation` | Atomically write label / metadata / description edits |
+| `create_enhancement_chunk` | Mint a NEW chunk (conversation + recommended enhancement) linked to its source |
 | `rate_search_result` | Record thumbs-up/down on a retrieved chunk |
 | `add_feedback` | Attach free-text feedback to a chunk without a full curation commit |

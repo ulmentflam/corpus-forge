@@ -143,6 +143,41 @@ def _insert_sdft_row(
     return row_id
 
 
+def _insert_sdft_row_with_hash(
+    backend: SQLiteBackend,
+    dataset_id: int,
+    *,
+    query: str,
+    content_hash: str,
+) -> None:
+    """Insert one sdft row with an EXPLICIT content_hash.
+
+    The default ``_insert_sdft_row`` derives content_hash from the payload;
+    the held-out-bucketing test needs to control the hash so the split
+    bucket (sha256(content_hash) % 100) is deterministic and known.
+    """
+    with backend._get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO sdft_demonstrations
+              (dataset_id, query, student_messages, teacher_messages,
+               target, source, trace_id, content_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                dataset_id,
+                query,
+                json.dumps([{"role": "assistant", "content": "s"}]),
+                json.dumps([{"role": "user", "content": "t"}]),
+                "tgt",
+                "cli_feedback",
+                None,
+                content_hash,
+            ),
+        )
+        conn.commit()
+
+
 def _seed_three_rows(backend: SQLiteBackend, dataset_id: int) -> list[int]:
     """Seed 3 rows with distinct queries/targets for split/filter tests."""
     ids = []
@@ -480,6 +515,39 @@ class TestExportSdftHeldOutSplit:
 
         assert (tmp_path / "sdft.train.parquet").exists(), "train.parquet file must exist"
         assert (tmp_path / "sdft.held_out.parquet").exists(), "held_out.parquet file must exist"
+
+    def test_held_out_bucketing_routes_by_sha256_mod_100(self, tmp_path: Path) -> None:
+        """Pin the split RULE, not just its determinism/disjointness.
+
+        held iff ``int(sha256(content_hash), 16) % 100 < int(fraction * 100)``.
+        frac=0.1 → threshold=10; ``hash-3`` → bucket 3 (held), ``hash-0`` →
+        bucket 41 (train). The other held-out tests only assert the split is
+        deterministic + disjoint — those survive an inverted ``<``/``>=``, a
+        swapped hash, or a changed modulus, which would silently LEAK held-out
+        eval rows into the training set (ML data leakage in the HF deliverable
+        with no error). This test is the only one that nails the routing.
+        """
+        backend = _make_backend()
+        ds_id = _insert_dataset(backend)
+        _insert_sdft_row_with_hash(backend, ds_id, query="held-query", content_hash="hash-3")
+        _insert_sdft_row_with_hash(backend, ds_id, query="train-query", content_hash="hash-0")
+
+        out = tmp_path / "sdft.jsonl"
+        result = export_sdft(
+            "q4-ds",
+            "chatml",
+            out,
+            format="jsonl",
+            backend=backend,
+            held_out_fraction=0.1,
+        )
+
+        held = [r["query"] for r in _read_jsonl(tmp_path / "sdft.held_out.jsonl")]
+        train = [r["query"] for r in _read_jsonl(tmp_path / "sdft.train.jsonl")]
+        assert held == ["held-query"], f"low-bucket hash must route to held_out, got {held}"
+        assert train == ["train-query"], f"high-bucket hash must route to train, got {train}"
+        assert result["held_out_count"] == 1
+        assert result["train_count"] == 1
 
 
 # ===========================================================================

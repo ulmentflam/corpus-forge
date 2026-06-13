@@ -478,6 +478,32 @@ _ADD_FEEDBACK_INPUT_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+# ── RFC 001 Phase 1 — create_enhancement_chunk ───────────────────────────
+
+_CREATE_ENHANCEMENT_CHUNK_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "dataset": {"type": "string"},
+        "text": {
+            "type": "string",
+            "description": (
+                "The new chunk body — a captured curation conversation, a "
+                "recommended enhancement, or a worked correction."
+            ),
+        },
+        "derived_from_chunk_id": {
+            "type": ["integer", "null"],
+            "description": "The source chunk this enhancement was derived from, if any.",
+        },
+        "heading": {"type": "string"},
+        "role": {"type": "string"},
+        "metadata": {"type": "object"},
+        "dry_run": {"type": "boolean"},
+    },
+    "required": ["dataset", "text"],
+    "additionalProperties": False,
+}
+
 # ── Phase P Wave 2 — rate_search_result ──────────────────────────────────
 
 _RATE_SEARCH_RESULT_INPUT_SCHEMA: dict[str, Any] = {
@@ -1001,7 +1027,7 @@ def build_server(
     Returns:
         ``mcp.server.Server`` instance with name ``"corpus-forge"`` and
         ``search`` / ``get_chunk`` / ``list_datasets`` tools registered
-        (plus 8 write tools when ``writes_enabled=True``).
+        (plus the write tools when ``writes_enabled=True``).
     """
     from mcp import types as mt
     from mcp.server import Server
@@ -1270,6 +1296,21 @@ def build_server(
                     ),
                     inputSchema=_COMMIT_CURATION_INPUT_SCHEMA,
                 ),
+                # RFC 001 Phase 1 curation write tool (gated by writes_enabled)
+                mt.Tool(
+                    name="create_enhancement_chunk",
+                    description=(
+                        "Mint a NEW chunk from a curation conversation + "
+                        "recommended enhancement (vs. commit_curation, which "
+                        "only edits an existing chunk). Persists the text to a "
+                        "per-dataset synthetic document "
+                        "'corpus-forge://curation/<dataset>' and stamps lineage "
+                        "metadata (kind=curation_enhancement, "
+                        "derived_from_chunk_id). Pass dry_run=true to preview. "
+                        "Returns chunk_id, document_id, audit_id."
+                    ),
+                    inputSchema=_CREATE_ENHANCEMENT_CHUNK_INPUT_SCHEMA,
+                ),
                 # G-03 write tool (gated by writes_enabled)
                 mt.Tool(
                     name="register_template",
@@ -1433,6 +1474,9 @@ def build_server(
             # J4 curation write tool
             if name == "commit_curation":
                 return await _dispatch_commit_curation(arguments)
+            # RFC 001 Phase 1 curation write tool
+            if name == "create_enhancement_chunk":
+                return await _dispatch_create_enhancement_chunk(arguments)
             # G-03 write tool
             if name == "register_template":
                 return await _dispatch_register_template(arguments)
@@ -2153,6 +2197,27 @@ def build_server(
             arguments["kind"],
             rating=arguments.get("rating"),
             text=arguments.get("text"),
+            metadata=arguments.get("metadata"),
+            dry_run=bool(arguments.get("dry_run", False)),
+        )
+        return result
+
+    async def _dispatch_create_enhancement_chunk(arguments: dict[str, Any]) -> Any:
+        from corpus_forge.mcp import writes
+
+        backend = _get_write_backend()
+        if backend is None:
+            return _error_result("retriever has no backend; cannot create enhancement chunk")
+        ctx = _make_write_ctx()
+        derived = arguments.get("derived_from_chunk_id")
+        result = writes.create_enhancement_chunk(
+            backend,
+            ctx,
+            dataset=arguments["dataset"],
+            text=arguments["text"],
+            derived_from_chunk_id=int(derived) if derived is not None else None,
+            heading=arguments.get("heading"),
+            role=arguments.get("role"),
             metadata=arguments.get("metadata"),
             dry_run=bool(arguments.get("dry_run", False)),
         )
