@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from corpus_forge import __version__
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 EXPECTED_CLASSIFIERS = [
@@ -122,8 +124,10 @@ def metadata(built_wheel: Path) -> dict:
 class TestWheelIdentity:
     def test_wheel_filename(self, built_wheel: Path) -> None:
         # Either underscore or hyphen normalisation depending on hatchling.
-        assert built_wheel.name.startswith("corpus_forge-0.1.0b17"), (
-            f"Expected wheel name to start with corpus_forge-0.1.0b17; got {built_wheel.name}"
+        # Single source of truth: derive from corpus_forge.__version__
+        # (rfc-version-single-source-of-truth) so a bump touches one literal.
+        assert built_wheel.name.startswith(f"corpus_forge-{__version__}"), (
+            f"Expected wheel name to start with corpus_forge-{__version__}; got {built_wheel.name}"
         )
         assert built_wheel.name.endswith("-py3-none-any.whl"), (
             f"Expected universal py3 wheel; got {built_wheel.name}"
@@ -133,7 +137,7 @@ class TestWheelIdentity:
         assert metadata["Name"] == "corpus-forge"
 
     def test_metadata_version(self, metadata: dict) -> None:
-        assert metadata["Version"] == "0.1.0b17"
+        assert metadata["Version"] == __version__
 
     def test_requires_python(self, metadata: dict) -> None:
         # Hatchling re-canonicalises the spec; the two parts may swap order
