@@ -73,6 +73,44 @@ CF_NON_INTERACTIVE=1 corpus-forge setup --backend postgres --embedder qwen3_8b
 
 The config lives at `~/.config/corpus-forge/config.toml` on macOS/Linux and `%APPDATA%\corpus-forge\config.toml` on Windows. A fully-commented example ships at `config.example.toml`.
 
+### Same model, different provider names (model aliases)
+
+If a fleet serves the **same embedding model** under different
+`(provider, model_id)` names — e.g. the operator runs `nomic-embed-code`
+via Ollama on a Mac (`provider="ollama"`,
+`model_id="manutic/nomic-embed-code:latest"`) and via an OpenAI-compatible
+endpoint on Windows (`provider="openai"`,
+`model_id="text-embedding-nomic-embed-code"`) — declare the equivalence so
+corpus-forge treats them as one identity (RFC fleet-6):
+
+```toml
+[[embedders]]
+name = "nomic-code"
+provider = "ollama"
+model_id = "manutic/nomic-embed-code:latest"
+dimension = 3584
+# Other provider names for the SAME weights/vector space:
+[[embedders.model_aliases]]
+provider = "openai"
+model_id = "text-embedding-nomic-embed-code"
+```
+
+With aliases declared:
+- **No false drift / re-embed prompt** — switching the host or provider that
+  serves the model no longer trips the "Embedder changed → re-embed N chunks"
+  panel (the drift fingerprint folds through the alias set).
+- **One telemetry lane** — fleet-1 `model_benchmarks` and the `fleet hosts`
+  plan key on the *canonical* identity, so the Mac and Windows box accrue
+  under one model instead of two.
+- **Safety** — aliases must agree on `dimension` / `normalize` / `distance`;
+  a mismatch is a hard error at config load (never a silent merge).
+- `config publish` / `pull` federate the alias set, so every host agrees
+  without re-typing it. `corpus-forge embedder merge-aliases` reports any
+  pre-existing split telemetry rows the aliases would unify.
+
+A single-machine corpus needs none of this — omit `model_aliases` and
+behavior is unchanged.
+
 ## 3. Migrate
 
 ```bash
@@ -244,6 +282,40 @@ schema lifecycle. After the one-liner finishes:
 - `corpus-forge service install` — install the daemon as a managed
   service so the host drains backlog continuously.
 
+#### The `[service]` block — what the managed daemon does (RFC fleet-5)
+
+`service install` now *actually* drains the backlog: the daemon runs a
+continuous fleet-2 claim-based embed-drain loop, honoring `[embed] lanes`.
+Two independent toggles under `[service]` select its role:
+
+```toml
+[service]
+embed_drain  = true     # run the backlog drain loop in the daemon
+ingest_watch = true      # also run the filesystem source watcher (default)
+```
+
+- **`embed_drain`** (default `false`) — when on (and the backend is
+  Postgres), the daemon continuously claims + embeds the standing backlog
+  via `corpus.embed_claims` (`FOR UPDATE SKIP LOCKED`), so N hosts drain one
+  lane with zero duplicate compute. Backs off (`[embed] drain_idle_min` ..
+  `drain_idle_max`, default 5 s → 5 min) when the backlog is empty.
+- **`ingest_watch`** (default `true`) — run the source watcher. A
+  **pure-drain GPU box** sets this `false`: it only embeds, never walks
+  source roots.
+
+`setup --join` seeds `embed_drain = true` for a joined host automatically,
+and a capable-GPU probe defaults `ingest_watch = false` (pure drain). Override
+either way with `--embed-drain/--no-embed-drain` and
+`--ingest-watch/--no-ingest-watch` (env `CF_EMBED_DRAIN` / `CF_INGEST_WATCH`).
+A plain local (non-`--join`) setup is unchanged — `embed_drain` stays off, so
+there's no surprise background GPU loop on a laptop; ingest-time embedding
+already covers a single-machine corpus.
+
+`corpus-forge doctor` reports an `embed_drain` row (WARN if it's on but the
+service isn't running), and `service status` shows the drain lanes. The
+detached drift-prompt re-embed worker automatically yields any lane the
+managed service already owns, so the two never double-embed.
+
 ## 7. Curation loop quickstart (for the assistant)
 
 When the user wants to improve corpus quality:
@@ -267,6 +339,8 @@ For bulk mode (many similar entries, one chat): call `next_curation_batch(limit=
 | Postgres ENOSPC | `corpus-forge estimate <path>` *before* sync. Tune the `[estimate]` block in config to model your TOAST compression ratio. |
 | `TailscaleUnavailable` / `ts://` won't resolve | `corpus-forge doctor` names the failing endpoint. "daemon" reason → install/start Tailscale (`tailscale status` should report `Running`); "name" reason → the peer name isn't in this tailnet (check spelling). `ts://` in config while `[tailscale] enabled = false` fails at load — flip it on. |
 | Second machine: no shared config after `setup --join` | `corpus-forge config pull` (dry-run) then `--apply`. "nothing published yet" means no host has run `config publish` — do it on the primary. Federation needs the `postgres` backend (SQLite WARNs in `doctor`). |
+| "Embedder changed" / huge re-embed prompt after switching the host or provider that serves a model | The same model under a different provider/`model_id` (e.g. Ollama `manutic/nomic-embed-code:latest` vs an OpenAI-compatible `text-embedding-nomic-embed-code`) used to look like a new model and trip a full re-embed. Declare the equivalence: add a `model_aliases = [{ provider = "...", model_id = "..." }]` list to the `[[embedders]]` block (rfc-fleet-6). The drift fingerprint then folds through the alias set, so a pure name/provider swap reports **no drift** — while a genuine model change (different dimension/space, or an identity not in the alias set) still drifts. Dimension-mismatched aliases are rejected at config load. |
+| Joined a fleet, backlog isn't draining | Is the drain loop on? `corpus-forge doctor` → the `embed_drain` row WARNs if `[service] embed_drain = true` but the managed service isn't running — `corpus-forge service install` then `service start`. Then `corpus-forge service status` shows the drain lanes ticking. Drain needs the `postgres` backend (no `corpus.embed_claims` coordination on SQLite). |
 | In-process embedding slow / GPU idle on a CUDA box | The installed `llama-cpp-python` is the CPU-only wheel (the host had no driver on PATH at install time, or `pip`/`uv install` was used directly instead of the installer). Reinstall with `install.sh --llama-backend cuda` (`-LlamaBackend cuda` on PowerShell), or set `CF_LLAMA_BACKEND=cuda`. Force a specific CUDA variant with `--llama-backend cuda124` if auto-detection picks the wrong one. |
 
 Full docs live under `docs/` in this repo. The `corpus-forge doctor` command's `--json` output is the quickest way to ship a diagnosis to the user.

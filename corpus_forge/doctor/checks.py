@@ -1347,6 +1347,48 @@ def _check_embed_claims(cfg: Config) -> CheckResult:
     )
 
 
+def _check_embed_drain(cfg: Config) -> CheckResult:
+    """RFC fleet-5 item 5 — sanity-check the managed embed-drain service.
+
+    ``[service] embed_drain = true`` promises the daemon continuously drains
+    the embedding backlog — but only if the managed service is actually
+    running. A common misconfiguration is flipping the knob on without
+    ``service install`` / ``service start``, leaving the backlog stuck with
+    no error. Surface it:
+
+    - ``embed_drain`` off → OK ("disabled"; ingest-time embedding still runs).
+    - on + daemon process alive → OK.
+    - on + daemon down → WARN with the install/start fix.
+
+    Never FAILs (a stopped daemon is operator-correctable, not broken). Takes
+    the already-loaded ``cfg`` from ``run_doctor`` — never calls
+    ``Config.load()`` itself.
+    """
+    embed_drain = getattr(getattr(cfg, "service", None), "embed_drain", False)
+    if embed_drain is not True:
+        return CheckResult(
+            "embed_drain",
+            CheckStatus.OK,
+            "disabled (ingest-time embedding only)",
+        )
+
+    from corpus_forge.admin import foreground as _fg
+    from corpus_forge.admin.service import DAEMON_COMPONENT
+
+    if _fg.read_pid(DAEMON_COMPONENT) is not None:
+        return CheckResult(
+            "embed_drain",
+            CheckStatus.OK,
+            "enabled; managed service running (backlog drains continuously)",
+        )
+    return CheckResult(
+        "embed_drain",
+        CheckStatus.WARN,
+        "embed_drain=true but the managed service isn't running — the backlog "
+        "won't drain. Fix: `corpus-forge service install` then `service start`.",
+    )
+
+
 def _embed_claims_ttl_warning(cfg: Config, backend: StorageBackend, ttl: int) -> str | None:
     """Return a TTL-sanity WARN message, or None when every lane is healthy.
 
@@ -1679,6 +1721,13 @@ def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
         )
         results.append(
             CheckResult(
+                "embed_drain",
+                CheckStatus.SKIP,
+                "skipped (config not loaded)",
+            )
+        )
+        results.append(
+            CheckResult(
                 "tailscale",
                 CheckStatus.SKIP,
                 "skipped (config not loaded)",
@@ -1693,6 +1742,7 @@ def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
         results.append(_check_icloud_access(loaded_cfg))
         results.append(_check_model_telemetry(loaded_cfg))
         results.append(_check_embed_claims(loaded_cfg))
+        results.append(_check_embed_drain(loaded_cfg))
         results.append(_check_tailscale(loaded_cfg))
     # The global ignore drift check is independent of whether the config
     # loaded — the global file lives at ~/.config/corpus-forge/ignore
