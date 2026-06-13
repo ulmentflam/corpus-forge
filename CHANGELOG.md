@@ -30,6 +30,16 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   - **Backcompat:** the defaults (`embed_drain=False` / `ingest_watch=True`)
     reproduce today's ingest-only daemon byte-for-byte; a config with no
     `[service]` block validates and behaves unchanged.
+- **`corpus-forge service status` now shows an "embed drain lanes" row**
+  (rfc-fleet-5) — the embedder lanes this host is configured to drain
+  (active embedders ∩ `[embed] lanes`; empty lanes → all active). The
+  row is config-derived and read-only, preserving the command's DB-free,
+  safe-to-script contract. The drain loop's *runtime* state (running?
+  last-claim age) is deferred to fleet-5 item 2 — the `[service]` config
+  knobs + a DB-backed status query — so this change doesn't depend on
+  that unmerged work.
+
+## [0.1.0b18] - 2026-06-08
 
 **Hotfix on top of the distributed-fleet release.** Fixes a real-world
 fleet-2 deadlock observed on the operator's two-host Mac + Windows
