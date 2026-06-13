@@ -8,6 +8,20 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Added
+
+- **The managed daemon continuously drains the embed backlog (RFC fleet-5).**
+  When `[service] embed_drain = true`, the daemon runs a claim-based
+  drain loop (`run_embed_drain_loop`): per owned lane it claims a batch via
+  fleet-2's `claim_chunks_for_embedding`, embeds the routed-in chunks,
+  writes the vectors, and releases the claims — with bounded exponential
+  backoff (`[embed] drain_idle_min` → `drain_idle_max`, default 5s→300s)
+  when the backlog is drained, so it never hot-spins. New `[service]`
+  config (`embed_drain` default off, `ingest_watch` default on) lets a
+  pure-drain GPU box run the loop with the source watcher off. A
+  non-Postgres (SQLite) backend is a no-op — today's ingest-time embedding
+  is unchanged. Pairs with the `setup --join` seeding (above).
+
 ## [0.1.0b17] - 2026-06-08
 
 **The distributed-fleet release.** corpus-forge is no longer a

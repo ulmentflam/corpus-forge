@@ -938,8 +938,24 @@ class EmbedConfig(BaseModel):
 
     claim_lease_ttl: int = Field(default=600, gt=0)
     lanes: list[str] = Field(default_factory=list)
+    # RFC fleet-5 — bounded exponential-backoff window for the daemon
+    # embed-drain loop. When every owned lane returns an empty claim the
+    # loop sleeps, doubling from ``drain_idle_min`` up to ``drain_idle_max``;
+    # any non-empty batch resets the backoff to the minimum.
+    drain_idle_min: float = Field(default=5.0, gt=0)
+    drain_idle_max: float = Field(default=300.0, gt=0)
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_drain_idle_window(self) -> "EmbedConfig":
+        if self.drain_idle_max < self.drain_idle_min:
+            raise ValueError(
+                "drain_idle_max must be >= drain_idle_min "
+                f"(got drain_idle_min={self.drain_idle_min}, "
+                f"drain_idle_max={self.drain_idle_max})"
+            )
+        return self
 
 
 class FederationConfig(BaseModel):
@@ -1352,6 +1368,23 @@ def _tailscale_endpoint_values(config: "Config") -> list[tuple[str, str]]:
     return [(path, value) for path, value in pairs if value is not None]
 
 
+class ServiceConfig(BaseModel):
+    """RFC ``rfc-fleet-5-service-embed-drain`` — what the supervised daemon runs.
+
+    Hard backcompat bar: a config with NO ``[service]`` block reproduces
+    today's daemon exactly — the ingest watcher runs and there is no
+    background drain loop. So ``embed_drain`` defaults ``False`` (a laptop
+    already embeds at ingest time; no surprise GPU loop) and
+    ``ingest_watch`` defaults ``True``. A pure-drain GPU box sets
+    ``embed_drain = true`` + ``ingest_watch = false``.
+    """
+
+    embed_drain: bool = Field(default=False, json_schema_extra={"scope": "local"})
+    ingest_watch: bool = Field(default=True, json_schema_extra={"scope": "local"})
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class Config(BaseModel):
     """Main configuration for corpus-forge."""
 
@@ -1385,6 +1418,10 @@ class Config(BaseModel):
     # (which omit the ``[embed]`` block) keep validating; on SQLite the
     # block is inert (the claim loop falls back to the single-host path).
     embed: EmbedConfig = Field(default_factory=EmbedConfig)
+    # RFC fleet-5 — what the supervised daemon runs (embed-drain loop +
+    # ingest watcher toggles). Default-factory so configs with no [service]
+    # block validate and reproduce today's daemon (watch on, drain off).
+    service: ServiceConfig = Field(default_factory=ServiceConfig)
     # Phase L Wave 7 — Ollama daemon endpoint used by the admin verbs.
     # Defaulted so existing configs (which omit the block) keep validating.
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)

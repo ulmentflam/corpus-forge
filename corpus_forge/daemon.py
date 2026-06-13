@@ -7,10 +7,18 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
 
+from .backends.postgres import PostgresBackend
 from .sync.engine import SyncEngine
+
+# Never-patched class reference so the embed-drain loop's claim-path gate
+# (``isinstance(backend, _RealPostgresBackend)``) isn't fooled by tests that
+# patch the ``PostgresBackend`` constructor — mirrors
+# ``corpus_forge.embed._RealPostgresBackend``.
+_RealPostgresBackend = PostgresBackend
 
 # Module-level alias for the hard-exit primitive used by ``_shutdown``.
 # Tests patch ``corpus_forge.daemon._exit_hard`` to avoid terminating
@@ -172,6 +180,170 @@ def _build_discovery_callback(
     return _on_new_file
 
 
+@dataclass
+class _DrainLane:
+    """One embedder lane the daemon embed-drain loop owns (RFC fleet-5)."""
+
+    embedder: object
+    embedder_id: int
+    embedder_config: object
+    ext_filter: "list[str] | None"
+    transport: str
+    device: str
+    after_id: "int | None" = None
+
+
+def _interruptible_sleep(stop_event, seconds: float, sleep) -> None:
+    """Sleep ``seconds``, waking early if ``stop_event`` is set.
+
+    Uses ``stop_event.wait`` when present (a real ``threading.Event``);
+    falls back to the injected ``sleep`` for the cadence tests, whose
+    stop-event exposes no ``wait``.
+    """
+    wait = getattr(stop_event, "wait", None)
+    if callable(wait):
+        wait(seconds)
+    else:
+        sleep(seconds)
+
+
+def _build_drain_lanes(config, backend):
+    """Resolve this host's owned embedder lanes for the drain loop.
+
+    Returns ``(lanes, embedders)``: a ``_DrainLane`` per active embedder
+    this host owns (``[embed] lanes`` pin, else all active), plus the
+    parallel embedder list used for per-chunk routing. Each embedder is
+    warmed + registered (its backend id is needed for claims). Mirrors
+    ``embed.py``'s backfill setup.
+    """
+    from .admin.bench import resolve_device, resolve_transport  # noqa: PLC0415
+    from .embedders.registry import register_from_config, registry  # noqa: PLC0415
+
+    active = [ec for ec in config.embedders if ec.active]
+    lanes_pin = list(getattr(config.embed, "lanes", []) or [])
+    if lanes_pin:
+        active = [ec for ec in active if ec.name in lanes_pin]
+
+    lanes: list[_DrainLane] = []
+    embedders: list = []
+    for ec in active:
+        try:
+            embedder = register_from_config(registry, ec)
+            embedder.warmup()
+            embedder_id = backend.register_embedder(embedder)
+        except Exception as exc:
+            logger.warning("drain: embedder %r failed to load: %r", ec.name, exc)
+            continue
+        transport = resolve_transport(ec)
+        ext_filter = list(embedder.extensions) if getattr(embedder, "extensions", None) else None
+        lanes.append(
+            _DrainLane(
+                embedder=embedder,
+                embedder_id=embedder_id,
+                embedder_config=ec,
+                ext_filter=ext_filter,
+                transport=transport,
+                device=resolve_device(transport),
+            )
+        )
+        embedders.append(embedder)
+    return lanes, embedders
+
+
+def _drain_lane_batch(backend, lane, embedders, host_id, lease_ttl, _config):
+    """Claim → embed → write → release one batch for ``lane`` (RFC fleet-5).
+
+    Returns ``(claimed: bool, embedded: int)``. Reuses fleet-2's claim
+    primitives verbatim: a ``FederationUnsupported`` backend (SQLite) is a
+    no-op; an empty page resets the lane cursor; only chunks that ROUTE to
+    this lane's embedder are embedded, but EVERY claimed id is released (in
+    a ``finally``) — even when embedding raises (then re-raised) or the
+    release itself raises ``FederationUnsupported`` (swallowed).
+    """
+    import contextlib  # noqa: PLC0415
+
+    from .backends.base import FederationUnsupported  # noqa: PLC0415
+    from .embedders import routing  # noqa: PLC0415
+
+    try:
+        page = backend.claim_chunks_for_embedding(
+            lane.embedder_id,
+            host_id,
+            batch=1000,
+            lease_ttl=lease_ttl,
+            extensions=lane.ext_filter,
+            after_id=lane.after_id,
+        )
+    except FederationUnsupported:
+        return (False, 0)
+
+    if not page:
+        lane.after_id = None
+        return (False, 0)
+
+    claimed_ids = [cid for cid, _text, _uri in page]
+    try:
+        routed_ids: list[int] = []
+        routed_texts: list[str] = []
+        for cid, text, uri in page:
+            if routing.route_for(uri, embedders) is lane.embedder:
+                routed_ids.append(cid)
+                routed_texts.append(text)
+        embedded = 0
+        if routed_texts:
+            vectors = lane.embedder.encode(routed_texts)
+            backend.write_embeddings(lane.embedder_id, list(zip(routed_ids, vectors, strict=True)))
+            embedded = len(routed_ids)
+    finally:
+        # Release ALL claimed ids (routed-in or not) so a chunk another lane
+        # owns is freed immediately; release-in-finally frees the page even
+        # when encode raised. A FederationUnsupported release is swallowed.
+        with contextlib.suppress(FederationUnsupported):
+            backend.release_claims(lane.embedder_id, host_id, claimed_ids)
+
+    lane.after_id = max(claimed_ids)
+    return (True, embedded)
+
+
+def run_embed_drain_loop(config, backend, *, stop_event, sleep=time.sleep) -> None:
+    """Continuously drain the embed backlog via fleet-2 claims (RFC fleet-5).
+
+    Hosted in the supervised daemon when ``[service] embed_drain = true``.
+    A no-op on a non-Postgres backend (SQLite raises ``FederationUnsupported``
+    on the claim primitive — today's ingest-time embedding is untouched).
+    Sweeps every owned lane each iteration; when EVERY lane returns an empty
+    batch, backs off with bounded exponential cadence
+    (``[embed] drain_idle_min`` → ``drain_idle_max``); any non-empty batch
+    resets the backoff to the minimum. Runs until ``stop_event`` is set.
+    """
+    if not isinstance(backend, _RealPostgresBackend):
+        return
+
+    lanes, embedders = _build_drain_lanes(config, backend)
+    if not lanes:
+        return
+
+    host_id = config.host_id()
+    lease_ttl = config.embed.claim_lease_ttl
+    idle_min = float(config.embed.drain_idle_min)
+    idle_max = float(config.embed.drain_idle_max)
+    backoff = idle_min
+
+    while not stop_event.is_set():
+        did_work = False
+        for lane in lanes:
+            claimed, _embedded = _drain_lane_batch(
+                backend, lane, embedders, host_id, lease_ttl, config
+            )
+            if claimed:
+                did_work = True
+        if did_work:
+            backoff = idle_min
+            continue
+        _interruptible_sleep(stop_event, backoff, sleep)
+        backoff = min(backoff * 2, idle_max)
+
+
 def run_daemon(config) -> None:
     """Run daemon with sync engine orchestration.
 
@@ -197,6 +369,13 @@ def run_daemon(config) -> None:
     _telemetry_heartbeat(backend, config)
     if backend is None:
         logger.warning("No reachable backend at daemon startup; skipping all sync engines")
+    elif not config.service.ingest_watch:
+        # RFC fleet-5 — a pure-drain host ([service] ingest_watch=false)
+        # runs only the embed-drain loop below; no source watchers.
+        logger.info(
+            "[service] ingest_watch=false — not starting source watchers "
+            "(this host runs the embed-drain loop only)."
+        )
     else:
         for dataset in config.datasets:
             if not dataset.sync_enabled:
@@ -260,7 +439,24 @@ def run_daemon(config) -> None:
                     root,
                 )
 
+    # RFC fleet-5 — embed-drain loop in a daemon thread, gated on
+    # ``[service] embed_drain``. ``is True`` (not truthiness) so a MagicMock
+    # service in tests doesn't spuriously start it; needs a live backend.
+    drain_stop = threading.Event()
+    drain_thread: threading.Thread | None = None
+    if config.service.embed_drain is True and backend is not None:
+        drain_thread = threading.Thread(
+            target=run_embed_drain_loop,
+            kwargs={"config": config, "backend": backend, "stop_event": drain_stop},
+            daemon=True,
+        )
+        drain_thread.start()
+        logger.info("Started embed-drain loop ([service] embed_drain=true)")
+
     def _shutdown(signum, _frame):
+        # Signal the drain loop to stop first so it stops claiming while the
+        # engines wind down; joined below after the engines are stopped.
+        drain_stop.set()
         # Parallelise ``engine.stop()`` so the total time is bounded
         # by the slowest engine, not the sum.  Each PullPipeline.stop
         # can block up to ~10s on its thread.join; with 12 engines a
@@ -291,6 +487,15 @@ def run_daemon(config) -> None:
                         logger.exception("engine.stop() raised during shutdown")
 
                 list(pool.map(_stop_one, engines))
+
+        # Join the embed-drain thread (RFC fleet-5) — it was signalled to
+        # stop at the top of this handler; give it a bounded wait so a
+        # mid-batch claim can release before exit.
+        if drain_thread is not None:
+            try:
+                drain_thread.join(timeout=10.0)
+            except Exception:
+                logger.exception("daemon: embed-drain thread join raised during shutdown")
 
         # Use ``os._exit`` instead of ``sys.exit`` so the daemon
         # actually terminates promptly.  ``sys.exit`` raises
