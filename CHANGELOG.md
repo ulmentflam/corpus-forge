@@ -10,6 +10,13 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ### Fixed
 
+- **`export chat` / `export sdft` / `export feedback-pairs` now emit a
+  clean error when no config exists** instead of a raw `FileNotFoundError`
+  traceback. These verbs load config one level down (in
+  `export._build_default_backend`), so a missing `config.toml` previously
+  crashed with an interpreter traceback. A new `_export_require_config()`
+  guard reports `No configuration found; run \`corpus-forge setup\`...` and
+  exits 2 — matching the `sync status` / `eval` idiom and exit code.
 - **`corpus-forge search --alpha` now validates its 0.0–1.0 range.** The
   `--alpha` help promises "(0.0..1.0)" and its sibling `--fusion` is
   range-checked one line away, but `--alpha` itself was unguarded, so
