@@ -38,6 +38,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
     from mcp.server import Server
 
+    from corpus_forge.mcp.writes import WriteContext
+    from corpus_forge.retrieval.rerank.base import Reranker
+    from corpus_forge.retrieval.retriever import Retriever
+    from corpus_forge.retrieval.types import Hit
+
 
 # Sentinel used to distinguish "set_description was omitted" from
 # "set_description was explicitly set to None" in the commit_curation
@@ -892,7 +897,7 @@ def _labels_to_wire(raw_labels: list[Any]) -> list[dict[str, Any]]:
     return out
 
 
-def _hit_to_dict(hit: Any) -> dict[str, Any]:
+def _hit_to_dict(hit: Hit) -> dict[str, Any]:
     """Serialize a retrieval ``Hit`` (or stand-in) to a JSON-safe dict.
 
     The MCP wire format requires plain JSON; we cannot ship the frozen
@@ -971,8 +976,8 @@ def _build_instructions() -> str:
 
 def build_server(
     *,
-    retriever_builder: Callable[[], Any],
-    reranker_builder: Callable[[], Any] | None = None,
+    retriever_builder: Callable[[], Retriever],
+    reranker_builder: Callable[[], Reranker] | None = None,
     default_dataset: str | None = None,
     writes_enabled: bool = True,
 ) -> Server[Any]:
@@ -1018,12 +1023,12 @@ def build_server(
     # so the inner async handlers can mutate without `nonlocal` boilerplate.
     state: dict[str, Any] = {"retriever": None, "reranker": None}
 
-    def _get_retriever() -> Any:
+    def _get_retriever() -> Retriever:
         if state["retriever"] is None:
             state["retriever"] = retriever_builder()
         return state["retriever"]
 
-    def _get_reranker() -> Any | None:
+    def _get_reranker() -> Reranker | None:
         if reranker_builder is None:
             return None
         if state["reranker"] is None:
@@ -1484,9 +1489,13 @@ def build_server(
             if reranker is not None and getattr(retriever, "reranker", None) is None:
                 # Some retriever stand-ins (e.g. test fakes) may not accept
                 # attribute assignment; the test path doesn't require it,
-                # only that the builder fires.
+                # only that the builder fires.  ``setattr`` (vs a direct
+                # ``retriever.reranker = …``) keeps this honest against the
+                # ``Retriever`` Protocol, which intentionally declares only
+                # ``search`` — the optional ``.reranker`` slot is a
+                # HybridRetriever implementation detail set dynamically here.
                 with contextlib.suppress(AttributeError):
-                    retriever.reranker = reranker
+                    setattr(retriever, "reranker", reranker)  # noqa: B010
 
         options = SearchOptions(
             k=k,
@@ -1678,7 +1687,7 @@ def build_server(
         except Exception:
             return None
 
-    def _chunk_row_to_mcp_dict(chunk: dict) -> dict:
+    def _chunk_row_to_mcp_dict(chunk: dict[str, Any]) -> dict[str, Any]:
         """Shape a backend chunk row for MCP responses (chunk_neighbors / get_document)."""
         return {
             "chunk_id": int(chunk["id"]),
@@ -1995,7 +2004,7 @@ def build_server(
 
     # ── write dispatchers (only reached when writes_enabled=True) ────────
 
-    def _make_write_ctx() -> Any:
+    def _make_write_ctx() -> WriteContext:
         """Build a WriteContext from env vars + config host identity."""
         import os
 
@@ -2008,6 +2017,11 @@ def build_server(
         )
 
     def _get_write_backend() -> Any:
+        # Returns the retriever's backend (a ``StorageBackend``) or ``None``.
+        # Typed ``Any`` rather than ``StorageBackend | None`` because several
+        # dispatchers reach past the public Protocol into backend-private
+        # members (``_execute`` / ``_get_connection``) for the SDFT and CAG
+        # hooks; the Protocol intentionally does not surface those.
         retriever = _get_retriever()
         return getattr(retriever, "backend", None)
 
@@ -2866,10 +2880,10 @@ async def _serve_stdio_async(*, default_dataset: str | None, writes_enabled: boo
     )
     from corpus_forge.config import Config
 
-    def _retriever_builder() -> Any:
+    def _retriever_builder() -> Retriever:
         return _build_retriever_for_eval()
 
-    def _reranker_builder() -> Any:
+    def _reranker_builder() -> Reranker:
         return _build_reranker_from_config(Config.load())
 
     server = build_server(
