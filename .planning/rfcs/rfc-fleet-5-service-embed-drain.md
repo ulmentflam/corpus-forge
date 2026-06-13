@@ -177,9 +177,12 @@ floor — see Makefile) on all new code is part of "done."
       joined host; ingest_watch GPU-aware via `_join_default_ingest_watch`;
       explicit wins); `_render_skeleton_join_config` writes `[service]`.
       Local setup unchanged. Tests: `test_setup_join_service_drain.py`.
-- [ ] Detached drift-prompt worker yields to the managed drain loop
+- [x] Detached drift-prompt worker yields to the managed drain loop
       when the service owns the lane (no double-embedding, one status
-      owner).
+      owner). — DONE: `cli.py _drain_loop_owns_lane` (daemon running +
+      `[service] embed_drain` + lane owned via `[embed] lanes`/no-pin);
+      `_spawn_background_embed` skips owned lanes (logs the yield) and
+      spawns only the rest. Tests: `tests/unit/test_drift_worker_yield.py`.
 - [ ] `service status` drain row (state / lanes / last-claim age /
       chunks-per-s); `--json` carries the same fields.
 - [ ] `doctor` drain check: `embed_drain` on but service not

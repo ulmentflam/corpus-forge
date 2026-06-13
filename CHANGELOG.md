@@ -21,6 +21,11 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   pure-drain GPU box run the loop with the source watcher off. A
   non-Postgres (SQLite) backend is a no-op — today's ingest-time embedding
   is unchanged. Pairs with the `setup --join` seeding (above).
+- **The drift-prompt embed-worker yields to the managed drain loop.** When
+  the daemon is running with `embed_drain` on and owns a drifting
+  embedder's lane, the ad-hoc detached re-embed worker no longer spawns
+  for that lane (it would just race the drain loop) — one status owner, no
+  double-embedding.
 
 ## [0.1.0b17] - 2026-06-08
 
