@@ -199,3 +199,110 @@ DB_NAME=secret_db
     # Check that environment variables were interpolated
     expected_dsn = "postgresql://secret_user:secret_pass@localhost/secret_db"
     assert config.backend.dsn == expected_dsn
+
+
+def test_config_load_uses_cf_config(tmp_path, monkeypatch):
+    """Test that Config.load uses CF_CONFIG when CORPUS_FORGE_CONFIG is not set."""
+    # Create config file
+    config_content = """\
+[backend]
+kind = "postgres"
+dsn = "postgresql://cf_user:cf_pass@localhost/cf_db"
+schema = "corpus"
+
+[daemon]
+debounce_seconds = 2.0
+log_level = "INFO"
+log_format = "text"
+
+[[datasets]]
+name = "cf-dataset"
+kind = "text"
+  [[datasets.sources]]
+  plugin = "markdown_vault"
+  vault_root = "~/cf-vault"
+  chunker = "markdown"
+
+[[embedders]]
+name = "cf-embedder"
+provider = "sentence_transformers"
+model_id = "cf-model"
+dimension = 384
+"""
+    config_file = tmp_path / "cf_config.toml"
+    config_file.write_text(config_content, encoding="utf-8")
+
+    monkeypatch.delenv("CORPUS_FORGE_CONFIG", raising=False)
+    monkeypatch.setenv("CF_CONFIG", str(config_file))
+
+    config = Config.load()
+    assert config.backend.dsn == "postgresql://cf_user:cf_pass@localhost/cf_db"
+    assert config.datasets[0].name == "cf-dataset"
+
+
+def test_config_load_prefers_corpus_forge_config(tmp_path, monkeypatch):
+    """Test that CORPUS_FORGE_CONFIG takes precedence over CF_CONFIG in Config.load."""
+    # Create first config file (for CF_CONFIG)
+    config_content_cf = """\
+[backend]
+kind = "postgres"
+dsn = "postgresql://cf_user:cf_pass@localhost/cf_db"
+schema = "corpus"
+
+[daemon]
+debounce_seconds = 2.0
+log_level = "INFO"
+log_format = "text"
+
+[[datasets]]
+name = "cf-dataset"
+kind = "text"
+  [[datasets.sources]]
+  plugin = "markdown_vault"
+  vault_root = "~/cf-vault"
+  chunker = "markdown"
+
+[[embedders]]
+name = "cf-embedder"
+provider = "sentence_transformers"
+model_id = "cf-model"
+dimension = 384
+"""
+    # Create second config file (for CORPUS_FORGE_CONFIG)
+    config_content_cf_forge = """\
+[backend]
+kind = "postgres"
+dsn = "postgresql://forge_user:forge_pass@localhost/forge_db"
+schema = "corpus"
+
+[daemon]
+debounce_seconds = 2.0
+log_level = "INFO"
+log_format = "text"
+
+[[datasets]]
+name = "forge-dataset"
+kind = "text"
+  [[datasets.sources]]
+  plugin = "markdown_vault"
+  vault_root = "~/forge-vault"
+  chunker = "markdown"
+
+[[embedders]]
+name = "forge-embedder"
+provider = "sentence_transformers"
+model_id = "forge-model"
+dimension = 384
+"""
+    config_file_cf = tmp_path / "cf_config.toml"
+    config_file_cf.write_text(config_content_cf, encoding="utf-8")
+
+    config_file_forge = tmp_path / "corpus_forge_config.toml"
+    config_file_forge.write_text(config_content_cf_forge, encoding="utf-8")
+
+    monkeypatch.setenv("CF_CONFIG", str(config_file_cf))
+    monkeypatch.setenv("CORPUS_FORGE_CONFIG", str(config_file_forge))
+
+    config = Config.load()
+    assert config.backend.dsn == "postgresql://forge_user:forge_pass@localhost/forge_db"
+    assert config.datasets[0].name == "forge-dataset"

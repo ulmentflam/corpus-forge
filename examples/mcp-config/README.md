@@ -48,7 +48,8 @@ have other MCP servers).  Restart Claude Desktop to pick up the change.
 
 | Variable                | Purpose                                                |
 |-------------------------|--------------------------------------------------------|
-| `CORPUS_FORGE_CONFIG`   | Path to the TOML the MCP subprocess loads at startup.  |
+| `CORPUS_FORGE_CONFIG`   | Path to the TOML the MCP subprocess loads at startup (canonical). |
+| `CF_CONFIG`             | Fallback alias for `CORPUS_FORGE_CONFIG`.               |
 | `HF_HUB_OFFLINE=1`      | Optional — skip Hugging Face network calls at boot.    |
 | `TRANSFORMERS_OFFLINE=1`| Optional — pin the embedder / reranker to local cache. |
 

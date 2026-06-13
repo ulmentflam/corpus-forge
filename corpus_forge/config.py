@@ -1792,10 +1792,11 @@ class Config(BaseModel):
            Phase R5 so subprocess-driven smoke tests (and Claude Desktop
            launchers that already set env vars) can point at a custom
            config without writing to ``~/.config``.
-        3. ``~/.config/corpus-forge/config.toml`` (the default).
+        3. ``CF_CONFIG`` environment variable (fallback alias).
+        4. ``~/.config/corpus-forge/config.toml`` (the default).
         """
         if config_path is None:
-            env_path = os.environ.get("CORPUS_FORGE_CONFIG")
+            env_path = os.environ.get("CORPUS_FORGE_CONFIG") or os.environ.get("CF_CONFIG")
             if env_path:
                 config_path = Path(env_path)
             else:

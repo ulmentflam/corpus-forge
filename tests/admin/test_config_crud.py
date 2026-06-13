@@ -63,6 +63,25 @@ def test_resolve_config_path_uses_env_var(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert admin_config.resolve_config_path() == target
 
 
+def test_resolve_config_path_uses_cf_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("CORPUS_FORGE_CONFIG", raising=False)
+    target = tmp_path / "x.toml"
+    monkeypatch.setenv("CF_CONFIG", str(target))
+    assert admin_config.resolve_config_path() == target
+
+
+def test_resolve_config_path_prefers_corpus_forge_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cf_target = tmp_path / "cf.toml"
+    forge_target = tmp_path / "forge.toml"
+    monkeypatch.setenv("CF_CONFIG", str(cf_target))
+    monkeypatch.setenv("CORPUS_FORGE_CONFIG", str(forge_target))
+    assert admin_config.resolve_config_path() == forge_target
+
+
 def test_resolve_config_path_explicit_wins(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("CORPUS_FORGE_CONFIG", str(tmp_path / "envvar.toml"))
     explicit = tmp_path / "explicit.toml"

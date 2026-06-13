@@ -276,6 +276,9 @@ def _collect_config_toml() -> str:
 
     # Default: ~/.config/corpus-forge/config.toml (matches Config.load).
     candidates = [
+        Path(os.environ.get("CORPUS_FORGE_CONFIG", "")).expanduser()
+        if os.environ.get("CORPUS_FORGE_CONFIG")
+        else None,
         Path(os.environ.get("CF_CONFIG", "")).expanduser() if os.environ.get("CF_CONFIG") else None,
         Path.home() / ".config" / "corpus-forge" / "config.toml",
     ]

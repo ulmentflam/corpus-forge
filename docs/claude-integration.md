@@ -91,7 +91,7 @@ If the call doesn't fire, double-check:
 - The drop-in JSON landed at the right path for your client.
 - `corpus-forge` is on the client's `PATH` (use an absolute path in the
   `command` field if the shell's `PATH` isn't inherited).
-- `CORPUS_FORGE_CONFIG` resolves to a real TOML file from the client's
+- `CORPUS_FORGE_CONFIG` (or the fallback alias `CF_CONFIG`) resolves to a real TOML file from the client's
   environment.
 
 ## First search
