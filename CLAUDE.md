@@ -68,7 +68,7 @@ Extras worth knowing:
 ```bash
 corpus-forge setup            # interactive wizard, renders ~/.config/corpus-forge/config.toml
 # or, unattended:
-CF_NON_INTERACTIVE=1 corpus-forge setup --backend postgres --embedder qwen3_8b
+CF_BACKEND=postgres CF_EMBEDDER=qwen3_8b corpus-forge setup --non-interactive
 ```
 
 The config lives at `~/.config/corpus-forge/config.toml` on macOS/Linux and `%APPDATA%\corpus-forge\config.toml` on Windows. A fully-commented example ships at `config.example.toml`.

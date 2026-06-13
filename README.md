@@ -721,7 +721,7 @@ comment + a commented-out remote example for every `*_url`). Key sections:
 - `[daemon]` — `debounce_seconds`, `log_level`, `log_format`, `sync_poll_interval_s`, `trash_dir`, `conflict_dir`, `host_id`.
 - `[[datasets]]` — repeated. `name`, `kind` (`text` | `chat`), `description`, `sync_enabled` (Postgres only — SQLite rejects `sync_enabled = true` at config-load).
 - `[[datasets.sources]]` — repeated. `plugin` (`markdown_vault` | `claude_code` | `opencode` | `filesystem` | `chatgpt_export` | `codex_cli` | `gemini_cli` | `jsonl_chat`), source-specific paths, `chunker`, `chunker_config`. An optional `[datasets.sources.extraction]` block tunes the Phase D extractor registry (`enable_pdf`, `enable_office`, `csv_max_rows`, `max_bytes`, `ocr_enabled`, `ocr_dpi`, …).
-- `[[embedders]]` — repeated. `name`, `provider` (`sentence_transformers` | `openai`), `model_id`, `dimension`, `normalize`, `distance`, `active`, `batch_size`, `device`, `api_key_env` (OpenAI only).
+- `[[embedders]]` — repeated. `name`, `provider` (`sentence_transformers` | `openai` | `model2vec` | `llama-cpp`), `model_id`, `dimension`, `normalize`, `distance`, `active`, `batch_size`, `device`, `api_key_env` (OpenAI only).
 - `[retrieval]` — `fusion` (`rrf` | `alpha`), `alpha`, `default_k`, `rerank_top_n`, `rerank_enabled`, `reranker.{kind, model_id, device, ...}`.
 - `[vlm]` — Phase D P1. `backend ∈ {none, ollama, mistral}`, `ollama_url`, `mistral_base_url`, `timeout_s`.
 - `[classifier]` — Phase E. `chain = ["rule", "llm"]`, `escalation_threshold`, `llm_model`, `llm_url`, `llm_temperature`, `llm_excerpt_chars`.
@@ -922,7 +922,7 @@ A drop in `recall@20` on your own held-out QA pairs is an early-warning signal t
 ```bash
 make dev           # install dev deps + pre-commit hooks
 make ci            # format-check + lint + typecheck + unit + fuzz + smoke
-make test-unit     # parallel unit tests, coverage-gated ≥ 85%
+make test-unit     # parallel unit tests, coverage-gated ≥ 89%
 make test-integration  # Docker-backed pgvector
 make test-fuzz     # Hypothesis property tests
 make test-smoke    # end-to-end happy paths
