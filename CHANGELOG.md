@@ -8,6 +8,16 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Tests
+
+- **Pinned the SDFT held-out split *routing rule*** in `export_sdft`
+  (`held iff sha256(content_hash) % 100 < int(fraction*100)`). The existing
+  split tests only asserted determinism + disjointness — which survive an
+  inverted comparison / swapped hash / changed modulus that would silently
+  leak held-out *eval* rows into the *training* set (ML data leakage in the
+  HF-export deliverable, with no error). The new regression test nails the
+  actual bucket→file routing so such a silent break is caught.
+
 ## [0.1.0b18] - 2026-06-08
 
 **Hotfix on top of the distributed-fleet release.** Fixes a real-world
