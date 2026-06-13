@@ -8,6 +8,17 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`config get`/`config set` now reject negative list indices consistently.**
+  The dotted-path resolver's leaf-set guard already rejected `foo[-1]`, but
+  the read accessor (and intermediate set tokens) silently resolved a
+  negative index to the last element — so `config get embedders[-1].model_id`
+  returned a value and `config set embedders[-1].x` mutated the *last*
+  embedder instead of erroring. Negative indices now raise `PathNotFound`
+  uniformly (negative indexing was never a documented feature of the path
+  mini-language). Positive-index access is unchanged.
+
 ## [0.1.0b18] - 2026-06-08
 
 **Hotfix on top of the distributed-fleet release.** Fixes a real-world
