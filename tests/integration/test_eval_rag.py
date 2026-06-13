@@ -760,3 +760,33 @@ def test_eval_rag_env_var_judge_endpoint(rag_queries_fixture: Path, report_dir: 
     assert result.exit_code == 0, (
         f"CF_JUDGE_ENDPOINT=mock was not respected; exit={result.exit_code}\n{result.output}"
     )
+
+
+# ── malformed-JSONL input → clean error (not a raw traceback) ────────────────
+
+
+def test_eval_rag_malformed_jsonl_clean_error(tmp_path: Path, report_dir: Path):
+    """A malformed JSONL line yields a clean error + exit 2, not a traceback.
+
+    Mirrors the adjacent missing-file guard, which already exits 2 via
+    ui_error; a bad *line* must be handled just as cleanly as a bad path.
+    """
+    bad = tmp_path / "bad_queries.jsonl"
+    bad.write_text('{"query": "ok", "answer": "a", "contexts": []}\n{not valid json\n')
+    result = _runner().invoke(
+        app,
+        [
+            "eval",
+            "rag",
+            "--judge-endpoint=mock",
+            "--queries",
+            str(bad),
+            "--report-dir",
+            str(report_dir),
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert "Malformed JSON" in result.output
+    assert "line 2" in result.output
+    # Clean exit, not an uncaught JSONDecodeError surfacing to the user.
+    assert result.exception is None or isinstance(result.exception, SystemExit)

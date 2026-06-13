@@ -28,6 +28,13 @@ runner = CliRunner()
 
 
 class TestExportFeedbackPairsSubcommandDispatch:
+    @pytest.fixture(autouse=True)
+    def _config_present(self):
+        """The handler now guards on ``Config.load()``; stub it present so these
+        dispatch tests pass on a config-less CI runner (see the chat tests)."""
+        with patch("corpus_forge.config.Config.load", return_value=MagicMock()):
+            yield
+
     def test_export_feedback_pairs_subcommand_dispatches(self) -> None:
         """Valid invocation monkeypatches export_feedback_pairs; stub called with right kwargs."""
         stub = MagicMock(return_value=None)
@@ -151,3 +158,19 @@ class TestExportFeedbackPairsHelp:
         assert (
             "missing" in output_lower or "--dataset" in output_lower or "--out" in output_lower
         ), f"Expected a helpful error about missing required options; got: {result.output!r}"
+
+
+class TestExportFeedbackPairsConfigGuard:
+    """Missing config → clean error + exit 2, not a raw FileNotFoundError."""
+
+    def test_export_feedback_pairs_no_config_clean_error(self) -> None:
+        with patch(
+            "corpus_forge.config.Config.load",
+            side_effect=FileNotFoundError("Configuration file not found"),
+        ):
+            result = runner.invoke(
+                app, ["export", "feedback-pairs", "--dataset", "d", "--out", "./o.jsonl"]
+            )
+        assert result.exit_code == 2, result.output
+        assert "no configuration found" in result.output.lower()
+        assert "corpus-forge setup" in result.output
