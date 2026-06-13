@@ -172,6 +172,61 @@ def _build_discovery_callback(
     return _on_new_file
 
 
+def _maybe_start_embed_drain(config, backend, stop_event: threading.Event):
+    """Start the managed ``EmbedDrainLoop`` on a daemon thread, or no-op.
+
+    RFC fleet-5 item 2b. Returns the started ``threading.Thread`` (a daemon
+    thread), or ``None`` when drain is not wired this run. Drain runs only
+    when **all** hold:
+
+    - a backend is reachable,
+    - ``[service] embed_drain`` is on, and
+    - the backend is Postgres (the only backend with the
+      ``corpus.embed_claims`` coordination the loop relies on — SQLite has
+      no cross-host claim guarantee, so a drain loop there would just be the
+      single-host backfill path and is intentionally not wired).
+
+    Idle-backoff bounds come from ``[embed] drain_idle_min`` /
+    ``drain_idle_max`` (validated ``max >= min`` at config load). Failure to
+    construct/start is logged and swallowed — a broken drain wiring must
+    never take down the ingest daemon.
+    """
+    if backend is None or not getattr(config.service, "embed_drain", False):
+        return None
+    if getattr(config.backend, "kind", None) != "postgres":
+        logger.info(
+            "[service] embed_drain=true but backend is %r, not postgres; "
+            "drain loop not started (claim-based drain needs Postgres)",
+            getattr(config.backend, "kind", None),
+        )
+        return None
+    try:
+        from corpus_forge.embed_drain import EmbedDrainLoop  # noqa: PLC0415
+
+        loop = EmbedDrainLoop(
+            backend,
+            config,
+            idle_min=config.embed.drain_idle_min,
+            idle_max=config.embed.drain_idle_max,
+        )
+        thread = threading.Thread(
+            target=loop.run,
+            args=(stop_event,),
+            name="cf-embed-drain",
+            daemon=True,
+        )
+        thread.start()
+        logger.info(
+            "Started managed embed-drain loop (idle backoff %.1fs..%.1fs)",
+            config.embed.drain_idle_min,
+            config.embed.drain_idle_max,
+        )
+        return thread
+    except Exception:
+        logger.exception("Failed to start managed embed-drain loop; continuing without it")
+        return None
+
+
 def run_daemon(config) -> None:
     """Run daemon with sync engine orchestration.
 
@@ -198,7 +253,17 @@ def run_daemon(config) -> None:
     if backend is None:
         logger.warning("No reachable backend at daemon startup; skipping all sync engines")
     else:
-        for dataset in config.datasets:
+        # RFC fleet-5 item 2b — the filesystem ingest watcher is now
+        # optional. A pure-drain host (``[service] ingest_watch = false``)
+        # only embeds the backlog and never walks source roots. Default
+        # ``ingest_watch = true`` reproduces today's behaviour.
+        if not config.service.ingest_watch:
+            logger.info(
+                "ingest watcher disabled ([service] ingest_watch=false); "
+                "daemon will not watch source roots this run"
+            )
+        watched_datasets = config.datasets if config.service.ingest_watch else []
+        for dataset in watched_datasets:
             if not dataset.sync_enabled:
                 continue
 
@@ -260,7 +325,22 @@ def run_daemon(config) -> None:
                     root,
                 )
 
+    # RFC fleet-5 item 2b — managed embed-drain loop. When
+    # ``[service] embed_drain`` is on and the backend is Postgres, drain
+    # the embedding backlog continuously on a daemon thread (fleet-2 claims
+    # dedupe the work across the fleet). The thread is a *daemon* thread so
+    # it dies with the process on the hard-exit shutdown below — the same
+    # teardown philosophy as the sync engines (no fragile join across the
+    # SIGTERM→SIGKILL grace window).
+    drain_stop = threading.Event()
+    _maybe_start_embed_drain(config, backend, drain_stop)
+
     def _shutdown(signum, _frame):
+        # Best-effort: ask the drain loop to exit its current backoff
+        # promptly. The hard ``_exit_hard`` below is the real teardown
+        # (the loop runs on a daemon thread), but setting the event lets
+        # an in-flight ``stop_event.wait`` return immediately.
+        drain_stop.set()
         # Parallelise ``engine.stop()`` so the total time is bounded
         # by the slowest engine, not the sum.  Each PullPipeline.stop
         # can block up to ~10s on its thread.join; with 12 engines a
