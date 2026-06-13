@@ -8,6 +8,17 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`.corpusignore` patterns with an internal slash are now correctly
+  root-anchored** (gitignore semantics). A pattern like `foo/bar` or
+  `logs/debug` previously matched at *any* depth (`a/foo/bar` was wrongly
+  ignored); per gitignore, a non-trailing internal slash anchors the
+  pattern to the corpus root, so `foo/bar` matches `<root>/foo/bar` only.
+  Leading `**/` still matches at any depth, and single-component patterns
+  (`*.log`, `Backups/`) are unaffected. Fixes silent over-ignoring of
+  user files.
+
 ## [0.1.0b18] - 2026-06-08
 
 **Hotfix on top of the distributed-fleet release.** Fixes a real-world

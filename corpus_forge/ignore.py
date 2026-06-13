@@ -79,6 +79,14 @@ def _compile_pattern(line: str) -> _Pattern | None:
     anchored = stripped.startswith("/")
     if anchored:
         stripped = stripped[1:]
+    elif "/" in stripped:
+        # gitignore: a pattern with an internal (non-trailing) slash is also
+        # anchored to the root — `foo/bar` matches `<root>/foo/bar` but NOT
+        # `<root>/a/foo/bar`. The trailing slash was already stripped into
+        # `dir_only` above, so any `/` remaining here is genuinely internal.
+        # A leading `**/` still matches at any depth: its regex begins with
+        # `.*`, which absorbs leading path components even when anchored.
+        anchored = True
 
     if not stripped:
         # Degenerate input (e.g. "/" or "!" alone). Skip.
