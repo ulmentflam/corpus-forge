@@ -504,6 +504,26 @@ def setup(
             "Works interactively and with --non-interactive."
         ),
     ),
+    embed_drain: bool | None = typer.Option(
+        None,
+        "--embed-drain/--no-embed-drain",
+        envvar="CF_EMBED_DRAIN",
+        help=(
+            "With --join (RFC fleet-5): seed [service] embed_drain in the "
+            "joined host's config so the managed service drains the shared "
+            "embed backlog. Defaults on for a joined host."
+        ),
+    ),
+    ingest_watch: bool | None = typer.Option(
+        None,
+        "--ingest-watch/--no-ingest-watch",
+        envvar="CF_INGEST_WATCH",
+        help=(
+            "With --join (RFC fleet-5): seed [service] ingest_watch. Pass "
+            "--no-ingest-watch for a pure-drain GPU box. Defaults off when "
+            "a capable GPU is detected, on otherwise."
+        ),
+    ),
 ) -> None:
     """Post-install setup wizard.
 
@@ -541,6 +561,8 @@ def setup(
                 join,
                 config_dir=config_dir,
                 interactive=not non_interactive,
+                embed_drain=embed_drain,
+                ingest_watch=ingest_watch,
             )
         except JoinError as exc:
             ui_error(str(exc))

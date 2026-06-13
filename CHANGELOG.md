@@ -10,6 +10,16 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ### Added
 
+- **`setup --join` seeds `[service] embed_drain` for the joined host
+  (rfc-fleet-5 item 3)** — the joined host's rendered `config.toml` gets a
+  `[service]` block with `embed_drain = true` (the managed service drains
+  the shared backlog) and a GPU-aware `ingest_watch` default — off on a
+  capable GPU box (pure-drain), on otherwise. New `setup` flags
+  `--embed-drain/--no-embed-drain` and `--ingest-watch/--no-ingest-watch`
+  (env `CF_EMBED_DRAIN` / `CF_INGEST_WATCH`) override the defaults. A plain
+  local (non-`--join`) setup is unchanged — no `[service]` block, drain
+  stays off (no surprise background GPU loop on a laptop). Builds on the
+  item-2 schema/wiring above.
 - **Managed embed-drain daemon (rfc-fleet-5 item 2)** — the background
   daemon can now continuously drain the embedding backlog, and its ingest
   watcher is optional.
