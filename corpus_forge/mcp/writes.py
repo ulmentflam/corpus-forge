@@ -56,7 +56,7 @@ _FEEDBACK_ENTITY_TYPES: frozenset[str] = frozenset({"chunk", "document", "conver
 
 def _link_to_session(
     backend: Any,
-    ctx: Any,
+    ctx: WriteContext,
     *,
     audit_id: int,
     entity_type: str,
@@ -139,7 +139,7 @@ def _count_messages(backend: Any, conversation_id: int) -> int:
 
 def add_label(
     backend: Any,
-    ctx: Any,
+    ctx: WriteContext,
     entity_type: str,
     entity_id: int,
     namespace: str,
@@ -211,7 +211,7 @@ def add_label(
 
 def remove_label(
     backend: Any,
-    ctx: Any,
+    ctx: WriteContext,
     entity_type: str,
     entity_id: int,
     namespace: str,
@@ -273,7 +273,7 @@ def remove_label(
 
 def set_metadata(
     backend: Any,
-    ctx: Any,
+    ctx: WriteContext,
     entity_type: str,
     entity_id: int,
     key: str,
@@ -335,7 +335,7 @@ def set_metadata(
 
 def set_description(
     backend: Any,
-    ctx: Any,
+    ctx: WriteContext,
     entity_type: str,
     entity_id: int,
     text: str | None,
@@ -395,7 +395,7 @@ def set_description(
 
 def list_labels(
     backend: Any,
-    ctx: Any,  # noqa: ARG001 — ctx accepted for API symmetry; not used (no audit)
+    ctx: WriteContext,  # noqa: ARG001 — ctx accepted for API symmetry; not used (no audit)
     entity_type: str | None = None,
     namespace: str | None = None,
 ) -> dict:
@@ -414,7 +414,7 @@ def list_labels(
 
 def append_conversation(
     backend: Any,
-    ctx: Any,
+    ctx: WriteContext,
     dataset: str,
     title: str,
     messages: list[dict],
@@ -495,7 +495,7 @@ def append_conversation(
 
 def append_message(
     backend: Any,
-    ctx: Any,
+    ctx: WriteContext,
     conversation_id: int,
     role: str,
     content: str,
@@ -585,7 +585,7 @@ def append_message(
 
 def add_feedback(
     backend: Any,
-    ctx: Any,
+    ctx: WriteContext,
     entity_type: str,
     entity_id: int,
     kind: str,
@@ -667,7 +667,7 @@ def add_feedback(
 
 def register_session(
     backend: Any,
-    ctx: Any,
+    ctx: WriteContext,
     client: str,
     session_id: str,
     *,
@@ -711,7 +711,7 @@ def _q(backend: Any, sql: str) -> str:
 
 def rate_search_result(
     backend: Any,
-    ctx: Any,
+    ctx: WriteContext,
     query_id: str,
     chunk_id: int,
     signal: str,
@@ -812,7 +812,7 @@ def rate_search_result(
 
 def record_demonstration(
     backend: Any,
-    ctx: Any,
+    ctx: WriteContext,
     query: str,
     student_messages: list[dict],
     teacher_messages: list[dict],
