@@ -1022,6 +1022,53 @@ class EmbedConfig(BaseModel):
     claim_batch_size: int = Field(default=1024, gt=0)
     max_inflight_batches: int = Field(default=1, gt=0)
     backpressure_max_load: float = Field(default=0.9, ge=0.0, le=1.0)
+    # RFC fleet-5 item 2 — bounded idle-backoff window for the daemon
+    # ``EmbedDrainLoop`` (corpus_forge/embed_drain.py). When every lane
+    # returns an empty batch the loop sleeps with exponential backoff
+    # between ``drain_idle_min`` and ``drain_idle_max`` seconds so an idle
+    # fleet doesn't hot-spin the shared Postgres host; the next non-empty
+    # sweep resets to ``drain_idle_min``. Defaults mirror the loop's own
+    # constants (5s..300s). Inert unless ``[service] embed_drain`` is on.
+    drain_idle_min: float = Field(default=5.0, gt=0.0)
+    drain_idle_max: float = Field(default=300.0, gt=0.0)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_drain_idle_window(self) -> "EmbedConfig":
+        """``drain_idle_max`` must be >= ``drain_idle_min`` (matches the loop guard)."""
+        if self.drain_idle_max < self.drain_idle_min:
+            raise ValueError(
+                "embed.drain_idle_max must be >= embed.drain_idle_min "
+                f"(got min={self.drain_idle_min}, max={self.drain_idle_max})"
+            )
+        return self
+
+
+class ServiceConfig(BaseModel):
+    """RFC fleet-5 item 2 — ``[service]`` daemon-role toggles.
+
+    Selects what the managed background daemon (``corpus-forge service``)
+    *does*. Two independent switches:
+
+    - ``embed_drain`` — run the claim-based :class:`EmbedDrainLoop` so this
+      host continuously drains the embedding backlog (fleet-2 claims keep N
+      hosts from double-embedding). Defaults to ``False``: a plain local
+      install is an ingest-only daemon, exactly as today.
+    - ``ingest_watch`` — run the filesystem ingest watcher. Defaults to
+      ``True`` (today's behaviour). A pure-drain GPU box sets this
+      ``False`` so it only embeds and never tries to walk source roots.
+
+    **Hard backcompat bar:** the default ``embed_drain=False`` /
+    ``ingest_watch=True`` reproduces today's daemon byte-for-byte — an
+    existing config with no ``[service]`` block is an ingest-only watcher
+    with no drain loop. A joined host flips ``embed_drain=True`` (RFC
+    item 3; seeded by ``setup --join``). The daemon-lifecycle wiring that
+    consumes these toggles is RFC item 2b.
+    """
+
+    embed_drain: bool = False
+    ingest_watch: bool = True
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1509,6 +1556,12 @@ class Config(BaseModel):
     # checker, reads no shared config, and never mutates config in the
     # background.
     federation: FederationConfig = Field(default_factory=FederationConfig)
+    # RFC fleet-5 item 2 — ``[service]`` daemon-role toggles (embed_drain /
+    # ingest_watch). Defaults to ``embed_drain=False`` / ``ingest_watch=True``
+    # so an existing config with no ``[service]`` block is an ingest-only
+    # watcher with no drain loop — today's behaviour, byte-for-byte. The
+    # daemon-lifecycle wiring that consumes these toggles is RFC item 2b.
+    service: ServiceConfig = Field(default_factory=ServiceConfig)
 
     model_config = ConfigDict(
         str_strip_whitespace=True,
