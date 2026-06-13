@@ -10,6 +10,16 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ### Fixed
 
+- **Fleet telemetry `model_key` now folds through `model_aliases`
+  (rfc-fleet-6 item 3).** The `corpus.models` registry / `model_benchmarks`
+  key (`embed.py`, `bench`, the `fleet hosts` plan view) is now the
+  *canonical* model identity, so the same model served under aliased
+  provider/model_id names (e.g. Ollama vs an OpenAI-compatible endpoint)
+  accrues under **one** `corpus.models` row and one lane in the fleet plan,
+  rather than splitting into two. With no `model_aliases`, the key is the
+  embedder's own pair — unchanged. (The embedding lane / claim row is keyed
+  on the embedder *name*, so storage was unaffected; this aligns the fleet
+  telemetry/plan layer with the canonical identity.)
 - **Embedder drift detection now folds through `model_aliases`
   (rfc-fleet-6 item 2).** `embedder_fingerprint` hashes the *canonical*
   `(provider, model_id)` (the lexicographically smallest declared alias

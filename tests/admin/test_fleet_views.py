@@ -764,6 +764,31 @@ class TestBuildPlan:
         assert by_lane["nomic"]["recommended_host"] == "h1"
         assert by_lane["nomic"]["drain_seconds"] == 1000 / 100.0
 
+    def test_build_plan_keys_lanes_on_canonical_model_identity(self) -> None:
+        """RFC fleet-6 item 3: an aliased embedder's lane is keyed on the
+        CANONICAL model_key, so a benchmark row recorded under the canonical
+        identity (the model served via a different provider name on another
+        host) is matched — two names share one lane. The raw key
+        ``openai:text-nomic`` would miss the canonically-keyed row."""
+        from corpus_forge.config import ModelAlias
+
+        emb = _Embedder("nomic", "openai", "text-nomic")
+        # canonical = min{(openai,text-nomic),(llama-cpp,nomic-code)}
+        #           = (llama-cpp, nomic-code) → "llama-cpp:nomic-code".
+        emb.model_aliases = [ModelAlias(provider="llama-cpp", model_id="nomic-code")]
+        model_rows = [
+            {"model_key": "llama-cpp:nomic-code", "host_id": "h9", "chunks_per_s": 42.0},
+        ]
+        lanes = fv.build_plan(
+            embedders=[emb],
+            model_rows=model_rows,
+            embedder_id_for=lambda ec: 1,
+            backlog_for=lambda eid, ext: 100,
+        )
+        by_lane = {lane["lane"]: lane for lane in lanes}
+        assert by_lane["nomic"]["recommended_host"] == "h9"
+        assert by_lane["nomic"]["rate"] == 42.0
+
     def test_tie_breaks_on_host_id_ascending(self) -> None:
         embedders = [_Embedder("e", "st", "m")]
         model_rows = [
