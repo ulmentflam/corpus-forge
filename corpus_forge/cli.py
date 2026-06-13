@@ -1798,10 +1798,15 @@ def eval_rag(
 
     rows = []
     with queries.open(encoding="utf-8") as fh:
-        for _line in fh:
+        for lineno, _line in enumerate(fh, start=1):
             stripped = _line.strip()
-            if stripped:
+            if not stripped:
+                continue
+            try:
                 rows.append(_json.loads(stripped))
+            except _json.JSONDecodeError as exc:
+                ui_error(f"Malformed JSON in {queries} at line {lineno}: {exc}")
+                raise typer.Exit(code=2) from None
 
     try:
         result = run_rag_eval(
@@ -1879,10 +1884,15 @@ def eval_cag(
 
     rows = []
     with queries.open(encoding="utf-8") as fh:
-        for _line in fh:
+        for lineno, _line in enumerate(fh, start=1):
             stripped = _line.strip()
-            if stripped:
+            if not stripped:
+                continue
+            try:
                 rows.append(_json.loads(stripped))
+            except _json.JSONDecodeError as exc:
+                ui_error(f"Malformed JSON in {queries} at line {lineno}: {exc}")
+                raise typer.Exit(code=2) from None
 
     try:
         result = run_cag_eval(
