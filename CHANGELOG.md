@@ -8,6 +8,19 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Tests
+
+- **Integration test: concurrent `EmbedDrainLoop` drain (rfc-fleet-5)** —
+  two drain loops with distinct `host_id`s and separate Postgres
+  connections drain a shared 60-chunk backlog concurrently (testcontainers
+  Postgres). Asserts the fleet-2 claim guarantees end-to-end through the
+  drain loop: full coverage (`count_chunks_missing_embedding` → 0), no
+  double-embedding (each chunk's text encoded exactly once across both
+  hosts, observed directly via a recording stub embedder; per-host counts
+  sum to the backlog), and all `corpus.embed_claims` rows released. Rides
+  the merged loop (#123) directly — no dependency on the daemon-lifecycle
+  wiring.
+
 ## [0.1.0b18] - 2026-06-08
 
 **Hotfix on top of the distributed-fleet release.** Fixes a real-world
