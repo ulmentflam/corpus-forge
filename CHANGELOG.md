@@ -10,17 +10,26 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ### Added
 
-- **`[service]` config block (rfc-fleet-5 item 2, schema half)** — new
-  `ServiceConfig` with `embed_drain` (default `False`) and `ingest_watch`
-  (default `True`) toggles selecting what the managed daemon does, plus
-  `[embed] drain_idle_min` / `drain_idle_max` (default 5s / 300s,
-  validated `max >= min`, both > 0) for the `EmbedDrainLoop` idle-backoff
-  window. The defaults reproduce today's ingest-only daemon byte-for-byte
-  (a config with no `[service]` block validates unchanged). This is the
-  keystone schema the `setup --join` seeding (item 3) targets and that the
-  drain loop (#123) reads; the daemon-lifecycle wiring that *activates*
-  `embed_drain` is the immediate follow-up (item 2b) — until it lands the
-  toggles are inert config.
+- **Managed embed-drain daemon (rfc-fleet-5 item 2)** — the background
+  daemon can now continuously drain the embedding backlog, and its ingest
+  watcher is optional.
+  - New `[service]` config block (`ServiceConfig`): `embed_drain`
+    (default `False`) and `ingest_watch` (default `True`) toggles, plus
+    `[embed] drain_idle_min` / `drain_idle_max` (default 5s / 300s,
+    validated `max >= min`, both > 0) for the `EmbedDrainLoop` idle-backoff
+    window.
+  - **Daemon wiring (item 2b):** when `[service] embed_drain` is on and the
+    backend is Postgres, `run_daemon` starts the merged `EmbedDrainLoop`
+    (#123) on a daemon thread so this host drains the backlog continuously
+    (fleet-2 claims dedupe the work across the fleet). The filesystem ingest
+    watcher is now gated on `[service] ingest_watch`, so a pure-drain GPU
+    box (`embed_drain=true, ingest_watch=false`) only embeds and never walks
+    source roots. Drain on a non-Postgres backend is intentionally skipped
+    (no `corpus.embed_claims` coordination); a broken drain wiring is logged
+    and swallowed so it can never take down the ingest daemon.
+  - **Backcompat:** the defaults (`embed_drain=False` / `ingest_watch=True`)
+    reproduce today's ingest-only daemon byte-for-byte; a config with no
+    `[service]` block validates and behaves unchanged.
 
 **Hotfix on top of the distributed-fleet release.** Fixes a real-world
 fleet-2 deadlock observed on the operator's two-host Mac + Windows
