@@ -292,6 +292,7 @@ class TestWritesEnabledGate:
         Phase O Wave 4 adds 4 analyze read tools = 29 total.
         Phase P Wave 2 adds rate_search_result (write) = 30 total.
         RFC version-update-awareness adds check_update (read) = 32 total.
+        rfc-001 Phase 1 adds create_enhancement_chunk (write) = 33 total.
         """
         server = _build_server(backend, writes_enabled=True)
         tools = _list_tools(server)
@@ -345,9 +346,11 @@ class TestWritesEnabledGate:
             "rate_search_result",
             # Phase Q Wave 1 write tool
             "record_demonstration",
+            # rfc-001 Phase 1 write tool
+            "create_enhancement_chunk",
         }
         assert set(tools) == expected, (
-            f"Expected 32 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
+            f"Expected 33 tools; missing={expected - set(tools)}, extra={set(tools) - expected}"
         )
 
     def test_unknown_tool_returns_error_when_writes_disabled(

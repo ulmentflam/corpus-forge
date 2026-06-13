@@ -88,6 +88,8 @@ _WRITE_TOOL_NAMES = {
     "rate_search_result",
     # Phase Q Wave 1 — SDFT demonstration capture tool
     "record_demonstration",
+    # rfc-001 Phase 1 — curation enhancement-chunk tool
+    "create_enhancement_chunk",
 }
 
 _ALL_TOOL_NAMES = _READ_TOOL_NAMES | _WRITE_TOOL_NAMES
