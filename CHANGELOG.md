@@ -21,6 +21,16 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   Not yet wired into the wizard (subsequent items); 22 tests cover both the rich
   and fallback paths.
 
+### Changed
+
+- **`setup` wizard `choice` questions now use an arrow-key picker
+  (rfc-interactive-install-selection-ux item 3).** The full wizard's
+  interactive collection path routes `type=choice` questions through
+  `select.pick_one` (arrow-key, default highlighted) at a real TTY, while
+  `--non-interactive` / CI / tests fall back to the existing typed prompt
+  byte-for-byte (the wizard's original `stream_in`/`stream_out` seam is
+  forwarded, so the fallback fires whenever streams are injected).
+
 ## [0.1.0b18] - 2026-06-08
 
 **Hotfix on top of the distributed-fleet release.** Fixes a real-world
