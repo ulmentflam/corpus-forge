@@ -1820,10 +1820,15 @@ def eval_rag(
 
     rows = []
     with queries.open(encoding="utf-8") as fh:
-        for _line in fh:
+        for lineno, _line in enumerate(fh, start=1):
             stripped = _line.strip()
-            if stripped:
+            if not stripped:
+                continue
+            try:
                 rows.append(_json.loads(stripped))
+            except _json.JSONDecodeError as exc:
+                ui_error(f"Malformed JSON in {queries} at line {lineno}: {exc}")
+                raise typer.Exit(code=2) from None
 
     try:
         result = run_rag_eval(
@@ -1901,10 +1906,15 @@ def eval_cag(
 
     rows = []
     with queries.open(encoding="utf-8") as fh:
-        for _line in fh:
+        for lineno, _line in enumerate(fh, start=1):
             stripped = _line.strip()
-            if stripped:
+            if not stripped:
+                continue
+            try:
                 rows.append(_json.loads(stripped))
+            except _json.JSONDecodeError as exc:
+                ui_error(f"Malformed JSON in {queries} at line {lineno}: {exc}")
+                raise typer.Exit(code=2) from None
 
     try:
         result = run_cag_eval(
@@ -2366,6 +2376,17 @@ def search(
 
     from corpus_forge.retrieval.types import SearchOptions
 
+    # Validate --fusion / --alpha up front — BEFORE building the reranker or
+    # retriever (which load config). A bad flag must fail fast with a clean
+    # BadParameter, not surface a confusing config/backend error first; this
+    # also makes the validation config-independent. ``fusion_resolved`` is
+    # reused when constructing SearchOptions below.
+    fusion_resolved: str = fusion if fusion is not None else "rrf"
+    if fusion_resolved not in ("rrf", "alpha"):
+        raise typer.BadParameter(f"--fusion must be 'rrf' or 'alpha'; got {fusion_resolved!r}")
+    if alpha is not None and not (0.0 <= alpha <= 1.0):
+        raise typer.BadParameter(f"--alpha must be between 0.0 and 1.0; got {alpha}")
+
     # Agent-chunk-explorer T4: `--json -` is the clean-stdout sentinel.
     json_stdout_mode = json_out == "-"
     _noisy_loggers = ("alembic", "alembic.runtime.migration", "corpus_forge")
@@ -2401,9 +2422,6 @@ def search(
 
     retriever = _build_retriever_for_eval(fusion=fusion, alpha=alpha, reranker=reranker)
 
-    fusion_resolved: str = fusion if fusion is not None else "rrf"
-    if fusion_resolved not in ("rrf", "alpha"):
-        raise typer.BadParameter(f"--fusion must be 'rrf' or 'alpha'; got {fusion_resolved!r}")
     options = SearchOptions(
         k=k,
         dataset=dataset,
