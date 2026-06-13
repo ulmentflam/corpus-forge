@@ -16,6 +16,48 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   matching the exit code + `ui_error` path the adjacent missing-file guard
   already uses. Previously a single unparseable line crashed the command
   with an interpreter traceback.
+### Tests
+
+- **Integration test: concurrent `EmbedDrainLoop` drain (rfc-fleet-5)** —
+  two drain loops with distinct `host_id`s and separate Postgres
+  connections drain a shared 60-chunk backlog concurrently (testcontainers
+  Postgres). Asserts the fleet-2 claim guarantees end-to-end through the
+  drain loop: full coverage (`count_chunks_missing_embedding` → 0), no
+  double-embedding (each chunk's text encoded exactly once across both
+  hosts, observed directly via a recording stub embedder; per-host counts
+  sum to the backlog), and all `corpus.embed_claims` rows released. Rides
+  the merged loop (#123) directly — no dependency on the daemon-lifecycle
+  wiring.
+### Added
+
+- **Managed embed-drain daemon (rfc-fleet-5 item 2)** — the background
+  daemon can now continuously drain the embedding backlog, and its ingest
+  watcher is optional.
+  - New `[service]` config block (`ServiceConfig`): `embed_drain`
+    (default `False`) and `ingest_watch` (default `True`) toggles, plus
+    `[embed] drain_idle_min` / `drain_idle_max` (default 5s / 300s,
+    validated `max >= min`, both > 0) for the `EmbedDrainLoop` idle-backoff
+    window.
+  - **Daemon wiring (item 2b):** when `[service] embed_drain` is on and the
+    backend is Postgres, `run_daemon` starts the merged `EmbedDrainLoop`
+    (#123) on a daemon thread so this host drains the backlog continuously
+    (fleet-2 claims dedupe the work across the fleet). The filesystem ingest
+    watcher is now gated on `[service] ingest_watch`, so a pure-drain GPU
+    box (`embed_drain=true, ingest_watch=false`) only embeds and never walks
+    source roots. Drain on a non-Postgres backend is intentionally skipped
+    (no `corpus.embed_claims` coordination); a broken drain wiring is logged
+    and swallowed so it can never take down the ingest daemon.
+  - **Backcompat:** the defaults (`embed_drain=False` / `ingest_watch=True`)
+    reproduce today's ingest-only daemon byte-for-byte; a config with no
+    `[service]` block validates and behaves unchanged.
+- **`corpus-forge service status` now shows an "embed drain lanes" row**
+  (rfc-fleet-5) — the embedder lanes this host is configured to drain
+  (active embedders ∩ `[embed] lanes`; empty lanes → all active). The
+  row is config-derived and read-only, preserving the command's DB-free,
+  safe-to-script contract. The drain loop's *runtime* state (running?
+  last-claim age) is deferred to fleet-5 item 2 — the `[service]` config
+  knobs + a DB-backed status query — so this change doesn't depend on
+  that unmerged work.
 
 ## [0.1.0b18] - 2026-06-08
 
