@@ -254,6 +254,8 @@ When the user wants to improve corpus quality:
 4. On confirm, call `mcp__corpus-forge__commit_curation(chunk_id=..., add_labels=[...], set_metadata={...}, set_description="...", feedback="...")`. The MCP server wraps the writes into a single atomic operation.
 5. Offer "next one?" — yes loops to step 1, no prints a session summary.
 
+When the conversation produces *new* material worth keeping (a worked correction, a clarified explanation, a recommended enhancement), call `mcp__corpus-forge__create_enhancement_chunk(dataset="<name>", text="...", derived_from_chunk_id=<source>)` to mint it as its own chunk. It lands under a synthetic `corpus-forge://curation/<dataset>` document, carries `metadata.kind = "curation_enhancement"` (filter on it to exclude synthetic rows from retrieval/eval), and is embedded on the normal lane. `commit_curation` *edits* the existing entry; `create_enhancement_chunk` *creates* a new one — use both in one pass when the fix is new text.
+
 For bulk mode (many similar entries, one chat): call `next_curation_batch(limit=N)` instead. The selector groups by `(source stem, classifier label)` so one ratification ride covers many.
 
 ## 8. Troubleshooting

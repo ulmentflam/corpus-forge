@@ -661,6 +661,104 @@ def add_feedback(
 
 
 # ---------------------------------------------------------------------------
+# create_enhancement_chunk
+# ---------------------------------------------------------------------------
+
+
+def create_enhancement_chunk(
+    backend: Any,
+    ctx: Any,
+    dataset: str,
+    text: str,
+    *,
+    derived_from_chunk_id: int | None = None,
+    heading: str | None = None,
+    role: str | None = None,
+    metadata: dict | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Mint a *new* chunk from a curation conversation + recommended enhancement.
+
+    Unlike ``commit_curation`` (which only edits an existing chunk), this
+    persists newly-authored text — a captured conversation snippet, a
+    recommended enhancement, a worked correction — as its own chunk in
+    ``dataset``.  The chunk is appended to a per-dataset synthetic host
+    document ``corpus-forge://curation/<dataset>`` (created lazily) and
+    stamped with lineage metadata so retrieval and export can find it:
+
+    ``{"kind": "curation_enhancement", "derived_from_chunk_id": <id>,
+       "curation_session_id": <ctx.session_id>}``
+
+    Returns ``{"chunk_id": int | None, "document_id": int | None,
+    "audit_id": int}``.  When ``dry_run=True``, ``chunk_id`` /
+    ``document_id`` are ``None`` and nothing is written.
+    """
+    dataset_id = backend.find_dataset_id_by_name(dataset)
+    if dataset_id is None:
+        raise ValueError(f"dataset {dataset!r} not found")
+
+    source_uri = f"corpus-forge://curation/{dataset}"
+
+    # Merge caller metadata under the lineage stamp (caller keys win on
+    # conflict so an explicit override is still possible).
+    lineage: dict = {"kind": "curation_enhancement"}
+    if derived_from_chunk_id is not None:
+        lineage["derived_from_chunk_id"] = derived_from_chunk_id
+    if ctx.session_id is not None:
+        lineage["curation_session_id"] = ctx.session_id
+    merged_metadata = {**lineage, **(metadata or {})}
+
+    before = None
+    after: dict = {
+        "dataset": dataset,
+        "source_uri": source_uri,
+        "kind": "curation_enhancement",
+    }
+    if derived_from_chunk_id is not None:
+        after["derived_from_chunk_id"] = derived_from_chunk_id
+
+    if dry_run:
+        audit_id = backend.audit_event(
+            ctx.host,
+            ctx.client,
+            ctx.session_id,
+            "create_enhancement_chunk",
+            "chunk",
+            0,
+            before,
+            after,
+            True,
+        )
+        _link_to_session(backend, ctx, audit_id=audit_id, entity_type="chunk", entity_id=0)
+        return {"chunk_id": None, "document_id": None, "audit_id": audit_id}
+
+    document_id, chunk_id = backend.append_enhancement_chunk(
+        dataset_id,
+        source_uri,
+        text,
+        title="Curation enhancements",
+        heading=heading,
+        role=role,
+        metadata=merged_metadata,
+    )
+    after["chunk_id"] = chunk_id
+    after["document_id"] = document_id
+    audit_id = backend.audit_event(
+        ctx.host,
+        ctx.client,
+        ctx.session_id,
+        "create_enhancement_chunk",
+        "chunk",
+        chunk_id,
+        before,
+        after,
+        False,
+    )
+    _link_to_session(backend, ctx, audit_id=audit_id, entity_type="chunk", entity_id=chunk_id)
+    return {"chunk_id": chunk_id, "document_id": document_id, "audit_id": audit_id}
+
+
+# ---------------------------------------------------------------------------
 # register_session
 # ---------------------------------------------------------------------------
 

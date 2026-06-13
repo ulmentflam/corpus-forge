@@ -2967,6 +2967,74 @@ class SQLiteBackend:
 
         return conv_id, len(messages)
 
+    def append_enhancement_chunk(
+        self,
+        dataset_id: int,
+        source_uri: str,
+        text: str,
+        *,
+        title: str | None = None,
+        heading: str | None = None,
+        role: str | None = None,
+        token_count: int | None = None,
+        metadata: dict | None = None,
+    ) -> tuple[int, int]:
+        """Append one synthetic chunk to a lazily-created host document.
+
+        The host document ``(dataset_id, source_uri)`` is created on first
+        use and reused thereafter; the chunk is appended at the next
+        ``chunk_index``.  Returns ``(document_id, chunk_id)``.  Inserted via
+        a single connection so the FTS5 ``chunks_fts`` mirror sees the new
+        text immediately (the ``chunks_ai`` trigger fires on commit).
+        """
+        import hashlib  # noqa: PLC0415
+
+        meta_json = json.dumps(metadata or {})
+        ch = chunk_content_hash(text)
+
+        with self._get_connection() as conn:
+            existing = conn.execute(
+                "SELECT id FROM documents WHERE dataset_id = ? AND source_uri = ?",
+                (dataset_id, source_uri),
+            ).fetchone()
+            if existing is not None:
+                document_id: int = existing[0]
+            else:
+                doc_hash = hashlib.sha256(source_uri.encode()).hexdigest()
+                doc_row = conn.execute(
+                    """
+                    INSERT INTO documents
+                      (dataset_id, source_uri, content_hash, title, text, metadata)
+                    VALUES (?, ?, ?, ?, '', '{}')
+                    RETURNING id
+                    """,
+                    (dataset_id, source_uri, doc_hash, title),
+                ).fetchone()
+                document_id = doc_row[0]
+
+            idx_row = conn.execute(
+                "SELECT COALESCE(MAX(chunk_index), -1) + 1 AS next FROM chunks "
+                "WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()
+            chunk_index: int = idx_row[0]
+
+            chunk_row = conn.execute(
+                """
+                INSERT INTO chunks
+                  (document_id, chunk_index, heading, text, role,
+                   token_count, metadata, content_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
+                """,
+                (document_id, chunk_index, heading, text, role, token_count, meta_json, ch),
+            ).fetchone()
+            chunk_id: int = chunk_row[0]
+
+            conn.commit()
+
+        return document_id, chunk_id
+
     def append_message(
         self,
         conversation_id: int,

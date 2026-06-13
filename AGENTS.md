@@ -19,6 +19,7 @@ Connected to an MCP-speaking assistant, corpus-forge exposes:
 | `check_update` | Reports whether a newer corpus-forge release exists (24h-cached PyPI check) plus the channel-appropriate upgrade command. Read-only; recommend, never run. |
 | `next_curation_target` / `next_curation_batch` | Ranker-driven "what entry most needs my help right now?" |
 | `commit_curation` | Atomic multi-write covering label adds/removes, metadata, description, feedback. |
+| `create_enhancement_chunk` | Mint a NEW chunk (conversation + recommended enhancement) into a per-dataset synthetic curation document, linked to its source via `metadata.derived_from_chunk_id`. Curation that *creates* data, not just edits it. |
 | `add_label` / `remove_label` / `set_metadata` / `set_description` / `add_feedback` | Direct write surface, used internally by `commit_curation` but available stand-alone. |
 | `list_labels` | Enumerate labels on a chunk / document / conversation. |
 | `append_conversation` / `append_message` / `render_conversation` / `list_chat_templates` / `register_template` / `register_session` | Chat-corpus authoring + templated rendering. |
@@ -195,6 +196,8 @@ When the user wants to improve corpus quality, follow this prompt skeleton — i
 3. **Ask** — at most three focused questions targeting the highest-value gap.
 4. **Commit** — call `commit_curation(chunk_id=..., add_labels=[...], remove_labels=[...], set_metadata={...}, set_description="...", feedback="...")`. The server applies the writes atomically.
 5. **Loop** — offer "next one?" — yes → step 1, no → session summary.
+
+When the conversation yields *new* material worth keeping (a worked correction, a clarified explanation, a recommended enhancement), call `create_enhancement_chunk(dataset=<name>, text=..., derived_from_chunk_id=<source>)` to mint it as its own chunk under the synthetic `corpus-forge://curation/<dataset>` document. `commit_curation` edits the existing entry; `create_enhancement_chunk` creates a new one. The minted chunk carries `metadata.kind = "curation_enhancement"` — filter on it to keep synthetic rows out of retrieval/eval.
 
 In bulk mode, `next_curation_batch` groups candidates by `(source stem, classifier label)` so one chat can ratify a coherent group of similar entries.
 

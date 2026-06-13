@@ -3189,6 +3189,82 @@ class PostgresBackend(StorageBackend):
 
         return conv_id, len(messages)
 
+    def append_enhancement_chunk(
+        self,
+        dataset_id: int,
+        source_uri: str,
+        text: str,
+        *,
+        title: str | None = None,
+        heading: str | None = None,
+        role: str | None = None,
+        token_count: int | None = None,
+        metadata: dict | None = None,
+    ) -> tuple[int, int]:
+        """Append one synthetic chunk to a lazily-created host document.
+
+        The host document ``(dataset_id, source_uri)`` is created on first
+        use and reused thereafter; the chunk is appended at the next
+        ``chunk_index``.  Returns ``(document_id, chunk_id)``.  The
+        ``text_tsv`` GIN trigger on ``corpus.chunks`` indexes the new text
+        on commit so lexical search finds it immediately.
+        """
+        from ..identity import chunk_content_hash as _chunk_hash  # noqa: PLC0415
+
+        existing = self._execute(
+            "SELECT id FROM corpus.documents WHERE dataset_id = %s AND source_uri = %s",
+            (dataset_id, source_uri),
+        )
+        if existing:
+            document_id: int = existing[0]["id"]
+        else:
+            doc_result = self._execute(
+                """
+                INSERT INTO corpus.documents
+                  (dataset_id, source_uri, content_hash, title, text, metadata)
+                VALUES (%s, %s, %s, %s, '', %s)
+                RETURNING id
+                """,
+                (
+                    dataset_id,
+                    source_uri,
+                    source_uri,
+                    title,
+                    psycopg.types.json.Json({}),
+                ),
+            )
+            document_id = doc_result[0]["id"]
+
+        idx_result = self._execute(
+            "SELECT COALESCE(MAX(chunk_index), -1) + 1 AS next FROM corpus.chunks "
+            "WHERE document_id = %s",
+            (document_id,),
+        )
+        chunk_index: int = idx_result[0]["next"]
+
+        chunk_result = self._execute(
+            """
+            INSERT INTO corpus.chunks
+              (document_id, chunk_index, heading, text, role,
+               token_count, metadata, content_hash)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                document_id,
+                chunk_index,
+                heading,
+                text,
+                role,
+                token_count,
+                psycopg.types.json.Json(metadata or {}),
+                _chunk_hash(text),
+            ),
+        )
+        chunk_id: int = chunk_result[0]["id"]
+
+        return document_id, chunk_id
+
     def append_message(
         self,
         conversation_id: int,

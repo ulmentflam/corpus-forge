@@ -445,6 +445,29 @@ class StorageBackend(Protocol):
 
     def register_source(self, dataset_id: int, plugin: str, identity: str, host: str) -> int: ...
 
+    def append_enhancement_chunk(
+        self,
+        dataset_id: int,
+        source_uri: str,
+        text: str,
+        *,
+        title: str | None = None,
+        heading: str | None = None,
+        role: str | None = None,
+        token_count: int | None = None,
+        metadata: "dict | None" = None,
+    ) -> "tuple[int, int]":
+        """Append one synthetic chunk to a lazily-created host document.
+
+        Used by the curation loop to *mint* new chunks (a captured
+        conversation + recommended enhancement) rather than only editing
+        existing ones.  The host document identified by
+        ``(dataset_id, source_uri)`` is created on first use and reused
+        thereafter; the new chunk is appended at the next ``chunk_index``.
+        Returns ``(document_id, chunk_id)``.
+        """
+        ...
+
     # --- Retrieval surface (Phase R1) ----------------------------------------
 
     def search_dense(
