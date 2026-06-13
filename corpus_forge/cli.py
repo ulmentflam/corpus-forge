@@ -904,6 +904,25 @@ export_app = typer.Typer(
 app.add_typer(export_app, name="export")
 
 
+def _export_require_config() -> None:
+    """Fail cleanly if no config file exists — matches the sync/eval idiom.
+
+    The ``export`` verbs load config one level down (in
+    ``corpus_forge.export._build_default_backend``), so without this guard a
+    missing config surfaces as a raw ``FileNotFoundError`` traceback instead
+    of the actionable "run setup" message every other config-dependent
+    command already emits (see ``sync status`` / ``eval``). Exit code 2
+    matches those siblings.
+    """
+    from corpus_forge.config import Config
+
+    try:
+        Config.load()
+    except FileNotFoundError:
+        ui_warn("No configuration found; run `corpus-forge setup` to create one.")
+        raise typer.Exit(code=2) from None
+
+
 @export_app.command("chat")
 def export_chat_cmd(
     dataset: Annotated[str, typer.Option("--dataset", "-d", help="Dataset name to export.")],
@@ -925,6 +944,7 @@ def export_chat_cmd(
     ] = None,
 ) -> None:
     """Export a dataset's chat conversations as templated HF-format rows."""
+    _export_require_config()
     from corpus_forge.export import export_chat
 
     export_chat(
@@ -965,6 +985,7 @@ def export_sdft_cmd(
     ] = None,
 ) -> None:
     """Export SDFT demonstrations as HF-format rows."""
+    _export_require_config()
     from corpus_forge.export import export_sdft
 
     sources = [s.strip() for s in include_sources.split(",")] if include_sources else None
@@ -997,6 +1018,7 @@ def export_feedback_pairs_cmd(
     ] = None,
 ) -> None:
     """Export feedback events as templated training rows."""
+    _export_require_config()
     from corpus_forge.export import export_feedback_pairs
 
     export_feedback_pairs(
