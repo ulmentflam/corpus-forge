@@ -70,12 +70,13 @@ def resolve_config_path(explicit: Path | None = None) -> Path:
 
     1. ``explicit`` argument (used by ``validate --file``).
     2. ``CORPUS_FORGE_CONFIG`` env var.
-    3. ``~/.config/corpus-forge/config.toml`` default.
+    3. ``CF_CONFIG`` env var (fallback alias).
+    4. ``~/.config/corpus-forge/config.toml`` default.
     """
 
     if explicit is not None:
         return explicit
-    env_path = os.environ.get("CORPUS_FORGE_CONFIG")
+    env_path = os.environ.get("CORPUS_FORGE_CONFIG") or os.environ.get("CF_CONFIG")
     if env_path:
         return Path(env_path)
     return Path.home() / ".config" / "corpus-forge" / "config.toml"

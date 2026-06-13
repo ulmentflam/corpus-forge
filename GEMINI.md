@@ -79,11 +79,12 @@ Edit `~/.gemini/settings.json` (per Gemini CLI's MCP docs cited above):
     "corpus-forge": {
       "command": "corpus-forge",
       "args": ["mcp", "serve", "--transport", "stdio"],
-      "env": { "CF_CONFIG": "~/.config/corpus-forge/config.toml" }
+      "env": { "CORPUS_FORGE_CONFIG": "~/.config/corpus-forge/config.toml" }
     }
   }
 }
 ```
+*(Note: `CORPUS_FORGE_CONFIG` is the canonical environment variable. The shorter `CF_CONFIG` is also supported as a fallback alias).*
 
 Reload Gemini CLI (`gemini` will re-read settings on launch). The tools `mcp__corpus-forge__search`, `…__get_chunk`, `…__list_datasets`, `…__estimate_sync_size`, `…__check_update`, `…__next_curation_target`, `…__next_curation_batch`, and `…__commit_curation` (plus the existing write tools) become available.
 
