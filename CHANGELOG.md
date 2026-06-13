@@ -8,6 +8,15 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`eval rag` / `eval cag` now emit a clean error on malformed
+  `--queries` JSONL** instead of a raw `JSONDecodeError` traceback. A bad
+  line reports `Malformed JSON in <file> at line N: <detail>` and exits 2 —
+  matching the exit code + `ui_error` path the adjacent missing-file guard
+  already uses. Previously a single unparseable line crashed the command
+  with an interpreter traceback.
+
 ## [0.1.0b18] - 2026-06-08
 
 **Hotfix on top of the distributed-fleet release.** Fixes a real-world
