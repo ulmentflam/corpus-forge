@@ -8,6 +8,19 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Distributed embedding: a worker no longer permanently demotes itself
+  to the un-deduped fallback after a transient startup race.** When the
+  telemetry heartbeat failed silently (no `corpus.hosts` row), the first
+  `embed_claims` insert tripped the host-id foreign key and the backfill
+  loop latched `use_claims = False` for the worker's whole lifetime —
+  so multiple hosts raced the same chunks with no `FOR UPDATE SKIP
+  LOCKED` coordination (a clean restart only masked it). The claim path
+  now re-heartbeats once and retries the claim; permanent demotion is
+  reserved for `FederationUnsupported` (SQLite). Live bug from
+  `rfc-fleet-2-distributed-embedding`.
+
 ## [0.1.0b18] - 2026-06-08
 
 **Hotfix on top of the distributed-fleet release.** Fixes a real-world
