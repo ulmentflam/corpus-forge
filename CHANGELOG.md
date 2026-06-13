@@ -8,7 +8,19 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
-## [0.1.0b18] - 2026-06-08
+### Added
+
+- **`[service]` config block (rfc-fleet-5 item 2, schema half)** — new
+  `ServiceConfig` with `embed_drain` (default `False`) and `ingest_watch`
+  (default `True`) toggles selecting what the managed daemon does, plus
+  `[embed] drain_idle_min` / `drain_idle_max` (default 5s / 300s,
+  validated `max >= min`, both > 0) for the `EmbedDrainLoop` idle-backoff
+  window. The defaults reproduce today's ingest-only daemon byte-for-byte
+  (a config with no `[service]` block validates unchanged). This is the
+  keystone schema the `setup --join` seeding (item 3) targets and that the
+  drain loop (#123) reads; the daemon-lifecycle wiring that *activates*
+  `embed_drain` is the immediate follow-up (item 2b) — until it lands the
+  toggles are inert config.
 
 **Hotfix on top of the distributed-fleet release.** Fixes a real-world
 fleet-2 deadlock observed on the operator's two-host Mac + Windows
