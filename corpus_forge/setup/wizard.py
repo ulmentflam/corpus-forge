@@ -867,6 +867,11 @@ def _collect_answers(
     stream_out: IO[str] | None = None,
 ) -> dict[str, str]:
     """Walk the question tree once and return the {id: answer} map."""
+    # Lazy import keeps the questionary/prompt_toolkit stack (pulled in by
+    # ``select`` only when the rich UI fires) off the wizard's cold-start
+    # path — this module is loaded by every CLI invocation.
+    from corpus_forge.setup import select  # noqa: PLC0415
+
     answers: dict[str, str] = {}
     in_stream = stream_in or sys.stdin
     out_stream = stream_out or sys.stdout
@@ -875,7 +880,27 @@ def _collect_answers(
         if not q.is_relevant(answers):
             continue
         if interactive:
-            answers[q.id] = _read_answer_interactive(q, stream_in=in_stream, stream_out=out_stream)
+            if q.type == "choice":
+                # Route ``choice`` questions through the arrow-key picker.
+                # Pass the wizard's ORIGINAL ``stream_in``/``stream_out``
+                # (which may be None on a real interactive run) — when
+                # either is supplied (tests / ``--non-interactive``)
+                # ``pick_one`` falls back to ``_read_answer_interactive``
+                # over that same seam, so behaviour is byte-identical to
+                # the typed path; only a real TTY lights up the rich UI.
+                # The returned value is the choice *value*, matching what
+                # the typed path stored.
+                answers[q.id] = select.pick_one(
+                    q.prompt,
+                    list(q.choices),
+                    default=q.default,
+                    stream_in=stream_in,
+                    stream_out=stream_out,
+                )
+            else:
+                answers[q.id] = _read_answer_interactive(
+                    q, stream_in=in_stream, stream_out=out_stream
+                )
         else:
             answers[q.id] = _read_answer_non_interactive(q, env)
     return answers
