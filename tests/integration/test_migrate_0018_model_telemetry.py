@@ -333,7 +333,10 @@ def test_postgres_list_models_latest_per_host_model(pg_dsn: str) -> None:
     from corpus_forge.backends.postgres import PostgresBackend
 
     _reset_pg_schema(pg_dsn)
-    _upgrade_pg(pg_dsn, _TARGET_REVISION)
+    # Behavioral test: exercises live backend methods that reference columns
+    # added after 0018 (e.g. cold_start_s in 0021), so migrate to head — only
+    # the schema-contract tests above stay pinned to _TARGET_REVISION.
+    _upgrade_pg(pg_dsn, "head")
     backend = PostgresBackend(dsn=pg_dsn, schema="corpus")
     _seed_telemetry(backend)
 
@@ -354,7 +357,8 @@ def test_postgres_list_hosts_latest_rate(pg_dsn: str) -> None:
     from corpus_forge.backends.postgres import PostgresBackend
 
     _reset_pg_schema(pg_dsn)
-    _upgrade_pg(pg_dsn, _TARGET_REVISION)
+    # Behavioral test (seeds via insert_model_benchmark) — migrate to head.
+    _upgrade_pg(pg_dsn, "head")
     backend = PostgresBackend(dsn=pg_dsn, schema="corpus")
     _seed_telemetry(backend)
 
@@ -368,7 +372,8 @@ def test_postgres_model_benchmark_stats(pg_dsn: str) -> None:
     from corpus_forge.backends.postgres import PostgresBackend
 
     _reset_pg_schema(pg_dsn)
-    _upgrade_pg(pg_dsn, _TARGET_REVISION)
+    # Behavioral test (seeds via insert_model_benchmark) — migrate to head.
+    _upgrade_pg(pg_dsn, "head")
     backend = PostgresBackend(dsn=pg_dsn, schema="corpus")
     # Empty table first.
     assert backend.model_benchmark_stats() == {"count": 0, "freshest": None}
