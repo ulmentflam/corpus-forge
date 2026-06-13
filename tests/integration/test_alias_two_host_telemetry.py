@@ -26,13 +26,27 @@ from the root conftest.
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from corpus_forge.backends.postgres import PostgresBackend
 from corpus_forge.config import EmbedderConfig, ModelAlias
 from corpus_forge.embedders.identity import canonical_model_key
 
-pytestmark = [pytest.mark.integration, pytest.mark.requires_docker]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.requires_docker,
+    # testcontainers needs a Linux Postgres image; standard Windows GH runners
+    # run Windows containers and can't run it. The `requires_docker` skip
+    # spuriously passes when the Docker CLI is present but the daemon can't run
+    # Linux containers, so the test hung ~35min on the windows-2022 cell. Skip
+    # on win32, mirroring tests/integration/test_scan_parity.py.
+    pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="testcontainers Linux Postgres unavailable on Windows GH runners",
+    ),
+]
 
 # The same nomic-embed-code model served under two provider names. The
 # ``provider`` field is validated against the EmbedderConfig regex
