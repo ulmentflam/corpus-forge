@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import platformdirs
@@ -307,3 +308,66 @@ def test_last_info_line_returns_most_recent_info(tmp_path: Path) -> None:
 
 def test_last_info_line_missing_log_returns_none(tmp_path: Path) -> None:
     assert svc._last_info_line(tmp_path / "missing.log") is None
+
+
+# ── render_status: embed-drain lanes row (rfc-fleet-5) ───────────────────
+
+
+def test_render_status_drain_row_always_renders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The drain-lanes row is always present, even with no config."""
+    _isolate(monkeypatch, tmp_path)
+    # No config in the isolated env → helper returns [] → muted placeholder.
+    monkeypatch.setattr(svc, "_embed_drain_lanes", list)
+    out = _render()
+    assert "embed drain lanes" in out
+    assert "no active embedders configured" in out
+
+
+def test_render_status_drain_row_lists_lanes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the host has configured drain lanes, they render comma-joined."""
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(svc, "_embed_drain_lanes", lambda: ["qwen3_8b", "nomic_code"])
+    out = _render()
+    assert "embed drain lanes" in out
+    assert "qwen3_8b, nomic_code" in out
+
+
+def test_embed_drain_lanes_best_effort_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing/broken config yields [] rather than propagating."""
+
+    def _boom() -> object:
+        raise RuntimeError("config blew up")
+
+    monkeypatch.setattr("corpus_forge.config.Config.load", staticmethod(_boom))
+    assert svc._embed_drain_lanes() == []
+
+
+def _fake_config(*, lanes: list[str]) -> SimpleNamespace:
+    """A minimal duck-typed Config for `_embed_drain_lanes`."""
+    return SimpleNamespace(
+        embedders=[
+            SimpleNamespace(name="qwen3_8b", active=True),
+            SimpleNamespace(name="nomic_code", active=True),
+            SimpleNamespace(name="off", active=False),
+        ],
+        embed=SimpleNamespace(lanes=lanes),
+    )
+
+
+def test_embed_drain_lanes_filters_by_lanes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Active embedders intersected with [embed] lanes, config order preserved."""
+    cfg = _fake_config(lanes=["nomic_code"])
+    monkeypatch.setattr("corpus_forge.config.Config.load", staticmethod(lambda: cfg))
+    # Only the active embedder named in lanes survives.
+    assert svc._embed_drain_lanes() == ["nomic_code"]
+
+
+def test_embed_drain_lanes_empty_lanes_means_all_active(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Empty [embed] lanes → all active embedders (the backcompat bar)."""
+    cfg = _fake_config(lanes=[])
+    monkeypatch.setattr("corpus_forge.config.Config.load", staticmethod(lambda: cfg))
+    assert svc._embed_drain_lanes() == ["qwen3_8b", "nomic_code"]

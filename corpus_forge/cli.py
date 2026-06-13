@@ -926,6 +926,25 @@ export_app = typer.Typer(
 app.add_typer(export_app, name="export")
 
 
+def _export_require_config() -> None:
+    """Fail cleanly if no config file exists — matches the sync/eval idiom.
+
+    The ``export`` verbs load config one level down (in
+    ``corpus_forge.export._build_default_backend``), so without this guard a
+    missing config surfaces as a raw ``FileNotFoundError`` traceback instead
+    of the actionable "run setup" message every other config-dependent
+    command already emits (see ``sync status`` / ``eval``). Exit code 2
+    matches those siblings.
+    """
+    from corpus_forge.config import Config
+
+    try:
+        Config.load()
+    except FileNotFoundError:
+        ui_warn("No configuration found; run `corpus-forge setup` to create one.")
+        raise typer.Exit(code=2) from None
+
+
 @export_app.command("chat")
 def export_chat_cmd(
     dataset: Annotated[str, typer.Option("--dataset", "-d", help="Dataset name to export.")],
@@ -947,6 +966,7 @@ def export_chat_cmd(
     ] = None,
 ) -> None:
     """Export a dataset's chat conversations as templated HF-format rows."""
+    _export_require_config()
     from corpus_forge.export import export_chat
 
     export_chat(
@@ -987,6 +1007,7 @@ def export_sdft_cmd(
     ] = None,
 ) -> None:
     """Export SDFT demonstrations as HF-format rows."""
+    _export_require_config()
     from corpus_forge.export import export_sdft
 
     sources = [s.strip() for s in include_sources.split(",")] if include_sources else None
@@ -1019,6 +1040,7 @@ def export_feedback_pairs_cmd(
     ] = None,
 ) -> None:
     """Export feedback events as templated training rows."""
+    _export_require_config()
     from corpus_forge.export import export_feedback_pairs
 
     export_feedback_pairs(
@@ -1820,10 +1842,15 @@ def eval_rag(
 
     rows = []
     with queries.open(encoding="utf-8") as fh:
-        for _line in fh:
+        for lineno, _line in enumerate(fh, start=1):
             stripped = _line.strip()
-            if stripped:
+            if not stripped:
+                continue
+            try:
                 rows.append(_json.loads(stripped))
+            except _json.JSONDecodeError as exc:
+                ui_error(f"Malformed JSON in {queries} at line {lineno}: {exc}")
+                raise typer.Exit(code=2) from None
 
     try:
         result = run_rag_eval(
@@ -1901,10 +1928,15 @@ def eval_cag(
 
     rows = []
     with queries.open(encoding="utf-8") as fh:
-        for _line in fh:
+        for lineno, _line in enumerate(fh, start=1):
             stripped = _line.strip()
-            if stripped:
+            if not stripped:
+                continue
+            try:
                 rows.append(_json.loads(stripped))
+            except _json.JSONDecodeError as exc:
+                ui_error(f"Malformed JSON in {queries} at line {lineno}: {exc}")
+                raise typer.Exit(code=2) from None
 
     try:
         result = run_cag_eval(
@@ -2366,6 +2398,17 @@ def search(
 
     from corpus_forge.retrieval.types import SearchOptions
 
+    # Validate --fusion / --alpha up front — BEFORE building the reranker or
+    # retriever (which load config). A bad flag must fail fast with a clean
+    # BadParameter, not surface a confusing config/backend error first; this
+    # also makes the validation config-independent. ``fusion_resolved`` is
+    # reused when constructing SearchOptions below.
+    fusion_resolved: str = fusion if fusion is not None else "rrf"
+    if fusion_resolved not in ("rrf", "alpha"):
+        raise typer.BadParameter(f"--fusion must be 'rrf' or 'alpha'; got {fusion_resolved!r}")
+    if alpha is not None and not (0.0 <= alpha <= 1.0):
+        raise typer.BadParameter(f"--alpha must be between 0.0 and 1.0; got {alpha}")
+
     # Agent-chunk-explorer T4: `--json -` is the clean-stdout sentinel.
     json_stdout_mode = json_out == "-"
     _noisy_loggers = ("alembic", "alembic.runtime.migration", "corpus_forge")
@@ -2401,9 +2444,6 @@ def search(
 
     retriever = _build_retriever_for_eval(fusion=fusion, alpha=alpha, reranker=reranker)
 
-    fusion_resolved: str = fusion if fusion is not None else "rrf"
-    if fusion_resolved not in ("rrf", "alpha"):
-        raise typer.BadParameter(f"--fusion must be 'rrf' or 'alpha'; got {fusion_resolved!r}")
     options = SearchOptions(
         k=k,
         dataset=dataset,
