@@ -95,6 +95,11 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   - **Backcompat:** the defaults (`embed_drain=False` / `ingest_watch=True`)
     reproduce today's ingest-only daemon byte-for-byte; a config with no
     `[service]` block validates and behaves unchanged.
+  - **`doctor` drain check (item 5):** `corpus-forge doctor` now reports an
+    `embed_drain` row — OK when disabled or when enabled + the managed
+    service is running, **WARN** when `embed_drain=true` but the daemon
+    isn't running (the backlog silently won't drain), with the
+    `service install` / `service start` fix. Never FAILs.
 - **`corpus-forge service status` now shows an "embed drain lanes" row**
   (rfc-fleet-5) — the embedder lanes this host is configured to drain
   (active embedders ∩ `[embed] lanes`; empty lanes → all active). The
