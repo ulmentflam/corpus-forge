@@ -446,7 +446,15 @@ def bench_one(
     name = getattr(embedder_config, "name", "<unknown>")
     provider = getattr(embedder_config, "provider", "<unknown>")
     model_id = getattr(embedder_config, "model_id", "<unknown>")
-    model_key = f"{provider}:{model_id}"
+    # RFC fleet-6 item 3 — canonical model identity for the telemetry registry
+    # (aliased provider/model_id names share one `corpus.models` row). Falls
+    # back to the raw pair for a non-EmbedderConfig stub.
+    try:
+        from corpus_forge.embedders.identity import canonical_model_key
+
+        model_key = canonical_model_key(embedder_config)
+    except Exception:
+        model_key = f"{provider}:{model_id}"
     transport = resolve_transport(embedder_config)
     device = resolve_device(transport)
 

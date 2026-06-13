@@ -124,9 +124,16 @@ def embedder_fingerprint(cfg: EmbedderConfig) -> Fingerprint:
     Returns both the short (16-char) and full (64-char) hex forms.
     """
 
+    # RFC fleet-6 item 2 — hash the CANONICAL (provider, model_id) so two
+    # declared-alias names produce one fingerprint (no false drift on a pure
+    # name/provider swap). With no `model_aliases`, this is the embedder's own
+    # pair, so the hash is byte-identical to the pre-alias formula.
+    from corpus_forge.embedders.identity import canonical_model_identity  # noqa: PLC0415
+
+    provider, model_id = canonical_model_identity(cfg)
     return _hash(
-        cfg.provider,
-        cfg.model_id,
+        provider,
+        model_id,
         cfg.dimension,
         cfg.normalize,
         cfg.distance,
@@ -134,12 +141,19 @@ def embedder_fingerprint(cfg: EmbedderConfig) -> Fingerprint:
     )
 
 
-def _stored_fingerprint(row: dict) -> Fingerprint:
+def _stored_fingerprint(row: dict, cfg: EmbedderConfig | None = None) -> Fingerprint:
     """Recompute the fingerprint from a stored embedder row.
 
     Falls back to the row's top-level columns when the ``config`` JSONB
     is missing fields (legacy 2-key shape pre-Wave-5).  SQLite stores
     ``config`` as a serialized JSON string — decoded transparently.
+
+    RFC fleet-6 item 2: when ``cfg`` (the matching active embedder) is
+    supplied and the stored ``(provider, model_id)`` is one of ``cfg``'s
+    declared identity pairs, fold it to ``cfg``'s canonical identity — so a
+    stored row written under one alias name compares equal to the active
+    config under another. Dimension / normalize / distance stay per-row, so a
+    genuine model change (different dim/space) still drifts.
     """
 
     cfg_blob = row.get("config") or {}
@@ -153,6 +167,16 @@ def _stored_fingerprint(row: dict) -> Fingerprint:
 
     provider = cfg_blob.get("provider") or row["provider"]
     model_id = cfg_blob.get("model_id") or row["model_id"]
+    # Fold the stored identity to the active config's canonical pair when the
+    # two are declared aliases (RFC fleet-6 item 2) — model part only.
+    if cfg is not None:
+        from corpus_forge.embedders.identity import (  # noqa: PLC0415
+            canonical_model_identity,
+            model_identity_pairs,
+        )
+
+        if (str(provider).strip(), str(model_id).strip()) in model_identity_pairs(cfg):
+            provider, model_id = canonical_model_identity(cfg)
     dimension = cfg_blob.get("dimension") or row["dimension"]
     if dimension is None:
         dimension = 0
@@ -207,7 +231,7 @@ def compare_active(config: Config, backend) -> list[EmbedderDrift]:
         if row is None:
             # Never registered — nothing to migrate.
             continue
-        fp_was = _stored_fingerprint(row)
+        fp_was = _stored_fingerprint(row, cfg)
         fp_now = embedder_fingerprint(cfg)
         if fp_was.full == fp_now.full:
             continue

@@ -64,6 +64,22 @@ class TestGlobBasics:
         assert ig.matches(tmp_path / "Backups", is_dir=True) is True
         assert ig.matches(tmp_path / "nested" / "Backups", is_dir=True) is True
 
+    def test_internal_slash_pattern_is_anchored(self, tmp_path: Path) -> None:
+        """gitignore: a pattern with an internal (non-trailing) slash anchors
+        to the root — `foo/bar` matches `<root>/foo/bar` but NOT
+        `<root>/a/foo/bar`. (Regression: previously over-matched at any depth.)
+        """
+        ig = CorpusIgnore.from_lines(["foo/bar"], root=tmp_path)
+        assert ig.matches(tmp_path / "foo" / "bar", is_dir=False) is True
+        assert ig.matches(tmp_path / "a" / "foo" / "bar", is_dir=False) is False
+
+    def test_double_star_prefix_still_matches_any_depth(self, tmp_path: Path) -> None:
+        """`**/foo` contains a slash but the leading `**` overrides
+        root-anchoring — it must still match at any depth."""
+        ig = CorpusIgnore.from_lines(["**/foo"], root=tmp_path)
+        assert ig.matches(tmp_path / "foo", is_dir=True) is True
+        assert ig.matches(tmp_path / "a" / "b" / "foo", is_dir=True) is True
+
     def test_directory_only_pattern_does_not_match_file(self, tmp_path: Path) -> None:
         ig = CorpusIgnore.from_lines(["Backups/"], root=tmp_path)
         # A file (not a dir) named `Backups` should NOT match.
