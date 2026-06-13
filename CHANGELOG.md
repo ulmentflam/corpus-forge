@@ -26,6 +26,10 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   embedder's lane, the ad-hoc detached re-embed worker no longer spawns
   for that lane (it would just race the drain loop) — one status owner, no
   double-embedding.
+- **`doctor` flags a misconfigured drain loop.** New `embed_drain` check:
+  WARNs when `[service] embed_drain = true` but the managed service isn't
+  running (the backlog won't drain) with the `service install` /
+  `service start` fix; OK otherwise.
 
 ## [0.1.0b17] - 2026-06-08
 

@@ -1070,6 +1070,35 @@ _LEASE_TTL_BATCH_FRACTION = 0.5
 _DEFAULT_CLAIM_LEASE_TTL = 600
 
 
+def _check_embed_drain(cfg: Config) -> CheckResult:
+    """Sanity-check the fleet-5 embed-drain loop config vs. the service.
+
+    Never blocks doctor (``OK``/``WARN`` only):
+
+    - ``embed_drain`` off → ``OK`` "disabled" (the default; a laptop embeds
+      at ingest time).
+    - ``embed_drain`` on + the managed daemon is running → ``OK`` "active".
+    - ``embed_drain`` on but the daemon is NOT running → ``WARN``: the
+      backlog won't drain until the service is up. Fix:
+      ``corpus-forge service install`` / ``service start``.
+    """
+    embed_drain = getattr(getattr(cfg, "service", None), "embed_drain", False)
+    if embed_drain is not True:
+        return CheckResult("embed_drain", CheckStatus.OK, "disabled (ingest-time embedding)")
+
+    from corpus_forge.admin import foreground as _fg
+    from corpus_forge.admin.service import DAEMON_COMPONENT
+
+    if _fg.read_pid(DAEMON_COMPONENT) is not None:
+        return CheckResult("embed_drain", CheckStatus.OK, "enabled; managed service running")
+    return CheckResult(
+        "embed_drain",
+        CheckStatus.WARN,
+        "embed_drain=true but the managed service isn't running — the backlog "
+        "won't drain. Fix: `corpus-forge service install` then `service start`.",
+    )
+
+
 def _check_embed_claims(cfg: Config) -> CheckResult:
     """Informational report on fleet-2 embed-claim health (rfc-fleet-2).
 
@@ -1477,6 +1506,7 @@ def run_doctor(*, config_path: Path | None = None) -> DoctorReport:
         results.append(_check_icloud_access(loaded_cfg))
         results.append(_check_model_telemetry(loaded_cfg))
         results.append(_check_embed_claims(loaded_cfg))
+        results.append(_check_embed_drain(loaded_cfg))
         results.append(_check_tailscale(loaded_cfg))
     # The global ignore drift check is independent of whether the config
     # loaded — the global file lives at ~/.config/corpus-forge/ignore

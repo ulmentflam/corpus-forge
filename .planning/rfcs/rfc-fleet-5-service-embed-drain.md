@@ -185,8 +185,11 @@ floor — see Makefile) on all new code is part of "done."
       spawns only the rest. Tests: `tests/unit/test_drift_worker_yield.py`.
 - [ ] `service status` drain row (state / lanes / last-claim age /
       chunks-per-s); `--json` carries the same fields.
-- [ ] `doctor` drain check: `embed_drain` on but service not
-      running → WARN with fix.
+- [x] `doctor` drain check: `embed_drain` on but service not
+      running → WARN with fix. — DONE: `doctor/checks.py _check_embed_drain`
+      (off → OK "disabled"; on + daemon running → OK; on + daemon down →
+      WARN "service install / service start"). Registered in the run block;
+      tests: `tests/unit/test_doctor_embed_drain.py`.
 - [ ] Integration test (testcontainers Postgres): a drain-only daemon
       (ingest watcher off) drains a pre-seeded backlog to zero;
       concurrent with a second drain daemon → disjoint work, no chunk
