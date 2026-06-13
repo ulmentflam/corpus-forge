@@ -474,8 +474,12 @@ def build_plan(
         by_model.setdefault(key, []).append((row.get("host_id"), row.get("chunks_per_s")))
 
     lanes: list[dict[str, Any]] = []
+    from corpus_forge.embedders.identity import canonical_model_key
+
     for ec in embedders:
-        model_key = f"{ec.provider}:{ec.model_id}"
+        # RFC fleet-6 item 3 — canonical identity so aliased names map to one
+        # model_key / lane row in the fleet view (no aliases → own pair).
+        model_key = canonical_model_key(ec)
         extensions = list(ec.extensions) if getattr(ec, "extensions", None) else None
         embedder_id = embedder_id_for(ec)
         backlog = 0 if embedder_id is None else int(backlog_for(embedder_id, extensions))

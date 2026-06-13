@@ -260,3 +260,28 @@ def test_search_fusion_alpha_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     _, opts = fake.calls[0]
     assert opts.fusion == "alpha"
     assert abs(opts.alpha - 0.7) < 1e-9
+
+
+def test_search_alpha_out_of_range_is_rejected() -> None:
+    """`--alpha 1.5` exits non-zero with a clean BadParameter, not a traceback.
+
+    Parity with the adjacent `--fusion` guard: the `--alpha` help promises
+    "(0.0..1.0)" so an out-of-range value must be rejected cleanly. The
+    check fires before the retriever is built, so no fixture is needed.
+    """
+    from corpus_forge.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["search", "q", "--fusion", "alpha", "--alpha", "1.5"])
+    assert result.exit_code != 0
+    assert "--alpha must be between 0.0 and 1.0" in result.output
+
+
+def test_search_alpha_negative_is_rejected() -> None:
+    """A negative `--alpha` is rejected the same way."""
+    from corpus_forge.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["search", "q", "--alpha", "-0.5"])
+    assert result.exit_code != 0
+    assert "--alpha must be between 0.0 and 1.0" in result.output

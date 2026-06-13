@@ -20,6 +20,148 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
   tests behave byte-identically to today. `questionary>=2.0` added to core deps.
   Not yet wired into the wizard (subsequent items); 22 tests cover both the rich
   and fallback paths.
+### Tests
+
+- **Integration test: two-host model-alias telemetry collapse (rfc-fleet-6
+  item 8).** Two hosts serve the same model under swapped `(provider,
+  model_id)` names, each declaring the other as a `ModelAlias`; both seed
+  `corpus.models` + a benchmark under `canonical_model_key`. Asserts
+  `list_models_with_latest_benchmark()` returns exactly ONE distinct
+  `model_key` (the canonical) — the same model accrues under one fleet lane
+  instead of splitting — and both hosts accrue under it (cooperative,
+  one-lane). testcontainers Postgres; `requires_docker`.
+### Added
+
+- **`corpus-forge embedder merge-aliases` (rfc-fleet-6 item 4, detection).**
+  Reports `corpus.models` rows that `model_aliases` would unify — i.e. the
+  same model recorded under more than one `(provider, model_id)` / `model_key`
+  (a split from before aliases were declared). Read-only / print-only (the
+  RFC's "print without `--apply`" behavior); `--apply` (automated collapse of
+  existing split rows) is the documented follow-up. The canonical-key fix
+  (item 3) already prevents *new* splits.
+### Fixed
+
+- **Fleet telemetry `model_key` now folds through `model_aliases`
+  (rfc-fleet-6 item 3).** The `corpus.models` registry / `model_benchmarks`
+  key (`embed.py`, `bench`, the `fleet hosts` plan view) is now the
+  *canonical* model identity, so the same model served under aliased
+  provider/model_id names (e.g. Ollama vs an OpenAI-compatible endpoint)
+  accrues under **one** `corpus.models` row and one lane in the fleet plan,
+  rather than splitting into two. With no `model_aliases`, the key is the
+  embedder's own pair — unchanged. (The embedding lane / claim row is keyed
+  on the embedder *name*, so storage was unaffected; this aligns the fleet
+  telemetry/plan layer with the canonical identity.)
+- **Embedder drift detection now folds through `model_aliases`
+  (rfc-fleet-6 item 2).** `embedder_fingerprint` hashes the *canonical*
+  `(provider, model_id)` (the lexicographically smallest declared alias
+  pair), and `compare_active` canonicalizes the stored row's identity
+  through the active embedder's alias set — so renaming an embedder's
+  provider/model_id to a declared alias (e.g. the same model served via
+  `llama-cpp` vs `openai`) no longer triggers a false "model drift" + full
+  re-embed prompt. A genuine model change (an identity *not* in the alias
+  set, or a dimension/space change) still drifts. With no `model_aliases`,
+  the canonical identity is the embedder's own pair, so fingerprints are
+  byte-identical to before (no migration churn).
+### Tests
+
+- **Pinned the SDFT held-out split *routing rule*** in `export_sdft`
+  (`held iff sha256(content_hash) % 100 < int(fraction*100)`). The existing
+  split tests only asserted determinism + disjointness — which survive an
+  inverted comparison / swapped hash / changed modulus that would silently
+  leak held-out *eval* rows into the *training* set (ML data leakage in the
+  HF-export deliverable, with no error). The new regression test nails the
+  actual bucket→file routing so such a silent break is caught.
+### Fixed
+
+- **`.corpusignore` patterns with an internal slash are now correctly
+  root-anchored** (gitignore semantics). A pattern like `foo/bar` or
+  `logs/debug` previously matched at *any* depth (`a/foo/bar` was wrongly
+  ignored); per gitignore, a non-trailing internal slash anchors the
+  pattern to the corpus root, so `foo/bar` matches `<root>/foo/bar` only.
+  Leading `**/` still matches at any depth, and single-component patterns
+  (`*.log`, `Backups/`) are unaffected. Fixes silent over-ignoring of
+  user files.
+### Added
+
+- **`setup --join` seeds `[service] embed_drain` for the joined host
+  (rfc-fleet-5 item 3)** — the joined host's rendered `config.toml` gets a
+  `[service]` block with `embed_drain = true` (the managed service drains
+  the shared backlog) and a GPU-aware `ingest_watch` default — off on a
+  capable GPU box (pure-drain), on otherwise. New `setup` flags
+  `--embed-drain/--no-embed-drain` and `--ingest-watch/--no-ingest-watch`
+  (env `CF_EMBED_DRAIN` / `CF_INGEST_WATCH`) override the defaults. A plain
+  local (non-`--join`) setup is unchanged — no `[service]` block, drain
+  stays off (no surprise background GPU loop on a laptop). Builds on the
+  item-2 schema/wiring above.
+### Fixed
+
+- **`export chat` / `export sdft` / `export feedback-pairs` now emit a
+  clean error when no config exists** instead of a raw `FileNotFoundError`
+  traceback. These verbs load config one level down (in
+  `export._build_default_backend`), so a missing `config.toml` previously
+  crashed with an interpreter traceback. A new `_export_require_config()`
+  guard reports `No configuration found; run \`corpus-forge setup\`...` and
+  exits 2 — matching the `sync status` / `eval` idiom and exit code.
+- **`corpus-forge search --alpha` now validates its 0.0–1.0 range.** The
+  `--alpha` help promises "(0.0..1.0)" and its sibling `--fusion` is
+  range-checked one line away, but `--alpha` itself was unguarded, so
+  `--alpha 5` / `--alpha -1` were silently accepted into the fusion math.
+  Out-of-range values now raise a clean `typer.BadParameter` (`--alpha must
+  be between 0.0 and 1.0`), matching the `--fusion` guard. Default behavior
+  (no `--alpha`) is unchanged.
+- **`eval rag` / `eval cag` now emit a clean error on malformed
+  `--queries` JSONL** instead of a raw `JSONDecodeError` traceback. A bad
+  line reports `Malformed JSON in <file> at line N: <detail>` and exits 2 —
+  matching the exit code + `ui_error` path the adjacent missing-file guard
+  already uses. Previously a single unparseable line crashed the command
+  with an interpreter traceback.
+### Tests
+
+- **Integration test: concurrent `EmbedDrainLoop` drain (rfc-fleet-5)** —
+  two drain loops with distinct `host_id`s and separate Postgres
+  connections drain a shared 60-chunk backlog concurrently (testcontainers
+  Postgres). Asserts the fleet-2 claim guarantees end-to-end through the
+  drain loop: full coverage (`count_chunks_missing_embedding` → 0), no
+  double-embedding (each chunk's text encoded exactly once across both
+  hosts, observed directly via a recording stub embedder; per-host counts
+  sum to the backlog), and all `corpus.embed_claims` rows released. Rides
+  the merged loop (#123) directly — no dependency on the daemon-lifecycle
+  wiring.
+### Added
+
+- **Managed embed-drain daemon (rfc-fleet-5 item 2)** — the background
+  daemon can now continuously drain the embedding backlog, and its ingest
+  watcher is optional.
+  - New `[service]` config block (`ServiceConfig`): `embed_drain`
+    (default `False`) and `ingest_watch` (default `True`) toggles, plus
+    `[embed] drain_idle_min` / `drain_idle_max` (default 5s / 300s,
+    validated `max >= min`, both > 0) for the `EmbedDrainLoop` idle-backoff
+    window.
+  - **Daemon wiring (item 2b):** when `[service] embed_drain` is on and the
+    backend is Postgres, `run_daemon` starts the merged `EmbedDrainLoop`
+    (#123) on a daemon thread so this host drains the backlog continuously
+    (fleet-2 claims dedupe the work across the fleet). The filesystem ingest
+    watcher is now gated on `[service] ingest_watch`, so a pure-drain GPU
+    box (`embed_drain=true, ingest_watch=false`) only embeds and never walks
+    source roots. Drain on a non-Postgres backend is intentionally skipped
+    (no `corpus.embed_claims` coordination); a broken drain wiring is logged
+    and swallowed so it can never take down the ingest daemon.
+  - **Backcompat:** the defaults (`embed_drain=False` / `ingest_watch=True`)
+    reproduce today's ingest-only daemon byte-for-byte; a config with no
+    `[service]` block validates and behaves unchanged.
+  - **`doctor` drain check (item 5):** `corpus-forge doctor` now reports an
+    `embed_drain` row — OK when disabled or when enabled + the managed
+    service is running, **WARN** when `embed_drain=true` but the daemon
+    isn't running (the backlog silently won't drain), with the
+    `service install` / `service start` fix. Never FAILs.
+- **`corpus-forge service status` now shows an "embed drain lanes" row**
+  (rfc-fleet-5) — the embedder lanes this host is configured to drain
+  (active embedders ∩ `[embed] lanes`; empty lanes → all active). The
+  row is config-derived and read-only, preserving the command's DB-free,
+  safe-to-script contract. The drain loop's *runtime* state (running?
+  last-claim age) is deferred to fleet-5 item 2 — the `[service]` config
+  knobs + a DB-backed status query — so this change doesn't depend on
+  that unmerged work.
 
 ## [0.1.0b18] - 2026-06-08
 

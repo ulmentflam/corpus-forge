@@ -301,3 +301,22 @@ def test_coerce_does_not_double_decode_json_strings() -> None:
     # the raw string — Pydantic decides what it means.
     raw = json.dumps({"x": 1})
     assert coerce_for_field(raw, _field("name")) == raw
+
+
+# ── negative-index rejection (parity with set_at_path's leaf guard) ──────────
+
+
+def test_get_at_path_negative_index_raises() -> None:
+    """`foo[-1]` must raise, not silently resolve to the last element."""
+    doc = {"a": [1, 2, 3]}
+    with pytest.raises(PathNotFound):
+        get_at_path(doc, "a[-1]")
+
+
+def test_set_at_path_intermediate_negative_index_raises() -> None:
+    """A negative index on the way to the leaf must not silently mutate the
+    last element — matches the leaf guard set_at_path already enforces."""
+    doc = {"embedders": [{"model_id": "first"}, {"model_id": "second"}]}
+    with pytest.raises(PathNotFound):
+        set_at_path(doc, "embedders[-1].model_id", "mutated")
+    assert doc["embedders"][-1]["model_id"] == "second"  # untouched

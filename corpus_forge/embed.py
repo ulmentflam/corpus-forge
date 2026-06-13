@@ -80,7 +80,12 @@ def _write_embed_run_telemetry(
         return
     try:
         chunks_per_s = processed / elapsed_s
-        model_key = f"{embedder_config.provider}:{embedder_config.model_id}"
+        # RFC fleet-6 item 3 — key telemetry on the CANONICAL model identity so
+        # the same model served under aliased provider/model_id names accrues
+        # under one `corpus.models` row. No aliases → the embedder's own pair.
+        from corpus_forge.embedders.identity import canonical_model_key  # noqa: PLC0415
+
+        model_key = canonical_model_key(embedder_config)
         backend.insert_model_benchmark(
             host_id=config.host_id(),
             model_key=model_key,
