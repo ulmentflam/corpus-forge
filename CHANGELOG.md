@@ -10,6 +10,17 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ### Added
 
+- **Curation can now mint new chunks, not just edit existing ones.** New
+  MCP write tool `create_enhancement_chunk(dataset, text, …)` persists a
+  curation conversation + recommended enhancement as its own chunk,
+  appended to a per-dataset synthetic host document
+  `corpus-forge://curation/<dataset>` and stamped with lineage metadata
+  (`kind=curation_enhancement`, `derived_from_chunk_id`,
+  `curation_session_id`). Gated by `writes_enabled` like
+  `commit_curation`; supports `dry_run`. Backed by a new
+  `backend.append_enhancement_chunk(...)` on both the SQLite and Postgres
+  backends. Phase 1 of
+  `.planning/rfcs/001-interactive-curation-debug-trajectory.md`.
 - **Interactive-install selection foundation (rfc-interactive-install-selection-ux,
   items 1-2).** New `corpus_forge/setup/select.py` — lazy-guarded `questionary`
   wrappers (`pick_one`, `pick_many`, `ask_text`, `confirm`) for arrow-key /

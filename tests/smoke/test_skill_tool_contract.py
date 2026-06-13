@@ -77,6 +77,8 @@ _WRITE_TOOLS = {
     "rate_search_result",
     # Phase Q Wave 1 — SDFT demonstration capture tool
     "record_demonstration",
+    # rfc-001 Phase 1 — curation enhancement-chunk tool
+    "create_enhancement_chunk",
 }
 # G-03: render_conversation + list_chat_templates are always-available read tools.
 # J1:   estimate_sync_size is an always-available read tool (no backend writes).
