@@ -8,6 +8,16 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`corpus-forge search --alpha` now validates its 0.0–1.0 range.** The
+  `--alpha` help promises "(0.0..1.0)" and its sibling `--fusion` is
+  range-checked one line away, but `--alpha` itself was unguarded, so
+  `--alpha 5` / `--alpha -1` were silently accepted into the fusion math.
+  Out-of-range values now raise a clean `typer.BadParameter` (`--alpha must
+  be between 0.0 and 1.0`), matching the `--fusion` guard. Default behavior
+  (no `--alpha`) is unchanged.
+
 ## [0.1.0b18] - 2026-06-08
 
 **Hotfix on top of the distributed-fleet release.** Fixes a real-world

@@ -2382,6 +2382,8 @@ def search(
     fusion_resolved: str = fusion if fusion is not None else "rrf"
     if fusion_resolved not in ("rrf", "alpha"):
         raise typer.BadParameter(f"--fusion must be 'rrf' or 'alpha'; got {fusion_resolved!r}")
+    if alpha is not None and not (0.0 <= alpha <= 1.0):
+        raise typer.BadParameter(f"--alpha must be between 0.0 and 1.0; got {alpha}")
     options = SearchOptions(
         k=k,
         dataset=dataset,
