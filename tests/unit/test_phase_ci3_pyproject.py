@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from corpus_forge import __version__
+
 PYPROJECT_PATH = Path(__file__).resolve().parents[2] / "pyproject.toml"
 
 
@@ -76,9 +78,17 @@ class TestProjectMetadata:
         assert project_table.get("name") == "corpus-forge"
 
     def test_version_is_beta(self, project_table: dict) -> None:
-        assert project_table.get("version") == "0.1.0b17", (
-            f"Expected version 0.1.0b17 (PEP 440 beta marker); got {project_table.get('version')!r}"
+        # Single source of truth (rfc-version-single-source-of-truth): assert
+        # pyproject's version EQUALS corpus_forge.__version__ rather than a
+        # hardcoded literal, so a release bump touches the version in one
+        # place (the package __init__) instead of also editing this pin —
+        # the recurring #119-class "forgot to bump the test" CI breakage.
+        assert project_table.get("version") == __version__, (
+            f"pyproject [project].version must match corpus_forge.__version__ "
+            f"({__version__}); got {project_table.get('version')!r} — bump both together."
         )
+        # Still guard the PEP 440 beta marker so a stray stable bump is caught.
+        assert "b" in __version__, f"expected a PEP 440 beta marker in {__version__!r}"
 
     def test_license_is_apache2_spdx(self, project_table: dict) -> None:
         """User override: Apache-2.0 SPDX, NOT MIT, NOT legacy {text=...}."""
