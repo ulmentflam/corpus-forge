@@ -10,6 +10,13 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ### Fixed
 
+- **`corpus-forge search --alpha` now validates its 0.0–1.0 range.** The
+  `--alpha` help promises "(0.0..1.0)" and its sibling `--fusion` is
+  range-checked one line away, but `--alpha` itself was unguarded, so
+  `--alpha 5` / `--alpha -1` were silently accepted into the fusion math.
+  Out-of-range values now raise a clean `typer.BadParameter` (`--alpha must
+  be between 0.0 and 1.0`), matching the `--fusion` guard. Default behavior
+  (no `--alpha`) is unchanged.
 - **`eval rag` / `eval cag` now emit a clean error on malformed
   `--queries` JSONL** instead of a raw `JSONDecodeError` traceback. A bad
   line reports `Malformed JSON in <file> at line N: <detail>` and exits 2 —
