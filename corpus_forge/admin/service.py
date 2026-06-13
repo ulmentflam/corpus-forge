@@ -267,6 +267,35 @@ def _active_datasets() -> list[str]:
         return []
 
 
+def _embed_drain_lanes() -> list[str]:
+    """Embedder lanes this host is configured to drain (best-effort, never raises).
+
+    Mirrors :meth:`EmbedDrainLoop.resolve_lanes` *read-only*: every active
+    configured embedder intersected with the host's ``[embed] lanes``
+    (empty lanes → all active, the backcompat bar). Pure config — no
+    embedder warm-up, no backend round-trip — so ``service status`` stays
+    DB-free and safe to script. The drain loop's *runtime* state (running?
+    last-claim age) lives in the daemon process / ``corpus.embed_claims``
+    and is deferred to fleet-5 item 2 (the ``[service]`` config + a
+    DB-backed status query) so we don't regress the no-IO contract here.
+    """
+
+    try:
+        from corpus_forge.config import Config
+        from corpus_forge.embed import filter_embedders_by_lanes
+
+        cfg = Config.load()
+        active = [ec for ec in getattr(cfg, "embedders", []) if getattr(ec, "active", True)]
+        embed_cfg = getattr(cfg, "embed", None)
+        lanes_cfg = list(getattr(embed_cfg, "lanes", []) or [])
+        kept = set(filter_embedders_by_lanes([ec.name for ec in active], lanes_cfg))
+        # Preserve config/declaration order.
+        return [ec.name for ec in active if ec.name in kept]
+    except Exception:
+        # Best-effort — config may be missing or invalid.
+        return []
+
+
 def render_status(console: Console | None = None) -> None:
     """Render the ``service status`` table to ``console`` (or the UI console).
 
@@ -316,6 +345,13 @@ def render_status(console: Console | None = None) -> None:
         table.add_row("datasets", ", ".join(datasets))
     else:
         table.add_row("datasets", "[muted](none configured)[/muted]")
+
+    # Embed-drain lanes (read-only, config-derived — see _embed_drain_lanes).
+    drain_lanes = _embed_drain_lanes()
+    if drain_lanes:
+        table.add_row("embed drain lanes", ", ".join(drain_lanes))
+    else:
+        table.add_row("embed drain lanes", "[muted](no active embedders configured)[/muted]")
 
     # Background embed-worker.
     if embed_worker_pid is None:

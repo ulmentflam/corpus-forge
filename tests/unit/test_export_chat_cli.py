@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from corpus_forge.cli import app
@@ -79,6 +80,16 @@ class TestExportChatRequiredArgs:
 
 
 class TestExportChatDispatch:
+    @pytest.fixture(autouse=True)
+    def _config_present(self):
+        """The handler now guards on ``Config.load()`` (clean missing-config
+        error). These dispatch tests stub the export fn but run the real
+        handler body, so the guard executes — make config "present" so they
+        pass regardless of whether the CI runner has ``~/.config/corpus-forge``.
+        """
+        with patch("corpus_forge.config.Config.load", return_value=MagicMock()):
+            yield
+
     def test_export_chat_dispatches_to_export_module(self):
         """Valid invocation monkeypatches corpus_forge.export.export_chat and asserts it
         was called with the expected keyword arguments."""
@@ -217,3 +228,18 @@ class TestExportChatHelp:
         assert "chat" in result.output.lower(), (
             f"Expected 'chat' subcommand in export --help output. Got:\n{result.output}"
         )
+
+
+class TestExportChatConfigGuard:
+    """Missing config → clean error + exit 2, not a raw FileNotFoundError."""
+
+    def test_export_chat_no_config_clean_error(self):
+        with patch(
+            "corpus_forge.config.Config.load",
+            side_effect=FileNotFoundError("Configuration file not found"),
+        ):
+            result = runner.invoke(app, ["export", "chat", "--dataset", "d", "--out", "./o.jsonl"])
+        assert result.exit_code == 2, result.output
+        assert "no configuration found" in result.output.lower()
+        assert "corpus-forge setup" in result.output
+        assert result.exception is None or isinstance(result.exception, SystemExit)

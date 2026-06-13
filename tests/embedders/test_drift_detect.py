@@ -266,3 +266,78 @@ def test_compare_active_returns_list_never_none():
 
     assert result == []
     assert isinstance(result, list)
+
+
+# ── RFC fleet-6 item 2 / item 6 — alias-folded fingerprints ──────────────────
+
+
+def _aliased_cfg():
+    """An embedder declared under one identity, aliased to a second."""
+    from corpus_forge.config import ModelAlias
+
+    return _make_cfg(
+        name="nomic_code",
+        provider="openai",
+        model_id="text-embedding-nomic-code",
+        model_aliases=[ModelAlias(provider="llama-cpp", model_id="nomic-embed-code")],
+    )
+
+
+def test_embedder_fingerprint_is_alias_swap_invariant():
+    """Two configs that are pure name/provider swaps (each declaring the other
+    as an alias) hash identically — RFC fleet-6 item 2."""
+    from corpus_forge.config import EmbedderConfig, ModelAlias
+    from corpus_forge.embedders.fingerprint import embedder_fingerprint
+
+    # Valid providers, but model_ids not in the known-embedder registry so the
+    # append_eos marker (resolved per-model) doesn't confound the identity check.
+    a = EmbedderConfig(
+        name="e",
+        provider="sentence_transformers",
+        model_id="acme/model-x",
+        dimension=768,
+        model_aliases=[ModelAlias(provider="openai", model_id="acme-model-y")],
+    )
+    b = EmbedderConfig(
+        name="e",
+        provider="openai",
+        model_id="acme-model-y",
+        dimension=768,
+        model_aliases=[ModelAlias(provider="sentence_transformers", model_id="acme/model-x")],
+    )
+    assert embedder_fingerprint(a).full == embedder_fingerprint(b).full
+
+
+def test_compare_active_alias_swap_reports_no_drift():
+    """A stored row written under one alias name compares equal to the active
+    config under the other — no false drift (RFC fleet-6 item 2 / item 6)."""
+    from corpus_forge.embedders.fingerprint import compare_active
+
+    cfg = _aliased_cfg()  # active identity: openai / text-embedding-nomic-code
+    # Stored under the OTHER (aliased) identity: llama-cpp / nomic-embed-code.
+    stored = _stored_row_matching(cfg)
+    stored["provider"] = stored["config"]["provider"] = "llama-cpp"
+    stored["model_id"] = stored["config"]["model_id"] = "nomic-embed-code"
+    backend = MagicMock()
+    backend.find_embedder_row_by_name.return_value = stored
+
+    assert compare_active(_stub_config(cfg), backend) == []
+
+
+def test_compare_active_genuine_change_still_drifts_with_aliases():
+    """A real model swap to an identity NOT in the alias set still drifts."""
+    from corpus_forge.embedders.fingerprint import compare_active
+
+    cfg = _aliased_cfg()
+    stored = _stored_row_matching(cfg)
+    # A model that is NOT one of cfg's declared aliases.
+    stored["provider"] = stored["config"]["provider"] = "cohere"
+    stored["model_id"] = stored["config"]["model_id"] = "embed-english-v3"
+    backend = MagicMock()
+    backend.find_embedder_row_by_name.return_value = stored
+    backend.count_existing_embeddings.return_value = 100
+    backend.count_chunks_missing_embedding.return_value = 5
+
+    drifts = compare_active(_stub_config(cfg), backend)
+    assert len(drifts) == 1
+    assert drifts[0].name == "nomic_code"

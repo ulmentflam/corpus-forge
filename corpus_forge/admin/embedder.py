@@ -951,6 +951,94 @@ def _human_bytes(n: int | None) -> str:
     return f"{value:.1f} PB"
 
 
+def _split_identity_groups(config, backend) -> dict[str, list[dict]]:
+    """Group `corpus.models` rows by the canonical identity they resolve to.
+
+    RFC fleet-6 item 4 (detection half). For each registered model row, find
+    the active embedder whose declared identity set (own pair + `model_aliases`)
+    contains the row's `(provider, model_id)`; key the row under that
+    embedder's `canonical_model_key`. A canonical key mapped to **more than one
+    distinct `model_key`** is a *split* — the same model recorded under two
+    provider/model_id names (the bug fleet-6 fixes). Pure / read-only.
+    """
+    from corpus_forge.embedders.identity import (
+        canonical_model_key,
+        model_identity_pairs,
+    )
+
+    # (provider, model_id) → canonical_model_key, from the active alias config.
+    canonical_of: dict[tuple[str, str], str] = {}
+    for ec in getattr(config, "embedders", []) or []:
+        ckey = canonical_model_key(ec)
+        for provider, model_id in model_identity_pairs(ec):
+            canonical_of[(provider, model_id)] = ckey
+
+    groups: dict[str, list[dict]] = {}
+    seen_keys: dict[str, set[str]] = {}
+    for row in backend.list_models_with_latest_benchmark():
+        mk = row.get("model_key")
+        if not mk:
+            continue
+        ident = (str(row.get("provider", "")).strip(), str(row.get("model_id", "")).strip())
+        canonical = canonical_of.get(ident, mk)  # unaliased → its own key
+        groups.setdefault(canonical, []).append(row)
+        seen_keys.setdefault(canonical, set()).add(mk)
+    # Only the canonicals with >1 distinct model_key are genuine splits.
+    return {c: rows for c, rows in groups.items() if len(seen_keys[c]) > 1}
+
+
+@embedder_app.command("merge-aliases")
+def cmd_merge_aliases(
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="(not yet automated) collapse split rows onto the canonical key.",
+    ),
+) -> None:
+    """Report `corpus.models` rows that `model_aliases` would unify (rfc-fleet-6).
+
+    Print-only by default: lists each canonical model identity that has been
+    recorded under more than one `(provider, model_id)` / `model_key` — i.e.
+    the same model split across two provider names before aliases were
+    declared. The canonical-key fix (item 3, #166) prevents *new* splits; this
+    surfaces any pre-existing ones for the operator.
+    """
+    try:
+        config = _load_config()
+    except FileNotFoundError:
+        ui_error("No configuration found; run `corpus-forge setup` to create one.")
+        raise typer.Exit(code=2) from None
+    try:
+        backend = _get_backend(config)
+    except Exception as exc:  # pragma: no cover - backend wiring
+        ui_error(f"Backend unavailable: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    splits = _split_identity_groups(config, backend)
+    if not splits:
+        ui_ok("No split model identities — every model resolves to one canonical key.")
+        return
+
+    table = Table(title="Split model identities (aliases would unify)", title_style="h1")
+    table.add_column("Canonical key", style="accent.path")
+    table.add_column("Recorded model_keys", style="muted")
+    for canonical, rows in sorted(splits.items()):
+        keys = sorted({str(r.get("model_key")) for r in rows})
+        table.add_row(canonical, "\n".join(keys))
+    ui_console.print(table)
+    ui_warn(
+        f"{len(splits)} canonical model(s) split across multiple keys. "
+        "Declare matching `model_aliases` on the embedder so telemetry unifies; "
+        "new runs already record under the canonical key (rfc-fleet-6 item 3)."
+    )
+    if apply:
+        ui_warn(
+            "`--apply` (automated collapse of existing split rows) is not yet "
+            "wired — it needs a backend repoint of `corpus.models` / "
+            "`model_benchmarks`. Tracked as rfc-fleet-6 item 4 (apply half)."
+        )
+
+
 __all__ = [
     "EmbedderDriftRow",
     "EmbedderSmokeOutcome",
