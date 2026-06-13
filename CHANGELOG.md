@@ -8,6 +8,16 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Tests
+
+- **Integration test: two-host model-alias telemetry collapse (rfc-fleet-6
+  item 8).** Two hosts serve the same model under swapped `(provider,
+  model_id)` names, each declaring the other as a `ModelAlias`; both seed
+  `corpus.models` + a benchmark under `canonical_model_key`. Asserts
+  `list_models_with_latest_benchmark()` returns exactly ONE distinct
+  `model_key` (the canonical) — the same model accrues under one fleet lane
+  instead of splitting — and both hosts accrue under it (cooperative,
+  one-lane). testcontainers Postgres; `requires_docker`.
 ### Added
 
 - **`corpus-forge embedder merge-aliases` (rfc-fleet-6 item 4, detection).**
