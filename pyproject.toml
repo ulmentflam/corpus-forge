@@ -82,6 +82,13 @@ dependencies = [
   # order survive the `bug-report` config snapshot. tomlkit is also the
   # forward foundation for the Wave 7 `config edit` round-trip CRUD.
   "tomlkit>=0.13",
+  # ``questionary`` drives the arrow-key / checkbox / fuzzy selection in
+  # the interactive ``corpus-forge setup`` wizard (see
+  # ``corpus_forge/setup/select.py``). It's a base dep — not an extra —
+  # because the wizard is the very first thing a fresh install runs, and
+  # the helpers degrade gracefully (lazy import + typed-prompt fallback)
+  # so the dependency is never load-bearing on non-TTY / CI paths.
+  "questionary>=2.0",
   # The ``openai`` SDK is the HTTP client behind ``provider = "openai"``
   # in ``[[embedders]]`` (and the same shape for any other config field
   # that names an OpenAI-compatible endpoint). The name refers to the

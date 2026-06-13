@@ -8,6 +8,19 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Added
+
+- **Interactive-install selection foundation (rfc-interactive-install-selection-ux,
+  items 1-2).** New `corpus_forge/setup/select.py` — lazy-guarded `questionary`
+  wrappers (`pick_one`, `pick_many`, `ask_text`, `confirm`) for arrow-key /
+  checkbox selection during `setup`. Each helper imports `questionary` lazily and
+  **falls back to the existing typed-prompt path** (the wizard's
+  `_read_answer_interactive` + `stream_in`/`stream_out` seam) when there's no TTY,
+  the import fails, or a stream seam is in use — so `--non-interactive` / CI /
+  tests behave byte-identically to today. `questionary>=2.0` added to core deps.
+  Not yet wired into the wizard (subsequent items); 22 tests cover both the rich
+  and fallback paths.
+
 ## [0.1.0b18] - 2026-06-08
 
 **Hotfix on top of the distributed-fleet release.** Fixes a real-world
