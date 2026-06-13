@@ -397,11 +397,12 @@ def backfill_embedder(
         # fire there.
         _MAX_EMPTY_PAGE_STREAK = 10
         empty_page_streak = 0
-        # RFC fleet-2 — the FK-violation demotion (reviewer finding) only
-        # fires on the FIRST claim: a missing ``corpus.hosts`` row (silent
-        # heartbeat failure) trips the ``embed_claims.host_id`` FK there.
-        # After any successful claim the host row demonstrably exists, so a
-        # later 23503 is a genuine error and must propagate.
+        # RFC fleet-2 — the FK-violation self-heal only fires on the FIRST
+        # claim: a missing ``corpus.hosts`` row (silent heartbeat failure)
+        # trips the ``embed_claims.host_id`` FK there. The handler re-
+        # heartbeats and retries the claim once (see ``_fetch_page``). After
+        # any successful claim the host row demonstrably exists, so a later
+        # 23503 is a genuine error and must propagate.
         first_claim_attempt = True
 
         def _fetch_page(after_id: int | None) -> list[tuple[int, str, str]]:
@@ -415,12 +416,14 @@ def backfill_embedder(
             of the loop is path-agnostic.
 
             ``nonlocal use_claims`` lets a ``FederationUnsupported`` (the
-            backend can't federate) OR a first-claim foreign-key violation
-            (the heartbeat silently failed, so no ``corpus.hosts`` row backs
-            the ``embed_claims.host_id`` FK) demote the run to the fallback
-            path once — after that every page uses
+            backend can't federate) demote the run to the fallback path
+            permanently — after that every page uses
             ``chunks_missing_embedding`` (the single-host SQLite path stays
-            exactly as it was).
+            exactly as it was). A first-claim foreign-key violation (the
+            heartbeat silently failed, so no ``corpus.hosts`` row backs the
+            ``embed_claims.host_id`` FK) does NOT demote: it re-heartbeats
+            and retries the claim once, so the worker rejoins the claim loop
+            once its host row self-heals (RFC fleet-2 live-bug fix).
             """
             nonlocal use_claims, first_claim_attempt
             if use_claims:
@@ -445,23 +448,55 @@ def backfill_embedder(
                     )
                     use_claims = False
                 except Exception as exc:
-                    # Reviewer finding: a silent heartbeat failure leaves no
-                    # ``corpus.hosts`` row, so the FIRST claim insert trips the
-                    # ``embed_claims.host_id`` FK (sqlstate 23503). Treat that
-                    # like FederationUnsupported — demote once, warn — but only
-                    # on the first attempt; a later FK violation is a real bug
-                    # and must propagate. Caught narrowly (FK only, first claim
-                    # only) so no other failure is swallowed.
+                    # RFC fleet-2 live bug (2026-06-08): a silent heartbeat
+                    # failure leaves no ``corpus.hosts`` row, so the FIRST claim
+                    # insert trips the ``embed_claims.host_id`` FK (sqlstate
+                    # 23503). The previous code latched ``use_claims = False``
+                    # PERMANENTLY here — demoting this worker to the un-deduped
+                    # ``chunks_missing_embedding`` fallback for its whole
+                    # lifetime, so it raced other hosts on the same chunks with
+                    # no ``SKIP LOCKED`` coordination. But a missing-row FK is
+                    # TRANSIENT: the host row self-heals on the next heartbeat.
+                    # So re-heartbeat once (mandatory this time, not the
+                    # swallowed best-effort one) and RETRY the claim. If the
+                    # retry succeeds the worker rejoins the claim loop; if it
+                    # still FK-violates the row is genuinely missing and the
+                    # error propagates — we never silently latch. Permanent
+                    # demotion is reserved for ``FederationUnsupported`` (the
+                    # SQLite-can't-federate case handled above). Caught narrowly
+                    # (FK only, first claim only) so no other failure is masked.
                     if first_claim_attempt and _is_fk_violation(exc):
                         logger.warning(
                             "First embed-claim insert hit a foreign-key violation "
                             "(no corpus.hosts row — the telemetry heartbeat likely "
-                            "failed silently); falling back to the single-host "
-                            "chunks_missing_embedding path for this run."
+                            "failed silently); re-heartbeating and retrying the "
+                            "claim rather than demoting to the single-host path."
                         )
-                        use_claims = False
-                    else:
-                        raise
+                        try:
+                            _telemetry_heartbeat(backend, config)
+                        except Exception:
+                            # Best-effort: if the re-heartbeat itself fails, the
+                            # claim retry below surfaces the real problem (and
+                            # propagates) instead of this masking it.
+                            logger.warning(
+                                "Re-heartbeat before claim retry failed.",
+                                exc_info=True,
+                            )
+                        # Retry the claim once. A success proves the host row now
+                        # exists → stay on the claim path (use_claims untouched).
+                        # A repeat FK propagates: the row is genuinely missing,
+                        # which is a real error, not the transient startup race.
+                        page = backend.claim_chunks_for_embedding(
+                            embedder_id,
+                            host_id,
+                            batch=1000,
+                            lease_ttl=lease_ttl,
+                            extensions=_ext_filter,
+                            after_id=after_id,
+                        )
+                        first_claim_attempt = False
+                        return page
+                    raise
             return list(
                 backend.chunks_missing_embedding(
                     embedder_id,

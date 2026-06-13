@@ -126,8 +126,18 @@ embed-worker and `corpus-forge embed --all` respect it; explicit
       `release_claims` / `expire_stale_claims`
       (`FOR UPDATE SKIP LOCKED`); SQLite raises
       `FederationUnsupported`.
-- [ ] `embed.py` backfill loop on claims; `[embed] claim_lease_ttl`
-      config; truthful multi-host progress totals.
+- [x] `embed.py` backfill loop on claims; `[embed] claim_lease_ttl`
+      config; truthful multi-host progress totals. — claim/release loop in
+      `embed.py:backfill_embedder` (`claim_chunks_for_embedding` page fetch,
+      `count_live_claims` progress adjust); `config.embed.claim_lease_ttl`.
+- [x] Claim-path latch self-heal (live bug 2026-06-08): a first-claim FK
+      violation (missing `corpus.hosts` row from a silently-failed
+      heartbeat) no longer PERMANENTLY demotes the worker to the un-deduped
+      `chunks_missing_embedding` fallback. `_fetch_page` now re-heartbeats
+      once and retries the claim; permanent `use_claims=False` is reserved
+      for `FederationUnsupported` (SQLite) only. Regression test:
+      heartbeat-fails → first claim 23503 → re-heartbeat → retry succeeds →
+      worker stays coordinated.
 - [ ] `[embed] lanes` local-config block; embed-worker + `--all`
       respect it; explicit `-e` overrides; setup wizard lane prompt +
       `--embed-lanes` non-interactive flag.

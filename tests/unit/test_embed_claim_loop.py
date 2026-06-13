@@ -372,16 +372,19 @@ class TestIsFkViolation:
         assert embed_mod._is_fk_violation(ValueError("nope")) is False
 
 
-class TestFirstClaimFKViolationDemotes:
-    """A FK violation on the FIRST claim demotes to the fallback path.
+class TestFirstClaimFKViolationSelfHeals:
+    """A FK violation on the FIRST claim re-heartbeats + retries the claim.
 
-    A silent heartbeat failure leaves no ``corpus.hosts`` row, so the
-    first claim insert trips the ``embed_claims.host_id`` FK. The loop
-    treats that exactly like ``FederationUnsupported`` — but only on the
-    first attempt.
+    RFC fleet-2 live bug (2026-06-08): a silent heartbeat failure leaves
+    no ``corpus.hosts`` row, so the first claim insert trips the
+    ``embed_claims.host_id`` FK. The old loop PERMANENTLY demoted the
+    worker to the un-deduped ``chunks_missing_embedding`` fallback for its
+    whole lifetime (racing other hosts). The fix re-heartbeats once and
+    retries the claim instead — a missing-row FK is transient and
+    self-heals; only ``FederationUnsupported`` earns a permanent demotion.
     """
 
-    def test_first_claim_fk_falls_back(self) -> None:
+    def test_first_claim_fk_reheartbeats_and_retries(self) -> None:
         config = _make_config_mock()
         embedder = _make_embedder_mock()
         embedder.encode.return_value = [[0.1] * 4, [0.2] * 4]
@@ -389,22 +392,52 @@ class TestFirstClaimFKViolationDemotes:
         backend = _ClaimBackend()
         backend.count_chunks_missing_embedding.return_value = 2
         backend.count_live_claims.return_value = 0
-        # First claim trips the host_id FK → demote to chunks_missing_embedding.
-        backend.claim_chunks_for_embedding.side_effect = _FakeFKViolation()
-        backend.chunks_missing_embedding.side_effect = [
+        # First claim trips the host_id FK; the re-heartbeat creates the
+        # host row so the RETRY succeeds and the worker stays on the claim
+        # path (no fallback). A trailing empty claim ends the loop.
+        backend.claim_chunks_for_embedding.side_effect = [
+            _FakeFKViolation(),
             [(1, "a", ""), (2, "b", "")],
             [],
         ]
 
         _run_backfill(config, backend, embedder)
 
-        # Claim attempted exactly once, then the fallback drained the pool.
-        assert backend.claim_chunks_for_embedding.call_count == 1
+        # Claim called 3x: initial FK, the successful retry, then the
+        # loop-terminating empty page. Crucially the worker NEVER fell back.
+        assert backend.claim_chunks_for_embedding.call_count == 3
+        backend.chunks_missing_embedding.assert_not_called()
         backend.write_embeddings.assert_called_once()
         written = backend.write_embeddings.call_args.args[1]
         assert {cid for cid, _ in written} == {1, 2}
-        # Nothing was claimed, so nothing to release.
-        backend.release_claims.assert_not_called()
+        # The claimed page was released after it was written.
+        assert backend.release_claims.call_count >= 1
+
+    def test_first_claim_fk_retry_also_fails_propagates(self) -> None:
+        """If the re-heartbeat doesn't help, the retry's FK propagates.
+
+        A host row that is STILL missing after an explicit re-heartbeat is
+        a genuine error, not the transient startup race — it must surface,
+        never silently latch the worker onto the fallback path.
+        """
+        config = _make_config_mock()
+        embedder = _make_embedder_mock()
+
+        backend = _ClaimBackend()
+        backend.count_chunks_missing_embedding.return_value = 2
+        backend.count_live_claims.return_value = 0
+        # Both the first claim and the post-heartbeat retry FK-violate.
+        backend.claim_chunks_for_embedding.side_effect = [
+            _FakeFKViolation(),
+            _FakeFKViolation(),
+        ]
+
+        with pytest.raises(_FakeFKViolation):
+            _run_backfill(config, backend, embedder)
+
+        # Initial claim + one retry, then it propagated — no silent fallback.
+        assert backend.claim_chunks_for_embedding.call_count == 2
+        backend.chunks_missing_embedding.assert_not_called()
 
     def test_later_fk_violation_propagates(self) -> None:
         """An FK violation after the first successful claim is a real bug.
