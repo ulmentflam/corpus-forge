@@ -217,6 +217,34 @@ schema lifecycle. After the one-liner finishes:
 - `corpus-forge service install` — install the daemon as a managed
   service so the host drains backlog continuously.
 
+**The managed service actually drains the backlog (RFC fleet-5).** A
+joined host's rendered `config.toml` gets a `[service]` block:
+
+```toml
+[service]
+embed_drain = true     # the daemon runs the claim-based drain loop
+ingest_watch = true    # also run the source watcher (default on)
+```
+
+`setup --join` seeds `embed_drain = true` so the daemon drains the shared
+embed backlog via fleet-2 claims — no foreground `embed` command, survives
+reboot. `ingest_watch` defaults **off** when a capable GPU is detected (a
+**pure-drain GPU box** that ingests nothing and only embeds), **on**
+otherwise. Override either at join time:
+
+```bash
+# pure-drain GPU box: drain only, never watch local sources
+curl -sSf .../install.sh | bash -s -- --join '<dsn>'   # GPU → ingest_watch defaults off
+corpus-forge setup --join '<dsn>' --no-ingest-watch    # force pure-drain explicitly
+corpus-forge setup --join '<dsn>' --no-embed-drain     # opt out of the drain loop
+```
+
+The flags also read `CF_EMBED_DRAIN` / `CF_INGEST_WATCH` for the
+non-interactive installer path. A plain local (non-`--join`) setup is
+unchanged — no `[service]` block, drain stays off (no surprise background
+GPU loop on a laptop); ingest-time embedding already covers a
+single-machine corpus.
+
 ## 7. Curation loop quickstart (for the assistant)
 
 When the user wants to improve corpus quality:
@@ -237,6 +265,7 @@ For bulk mode (many similar entries, one chat): call `next_curation_batch(limit=
 | `corpus-forge` not found | `which corpus-forge` (POSIX) / `Get-Command corpus-forge` (PowerShell). If installed via `uv tool`, `uv tool list` confirms the venv path. |
 | Slow `search`, no rerank | Reranker is opt-in (`rerank=true`). First call triggers a one-time ~600 MB BGE download. Skip on latency-sensitive paths. |
 | "no embeddings for dataset" | Run `corpus-forge embed -e <embedder_name>` once after `ingest`. |
+| Joined a fleet but the backlog isn't draining | Is the drain loop on? Check `[service] embed_drain = true` in `config.toml`; is the service running? `corpus-forge service status`. `setup --join` seeds `embed_drain=true`, but a pre-existing local config joined another way may not have it. |
 | Postgres ENOSPC | `corpus-forge estimate <path>` *before* sync. Tune the `[estimate]` block in config to model your TOAST compression ratio. |
 | `TailscaleUnavailable` / `ts://` won't resolve | `corpus-forge doctor` names the failing endpoint. "daemon" reason → install/start Tailscale (`tailscale status` should report `Running`); "name" reason → the peer name isn't in this tailnet (check spelling). `ts://` in config while `[tailscale] enabled = false` fails at load — flip it on. |
 | Second machine: no shared config after `setup --join` | `corpus-forge config pull` (dry-run) then `--apply`. "nothing published yet" means no host has run `config publish` — do it on the primary. Federation needs the `postgres` backend (SQLite WARNs in `doctor`). |

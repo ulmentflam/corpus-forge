@@ -190,7 +190,12 @@ floor — see Makefile) on all new code is part of "done."
       min interval. — DONE: `tests/unit/test_embed_drain_loop.py`
       (`test_backoff_capped_at_max`, `test_does_not_hot_spin`,
       `test_work_resets_backoff_to_min`).
-- [ ] CLAUDE.md "Add a second machine" + troubleshooting updates.
+- [x] CLAUDE.md "Add a second machine" + troubleshooting updates. — DONE
+      (PR #148): documents the `[service] embed_drain`/`ingest_watch`
+      block, the `--embed-drain`/`--ingest-watch` flags + `CF_*` env, the
+      pure-drain GPU-box recipe, and the local-unchanged backcompat; plus
+      a "joined a fleet but the backlog isn't draining" troubleshooting
+      row pointing at `service status`.
 
 ## Verification
 
