@@ -8,6 +8,15 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+### Added
+
+- **`corpus-forge embedder merge-aliases` (rfc-fleet-6 item 4, detection).**
+  Reports `corpus.models` rows that `model_aliases` would unify — i.e. the
+  same model recorded under more than one `(provider, model_id)` / `model_key`
+  (a split from before aliases were declared). Read-only / print-only (the
+  RFC's "print without `--apply`" behavior); `--apply` (automated collapse of
+  existing split rows) is the documented follow-up. The canonical-key fix
+  (item 3) already prevents *new* splits.
 ### Fixed
 
 - **Fleet telemetry `model_key` now folds through `model_aliases`
