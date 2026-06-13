@@ -113,6 +113,14 @@ def _get_one(container: Any, token: Token) -> Any:
                 f"expected list at index {token.key}, got {type(container).__name__}"
             )
         idx = int(token.key)
+        # Reject negative indices for parity with set_at_path's leaf guard
+        # (`idx < 0` is "out of range for set_at_path"). Otherwise `config
+        # get/set foo[-1]` would silently resolve to the last element on the
+        # get path and on intermediate set tokens, while the set *leaf*
+        # rejects it — a surprising, inconsistent contract. Negative indexing
+        # is not a documented feature of the dotted-path mini-language.
+        if idx < 0:
+            raise PathNotFound(f"index {idx} out of range")
         try:
             return container[idx]
         except IndexError as exc:

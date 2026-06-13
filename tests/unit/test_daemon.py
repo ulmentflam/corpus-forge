@@ -2,6 +2,7 @@
 
 import contextlib
 import signal
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -16,7 +17,12 @@ from corpus_forge.config import (
     DatasetSourceConfig,
     EmbedderConfig,
 )
-from corpus_forge.daemon import main, run_daemon, setup_signal_handlers
+from corpus_forge.daemon import (
+    _maybe_start_embed_drain,
+    main,
+    run_daemon,
+    setup_signal_handlers,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -660,3 +666,108 @@ class TestDaemonRespectsConfigValidator:
         ):
             run_daemon(valid_config)
             mock_cls.assert_not_called()
+
+
+class TestEmbedDrainWiring:
+    """RFC fleet-5 item 2b — ``_maybe_start_embed_drain`` gating + thread."""
+
+    @staticmethod
+    def _drain_config(*, embed_drain: bool, backend_kind: str = "postgres"):
+        """A config mock with concrete service / backend / embed drain attrs."""
+        config = MagicMock()
+        config.service.embed_drain = embed_drain
+        config.service.ingest_watch = True
+        config.backend.kind = backend_kind
+        config.embed.drain_idle_min = 5.0
+        config.embed.drain_idle_max = 300.0
+        return config
+
+    def test_no_backend_no_drain(self):
+        cfg = self._drain_config(embed_drain=True)
+        with patch("corpus_forge.embed_drain.EmbedDrainLoop") as mock_loop:
+            assert _maybe_start_embed_drain(cfg, None, threading.Event()) is None
+            mock_loop.assert_not_called()
+
+    def test_embed_drain_off_no_drain(self):
+        cfg = self._drain_config(embed_drain=False)
+        with patch("corpus_forge.embed_drain.EmbedDrainLoop") as mock_loop:
+            assert _maybe_start_embed_drain(cfg, MagicMock(), threading.Event()) is None
+            mock_loop.assert_not_called()
+
+    def test_non_postgres_backend_no_drain(self):
+        cfg = self._drain_config(embed_drain=True, backend_kind="sqlite")
+        with patch("corpus_forge.embed_drain.EmbedDrainLoop") as mock_loop:
+            assert _maybe_start_embed_drain(cfg, MagicMock(), threading.Event()) is None
+            mock_loop.assert_not_called()
+
+    def test_postgres_drain_starts_daemon_thread(self):
+        cfg = self._drain_config(embed_drain=True, backend_kind="postgres")
+        backend = MagicMock()
+        stop = threading.Event()
+        with (
+            patch("corpus_forge.embed_drain.EmbedDrainLoop") as mock_loop,
+            patch("corpus_forge.daemon.threading.Thread") as mock_thread,
+        ):
+            thread = _maybe_start_embed_drain(cfg, backend, stop)
+            # Loop constructed with the configured idle window.
+            mock_loop.assert_called_once()
+            kwargs = mock_loop.call_args.kwargs
+            assert kwargs["idle_min"] == 5.0
+            assert kwargs["idle_max"] == 300.0
+            # A daemon thread targeting loop.run(stop_event) was started.
+            mock_thread.assert_called_once()
+            t_kwargs = mock_thread.call_args.kwargs
+            assert t_kwargs["daemon"] is True
+            assert t_kwargs["target"] == mock_loop.return_value.run
+            assert t_kwargs["args"] == (stop,)
+            mock_thread.return_value.start.assert_called_once()
+            assert thread is mock_thread.return_value
+
+    def test_loop_construction_failure_is_swallowed(self):
+        cfg = self._drain_config(embed_drain=True, backend_kind="postgres")
+        with patch("corpus_forge.embed_drain.EmbedDrainLoop", side_effect=RuntimeError("boom")):
+            # Must not propagate — a broken drain wiring can't kill the daemon.
+            assert _maybe_start_embed_drain(cfg, MagicMock(), threading.Event()) is None
+
+
+class TestIngestWatchGating:
+    """RFC fleet-5 item 2b — ``[service] ingest_watch`` toggles the watcher."""
+
+    @staticmethod
+    def _watch_config(*, ingest_watch: bool):
+        dataset = MagicMock(sync_enabled=True)
+        dataset.name = "vault"
+        dataset.sources = [MagicMock()]
+        config = MagicMock()
+        config.datasets = [dataset]
+        config.host_id.return_value = "test-host"
+        config.service.ingest_watch = ingest_watch
+        config.service.embed_drain = False  # isolate the watcher behaviour
+        config.backend.kind = "postgres"
+        return config
+
+    def test_ingest_watch_false_skips_engines(self):
+        config = self._watch_config(ingest_watch=False)
+        backend = MagicMock()
+        backend.find_dataset_id_by_name.return_value = 42
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake/vault")),
+            patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+            patch("corpus_forge.daemon.signal.signal"),
+        ):
+            run_daemon(config)
+            mock_cls.assert_not_called()
+
+    def test_ingest_watch_true_starts_engine(self):
+        config = self._watch_config(ingest_watch=True)
+        backend = MagicMock()
+        backend.find_dataset_id_by_name.return_value = 42
+        with (
+            patch("corpus_forge.daemon._get_any_backend", return_value=backend),
+            patch("corpus_forge.daemon._source_root", return_value=Path("/fake/vault")),
+            patch("corpus_forge.daemon.SyncEngine") as mock_cls,
+            patch("corpus_forge.daemon.signal.signal"),
+        ):
+            run_daemon(config)
+            mock_cls.assert_called_once()

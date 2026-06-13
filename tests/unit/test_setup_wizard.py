@@ -498,6 +498,89 @@ class TestCollectAnswers:
         assert "code_enricher" not in answers
 
 
+# ── choice questions route through select.pick_one (item 3) ───────────
+
+
+class TestChoiceRoutesThroughPickOne:
+    """Interactive ``choice`` questions are dispatched via
+    :func:`corpus_forge.setup.select.pick_one`, but with the wizard's
+    stream seam passed through so tests (which inject streams) and
+    ``--non-interactive`` stay byte-identical to the typed path.
+    """
+
+    def _choice_q(self) -> Question:
+        return Question(
+            id="backend",
+            prompt="Storage backend",
+            type="choice",
+            env="CF_BACKEND",
+            choices=["sqlite", "postgres"],
+            default="sqlite",
+        )
+
+    def test_choice_returns_chosen_value_via_stream_seam(self) -> None:
+        """Typing a valid choice on the injected stream returns that
+        choice's value — exactly what the old typed path stored."""
+        out = io.StringIO()
+        answers = _collect_answers(
+            [self._choice_q()],
+            interactive=True,
+            env={},
+            stream_in=io.StringIO("postgres\n"),
+            stream_out=out,
+        )
+        assert answers["backend"] == "postgres"
+
+    def test_choice_empty_input_uses_default_value(self) -> None:
+        """Blank input on the injected stream falls back to the
+        question's default value (no rich UI, no behaviour drift)."""
+        out = io.StringIO()
+        answers = _collect_answers(
+            [self._choice_q()],
+            interactive=True,
+            env={},
+            stream_in=io.StringIO("\n"),
+            stream_out=out,
+        )
+        assert answers["backend"] == "sqlite"
+
+    def test_choice_routes_through_pick_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The dispatch site actually calls ``select.pick_one`` for a
+        ``choice`` question, forwarding the wizard's stream seam."""
+        from corpus_forge.setup import select
+
+        captured: dict[str, object] = {}
+
+        def fake_pick_one(prompt, choices, *, default=None, stream_in=None, stream_out=None):
+            captured.update(
+                prompt=prompt,
+                choices=list(choices),
+                default=default,
+                stream_in=stream_in,
+                stream_out=stream_out,
+            )
+            return "postgres"
+
+        monkeypatch.setattr(select, "pick_one", fake_pick_one)
+
+        in_stream = io.StringIO("ignored\n")
+        out_stream = io.StringIO()
+        answers = _collect_answers(
+            [self._choice_q()],
+            interactive=True,
+            env={},
+            stream_in=in_stream,
+            stream_out=out_stream,
+        )
+        assert answers["backend"] == "postgres"
+        assert captured["prompt"] == "Storage backend"
+        assert captured["choices"] == ["sqlite", "postgres"]
+        assert captured["default"] == "sqlite"
+        # The wizard's own stream seam is passed through unchanged.
+        assert captured["stream_in"] is in_stream
+        assert captured["stream_out"] is out_stream
+
+
 # ── Phase M Wave 1 — create_corpusignore wiring ─────────────────────
 
 
