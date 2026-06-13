@@ -73,6 +73,44 @@ CF_NON_INTERACTIVE=1 corpus-forge setup --backend postgres --embedder qwen3_8b
 
 The config lives at `~/.config/corpus-forge/config.toml` on macOS/Linux and `%APPDATA%\corpus-forge\config.toml` on Windows. A fully-commented example ships at `config.example.toml`.
 
+### Same model, different provider names (model aliases)
+
+If a fleet serves the **same embedding model** under different
+`(provider, model_id)` names — e.g. the operator runs `nomic-embed-code`
+via Ollama on a Mac (`provider="ollama"`,
+`model_id="manutic/nomic-embed-code:latest"`) and via an OpenAI-compatible
+endpoint on Windows (`provider="openai"`,
+`model_id="text-embedding-nomic-embed-code"`) — declare the equivalence so
+corpus-forge treats them as one identity (RFC fleet-6):
+
+```toml
+[[embedders]]
+name = "nomic-code"
+provider = "ollama"
+model_id = "manutic/nomic-embed-code:latest"
+dimension = 3584
+# Other provider names for the SAME weights/vector space:
+[[embedders.model_aliases]]
+provider = "openai"
+model_id = "text-embedding-nomic-embed-code"
+```
+
+With aliases declared:
+- **No false drift / re-embed prompt** — switching the host or provider that
+  serves the model no longer trips the "Embedder changed → re-embed N chunks"
+  panel (the drift fingerprint folds through the alias set).
+- **One telemetry lane** — fleet-1 `model_benchmarks` and the `fleet hosts`
+  plan key on the *canonical* identity, so the Mac and Windows box accrue
+  under one model instead of two.
+- **Safety** — aliases must agree on `dimension` / `normalize` / `distance`;
+  a mismatch is a hard error at config load (never a silent merge).
+- `config publish` / `pull` federate the alias set, so every host agrees
+  without re-typing it. `corpus-forge embedder merge-aliases` reports any
+  pre-existing split telemetry rows the aliases would unify.
+
+A single-machine corpus needs none of this — omit `model_aliases` and
+behavior is unchanged.
+
 ## 3. Migrate
 
 ```bash
