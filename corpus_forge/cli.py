@@ -1120,16 +1120,57 @@ def _state_dir_path():
     return p
 
 
-def _spawn_background_embed(drifts) -> None:
-    """Detach a re-embed worker per drifting embedder."""
+def _drain_loop_owns_lane(config, embedder_name: str) -> bool:
+    """RFC fleet-5 item 4 — does the managed service already drain this lane?
+
+    True only when the managed daemon is running AND `[service] embed_drain`
+    is on AND this embedder is one of the lanes the host drains (empty
+    `[embed] lanes` → all lanes owned; otherwise the name must be pinned).
+    When True, the detached drift-prompt re-embed worker must NOT spawn for
+    this lane — the service's `EmbedDrainLoop` already claims and embeds it
+    (fleet-2 claims would dedupe anyway, but we want one status owner and no
+    redundant process). Defaults to False for every non-fleet user (no
+    daemon and/or `embed_drain` off), so today's behaviour is unchanged.
+    """
+    from corpus_forge.admin import foreground as _fg
+    from corpus_forge.admin.service import DAEMON_COMPONENT
+
+    if _fg.read_pid(DAEMON_COMPONENT) is None:
+        return False
+    if getattr(getattr(config, "service", None), "embed_drain", False) is not True:
+        return False
+    lanes = list(getattr(getattr(config, "embed", None), "lanes", []) or [])
+    return (not lanes) or (embedder_name in lanes)
+
+
+def _spawn_background_embed(drifts, config) -> None:
+    """Detach a re-embed worker per drifting embedder.
+
+    Lanes the managed service already drains (see `_drain_loop_owns_lane`)
+    are skipped — the service owns them — so two supervisors don't both work
+    one lane. Only the remaining (unowned) drifts get a detached worker.
+    """
 
     import subprocess
     import sys
 
+    to_spawn = []
+    for d in drifts:
+        if _drain_loop_owns_lane(config, d.name):
+            ui_info(
+                f"drain loop active in the managed service for lane {d.name!r}; "
+                "not spawning a detached embed-worker."
+            )
+            continue
+        to_spawn.append(d)
+
+    if not to_spawn:
+        return
+
     state_dir = _state_dir_path()
     pid_file = state_dir / "embed-worker.pid"
     last_pid: int | None = None
-    for d in drifts:
+    for d in to_spawn:
         proc = subprocess.Popen(
             [sys.executable, "-m", "corpus_forge", "embed", "-e", d.name],
             stdin=subprocess.DEVNULL,
@@ -1191,7 +1232,7 @@ def _handle_drift(config, backend, *, background: bool, non_interactive: bool) -
 
     if decision == "now":
         if background:
-            _spawn_background_embed(actionable)
+            _spawn_background_embed(actionable, config)
         else:
             _run_foreground_embed(actionable)
             try:
