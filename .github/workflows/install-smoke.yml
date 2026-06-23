@@ -70,7 +70,7 @@ jobs:
       CF_INSTALL_FROM: "."
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Run install.sh (non-interactive)
         run: bash install.sh
@@ -123,7 +123,7 @@ jobs:
       CF_INSTALL_FROM: "."
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Run install.ps1 (non-interactive)
         run: .\install.ps1

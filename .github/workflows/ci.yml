@@ -45,7 +45,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: actionlint
         uses: raven-actions/actionlint@v2
@@ -64,7 +64,7 @@ jobs:
     needs: [actionlint]
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup uv + Python
         uses: ./.github/actions/setup-uv
@@ -140,7 +140,7 @@ jobs:
       CI_NO_DOCKER: ${{ matrix.os == 'windows-2022' && '1' || '' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup uv + Python
         uses: ./.github/actions/setup-uv
