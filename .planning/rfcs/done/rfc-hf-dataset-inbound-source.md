@@ -1,6 +1,6 @@
 # RFC: Inbound HuggingFace Datasets source
 
-status: accepted
+status: done
 **Owner**: nightly (open for any agent to claim)
 **Priority**: P3
 **Depends on**: `rfc-corpus-growth-controls.md` (per-source `max_rows`

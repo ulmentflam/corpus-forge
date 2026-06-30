@@ -1,6 +1,6 @@
 # RFC: Fleet 4/4 — Tailscale-native configuration and discovery
 
-status: accepted
+status: done
 **Owner**: nightly (open for any agent to claim)
 **Priority**: P1 — operator-requested 2026-06-04 (ergonomics layer over fleet 1–3)
 **Depends on**: rfc-fleet-1-model-telemetry-and-bench (hosts table); enhances rfc-fleet-3's join flow

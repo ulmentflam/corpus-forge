@@ -1,6 +1,6 @@
 # RFC: Runtime feedback — sandboxed code execution + profiling
 
-status: accepted
+status: done
 **Owner**: nightly (open for any agent to claim)
 **Priority**: P2
 **Depends on**: `rfc-source-provenance-git-and-lines.md` (we need

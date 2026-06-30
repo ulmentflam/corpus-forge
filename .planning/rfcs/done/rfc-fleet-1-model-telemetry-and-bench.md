@@ -1,6 +1,6 @@
 # RFC: Fleet 1/4 — model registry, speed telemetry, and `bench embed`
 
-status: accepted
+status: done
 **Owner**: nightly (open for any agent to claim)
 **Priority**: P0 — operator-requested 2026-06-04
 **Depends on**: none (first of the fleet series; rfc-fleet-2..4 build on its tables)

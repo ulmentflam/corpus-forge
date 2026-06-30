@@ -1,6 +1,6 @@
 # RFC: Fleet 3/4 — federated config scope + multi-host setup/install flow
 
-status: accepted
+status: done
 **Owner**: nightly (open for any agent to claim)
 **Priority**: P0 — operator-requested 2026-06-04
 **Depends on**: rfc-fleet-1-model-telemetry-and-bench (hosts table); pairs with rfc-fleet-2 (lanes are local scope)
