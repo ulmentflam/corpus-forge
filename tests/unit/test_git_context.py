@@ -54,17 +54,21 @@ def _init_repo(repo: Path) -> str:
     return _git(repo, "rev-parse", "HEAD")
 
 
-def test_fixture_repo_ignores_global_signing_and_hooks(tmp_path: Path, monkeypatch) -> None:
-    hooks = tmp_path / "global-hooks"
-    hooks.mkdir()
+@pytest.mark.parametrize("hooks_name", ["global-hooks", "global hooks", r"global\hooks"])
+def test_fixture_repo_ignores_global_signing_and_hooks(
+    tmp_path: Path, monkeypatch, hooks_name: str
+) -> None:
+    hooks = tmp_path / hooks_name
+    hooks.mkdir(parents=True)
     hook = hooks / "pre-commit"
     hook.write_text("#!/bin/sh\nexit 1\n")
     hook.chmod(0o755)
     config = tmp_path / "global.gitconfig"
-    config.write_text(
-        f'[commit]\n    gpgsign = true\n[core]\n    hooksPath = "{hooks}"\n'
-        "[gpg]\n    program = missing-test-signing-program\n"
-    )
+    # Git escapes platform-specific path separators and quotes correctly.
+    _git(tmp_path, "config", "--file", str(config), "commit.gpgsign", "true")
+    _git(tmp_path, "config", "--file", str(config), "core.hooksPath", str(hooks))
+    _git(tmp_path, "config", "--file", str(config), "gpg.program", "missing-test-signing-program")
+    assert _git(tmp_path, "config", "--file", str(config), "--get", "core.hooksPath") == str(hooks)
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
     repo = tmp_path / "repo"
     sha = _init_repo(repo)

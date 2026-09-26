@@ -22,6 +22,11 @@ selection and sync commands and checks the environment received by Make.
 The first release gate exposed a mismatch: CI populated `.venv`, while Make
 selected a fresh external environment without the optional dependencies. The
 `0.1.0b19` tag was not published. Version `0.1.0b20` corrects this shared setup.
+The `0.1.0b20` gate passed Linux, macOS, and integration checks but exposed an
+invalid Windows Git config in the new isolation test. A backslash-containing
+path reproduced the failure on macOS too. Writing that fixture through
+`git config --file` fixes escaping; ordinary paths, spaces, and backslashes are
+all covered. Version `0.1.0b21` includes this correction.
 
 ## Findings and fixes
 
@@ -39,8 +44,8 @@ selected a fresh external environment without the optional dependencies. The
 ## Latest validation
 
 - Formatting, lint, type checks, and `git diff --check` pass.
-- Full suite for `0.1.0b20`: **9,170 passed, 28 skipped**, with no failures or setup errors.
-- Coverage: **92.26%**, above the unchanged 89% gate.
+- Full suite for `0.1.0b21`: **9,172 passed, 28 skipped**, with no failures or setup errors.
+- Coverage: **92.25%**, above the unchanged 89% gate.
 - No expected failures remain in this run.
 - After the release version bump, all 31 wheel-metadata checks pass, including
   the opt-in fresh-environment installation and CLI startup test.
@@ -52,7 +57,7 @@ selected a fresh external environment without the optional dependencies. The
   opt-in model benchmarks, and pre-existing test guards.
 
 The full-suite log is preserved at
-`~/Workspace/scripts/corpus-forge-cleanup-20260925/pytest-b20-final.log`.
+`~/Workspace/scripts/corpus-forge-cleanup-20260925/pytest-b21-final.log`.
 
 The restricted run is in `.pytest_cache/validation-current.log`. Earlier failure
 reports remain in `.pytest_cache/validation-sync-gate.log` and
@@ -71,3 +76,7 @@ Archives and manifests live under `~/Local/archives/corpus-forge/`; the cleanup
 script and restoration notes remain in `~/Workspace/scripts/corpus-forge-cleanup-20260925/`.
 The discarded `.venv-trash-*` directories are now ignored so source builds do
 not traverse or package their nested dependency test suites.
+A directory-name audit then archived 63 whole conflict directories containing
+735 files, including two empty directories. The combined cleanup preserved
+951 file copies. Both file-name and directory-name inventories were empty after
+the final pass; restoration notes are in the script directory above.
