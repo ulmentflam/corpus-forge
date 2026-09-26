@@ -16,7 +16,9 @@ to guarantee:
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -136,6 +138,43 @@ class TestCIWorkflow:
 
 
 class TestSetupUvAction:
+    @pytest.mark.requires_unix
+    def test_setup_and_make_share_environment(self, setup_uv_yaml: dict, tmp_path: Path) -> None:
+        """Make must use the environment populated by the composite action."""
+        env_file = tmp_path / "github-env"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        uv = bin_dir / "uv"
+        uv.write_text('#!/bin/sh\nprintf "%s\\n" "$UV_PROJECT_ENVIRONMENT"\n')
+        uv.chmod(0o755)
+        env = {
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "RUNNER_TEMP": str(tmp_path / "runner temp"),
+            "GITHUB_ENV": str(env_file),
+        }
+        env.pop("VENV", None)
+        env.pop("UV_PROJECT_ENVIRONMENT", None)
+        steps = setup_uv_yaml["runs"]["steps"]
+        selection = next(step for step in steps if "GITHUB_ENV" in step.get("run", ""))
+        sync = next(step for step in steps if "uv sync" in step.get("run", ""))
+        assert steps.index(selection) < steps.index(sync)
+        subprocess.run(["bash", "-c", selection["run"]], env=env, check=True)
+        env.update(line.split("=", 1) for line in env_file.read_text().splitlines())
+        setup_result = subprocess.run(
+            ["bash", "-c", sync["run"]], env=env, check=True, capture_output=True, text=True
+        )
+        make_result = subprocess.run(
+            ["make", "--silent", "-f", str(MAKEFILE_PATH), "lint"],
+            cwd=tmp_path,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert setup_result.stdout.strip()
+        assert make_result.stdout == setup_result.stdout
+
     def test_yaml_parses(self, setup_uv_yaml: dict) -> None:
         assert isinstance(setup_uv_yaml, dict)
 

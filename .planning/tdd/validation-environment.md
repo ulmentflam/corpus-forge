@@ -14,6 +14,14 @@ site-packages resolve there too. Packages are outside iCloud Drive.
 handles paths with spaces, and refuses to overwrite a real `.venv` directory.
 Every Makefile `uv` command receives `UV_PROJECT_ENVIRONMENT` from `VENV`.
 Export a different absolute `VENV` for another checkout.
+An existing `UV_PROJECT_ENVIRONMENT` supplies the default for `VENV`. CI selects
+one environment under `RUNNER_TEMP` before syncing dependencies, and every later
+Make invocation reuses it. A regression test executes the composite action's
+selection and sync commands and checks the environment received by Make.
+
+The first release gate exposed a mismatch: CI populated `.venv`, while Make
+selected a fresh external environment without the optional dependencies. The
+`0.1.0b19` tag was not published. Version `0.1.0b20` corrects this shared setup.
 
 ## Findings and fixes
 
@@ -31,8 +39,8 @@ Export a different absolute `VENV` for another checkout.
 ## Latest validation
 
 - Formatting, lint, type checks, and `git diff --check` pass.
-- Full suite: **9,166 passed, 29 skipped**, with no failures or setup errors.
-- Coverage: **92.25%**, above the unchanged 89% gate.
+- Full suite for `0.1.0b20`: **9,170 passed, 28 skipped**, with no failures or setup errors.
+- Coverage: **92.26%**, above the unchanged 89% gate.
 - No expected failures remain in this run.
 - After the release version bump, all 31 wheel-metadata checks pass, including
   the opt-in fresh-environment installation and CLI startup test.
@@ -44,7 +52,7 @@ Export a different absolute `VENV` for another checkout.
   opt-in model benchmarks, and pre-existing test guards.
 
 The full-suite log is preserved at
-`~/Workspace/scripts/corpus-forge-cleanup-20260925/pytest-unrestricted-final.log`.
+`~/Workspace/scripts/corpus-forge-cleanup-20260925/pytest-b20-final.log`.
 
 The restricted run is in `.pytest_cache/validation-current.log`. Earlier failure
 reports remain in `.pytest_cache/validation-sync-gate.log` and
@@ -53,8 +61,10 @@ been committed or pushed at the time those failure reports were captured.
 
 ## iCloud conflict cleanup
 
-Archived 214 additional numbered conflict copies outside iCloud, including
-20 alternate Git indexes. Hydrated 176 cloud-only placeholders before archiving.
+Archived 216 additional numbered conflict copies outside iCloud, including
+22 alternate Git indexes. Hydrated 178 cloud-only placeholders before archiving.
+The last two index copies reappeared after the first clean scan and were archived
+in a follow-up pass.
 Each copy was verified by SHA-256 before removal. Canonical files and tracked
 paths were preserved; the final rescan found no remaining conflict candidates.
 Archives and manifests live under `~/Local/archives/corpus-forge/`; the cleanup

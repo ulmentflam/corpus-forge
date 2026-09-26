@@ -8,10 +8,15 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
-## [0.1.0b19] - 2026-09-26
+## [0.1.0b20] - 2026-09-26
+
+Version 0.1.0b19 was tagged but not published: its CI gate caught mismatched
+virtual environments between dependency setup and Make.
 
 ### Fixed
 
+- Share the explicitly selected virtual environment between CI dependency setup
+  and Make, preserving optional dependencies installed during setup.
 - Keep CLI and in-memory logging available when the log directory cannot be
   created or the log file cannot be opened.
 - Include offending dataset names in SQLite sync configuration errors.
@@ -2222,6 +2227,6 @@ ready for external review.
 - `SECURITY.md` lists `0.1.x` as the supported beta line and
   `evan@jwo3.io` as the vulnerability-reporting contact.
 
-[Unreleased]: https://github.com/ulmentflam/corpus-forge/compare/v0.1.0b19...HEAD
-[0.1.0b19]: https://github.com/ulmentflam/corpus-forge/compare/v0.1.0b18...v0.1.0b19
+[Unreleased]: https://github.com/ulmentflam/corpus-forge/compare/v0.1.0b20...HEAD
+[0.1.0b20]: https://github.com/ulmentflam/corpus-forge/compare/v0.1.0b18...v0.1.0b20
 [0.1.0b1]: https://github.com/ulmentflam/corpus-forge/releases/tag/v0.1.0b1

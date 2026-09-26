@@ -9,7 +9,7 @@ OS := $(shell uname -s)
 # under ~/Library/Mobile Documents/...); .venv here is kept as a symlink
 # into it, matching the pattern used by pixi (detached-environments) and
 # other repos on this machine.
-VENV ?= $(HOME)/Local/venvs/corpus-forge
+VENV ?= $(or $(UV_PROJECT_ENVIRONMENT),$(HOME)/Local/venvs/corpus-forge)
 export UV_PROJECT_ENVIRONMENT := $(VENV)
 
 help: ## Show this help

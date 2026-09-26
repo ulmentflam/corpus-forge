@@ -51,17 +51,28 @@ def test_venv_link_preserves_existing_directory(tmp_path: Path) -> None:
     assert sentinel.read_text() == "existing environment"
 
 
-def test_uv_recipes_use_external_environment(tmp_path: Path) -> None:
+@pytest.mark.parametrize("selection", ["uv_environment", "make_variable", "make_overrides_uv"])
+def test_uv_recipes_use_external_environment(tmp_path: Path, selection: str) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     uv = bin_dir / "uv"
     uv.write_text('#!/bin/sh\nprintf "%s\\n" "$UV_PROJECT_ENVIRONMENT"\n')
     uv.chmod(0o755)
     external = tmp_path / "external venv"
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    env.pop("VENV", None)
+    env.pop("UV_PROJECT_ENVIRONMENT", None)
+    args = ["make", "--silent", "-f", str(MAKEFILE), "lint"]
+    if selection == "uv_environment":
+        env["UV_PROJECT_ENVIRONMENT"] = str(external)
+    else:
+        args.append(f"VENV={external}")
+        if selection == "make_overrides_uv":
+            env["UV_PROJECT_ENVIRONMENT"] = str(tmp_path / "different environment")
     result = subprocess.run(
-        ["make", "--silent", "-f", str(MAKEFILE), "lint", f"VENV={external}"],
+        args,
         cwd=tmp_path,
-        env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
+        env=env,
         capture_output=True,
         text=True,
         check=False,

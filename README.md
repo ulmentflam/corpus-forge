@@ -925,6 +925,9 @@ installed packages outside iCloud Drive. Export `VENV` to choose another absolut
 path, including a separate environment for another checkout; all Makefile `uv`
 commands use that path. An existing `.venv` directory is preserved and must be
 moved outside the checkout before these targets can create the link.
+When `UV_PROJECT_ENVIRONMENT` is already set, Make uses that environment unless
+`VENV` explicitly overrides it. CI sets this path before installing dependencies
+so setup and test commands share the same packages.
 
 ```bash
 make dev           # install dev deps + pre-commit hooks
