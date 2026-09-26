@@ -18,6 +18,9 @@ dist/
 htmlcov/
 coverage.xml
 
+# Local monitoring reports
+/.autosentry/
+
 # Type checkers
 .mypy_cache/
 .pyre/
