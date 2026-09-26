@@ -1582,10 +1582,12 @@ class Config(BaseModel):
 
         SQLite is single-host; cross-host sync requires the Postgres backend.
         """
-        if self.backend.kind == "sqlite" and any(ds.sync_enabled for ds in self.datasets):
+        sync_datasets = [ds.name for ds in self.datasets if ds.sync_enabled]
+        if self.backend.kind == "sqlite" and sync_datasets:
             raise ValueError(
                 "Cross-host sync requires the postgres backend; SQLite is single-host. "
-                "Set sync_enabled = false or switch backend.kind to 'postgres'."
+                "Set sync_enabled = false or switch backend.kind to 'postgres'. "
+                f"Datasets with sync_enabled = true: {', '.join(map(repr, sync_datasets))}."
             )
         return self
 

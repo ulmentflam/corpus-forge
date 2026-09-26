@@ -8,7 +8,19 @@ version numbers (so `0.1.0b1` is the first beta of the `0.1.0` line).
 
 ## [Unreleased]
 
+## [0.1.0b19] - 2026-09-26
+
 ### Fixed
+
+- Keep CLI and in-memory logging available when the log directory cannot be
+  created or the log file cannot be opened.
+- Include offending dataset names in SQLite sync configuration errors.
+- Create the development `.venv` symlink against an external environment outside
+  iCloud, preserving existing environment directories.
+- Compare scan performance against the historical unpruned traversal, using
+  alternating samples and medians while preserving the existing speed threshold.
+- Isolate validation from personal configuration, Git signing hooks, live doctor
+  probes, and native filesystem watchers where those are outside the test scope.
 
 - **Distributed embedding: a worker no longer permanently demotes itself
   to the un-deduped fallback after a transient startup race.** When the
@@ -2210,5 +2222,6 @@ ready for external review.
 - `SECURITY.md` lists `0.1.x` as the supported beta line and
   `evan@jwo3.io` as the vulnerability-reporting contact.
 
-[Unreleased]: https://github.com/ulmentflam/corpus-forge/compare/v0.1.0b1...HEAD
+[Unreleased]: https://github.com/ulmentflam/corpus-forge/compare/v0.1.0b19...HEAD
+[0.1.0b19]: https://github.com/ulmentflam/corpus-forge/compare/v0.1.0b18...v0.1.0b19
 [0.1.0b1]: https://github.com/ulmentflam/corpus-forge/releases/tag/v0.1.0b1

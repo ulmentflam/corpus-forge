@@ -17,6 +17,8 @@ import pytest
 
 from corpus_forge.diagnostics import bug_report as br
 
+pytestmark = pytest.mark.usefixtures("stub_doctor_report")
+
 
 @pytest.fixture
 def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -214,14 +216,14 @@ def test_collect_config_toml_via_env_var(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
 
 def test_collect_doctor_json_failure_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When ``run_doctor`` raises, we fall back to an ``{"unavailable": ...}`` dict.
+    """A failed health probe must not prevent creating a diagnostic bundle."""
 
-    The error path is normally a no-op pragma; this just verifies the
-    happy path returns a dict.
-    """
+    def fail():
+        raise OSError("probe unavailable")
 
+    monkeypatch.setattr("corpus_forge.doctor.run_doctor", fail)
     payload = br._collect_doctor_json()
-    assert isinstance(payload, dict)
+    assert payload == {"unavailable": "probe unavailable"}
 
 
 def test_collect_env_filters_to_known_prefixes(monkeypatch: pytest.MonkeyPatch) -> None:

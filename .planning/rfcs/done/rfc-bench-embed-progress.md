@@ -1,6 +1,6 @@
 # RFC: Progress feedback for `bench embed` — phases + cold-start accounting
 
-status: accepted
+status: done
 **Owner**: nightly (open for any agent to claim)
 **Priority**: P2 — operator-requested 2026-06-08
 **Depends on**: rfc-fleet-1-model-telemetry-and-bench (the `bench embed`
@@ -126,27 +126,30 @@ task:
 - `--json` payload gains `cold_start_s` (float, nullable) per result;
   no existing field changes.
 
+Completed in #121 (`d3250a0`, 2026-06-10), including persisted cold-start
+telemetry. The merge records 100% line coverage on `bench.py`.
+
 ## Tasks
 
-- [ ] Phase-aware `make_progress` wrapping in `bench_one` /
+- [x] Phase-aware `make_progress` wrapping in `bench_one` /
       `cmd_bench_embed`: cold-start + warmup as unbounded spinners with
       elapsed; encode phase bounded for `api`, indeterminate (option a)
       for local; write phase. Renders on stderr, agent-mode aware,
       never pollutes `--json`.
-- [ ] Time the load+warmup as `cold_start_s` (perf_counter around the
+- [x] Time the load+warmup as `cold_start_s` (perf_counter around the
       pre-`t0` block); confirm `chunks_per_s` semantics are unchanged.
-- [ ] Surface `cold_start_s` in the Rich table (new column) and the
+- [x] Surface `cold_start_s` in the Rich table (new column) and the
       `--json` payload (additive field).
-- [ ] Tests:
-  - [ ] `chunks_per_s` is unaffected by a slow `warmup()` (fake
+- [x] Tests:
+  - [x] `chunks_per_s` is unaffected by a slow `warmup()` (fake
         embedder with a sleeping warmup → `cold_start_s` rises,
         `chunks_per_s` constant).
-  - [ ] progress renders on stderr / is suppressed under agent mode;
+  - [x] progress renders on stderr / is suppressed under agent mode;
         `--json` stdout stays a clean parseable object (no Rich escape
         codes), with the new `cold_start_s` key present.
-  - [ ] api per-text path advances the bar `sample` times; local path
+  - [x] api per-text path advances the bar `sample` times; local path
         shows the indeterminate encode phase.
-  - [ ] ≥90% line coverage on the new code (`make test-unit` gate).
+  - [x] ≥90% line coverage on the new code (`make test-unit` gate).
 - [x] (Stretch) alembic revision adding nullable
       `model_benchmarks.cold_start_s`; `bench` writes it; `models list`
       surfaces it. Idempotent re-run test, head-pin transition like the

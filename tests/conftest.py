@@ -96,6 +96,21 @@ _AGENT_ENV_VARS = (
 
 
 @pytest.fixture(autouse=True)
+def _isolate_log_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep CLI invocations and their subprocesses out of the user's log files."""
+    monkeypatch.setenv("CF_LOG_DIR", str(tmp_path / "logs"))
+
+
+@pytest.fixture
+def stub_doctor_report(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bundle tests serialize a report without probing the developer's services."""
+    from corpus_forge.doctor import CheckResult, CheckStatus, DoctorReport
+
+    report = DoctorReport([CheckResult("fixture_check", CheckStatus.OK, "fixture detail")])
+    monkeypatch.setattr("corpus_forge.doctor.run_doctor", lambda **kwargs: report)
+
+
+@pytest.fixture(autouse=True)
 def _reset_agent_state():
     """Wave 9 — per-test reset of agent detection state.
 

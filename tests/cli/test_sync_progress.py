@@ -148,7 +148,8 @@ def test_push_stop_logs_bookend(tmp_path, caplog):
 
 
 @pytest.fixture(autouse=True)
-def _no_op_fixture():
-    """Caplog propagation behaves nicely under the conftest's NO_COLOR shim."""
-
-    return
+def _observer_stub(monkeypatch):
+    """Bookend tests exercise logging without starting a native file watcher."""
+    observer = MagicMock()
+    monkeypatch.setattr("corpus_forge.sync.push.observers.Observer", lambda: observer)
+    return observer

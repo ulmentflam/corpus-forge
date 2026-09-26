@@ -5,17 +5,33 @@
 # on macOS and to systemd-user on Linux. Detect OS once at the top.
 OS := $(shell uname -s)
 
+# The real venv lives outside iCloud Drive (this repo may be checked out
+# under ~/Library/Mobile Documents/...); .venv here is kept as a symlink
+# into it, matching the pattern used by pixi (detached-environments) and
+# other repos on this machine.
+VENV ?= $(HOME)/Local/venvs/corpus-forge
+export UV_PROJECT_ENVIRONMENT := $(VENV)
+
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?##"};{printf "  %-18s %s\n",$$1,$$2}'
 
-install: ## Install runtime dependencies (uv sync)
+install: _venv-link ## Install runtime dependencies (uv sync)
 	uv sync
 	@$(MAKE) --no-print-directory _unhide-pth
 
-dev: ## Install dev dependencies + pre-commit hooks (commit + push stages)
+dev: _venv-link ## Install dev dependencies + pre-commit hooks (commit + push stages)
 	uv sync --all-extras --group dev
-	uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 	@$(MAKE) --no-print-directory _unhide-pth
+	uv run pre-commit install --hook-type pre-commit --hook-type pre-push
+
+.PHONY: _venv-link
+_venv-link:
+	@if [ -e .venv ] && [ ! -L .venv ]; then \
+	  echo "Refusing to replace .venv: move the existing environment outside the checkout first." >&2; \
+	  exit 1; \
+	fi
+	@mkdir -p "$(VENV)"
+	@ln -sfn "$(VENV)" .venv
 
 # Darwin-only workaround: when the repo lives in iCloud Drive (~/Library/Mobile
 # Documents/...), every freshly written file inherits the parent UF_HIDDEN flag,

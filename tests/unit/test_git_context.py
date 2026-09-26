@@ -43,10 +43,33 @@ def _init_repo(repo: Path) -> str:
     # is worth the extra two lines).
     _git(repo, "config", "user.email", "test@example.invalid")
     _git(repo, "config", "user.name", "Test User")
+    # Fixture commits must not invoke the developer's signing agent or hooks.
+    _git(repo, "config", "commit.gpgsign", "false")
+    hooks = repo / ".git" / "test-hooks"
+    hooks.mkdir()
+    _git(repo, "config", "core.hooksPath", str(hooks))
     (repo / "README.md").write_text("hello\n")
     _git(repo, "add", "README.md")
     _git(repo, "commit", "-q", "-m", "initial commit")
     return _git(repo, "rev-parse", "HEAD")
+
+
+def test_fixture_repo_ignores_global_signing_and_hooks(tmp_path: Path, monkeypatch) -> None:
+    hooks = tmp_path / "global-hooks"
+    hooks.mkdir()
+    hook = hooks / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    config = tmp_path / "global.gitconfig"
+    config.write_text(
+        f'[commit]\n    gpgsign = true\n[core]\n    hooksPath = "{hooks}"\n'
+        "[gpg]\n    program = missing-test-signing-program\n"
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    repo = tmp_path / "repo"
+    sha = _init_repo(repo)
+    assert _git(repo, "rev-parse", "HEAD") == sha
+    assert _git(repo, "log", "-1", "--format=%s") == "initial commit"
 
 
 class TestGitContextHappyPath:

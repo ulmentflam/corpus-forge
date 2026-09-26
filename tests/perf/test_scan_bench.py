@@ -2,20 +2,20 @@
 
 Generates ~10,000 files in a `tmp_path`:
 
-  - ~7,000 inside baseline-skip dirs (`.git/`, `node_modules/`,
+  - ~6,200 inside baseline-skip dirs (`.git/`, `node_modules/`,
     `__pycache__/`) — the walker MUST never `scandir` into these.
   - ~2,800 ordinary `.md`/`.py`/`.txt` files distributed across a
     moderately-deep tree.
-  - ~200 large-extension binaries (`.iso` / `.dmg`) that the include_exts
+  - 1,000 large-extension binaries (`.iso` / `.dmg`) that the include_exts
     short-circuit MUST reject before `entry.stat()`.
 
 Hard assertions:
 
   (a) The new walker is at least 3x faster than a control walker
-      (re-implemented inline matching the legacy `iterdir + post-filter`
+      (re-implemented inline matching the legacy `rglob + post-filter`
       shape on the SAME tree).
   (b) `os.scandir` was called on no more than ~250 directories of the
-      ~2,200 directories actually created.
+      ~380 directories actually created.
 
 Warning, not hard fail:
 
@@ -28,6 +28,7 @@ import os
 import time
 import warnings
 from pathlib import Path
+from statistics import median
 
 import pytest
 
@@ -45,8 +46,7 @@ def _build_synthetic_tree(root: Path) -> tuple[int, int]:
     n_dirs = 0
 
     # Baseline-skip noise: simulate node_modules / .git / __pycache__.
-    # ~7,000 files distributed across many "package" directories so the
-    # directory count climbs into the ~2k range.
+    # About 6,200 files distributed across ignored package/cache directories.
     pkgs = (
         "alpha",
         "beta",
@@ -171,48 +171,34 @@ def _build_synthetic_tree(root: Path) -> tuple[int, int]:
 
 
 def _control_walk(root: Path, include_exts: frozenset[str]) -> tuple[int, int, int]:
-    """`iterdir` + post-filter. No descent-time pruning, no short-circuit."""
+    """Pre-Wave-2 filesystem discovery, with output filters applied afterward.
+
+    ``FilesystemSource.discover`` at ``d226c7c^`` used ``rglob("*")``
+    followed by per-file exclusion. Unlike the old estimator, it did not
+    prune directories. Match the new walker's output without giving the
+    control the descent-time optimization this benchmark measures.
+    """
     from corpus_forge.estimate import _SKIP_DIR_NAMES, _SKIP_FILE_NAMES
 
     file_count = 0
     dir_count = 0
     total_bytes = 0
-
-    stack: list[Path] = [root]
-    while stack:
-        current = stack.pop()
-        try:
-            entries = list(current.iterdir())
-        except OSError:
+    for entry in root.rglob("*"):
+        if entry.is_dir():
+            dir_count += 1
             continue
-        for entry in entries:
-            name = entry.name
-            try:
-                if entry.is_symlink():
-                    continue
-                if entry.is_dir():
-                    if name in _SKIP_DIR_NAMES:
-                        continue
-                    dir_count += 1
-                    stack.append(entry)
-                    continue
-                if not entry.is_file():
-                    continue
-                if name in _SKIP_FILE_NAMES or name.startswith("._"):
-                    continue
-            except OSError:
-                continue
-            try:
-                st = entry.stat()
-            except OSError:
-                continue
-            # Apply include_exts AFTER stat — that's the "control" behavior
-            # we're trying to beat.
-            ext = Path(name).suffix.lower()
-            if ext not in include_exts:
-                continue
-            file_count += 1
-            total_bytes += st.st_size
+        if not entry.is_file() or entry.is_symlink():
+            continue
+        rel = entry.relative_to(root)
+        if any(part in _SKIP_DIR_NAMES for part in rel.parts[:-1]):
+            continue
+        if entry.name in _SKIP_FILE_NAMES or entry.name.startswith("._"):
+            continue
+        st = entry.stat()
+        if entry.suffix.lower() not in include_exts:
+            continue
+        file_count += 1
+        total_bytes += st.st_size
     return file_count, dir_count, total_bytes
 
 
@@ -229,28 +215,55 @@ def test_walker_perf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     include_exts = _full_ext_index()
 
-    # 1) Time the control on a separate run (no monkey-patch).
-    started = time.perf_counter()
-    ctrl_files, _ctrl_dirs, _ctrl_bytes = _control_walk(tmp_path, include_exts)
-    ctrl_elapsed = time.perf_counter() - started
+    def consume_new() -> tuple[int, int]:
+        count = 0
+        size = 0
+        for entry in walk(tmp_path, include_exts=include_exts):
+            count += 1
+            size += entry.stat.st_size
+        return count, size
 
-    # 2) Time the new walker, AND count scandir invocations.
+    # Warm both paths, then alternate order to limit cache/order bias.
+    ctrl_files, ctrl_dirs, ctrl_bytes = _control_walk(tmp_path, include_exts)
+    new_count, new_bytes = consume_new()
+    assert (new_count, new_bytes) == (ctrl_files, ctrl_bytes)
+    assert ctrl_dirs == sum(p.is_dir() for p in tmp_path.rglob("*"))
+
+    control_samples: list[float] = []
+    new_samples: list[float] = []
+    for sample in range(7):
+        operations = [
+            (lambda: _control_walk(tmp_path, include_exts), control_samples),
+            (consume_new, new_samples),
+        ]
+        if sample % 2:
+            operations.reverse()
+        for operation, timings in operations:
+            started = time.perf_counter()
+            operation()
+            timings.append(time.perf_counter() - started)
+    ctrl_elapsed = median(control_samples)
+    new_elapsed = median(new_samples)
+
+    # Count visits separately so instrumentation cannot penalize one timer.
     real_scandir = os.scandir
-    scandir_calls: list[str] = []
+    scandir_calls: list[Path] = []
 
     def _counting_scandir(path):  # type: ignore[no-untyped-def]
-        scandir_calls.append(os.fspath(path))
+        scandir_calls.append(Path(path))
         return real_scandir(path)
 
-    monkeypatch.setattr("corpus_forge.scanner.walker.os.scandir", _counting_scandir)
+    with monkeypatch.context() as patch:
+        patch.setattr("corpus_forge.scanner.walker.os.scandir", _counting_scandir)
+        assert consume_new() == (ctrl_files, ctrl_bytes)
 
-    started = time.perf_counter()
-    new_count = 0
-    new_bytes = 0
-    for entry in walk(tmp_path, include_exts=include_exts):
-        new_count += 1
-        new_bytes += entry.stat.st_size
-    new_elapsed = time.perf_counter() - started
+    from corpus_forge.estimate import _SKIP_DIR_NAMES
+
+    assert all(
+        not any(part in _SKIP_DIR_NAMES for part in path.relative_to(tmp_path).parts)
+        for path in scandir_calls
+    )
+    assert len(scandir_calls) < ctrl_dirs
 
     # ── (a) speedup ─────────────────────────────────────────────────────
     # Ratio is control_elapsed / new_elapsed. Hard floor at 3x.
@@ -268,7 +281,7 @@ def test_walker_perf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     # ── (b) scandir call budget ────────────────────────────────────────
-    # ~2,200 dirs created; the walker should descend ≤250 of them after
+    # ~380 dirs created; the walker should descend ≤250 of them after
     # baseline + include_exts pruning. Generous margin for env variance.
     # The real distribution: root + src + 70 pkg + docs + 70 chapter +
     # blobs ≈ 144 expected — well under the 250 budget.
@@ -284,11 +297,8 @@ def test_walker_perf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
             stacklevel=1,
         )
 
-    # Sanity: the new walker yields strictly more relevant files than the
-    # control's same-include-exts filter, OR exactly the same. The
-    # presence-vs-absence of the .iso/.dmg short-circuit means
-    # include_exts is identical, so both should produce the same count
-    # of yielded files.
+    # Both algorithms must return the same files and byte totals.
     assert new_count == ctrl_files, (
         f"new walker yielded {new_count} files; control yielded {ctrl_files}"
     )
+    assert new_bytes == ctrl_bytes

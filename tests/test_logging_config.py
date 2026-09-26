@@ -213,3 +213,44 @@ def test_ring_buffer_captures_recent_events() -> None:
     messages = [r.getMessage() for r in rb.buffer]
     assert "event one" in messages
     assert "event two" in messages
+
+
+@pytest.mark.parametrize("failure", ["mkdir", "open"])
+@pytest.mark.parametrize("component", ["cli", "mcp"])
+def test_unwritable_log_destination_preserves_logging(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: str,
+    component: str,
+) -> None:
+    from corpus_forge import logging_config
+
+    def denied(*args, **kwargs):
+        raise PermissionError("read-only log destination")
+
+    monkeypatch.setenv("CF_TRANSPORT", "stdio")
+    with monkeypatch.context() as patch:
+        if failure == "mkdir":
+            patch.setattr(Path, "mkdir", denied)
+        else:
+            patch.setattr(logging_config, "RotatingFileHandler", denied)
+        logging_config.init_logging(component)
+
+    log = logging.getLogger("corpus_forge.test")
+    log.info("still running")
+    messages = [record.getMessage() for record in logging_config.get_ring_buffer().buffer]
+    assert any("File logging unavailable" in message for message in messages)
+    assert "still running" in messages
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    if component == "cli":
+        assert "read-only log destination" in " ".join(captured.err.split())
+        assert "still running" in captured.err
+    else:
+        assert captured.err == ""
+
+    # A later initialization can restore file logging without duplicate handlers.
+    logging_config.init_logging(component)
+    handlers = logging.getLogger("corpus_forge").handlers
+    assert sum(isinstance(handler, RotatingFileHandler) for handler in handlers) == 1
+    assert sum(isinstance(handler, MemoryHandler) for handler in handlers) == 1

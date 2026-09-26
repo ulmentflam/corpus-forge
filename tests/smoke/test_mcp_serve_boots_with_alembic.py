@@ -132,6 +132,8 @@ def _boot_and_send_initialize(
     """
     env = os.environ.copy()
     env["CORPUS_FORGE_CONFIG"] = str(config_path)
+    # Alembic emits INFO records; explicitly enable them for the stderr contract.
+    env["CF_LOG_LEVEL"] = "INFO"
     # Keep HuggingFace offline so no model weights are downloaded on startup.
     env.setdefault("HF_HUB_OFFLINE", "1")
     env.setdefault("TRANSFORMERS_OFFLINE", "1")

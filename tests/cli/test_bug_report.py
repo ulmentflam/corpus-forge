@@ -14,6 +14,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+pytestmark = pytest.mark.usefixtures("stub_doctor_report")
+
 
 @pytest.fixture
 def isolated_log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:

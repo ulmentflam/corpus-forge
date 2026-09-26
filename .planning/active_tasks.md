@@ -1,6 +1,11 @@
-# Active Tasks for corpus-forge Development
+# Historical development task ledger
 
-## Current Phase: Phase A - Greenfield rewrite
+This file preserves the original phase ledger; its unchecked boxes are not
+a current backlog. Use [the RFC queue](rfcs/README.md) for active priorities.
+The next initiative is incremental Merkle diff-sync, followed by code knowledge
+subgraphs. Reconciled against merged work on 2026-09-25.
+
+## Historical phase: Phase A - Greenfield rewrite
 
 ### Completed Tasks:
 - [x] Set up project structure with corpus_forge package

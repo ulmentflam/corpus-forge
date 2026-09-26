@@ -40,6 +40,13 @@ from typer.testing import CliRunner
 
 from corpus_forge.cli import app
 
+
+@pytest.fixture(autouse=True)
+def _isolate_drift_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flag-plumbing tests must not connect to the developer's configured DB."""
+    monkeypatch.setattr("corpus_forge.cli._maybe_handle_drift", lambda ctx: None)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

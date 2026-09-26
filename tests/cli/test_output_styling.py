@@ -75,7 +75,7 @@ def test_setup_non_interactive_emits_ok_pill(
     )
 
 
-def test_doctor_emits_styled_status_pills() -> None:
+def test_doctor_emits_styled_status_pills(stub_doctor_report) -> None:
     """``corpus-forge doctor`` prints at least one status-pill token.
 
     The styled render preserves the existing ``[OK  ]`` / ``[WARN]`` /

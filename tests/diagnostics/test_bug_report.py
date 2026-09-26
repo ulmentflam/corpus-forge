@@ -22,6 +22,8 @@ from unittest.mock import patch
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("stub_doctor_report")
+
 
 @pytest.fixture
 def isolated_log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -75,6 +77,7 @@ class TestCollect:
 
         with zipfile.ZipFile(report.path) as zf:
             names = set(zf.namelist())
+            doctor = json.loads(zf.read("doctor.json"))
             # Required files.
             assert "README.txt" in names
             assert "manifest.json" in names
@@ -87,6 +90,7 @@ class TestCollect:
             assert "service_status.txt" in names
             # cli.log was synthesized so its sweep should be present.
             assert "logs/cli.log.txt" in names
+        assert any(result["name"] == "fixture_check" for result in doctor["checks"])
 
     def test_manifest_keys(self, isolated_log_dir: Path, cwd_tmp: Path) -> None:
         from corpus_forge.diagnostics.bug_report import collect

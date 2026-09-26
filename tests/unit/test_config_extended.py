@@ -1307,36 +1307,42 @@ dimension = 384
         assert config.backend.kind == "sqlite"
         assert config.datasets[0].sync_enabled is False
 
-    # ------------------------------------------------------------------ #
-    # Optional: naming the offending dataset in the error                 #
-    # ------------------------------------------------------------------ #
-
-    @pytest.mark.xfail(
-        strict=False,
-        reason="Nice-to-have: spec does not require naming the offending dataset in the error.",
+    @pytest.mark.parametrize(
+        "dataset_names", [("offending-vault",), ("first-vault", "second-vault")]
     )
-    def test_optional_error_names_offending_dataset(self):
-        """OPTIONAL: ValidationError message names the offending dataset.
-
-        The spec does not mandate this, but a good implementation might include
-        it. If the implementation includes the dataset name, this test will pass;
-        if not, it is an acceptable xfail (non-strict).
-        """
+    def test_error_names_offending_datasets(self, dataset_names):
+        """The error identifies every sync-enabled dataset and excludes others."""
+        datasets = [
+            DatasetConfig(
+                name=name,
+                kind="text",
+                sync_enabled=True,
+                sources=[_make_text_source()],
+            )
+            for name in dataset_names
+        ]
+        datasets.insert(
+            0,
+            DatasetConfig(
+                name="local-only-vault",
+                kind="text",
+                sync_enabled=False,
+                sources=[_make_text_source()],
+            ),
+        )
         with pytest.raises(ValidationError) as exc_info:
             Config(
                 backend=_sqlite_backend(),
                 daemon=_minimal_daemon(),
-                datasets=[
-                    DatasetConfig(
-                        name="offending-vault",
-                        kind="text",
-                        sync_enabled=True,
-                        sources=[_make_text_source()],
-                    )
-                ],
+                datasets=datasets,
                 embedders=[_make_embedder()],
             )
-        assert "offending-vault" in str(exc_info.value)
+        message = exc_info.value.errors()[0]["msg"]
+        for name in dataset_names:
+            assert repr(name) in message
+        assert "local-only-vault" not in message
+        assert "Set sync_enabled = false" in message
+        assert "switch backend.kind to 'postgres'" in message
 
 
 class TestConfigGetReload:

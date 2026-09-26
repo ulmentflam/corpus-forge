@@ -49,7 +49,7 @@ def _combined(result) -> str:
 # ── doctor renders the banner by default ──────────────────────────────
 
 
-def test_doctor_renders_banner_by_default() -> None:
+def test_doctor_renders_banner_by_default(stub_doctor_report) -> None:
     """``corpus-forge doctor`` (no ``--json``) renders the banner."""
 
     result = _runner().invoke(app, ["doctor"])

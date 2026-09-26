@@ -473,7 +473,11 @@ python_version   = "3.11"
 # fresh CI venvs.
 pythonpath    = ["."]
 testpaths     = ["tests"]
-addopts       = "-ra --strict-markers --strict-config --timeout=60 --timeout-method=thread"
+# Vendored repositories are ingestion data, not part of our test suite.
+norecursedirs = [".*", "build", "dist", "tests/fixtures"]
+# No tests request retries. The optional retry plugin opens a coordination
+# socket even without retries, preventing collection in restricted runners.
+addopts       = "-ra --strict-markers --strict-config --timeout=60 --timeout-method=thread -p no:rerunfailures"
 xfail_strict  = true
 filterwarnings = [
   # Library-side runtime warnings we don't control:

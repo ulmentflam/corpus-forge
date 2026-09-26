@@ -1,5 +1,7 @@
 # Python
 .venv/
+/.venv
+/.venv-trash-*/
 __pycache__/
 *.pyc
 *.pyo

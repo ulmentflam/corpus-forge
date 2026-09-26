@@ -12,17 +12,11 @@ source: interactive_seed
 
 ## Status
 
-`accepted` — operator seed (2026-06-13). The curation loop today can
-only *edit* existing chunks; runtime execution today is single-shot
-(`run_chunk_and_capture` → one feedback row). This RFC closes the gap
-between those two: let a curation conversation **mint new chunks**, and
-capture the **full error → fix → success trajectory** of an interactive
-debugging session as first-class, exportable corpus data — the
-highest-signal rows for the operator's RL/SDFT dataset.
+Phase 1 shipped in #145 (`f2d73e5`, 2026-06-13): curation can mint linked
+enhancement chunks through MCP. Phases 2-4 remain open: debug trajectories,
+the interactive shell, and terminal-history capture/export.
 
-The filename is intentionally `001-…` so it sorts ahead of the
-`rfc-fleet-*` family under the cascade's alphabetical pick: this is the
-operator's current top-of-queue seed.
+The two `000-codeintel-*` RFCs take priority over this RFC.
 
 ## Context
 
@@ -212,13 +206,13 @@ dedicated tool is clearer and keeps the skill playbook honest.
 
 ### Phase 1 — Enhancement chunks via MCP
 
-- [ ] `backend.append_enhancement_chunk(dataset_id, text, *, heading, role, derived_from_chunk_id, metadata)` on `backends/base.py` (ABC) + `backends/sqlite.py` and the Postgres backend; lazily creates the `corpus-forge://curation/<dataset>` synthetic document.
-- [ ] `create_enhancement_chunk(...)` dispatch in `corpus_forge/mcp/writes.py` — resolves dataset, writes chunk, stamps lineage metadata, emits `audit_event` + `_link_to_session`, honors `dry_run`.
-- [ ] Register the tool in `corpus_forge/mcp/server.py` (schema in the tool-defs block + dispatch in `@server.call_tool()`), gated by `writes_enabled` like `commit_curation`.
-- [ ] Unit tests: dry-run returns `chunk_id: None` + audit row; real write returns a new `chunk_id`; lineage metadata present; `writes_enabled=False` hides the tool.
-- [ ] Update `.claude/skills/corpus-curate/SKILL.md` — add a "mint an enhancement chunk" step + the tool to `allowed-tools`; note the `kind: "curation_enhancement"` retrieval filter.
-- [ ] Update `CLAUDE.md` / `AGENTS.md` curation-loop quickstart to mention `create_enhancement_chunk`.
-- [ ] CHANGELOG entry.
+- [x] `backend.append_enhancement_chunk(dataset_id, text, *, heading, role, derived_from_chunk_id, metadata)` on `backends/base.py` (ABC) + `backends/sqlite.py` and the Postgres backend; lazily creates the `corpus-forge://curation/<dataset>` synthetic document.
+- [x] `create_enhancement_chunk(...)` dispatch in `corpus_forge/mcp/writes.py` — resolves dataset, writes chunk, stamps lineage metadata, emits `audit_event` + `_link_to_session`, honors `dry_run`.
+- [x] Register the tool in `corpus_forge/mcp/server.py` (schema in the tool-defs block + dispatch in `@server.call_tool()`), gated by `writes_enabled` like `commit_curation`.
+- [x] Unit tests: dry-run returns `chunk_id: None` + audit row; real write returns a new `chunk_id`; lineage metadata present; `writes_enabled=False` hides the tool.
+- [x] Update `.claude/skills/corpus-curate/SKILL.md` — add a "mint an enhancement chunk" step + the tool to `allowed-tools`; note the `kind: "curation_enhancement"` retrieval filter.
+- [x] Update `CLAUDE.md` / `AGENTS.md` curation-loop quickstart to mention `create_enhancement_chunk`.
+- [x] CHANGELOG entry.
 
 ### Phase 2 — Debug-trajectory schema + record tools
 

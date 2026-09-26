@@ -40,18 +40,13 @@ first.
 |---|---|---|---|
 | **P0 (top)** | [000-codeintel-1-incremental-merkle-sync](000-codeintel-1-incremental-merkle-sync.md) | — | **Operator-requested 2026-06-30.** Merkle-tree diff-sync for scans (Cursor secure-indexing model): persisted per-(dataset,path) fingerprint so an unchanged subtree is pruned without reading any file. Turns re-scan cost from O(all files) → O(changed). Foundational — the change-set feeds codeintel-2. |
 | **P0 (top)** | [000-codeintel-2-code-knowledge-subgraphs](000-codeintel-2-code-knowledge-subgraphs.md) | 000-codeintel-1 | **Operator-requested 2026-06-30.** Code knowledge graph (GitNexus model) over Postgres: resolved `CALLS`/`IMPORTS`/`EXTENDS`/`IMPLEMENTS` edges with confidence, Leiden communities, GraphRAG retrieval expansion, `code_context`/`code_impact`/`code_neighbors` MCP tools. Cross-repo edges via `qualified_name` are the differentiator. Fulfills the `CodeChunkEnrichment.symbols` "P2 graph storage" reservation. |
-| P1 | [001-interactive-curation-debug-trajectory](001-interactive-curation-debug-trajectory.md) | — | Phase 1 shipped (MCP enhancement chunks, commit f2d73e5); later phases of the interactive-curation debug-trajectory flow remain. 19 open tasks. |
+| P1 | [001-interactive-curation-debug-trajectory](001-interactive-curation-debug-trajectory.md) | — | Phase 1 shipped (MCP enhancement chunks, commit f2d73e5); later phases of the interactive-curation debug-trajectory flow remain. 12 open tasks. |
 | P1 | [rfc-fleet-2-distributed-embedding](rfc-fleet-2-distributed-embedding.md) | rfc-fleet-1 (done) | Claim-based distributed backfill mostly shipped; `[embed] lanes` pinning, crash-recovery + two-worker integration tests, doctor check, `hosts plan` still open. 5 open tasks. |
 | P1 | [rfc-fleet-7-llama-cpp-accelerated-install](rfc-fleet-7-llama-cpp-accelerated-install.md) | — | Accelerated llama-cpp wheel auto-select on install; 3 open tasks remain. |
-| P2 | [rfc-bench-embed-progress](rfc-bench-embed-progress.md) | — | `bench embed` progress reporting polish; 4 open tasks remain. |
 
-Everything else has all its task boxes checked and is archived under
-[`done/`](done/) with `status: done` (13 RFCs as of 2026-06-30:
-fleet-1/3/4, source-provenance, corpus-growth-controls, nlp-data-
-quality-signals, eval-framework-expansion, developer-ux-verbs,
-runtime-feedback, self-distillation-export, hf-dataset-inbound,
-profiling-trace-source, claude-code-self-ingest-e2e). They are kept,
-not deleted, for provenance.
+Completed RFCs live under [`done/`](done/) for provenance. Benchmark
+progress and cold-start telemetry shipped in #121; its checklist was
+reconciled and archived on 2026-09-25.
 
 ## Sequencing notes
 
@@ -65,7 +60,7 @@ not deleted, for provenance.
   `code_symbols`/`code_edges` schema + resolution pass (the existing
   flat `symbols` enrichment is the seed) and lead with the cross-repo
   angle, the corpus-forge-native differentiator.
-- **Remaining todos are demoted, not dropped.** The four RFCs below
+- **Remaining todos are demoted, not dropped.** The three RFCs below
   the codeintel pair still carry genuine unchecked work; they stay
   `accepted` at lower cascade priority (sorted after `000-*`). Nothing
   was buried — only genuinely-complete RFCs moved to `done/`.

@@ -285,8 +285,12 @@ class TestMultiFormatIngestE2E:
         ):
             assert (_FIXTURE_ROOT / rel).is_file(), f"Expected fixture file missing: {rel}"
 
-    def test_full_ingest_against_postgres(self, pg_dsn: str, tmp_path: Path) -> None:
+    def test_full_ingest_against_postgres(
+        self, pg_dsn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Wave 3 P0 gate — full multi-format ingest happy path."""
+        # Personal ignore rules must not prune files from the fixture corpus.
+        monkeypatch.setenv("CF_GLOBAL_IGNORE_FILE", str(tmp_path / "empty-ignore"))
         backend = _make_backend(pg_dsn)
         dataset_id = _create_dataset(backend, "multi-format-e2e")
         embedder = _FakeEmbedder()

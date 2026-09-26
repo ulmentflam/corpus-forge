@@ -919,6 +919,13 @@ A drop in `recall@20` on your own held-out QA pairs is an early-warning signal t
 
 ## Development
 
+`make install` and `make dev` keep the environment at
+`~/Local/venvs/corpus-forge` and link the checkout's `.venv` to it. This keeps
+installed packages outside iCloud Drive. Export `VENV` to choose another absolute
+path, including a separate environment for another checkout; all Makefile `uv`
+commands use that path. An existing `.venv` directory is preserved and must be
+moved outside the checkout before these targets can create the link.
+
 ```bash
 make dev           # install dev deps + pre-commit hooks
 make ci            # format-check + lint + typecheck + unit + fuzz + smoke

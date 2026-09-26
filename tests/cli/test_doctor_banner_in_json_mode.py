@@ -26,7 +26,7 @@ def _combined(result) -> str:
     return "".join(parts) or result.output
 
 
-def test_doctor_human_render_has_banner_but_json_does_not() -> None:
+def test_doctor_human_render_has_banner_but_json_does_not(stub_doctor_report) -> None:
     """``doctor`` (human) renders the banner; ``doctor --json`` suppresses it."""
 
     runner = CliRunner()

@@ -52,6 +52,8 @@ def _install_stubs(
     *,
     uv_fails_on_accel: bool = False,
     nvidia_smi: str | None = "absent",
+    system: str = "Linux",
+    machine: str = "x86_64",
 ) -> tuple[Path, Path]:
     """Drop stub ``uv`` + ``corpus-forge`` (+ a controlled ``nvidia-smi``)
     on PATH.
@@ -69,6 +71,12 @@ def _install_stubs(
     ``None`` → no stub (use the host's real nvidia-smi).
     """
     bin_dir.mkdir(parents=True, exist_ok=True)
+    uname = bin_dir / "uname"
+    uname.write_text(
+        f'#!/usr/bin/env bash\ncase "$1" in\n-s) echo {system};;\n-m) echo {machine};;\nesac\n',
+        encoding="utf-8",
+    )
+    uname.chmod(0o755)
     if nvidia_smi is not None:
         smi = bin_dir / "nvidia-smi"
         if nvidia_smi == "absent":
@@ -123,6 +131,8 @@ def _run_install_sh(
     extra_env: dict[str, str] | None = None,
     uv_fails_on_accel: bool = False,
     nvidia_smi: str | None = "absent",
+    system: str = "Linux",
+    machine: str = "x86_64",
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     """Run ``install.sh`` from the repo root (so it finds the in-repo
     ``questions.toml`` and never networks out) with stub uv/corpus-forge.
@@ -130,7 +140,13 @@ def _run_install_sh(
     ``bin_dir`` is first on PATH so the stub ``nvidia-smi`` shadows any real
     one on the host, keeping accelerator detection deterministic.
     """
-    uv_log, _ = _install_stubs(bin_dir, uv_fails_on_accel=uv_fails_on_accel, nvidia_smi=nvidia_smi)
+    uv_log, _ = _install_stubs(
+        bin_dir,
+        uv_fails_on_accel=uv_fails_on_accel,
+        nvidia_smi=nvidia_smi,
+        system=system,
+        machine=machine,
+    )
     env = {
         "PATH": f"{bin_dir}:/usr/bin:/bin",
         "HOME": str(bin_dir.parent),
@@ -227,6 +243,20 @@ def test_auto_embedder_installs_cpu_llama_on_no_accel_box(tmp_path: Path) -> Non
     )
     # CPU path must never trigger the accel→cpu fallback (only one install).
     assert len(lines) == 1, f"CPU path should install once, not retry; got {lines!r}"
+
+
+def test_auto_embedder_detects_apple_silicon_and_selects_metal(tmp_path: Path) -> None:
+    result, uv_log = _run_install_sh(
+        tmp_path / "bin",
+        [],
+        extra_env={"CF_EMBEDDER": "auto"},
+        system="Darwin",
+        machine="arm64",
+    )
+    assert result.returncode == 0, result.stderr
+    lines = _tool_install_lines(uv_log)
+    assert len(lines) == 1
+    assert "/whl/metal" in lines[0]
 
 
 def test_auto_embedder_detects_cuda_and_selects_cuda_index(tmp_path: Path) -> None:

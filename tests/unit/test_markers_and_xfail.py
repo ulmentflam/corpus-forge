@@ -58,7 +58,7 @@ def test_requires_unix_skips_on_simulated_windows(pytester: pytest.Pytester) -> 
         "addopts = --strict-markers\n"
     )
     # Force-skip path via -p no:cacheprovider for cleanliness.
-    result = pytester.runpytest("-p", "no:cacheprovider")
+    result = pytester.runpytest("-p", "no:cacheprovider", "-p", "no:rerunfailures")
     # Either it ran (we're on a POSIX system) — assert pass; or it skipped.
     if sys.platform == "win32":
         result.assert_outcomes(skipped=1)
@@ -82,6 +82,6 @@ def test_xfail_strict_fails_on_unexpected_pass(pytester: pytest.Pytester) -> Non
         )
     )
     pytester.makeini("[pytest]\nxfail_strict = true\naddopts = --strict-markers\n")
-    result = pytester.runpytest("-p", "no:cacheprovider")
+    result = pytester.runpytest("-p", "no:cacheprovider", "-p", "no:rerunfailures")
     # With xfail_strict, XPASS -> failure. assert_outcomes counts failures.
     result.assert_outcomes(failed=1)

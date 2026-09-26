@@ -62,10 +62,14 @@ def test_skip_when_no_info_line(isolated_log_dir: Path) -> None:
     assert result.status in (CheckStatus.SKIP, CheckStatus.WARN)
 
 
-def test_check_registered_in_run_doctor(isolated_log_dir: Path) -> None:
-    from corpus_forge.doctor import run_doctor
+def test_check_registered_in_run_doctor(
+    isolated_log_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from corpus_forge.doctor import checks, run_doctor
 
-    report = run_doctor()
+    assert checks._check_daemon_activity in checks._CHECKS
+    monkeypatch.setattr(checks, "_CHECKS", [checks._check_daemon_activity])
+    report = run_doctor(config_path=isolated_log_dir / "missing-config.toml")
     names = [r.name for r in report.results]
     assert "daemon_activity" in names
 

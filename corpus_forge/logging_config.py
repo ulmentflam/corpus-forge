@@ -6,7 +6,8 @@ logger:
 
 1. A ``RotatingFileHandler`` at ``<cache>/corpus-forge/logs/<component>.log``
    (10 MB x 5), level DEBUG, that is the durable diagnostic substrate
-   bug-report ships.
+   bug-report ships. If the destination is unavailable, initialization
+   continues with the remaining handlers and records a warning.
 2. A ``rich.logging.RichHandler`` on stderr (level INFO by default,
    DEBUG with ``--verbose``, WARNING with ``--quiet``).  Skipped for
    ``component='mcp'`` + ``CF_TRANSPORT='stdio'`` so the MCP wire stays
@@ -81,7 +82,6 @@ def _resolve_log_dir() -> Path:
         path = Path(override).expanduser()
     else:
         path = Path(platformdirs.user_cache_dir("corpus-forge")) / "logs"
-    path.mkdir(parents=True, exist_ok=True)
     return path
 
 
@@ -155,7 +155,7 @@ def init_logging(
     quiet: bool = False,
     agent_logs: str | None = None,
 ) -> None:
-    """Install the three corpus-forge log handlers.
+    """Install stderr and memory handlers, plus a file handler when writable.
 
     Idempotent: re-calling clears the existing handler set first so
     repeat invocations from tests / re-entrant entry points don't stack
@@ -176,20 +176,26 @@ def init_logging(
     # is a no-op.
     root.propagate = True
 
-    # (1) Rotating file: always-on, always DEBUG.
+    # (1) Rotating file: DEBUG when the destination is writable.
     file_formatter = logging.Formatter(
         fmt="%(asctime)s.%(msecs)03d [%(levelname)-7s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    file_handler = RotatingFileHandler(
-        log_path,
-        maxBytes=10 * 1024 * 1024,
-        backupCount=5,
-        encoding="utf-8",
-    )
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(file_formatter)
-    root.addHandler(file_handler)
+    file_error: OSError | None = None
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(
+            log_path,
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        file_error = exc
+    else:
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(file_formatter)
+        root.addHandler(file_handler)
 
     # (2) Stderr handler — RichHandler in human mode, AgentLogHandler in
     #     agent mode.  MCP stdio still gets nothing (the wire is owned
@@ -230,6 +236,8 @@ def init_logging(
 
     _RING_BUFFER = ring
     _LOG_DIR = log_dir
+    if file_error is not None:
+        root.warning("File logging unavailable at %s: %s", log_path, file_error)
 
 
 def get_log_dir() -> Path:
