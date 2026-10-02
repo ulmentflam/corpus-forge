@@ -128,7 +128,7 @@ rerank     = ["sentence-transformers>=3.0"]
 # R5: Model Context Protocol server.  Pin `>=1.0,<2.0` to bracket the v1
 # Server API surface; a v2 release would change the registration shape
 # and silently break the in-process stdio adapter.
-mcp        = ["mcp>=1.0,<2.0"]
+mcp        = ["mcp>=1.0,<3.0"]
 # Phase D: tree-sitter-based code chunker (`CodeChunker`, D-02). Apache-2.0
 # grammars via `tree-sitter-language-pack`. Lazy-imported inside
 # `corpus_forge.chunkers.code` so the core install stays light.
